@@ -1,6 +1,6 @@
 
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName } from './gpxUtils';
 import { fit2json, parseRecords } from 'fit-decoder';
 
 const HIGH_CONTRAST_COLORS = [
@@ -83,7 +83,8 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     
     let name = `${dateStr}, ${timeStr}`;
     if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
-      name += ` (${firstPoint.lat.toFixed(2)}, ${firstPoint.lng.toFixed(2)})`;
+      const location = await getLocationName(firstPoint.lat, firstPoint.lng);
+      name += ` (${location})`;
     } else {
       name += ` - ${fileName.replace(/\.[^/.]+$/, "")}`;
     }

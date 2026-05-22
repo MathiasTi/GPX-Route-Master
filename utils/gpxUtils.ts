@@ -1,18 +1,175 @@
 
-import { GPXPoint, GPXTrack, PowerStats } from '../types';
+import { GPXPoint, GPXTrack, PowerStats, ClimbSegment } from '../types';
 
-export const calculatePowerStats = (points: GPXPoint[], ftp: number = 250): PowerStats | undefined => {
-  const powerPoints = points.filter(p => p.power !== undefined && p.time);
+export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
+  if (points.length < 20) return [];
+  
+  const minClimbDistance = 500; // meters
+  const minAvgGradient = 3.0; // percent
+  
+  // Calculate cumulative distance and filled elevation
+  const cumDist = new Float64Array(points.length);
+  const filledEle = new Float64Array(points.length);
+  let lastEle = points.find(p => p.ele !== undefined)?.ele || 0;
+  
+  for (let i = 0; i < points.length; i++) {
+    if (points[i].ele !== undefined) lastEle = points[i].ele!;
+    filledEle[i] = lastEle;
+    if (i > 0) {
+      cumDist[i] = cumDist[i - 1] + calculateDistance(points[i - 1], points[i]) * 1000;
+    } else {
+      cumDist[0] = 0;
+    }
+  }
+
+  const climbs: ClimbSegment[] = [];
+  
+  for (let i = 0; i < points.length - 20; i++) {
+    // Look for a point at least 500m ahead
+    for (let j = i + 10; j < points.length; j++) {
+      const dist = cumDist[j] - cumDist[i];
+      if (dist < minClimbDistance) continue;
+      
+      const eleDiff = filledEle[j] - filledEle[i];
+      const avgGrad = (eleDiff / dist) * 100;
+      
+      if (avgGrad >= minAvgGradient) {
+        // Potential climb found, now try to extend it
+        let currentEnd = j;
+        let runningMaxGrad = avgGrad;
+        
+        while (currentEnd < points.length - 5) {
+          const nextDist = cumDist[currentEnd + 5] - cumDist[currentEnd];
+          const nextEle = filledEle[currentEnd + 5] - filledEle[currentEnd];
+          const segmentGrad = (nextEle / nextDist) * 100;
+          
+          if (segmentGrad > 1.0 || (filledEle[currentEnd + 5] - filledEle[i]) / (cumDist[currentEnd + 5] - cumDist[i]) * 100 > minAvgGradient) {
+            currentEnd += 5;
+            if (segmentGrad > runningMaxGrad) runningMaxGrad = segmentGrad;
+          } else {
+            break;
+          }
+        }
+        
+        const finalDist = cumDist[currentEnd] - cumDist[i];
+        const finalAscent = filledEle[currentEnd] - filledEle[i];
+        const finalAvgGrad = (finalAscent / finalDist) * 100;
+        
+        if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient) {
+          climbs.push({
+            startIndex: i,
+            endIndex: currentEnd,
+            distance: finalDist,
+            ascent: finalAscent,
+            avgGradient: finalAvgGrad,
+            maxGradient: runningMaxGrad
+          });
+          i = currentEnd; // Skip processed points
+          break;
+        }
+      } else if (avgGrad < -2) {
+        // If it's a significant descent, stop looking from this i
+        break;
+      }
+    }
+  }
+  
+  return climbs;
+};
+
+export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, speedKmh: number = 15): GPXPoint[] => {
+  const totalMass = weightKg + 8.5; // Rider + active equipment
+  const g = 9.81;
+  const Crr = 0.005; // Rolling resistance coefficient
+  const CdA = 0.35;  // Coefficient of aerodynamic drag * area
+  const rho = 1.225; // Air density
+
+  // Smooth elevations to reduce GPS noise
+  const eleSmoothed = new Float64Array(points.length);
+  const windowHalf = 5;
+  for (let i = 0; i < points.length; i++) {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - windowHalf); j <= Math.min(points.length - 1, i + windowHalf); j++) {
+      if (points[j].ele !== undefined) {
+        sum += points[j].ele!;
+        count++;
+      }
+    }
+    eleSmoothed[i] = count > 0 ? sum / count : (points[i].ele ?? 0);
+  }
+
+  return points.map((p, i) => {
+    if (p.power !== undefined) return p;
+
+    let slope = 0;
+    let speedMs = speedKmh / 3.6;
+
+    if (i > 0) {
+      const pPrev = points[i - 1];
+      const distM = calculateDistance(pPrev, p) * 1000;
+      
+      if (distM > 1) {
+        const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
+        slope = eleDiff / distM;
+      }
+
+      if (p.time && pPrev.time) {
+        const dt = (p.time.getTime() - pPrev.time.getTime()) / 1000;
+        if (dt > 0 && dt < 120 && distM > 0) {
+          speedMs = distM / dt;
+        }
+      }
+    }
+
+    // Clip gradient extremes
+    slope = Math.max(-0.22, Math.min(0.22, slope));
+
+    const fGrav = totalMass * g * Math.sin(Math.atan(slope));
+    const fRoll = totalMass * g * Math.cos(Math.atan(slope)) * Crr;
+    const fAero = 0.5 * rho * CdA * speedMs * speedMs;
+    
+    let fNet = fGrav + fRoll + fAero;
+    let rawPower = fNet * speedMs;
+    let power = rawPower / 0.95; // Drivetrain transfer factor
+
+    if (slope < -0.04) {
+      power = 0; // Coasting
+    } else {
+      power = Math.max(10, Math.min(950, power));
+    }
+
+    if (speedMs < 0.2) {
+      power = 0; // Standing still
+    }
+
+    return {
+      ...p,
+      power: Math.round(power)
+    };
+  });
+};
+
+export const calculatePowerStats = (
+  points: GPXPoint[],
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 15
+): PowerStats | undefined => {
+  // Check if track has power. If not, estimate it
+  const hasRealPower = points.some(p => p.power !== undefined);
+  const processedPoints = hasRealPower ? points : estimateTrackPower(points, userWeight, estimatedSpeed);
+
+  const powerPoints = processedPoints.filter(p => p.power !== undefined && p.time);
   if (powerPoints.length < 2) return undefined;
 
   // 1. Smooth power data (5-point moving average)
-  const smoothedPower = points.map((p, i) => {
+  const smoothedPower = processedPoints.map((p, i) => {
     if (p.power === undefined) return undefined;
     const window = 2;
     let sum = 0, count = 0;
-    for (let j = Math.max(0, i - window); j <= Math.min(points.length - 1, i + window); j++) {
-      if (points[j].power !== undefined) {
-        sum += Math.min(points[j].power!, 2500);
+    for (let j = Math.max(0, i - window); j <= Math.min(processedPoints.length - 1, i + window); j++) {
+      if (processedPoints[j].power !== undefined) {
+        sum += Math.min(processedPoints[j].power!, 2500);
         count++;
       }
     }
@@ -22,9 +179,9 @@ export const calculatePowerStats = (points: GPXPoint[], ftp: number = 250): Powe
   // 2. Time-weighted Average Power and Work
   let totalEnergy = 0;
   let totalTime = 0;
-  for (let i = 1; i < points.length; i++) {
-    const p1 = points[i - 1];
-    const p2 = points[i];
+  for (let i = 1; i < processedPoints.length; i++) {
+    const p1 = processedPoints[i - 1];
+    const p2 = processedPoints[i];
     if (p1.power !== undefined && p2.power !== undefined && p1.time && p2.time) {
       const dt = (p2.time.getTime() - p1.time.getTime()) / 1000;
       if (dt > 0 && dt < 30) {
@@ -35,14 +192,14 @@ export const calculatePowerStats = (points: GPXPoint[], ftp: number = 250): Powe
     }
   }
   const avgPower = totalTime > 0 ? totalEnergy / totalTime : 0;
-  const work = totalEnergy / 1000; // Joules to kJ (approx 1:1 with food calories for cycling)
+  const work = totalEnergy / 1000; // Joules to kJ
 
   // 3. Max Power (from smoothed data)
   const validSmoothed = smoothedPower.filter(p => p !== undefined) as number[];
   const maxPower = validSmoothed.length > 0 ? Math.max(...validSmoothed) : 0;
 
   // 4. Best 20s, 1m, 20m using 1s interpolation
-  const timedPoints = points.map((p, i) => ({ ...p, power: smoothedPower[i] })).filter(p => p.time && p.power !== undefined);
+  const timedPoints = processedPoints.map((p, i) => ({ ...p, power: smoothedPower[i] })).filter(p => p.time && p.power !== undefined);
   if (timedPoints.length < 2) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
 
   const startTime = timedPoints[0].time!.getTime();
@@ -89,7 +246,6 @@ export const calculatePowerStats = (points: GPXPoint[], ftp: number = 250): Powe
   };
 
   // 5. Normalized Power (NP)
-  // Rolling 30s average, each raised to 4th power, averaged, then 4th root
   let normalizedPower = avgPower;
   if (power1s.length >= 30) {
     let rollingSum30 = 0;
@@ -290,6 +446,24 @@ const HIGH_CONTRAST_COLORS = [
 
 let colorIndex = 0;
 
+export const getLocationName = async (lat: number, lng: number): Promise<string> => {
+  try {
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`, {
+      headers: {
+        'Accept-Language': 'de-DE, de;q=0.9, en;q=0.8'
+      }
+    });
+    const data = await response.json();
+    if (data.address) {
+      return data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.county || "Unbekannter Ort";
+    }
+    return `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
+  } catch (error) {
+    console.error("Geocoding error:", error);
+    return `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
+  }
+};
+
 export const validateGPX = (xmlString: string): { isValid: boolean; error?: string } => {
   try {
     const parser = new DOMParser();
@@ -318,7 +492,7 @@ export const validateGPX = (xmlString: string): { isValid: boolean; error?: stri
   }
 };
 
-export const parseGPX = (xmlString: string, fileName: string): GPXTrack | null => {
+export const parseGPX = async (xmlString: string, fileName: string): Promise<GPXTrack | null> => {
   const validation = validateGPX(xmlString);
   if (!validation.isValid) {
     console.error("GPX Validation Error:", validation.error);
@@ -362,14 +536,46 @@ export const parseGPX = (xmlString: string, fileName: string): GPXTrack | null =
       return { lat, lng, ele, time, power, hr, cadence };
     });
 
-    const name = xml.querySelector("name")?.textContent || fileName || "Unbenannter Track";
+    const hasTimestamps = points.some(p => p.time !== undefined);
+    if (!hasTimestamps && points.length > 0) {
+      let currentTimeMs = Date.now() - 3600 * 2000; // Start 2 hours ago
+      points[0].time = new Date(currentTimeMs);
+      for (let i = 1; i < points.length; i++) {
+        const distKm = calculateDistance(points[i - 1], points[i]);
+        const timeDeltaHours = distKm / 20.0; // 20 km/h baseline speed
+        currentTimeMs += timeDeltaHours * 3600 * 1000;
+        points[i].time = new Date(currentTimeMs);
+      }
+    }
+
+    const firstPoint = points.find(p => p.time !== undefined) || points[0];
+    const startDate = firstPoint?.time || new Date();
+    const dateStr = startDate.toLocaleDateString('de-DE', { 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit' 
+    });
+    const timeStr = startDate.toLocaleTimeString('de-DE', { 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    let activityName = `${dateStr}, ${timeStr}`;
+    if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
+      const location = await getLocationName(firstPoint.lat, firstPoint.lng);
+      activityName += ` (${location})`;
+    } else {
+      activityName += ` - ${fileName.replace(/\.[^/.]+$/, "") || "Unbenannter Track"}`;
+    }
+
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
     const powerStats = calculatePowerStats(points);
     const surfaceStats = generateMockSurfaceStats(totalDist);
+    const climbs = findClimbs(points);
     
     let duration: number | undefined;
-    const hasTimestamps = points.some(p => p.time !== undefined);
-    if (hasTimestamps && points.length > 1) {
+    const trackHasTimestamps = points.some(p => p.time !== undefined);
+    if (trackHasTimestamps && points.length > 1) {
       const firstTime = points.find(p => p.time !== undefined)?.time;
       const lastTime = [...points].reverse().find(p => p.time !== undefined)?.time;
       if (firstTime && lastTime) {
@@ -382,7 +588,7 @@ export const parseGPX = (xmlString: string, fileName: string): GPXTrack | null =
 
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,
-      name,
+      name: activityName,
       points,
       color,
       distance: totalDist,
@@ -392,6 +598,7 @@ export const parseGPX = (xmlString: string, fileName: string): GPXTrack | null =
       visible: true,
       powerStats,
       surfaceStats,
+      climbs,
       duration,
       hasTimestamps
     };
@@ -407,6 +614,7 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
   const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(combinedPoints);
   const powerStats = calculatePowerStats(combinedPoints);
   const surfaceStats = generateMockSurfaceStats(totalDist);
+  const climbs = findClimbs(combinedPoints);
   
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : `merged-${Date.now()}-${Math.random()}`,
@@ -419,6 +627,7 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
     maxSlope,
     visible: true,
     powerStats,
-    surfaceStats
+    surfaceStats,
+    climbs
   };
 };

@@ -1,7 +1,8 @@
 
 import React from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2 } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X } from 'lucide-react';
 import { 
   DndContext, 
   closestCenter, 
@@ -66,8 +67,6 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
           <div className="flex flex-col gap-1 ml-5">
             <div className="text-[11px] text-slate-500 flex items-center gap-2">
               <span className={`${isMarked ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'} px-1.5 py-0.5 rounded font-mono`}>{track.distance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</span>
-              <span className="text-slate-300">•</span>
-              <span>{track.points.length.toLocaleString('de-DE')} Pkt</span>
               {track.duration ? (
                 <>
                   <span className="text-slate-300">•</span>
@@ -80,10 +79,21 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
                 </>
               )}
             </div>
+            <div className={`text-[11px] font-bold py-1 px-2 rounded-lg flex items-center justify-between font-mono ${isMarked ? 'bg-indigo-100/60 text-indigo-950 border border-indigo-200/40' : 'bg-slate-50/75 text-slate-700 border border-slate-100'}`}>
+              <span className="flex items-center gap-1 text-emerald-700">
+                <TrendingUp className="w-3.5 h-3.5" />
+                Anstieg: +{Math.round(track.ascent).toLocaleString('de-DE')}m
+              </span>
+              <span className="text-slate-300">|</span>
+              <span className="flex items-center gap-1 text-rose-700">
+                <TrendingDown className="w-3.5 h-3.5" />
+                Abstieg: -{Math.round(track.descent).toLocaleString('de-DE')}m
+              </span>
+            </div>
             <div className="text-[10px] text-slate-400 flex items-center gap-3 font-mono">
-              <span className="flex items-center gap-0.5 text-emerald-600"><TrendingUp className="w-3 h-3" /> {Math.round(track.ascent).toLocaleString('de-DE')}m</span>
-              <span className="flex items-center gap-0.5 text-rose-600"><TrendingDown className="w-3 h-3" /> {Math.round(track.descent).toLocaleString('de-DE')}m</span>
-              <span className="text-slate-500">Max: {track.maxSlope.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</span>
+              <span className="text-slate-500">Max Steigung: {track.maxSlope.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</span>
+              <span className="text-slate-300">•</span>
+              <span>{track.points.length.toLocaleString('de-DE')} Pkt</span>
             </div>
             {track.powerStats && (
               <div className="text-[10px] text-amber-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono mt-1 pt-1 border-t border-slate-100">
@@ -92,6 +102,17 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
                 <span title="Intensity Factor">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
                 <span title="Training Stress Score">TSS {Math.round(track.powerStats.tss || 0)}</span>
                 <span title="Arbeit">Work {Math.round(track.powerStats.work || 0)}kJ</span>
+              </div>
+            )}
+            {track.climbs && track.climbs.length > 0 && (
+              <div className="text-[10px] text-indigo-600 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono mt-1 pt-1 border-t border-slate-100">
+                <TrendingUp className="w-3 h-3 shrink-0" />
+                <span className="font-bold">Anstiege:</span>
+                {track.climbs.map((climb, idx) => (
+                  <span key={idx} className="bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100" title={`Max Steigung: ${climb.maxGradient.toFixed(1)}%`}>
+                    {climb.avgGradient.toFixed(1)}% / {(climb.distance / 1000).toFixed(1)}km
+                  </span>
+                ))}
               </div>
             )}
             {track.surfaceStats && track.surfaceStats.length > 0 && (
@@ -155,10 +176,16 @@ interface SidebarProps {
   setIs3D: (mode: boolean) => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  isMobileMenuOpen: boolean;
+  setIsMobileMenuOpen: (open: boolean) => void;
   estimatedSpeed: number;
   setEstimatedSpeed: (speed: number) => void;
   ftp: number;
   setFtp: (ftp: number) => void;
+  userWeight: number;
+  setUserWeight: (weight: number) => void;
+  userAge: number;
+  setUserAge: (age: number) => void;
   suggestedFtp: number | null;
   onOpenAnalytics: (id: string) => void;
 }
@@ -180,10 +207,16 @@ const Sidebar: React.FC<SidebarProps> = ({
   setIs3D,
   isCollapsed,
   onToggleCollapse,
+  isMobileMenuOpen,
+  setIsMobileMenuOpen,
   estimatedSpeed,
   setEstimatedSpeed,
   ftp,
   setFtp,
+  userWeight,
+  setUserWeight,
+  userAge,
+  setUserAge,
   suggestedFtp,
   onOpenAnalytics
 }) => {
@@ -204,8 +237,36 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   return (
-    <div className={`${isCollapsed ? 'w-16' : 'w-80'} h-full shadow-2xl flex flex-col z-30 border-r border-slate-200 overflow-hidden transition-all duration-300 relative`}>
-      {/* AI Generated Background Image */}
+    <>
+      {/* Mobile Overlay */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] md:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      <div className={`
+        fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
+        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        md:relative md:translate-x-0
+        ${isCollapsed ? 'md:w-16' : 'md:w-80'} 
+        h-full shadow-2xl flex flex-col border-r border-slate-200 overflow-hidden bg-white
+      `}>
+        {/* Mobile Close Button */}
+        <button 
+          onClick={() => setIsMobileMenuOpen(false)}
+          className="md:hidden absolute right-4 top-4 p-2 bg-slate-100 rounded-xl text-slate-600 z-50"
+        >
+          <X size={20} />
+        </button>
+
+        {/* AI Generated Background Image */}
       <div 
         className="absolute inset-0 z-0 opacity-60 pointer-events-none"
         style={{
@@ -351,39 +412,59 @@ const Sidebar: React.FC<SidebarProps> = ({
               </section>
             )}
 
-            <section className="space-y-3">
+            <section className="space-y-4">
               <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Nutzer-FTP</h2>
-                <span className="text-xs font-bold text-amber-600">{ftp} W</span>
+                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Erweiterte Nutzerdaten</h2>
               </div>
-              <div className="flex items-center gap-3">
-                <input 
-                  type="range" 
-                  min="100" 
-                  max="500" 
-                  step="5" 
-                  value={ftp} 
-                  onChange={(e) => setFtp(Number(e.target.value))}
-                  className="flex-1 accent-amber-500"
-                />
-                <input 
-                  type="number"
-                  value={ftp}
-                  onChange={(e) => setFtp(Number(e.target.value))}
-                  className="w-16 bg-white border border-slate-200 rounded px-1.5 py-1 text-xs font-mono font-bold text-slate-700"
-                />
-              </div>
-              <div className="flex justify-between items-center gap-2">
-                <p className="text-[10px] text-slate-500">Basis für NP, IF und TSS Berechnungen.</p>
+              
+              <div className="space-y-3 p-3 bg-slate-50/50 rounded-xl border border-slate-200/50">
+                <div className="space-y-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 rounded transition-all">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">FTP (Watt)</label>
+                    <span className="text-[11px] font-black text-amber-600">{ftp} W</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="100" 
+                    max="500" 
+                    step="5" 
+                    value={ftp} 
+                    onChange={(e) => setFtp(Number(e.target.value))}
+                    className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">Gewicht (kg)</label>
+                    <input 
+                      type="number"
+                      value={userWeight}
+                      onChange={(e) => setUserWeight(Number(e.target.value))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">Alter</label>
+                    <input 
+                      type="number"
+                      value={userAge}
+                      onChange={(e) => setUserAge(Number(e.target.value))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
                 {suggestedFtp && Math.abs(suggestedFtp - ftp) > 2 && (
                   <button 
                     onClick={() => setFtp(suggestedFtp)}
-                    className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-black hover:bg-amber-200 transition-colors animate-pulse"
+                    className="w-full text-[9px] bg-amber-100 text-amber-700 px-1.5 py-1 rounded font-black hover:bg-amber-200 transition-colors animate-pulse"
                   >
-                    Vorschlag: {suggestedFtp}W
+                    FTP-Vorschlag basierend auf Bestleistung: {suggestedFtp}W
                   </button>
                 )}
               </div>
+              <p className="text-[10px] text-slate-400 italic">Diese Daten ermöglichen eine genauere Schätzung von VO2max und Kalorienverbrauch.</p>
             </section>
 
             <section className="space-y-3">
@@ -429,6 +510,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
     </div>
+    </>
   );
 };
 

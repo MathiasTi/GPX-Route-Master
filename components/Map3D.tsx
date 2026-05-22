@@ -268,7 +268,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           bearing: mapView.bearing
         }}
         maxPitch={75}
-        mapStyle={mapStyle}
+        mapStyle={mapStyle as any}
         onMove={(e) => {
           if (isFlying) return;
           setPitch(e.viewState.pitch);

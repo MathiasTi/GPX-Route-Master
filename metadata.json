@@ -1,5 +1,6 @@
 {
   "name": "New GPX Route Master",
   "description": "A professional GPX file visualizer and editor with OpenStreetMap integration, allowing route merging and distance measurements.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

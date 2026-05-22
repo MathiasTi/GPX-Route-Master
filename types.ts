@@ -27,6 +27,15 @@ export interface SurfaceSegment {
   distance: number;
 }
 
+export interface ClimbSegment {
+  startIndex: number;
+  endIndex: number;
+  distance: number; // meters
+  ascent: number; // meters
+  avgGradient: number; // percent
+  maxGradient: number; // percent
+}
+
 export interface GPXTrack {
   id: string;
   name: string;
@@ -39,6 +48,7 @@ export interface GPXTrack {
   visible: boolean;
   powerStats?: PowerStats;
   surfaceStats?: SurfaceSegment[];
+  climbs?: ClimbSegment[];
   duration?: number; // in seconds
   hasTimestamps?: boolean;
 }
@@ -74,3 +84,19 @@ export const MAP_LAYERS: Record<MapLayer, MapLayerConfig> = {
     attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
   }
 };
+
+export interface WeatherData {
+  locationName: string;
+  temperature: number;
+  tempHigh: number;
+  tempLow: number;
+  condition: string;
+  conditionDetail: string;
+  humidity?: number;
+  windSpeed?: number;
+  precipitationProbability?: number;
+  sourceUrl?: string;
+  forecastSummary: string;
+  isFallback?: boolean;
+  fallbackNotice?: string;
+}

@@ -4,12 +4,15 @@ import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
+import { Activity, BarChart2 } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer } from './types';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
 import { arrayMove } from '@dnd-kit/sortable';
 import AdvancedAnalytics from './components/AdvancedAnalytics';
 import { AnimatePresence } from 'motion/react';
+import { VideoExportModal } from './components/VideoExportModal';
+import { WeatherOverlay } from './components/WeatherOverlay';
 
 const App: React.FC = () => {
   const [tracks, setTracks] = useState<GPXTrack[]>([]);
@@ -20,6 +23,7 @@ const App: React.FC = () => {
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [mapView, setMapView] = useState({
     lat: 51.1657,
     lng: 10.4515,
@@ -29,19 +33,22 @@ const App: React.FC = () => {
   });
   const [hoveredPoint, setHoveredPoint] = useState<GPXPoint | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [userWeight, setUserWeight] = useState(75);
+  const [userAge, setUserAge] = useState(35);
   const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
   const [isFlying, setIsFlying] = useState(false);
   const [flyProgress, setFlyProgress] = useState(0); // 0 to 1
   const [flySpeed, setFlySpeed] = useState(1); // multiplier
  
-  // Recalculate power stats when FTP changes
+  // Recalculate power stats when FTP, weight, or estimated Speed changes
   useEffect(() => {
     setTracks(prev => prev.map(track => {
-      const powerStats = calculatePowerStats(track.points, ftp);
+      const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed);
       return { ...track, powerStats };
     }));
-  }, [ftp]);
+  }, [ftp, userWeight, estimatedSpeed]);
 
   const handleToggle3D = useCallback((mode: boolean) => {
     setIs3D(mode);
@@ -89,7 +96,7 @@ const App: React.FC = () => {
           const buffer = await file.arrayBuffer();
           const parsed = await parseFIT(buffer, file.name);
           if (parsed) {
-            parsed.powerStats = calculatePowerStats(parsed.points, ftp);
+            parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
             newTracks.push(parsed);
           } else {
             errors.push(`${file.name}: Fehler beim Verarbeiten der FIT-Datei.`);
@@ -102,9 +109,9 @@ const App: React.FC = () => {
             continue;
           }
  
-          const parsed = parseGPX(text, file.name);
+          const parsed = await parseGPX(text, file.name);
           if (parsed) {
-            parsed.powerStats = calculatePowerStats(parsed.points, ftp);
+            parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
             newTracks.push(parsed);
           } else {
             errors.push(`${file.name}: Fehler beim Verarbeiten der GPX-Datei.`);
@@ -127,7 +134,7 @@ const App: React.FC = () => {
       setTracks(prev => [...prev, ...newTracks]);
     }
     e.target.value = '';
-  }, [saveToHistory]);
+  }, [saveToHistory, ftp, userWeight, estimatedSpeed]);
  
   const toggleVisibility = useCallback((id: string) => {
     setTracks(prev => prev.map(t => t.id === id ? { ...t, visible: !t.visible } : t));
@@ -143,10 +150,10 @@ const App: React.FC = () => {
     if (tracks.length < 2) return;
     saveToHistory();
     const merged = mergeTracks(tracks);
-    merged.powerStats = calculatePowerStats(merged.points, ftp);
+    merged.powerStats = calculatePowerStats(merged.points, ftp, userWeight, estimatedSpeed);
     setTracks([merged]);
     setMarkedTrackId(merged.id);
-  }, [tracks, saveToHistory]);
+  }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed]);
  
   const handleReorder = useCallback((oldIndex: number, newIndex: number) => {
     setTracks(prev => arrayMove(prev, oldIndex, newIndex));
@@ -226,14 +233,36 @@ const App: React.FC = () => {
         setIs3D={handleToggle3D}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        isMobileMenuOpen={isMobileMenuOpen}
+        setIsMobileMenuOpen={setIsMobileMenuOpen}
         estimatedSpeed={estimatedSpeed}
         setEstimatedSpeed={setEstimatedSpeed}
         ftp={ftp}
         setFtp={setFtp}
+        userWeight={userWeight}
+        setUserWeight={setUserWeight}
+        userAge={userAge}
+        setUserAge={setUserAge}
         suggestedFtp={suggestedFtp}
-        onOpenAnalytics={() => setAnalyticsOpen(true)}
+        onOpenAnalytics={() => {
+          setAnalyticsOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
+        {/* Mobile Header */}
+        <div className="md:hidden flex items-center justify-between p-4 bg-white border-b border-slate-200 z-[60]">
+          <div className="flex items-center gap-2">
+            <Activity className="text-indigo-600" size={24} />
+            <span className="font-black tracking-tight text-lg">VeloAnalytics</span>
+          </div>
+          <button 
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="p-2.5 bg-slate-50 text-slate-600 rounded-xl border border-slate-200"
+          >
+            <BarChart2 size={24} />
+          </button>
+        </div>
         <div className="flex-1 relative">
           {is3D ? (
             <Map3D 
@@ -268,12 +297,17 @@ const App: React.FC = () => {
             />
           )}
 
+          <WeatherOverlay track={markedTrack} />
+
           <AnimatePresence>
             {analyticsOpen && markedTrack && (
               <AdvancedAnalytics 
                 track={markedTrack} 
                 ftp={ftp} 
+                userWeight={userWeight}
+                userAge={userAge}
                 selectionBounds={selectionBounds}
+                onSelection={setSelectionBounds}
                 onClose={() => setAnalyticsOpen(false)} 
               />
             )}
@@ -339,6 +373,7 @@ const App: React.FC = () => {
               flySpeed={flySpeed}
               onFlySpeedChange={setFlySpeed}
               onOpenAnalytics={() => setAnalyticsOpen(true)}
+              onOpenVideoExport={() => setIsExportModalOpen(true)}
               ftp={ftp}
               onToggleFlyover={() => {
                 if (isFlying) {
@@ -351,6 +386,14 @@ const App: React.FC = () => {
             />
           </div>
         )}
+
+        <VideoExportModal
+          track={markedTrack}
+          isOpen={isExportModalOpen}
+          onClose={() => setIsExportModalOpen(false)}
+          userWeight={userWeight}
+          estimatedSpeed={estimatedSpeed}
+        />
       </main>
     </div>
   );

@@ -254,19 +254,24 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
   );
 };
 
+const LeafletMapContainer = MapContainer as any;
+const LeafletTileLayer = TileLayer as any;
+const LeafletPolyline = Polyline as any;
+const LeafletMarker = Marker as any;
+
 const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTrack, hoveredPoint, onHoverPoint, selectionBounds, onSelection, mapView, onMapViewChange, estimatedSpeed = 15, isFlying = false }) => {
   const layer = MAP_LAYERS[activeLayer];
 
   return (
     <div className="w-full h-full relative">
-      <MapContainer 
+      <LeafletMapContainer 
         center={[mapView.lat, mapView.lng]} 
         zoom={mapView.zoom} 
         scrollWheelZoom={true}
         boxZoom={false}
         className="z-0"
       >
-        <TileLayer
+        <LeafletTileLayer
           attribution={layer.attribution}
           url={layer.url}
           maxZoom={layer.maxZoom || 19}
@@ -299,7 +304,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
           return (
             <React.Fragment key={track.id}>
               {/* Invisible thick line for easier hovering/clicking */}
-              <Polyline 
+              <LeafletPolyline 
                 positions={positions}
                 color="#000000"
                 opacity={0}
@@ -329,7 +334,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
                 }}
               />
               {/* Visible line */}
-              <Polyline 
+              <LeafletPolyline 
                 positions={positions}
                 color={track.color}
                 weight={isMarked ? 8 : 4}
@@ -354,11 +359,11 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
                       </div>
                     )}
                 </Popup>
-              </Polyline>
+              </LeafletPolyline>
 
               {/* Selection Highlights */}
               {selectedPolylines.map((pts, i) => (
-                <Polyline
+                <LeafletPolyline
                   key={`sel-${i}`}
                   positions={pts}
                   color="#4f46e5"
@@ -389,7 +394,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
                   }
                 }
                 return pauses.map(pause => (
-                  <Marker
+                  <LeafletMarker
                     key={`pause-${track.id}-${pause.idx}`}
                     position={[pause.lat, pause.lng]}
                     icon={new L.DivIcon({
@@ -411,7 +416,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
                       <div>Start: {pause.startTime.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
                       <div>Ende: {pause.endTime.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
                     </Popup>
-                  </Marker>
+                  </LeafletMarker>
                 ));
               })()}
             </React.Fragment>
@@ -426,7 +431,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
         <SelectionTool active={true} onSelection={onSelection} currentBounds={selectionBounds} />
         
         {hoveredPoint && (
-          <Marker 
+          <LeafletMarker 
             position={[hoveredPoint.lat, hoveredPoint.lng]} 
             interactive={false}
             icon={new L.DivIcon({
@@ -456,7 +461,7 @@ const Map: React.FC<MapProps> = ({ tracks, activeLayer, markedTrackId, onMarkTra
             })} 
           />
         )}
-      </MapContainer>
+      </LeafletMapContainer>
     </div>
   );
 };

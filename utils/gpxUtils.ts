@@ -77,7 +77,71 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
   return climbs;
 };
 
-export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, speedKmh: number = 15): GPXPoint[] => {
+export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, speedKmh: number = 15, activityType?: 'cycling' | 'running'): GPXPoint[] => {
+  if (activityType === 'running') {
+    // Smooth elevations to reduce GPS noise
+    const eleSmoothed = new Float64Array(points.length);
+    const windowHalf = 5;
+    for (let i = 0; i < points.length; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - windowHalf); j <= Math.min(points.length - 1, i + windowHalf); j++) {
+        if (points[j].ele !== undefined) {
+          sum += points[j].ele!;
+          count++;
+        }
+      }
+      eleSmoothed[i] = count > 0 ? sum / count : (points[i].ele ?? 0);
+    }
+
+    return points.map((p, i) => {
+      if (p.power !== undefined) return p;
+
+      let slope = 0;
+      let speedMs = speedKmh / 3.6;
+
+      if (i > 0) {
+        const pPrev = points[i - 1];
+        const distM = calculateDistance(pPrev, p) * 1000;
+        
+        if (distM > 1) {
+          const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
+          slope = eleDiff / distM;
+        }
+
+        if (p.time && pPrev.time) {
+          const dt = (p.time.getTime() - pPrev.time.getTime()) / 1000;
+          if (dt > 0 && dt < 120 && distM > 0) {
+            speedMs = distM / dt;
+          }
+        }
+      }
+
+      // Biomechanical running power formula: P = metabolic efficiency coef * bodyMass * speed
+      // Typically running on level ground of 1 m/s requires ~1.04 W/kg of mechanical-equivalent power (like Stryd).
+      const runningFactor = 1.04; 
+      let power = runningFactor * weightKg * speedMs;
+
+      // Adjust for graded hills
+      slope = Math.max(-0.25, Math.min(0.25, slope));
+      if (slope > 0) {
+        // High steepness increases energy requirement dramatically
+        power *= (1 + slope * 3.6);
+      } else if (slope < 0) {
+        // Flat downhill requires less, but we active/braking limits it, at least 60% of flat running power
+        power *= Math.max(0.60, 1 + slope * 1.5);
+      }
+
+      if (speedMs < 0.2) {
+        power = 0;
+      }
+
+      return {
+        ...p,
+        power: Math.round(power)
+      };
+    });
+  }
+
   const totalMass = weightKg + 8.5; // Rider + active equipment
   const g = 9.81;
   const Crr = 0.005; // Rolling resistance coefficient
@@ -153,11 +217,12 @@ export const calculatePowerStats = (
   points: GPXPoint[],
   ftp: number = 250,
   userWeight: number = 75,
-  estimatedSpeed: number = 15
+  estimatedSpeed: number = 15,
+  activityType?: 'cycling' | 'running'
 ): PowerStats | undefined => {
   // Check if track has power. If not, estimate it
   const hasRealPower = points.some(p => p.power !== undefined);
-  const processedPoints = hasRealPower ? points : estimateTrackPower(points, userWeight, estimatedSpeed);
+  const processedPoints = hasRealPower ? points : estimateTrackPower(points, userWeight, estimatedSpeed, activityType);
 
   const powerPoints = processedPoints.filter(p => p.power !== undefined && p.time);
   if (powerPoints.length < 2) return undefined;
@@ -278,6 +343,24 @@ export const calculatePowerStats = (
     variabilityIndex,
     work
   };
+};
+
+export const formatPace = (durationSecs: number, distanceKm: number): string => {
+  if (!distanceKm || !durationSecs) return "--:-- min/km";
+  const paceTotalSec = durationSecs / distanceKm;
+  if (paceTotalSec > 3600) return ">60:00 min/km";
+  const mins = Math.floor(paceTotalSec / 60);
+  const secs = Math.round(paceTotalSec % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')} min/km`;
+};
+
+export const getPaceString = (speedKmh: number): string => {
+  if (speedKmh <= 0.1) return "--:-- min/km";
+  const paceMinKm = 60 / speedKmh;
+  if (paceMinKm > 60) return ">60:00 min/km";
+  const mins = Math.floor(paceMinKm);
+  const secs = Math.floor((paceMinKm % 1) * 60);
+  return `${mins}:${secs.toString().padStart(2, '0')} min/km`;
 };
 
 /**
@@ -492,6 +575,38 @@ export const validateGPX = (xmlString: string): { isValid: boolean; error?: stri
   }
 };
 
+export const detectActivityType = (points: GPXPoint[], name: string, fileName: string): 'cycling' | 'running' => {
+  const combined = (name + " " + fileName).toLowerCase();
+  const keywords = ['run', 'lauf', 'jog', 'walk', 'hiking', 'running', 'laufen', 'jogging', 'spazier', 'wander', 'pace', 'lauft'];
+  for (const kw of keywords) {
+    if (combined.includes(kw)) return 'running';
+  }
+
+  // Speed check
+  const hasTime = points.filter(p => p.time !== undefined);
+  if (hasTime.length > 5) {
+    let distSum = 0;
+    let timeSum = 0;
+    for (let i = 1; i < hasTime.length; i++) {
+      const pPrev = hasTime[i - 1];
+      const pCurr = hasTime[i];
+      const d = calculateDistance(pPrev, pCurr);
+      const dt = (pCurr.time!.getTime() - pPrev.time!.getTime()) / 1000;
+      if (dt > 0 && dt < 120) {
+        distSum += d;
+        timeSum += dt;
+      }
+    }
+    if (timeSum > 0) {
+      const avgKmh = distSum / (timeSum / 3600);
+      if (avgKmh < 15.5) {
+        return 'running';
+      }
+    }
+  }
+  return 'cycling';
+};
+
 export const parseGPX = async (xmlString: string, fileName: string): Promise<GPXTrack | null> => {
   const validation = validateGPX(xmlString);
   if (!validation.isValid) {
@@ -537,7 +652,19 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     });
 
     const hasTimestamps = points.some(p => p.time !== undefined);
-    if (!hasTimestamps && points.length > 0) {
+    if (hasTimestamps && points.length > 0) {
+      // Shift timestamps to start at current date/time for GPX tracks
+      const now = new Date();
+      const firstTimePt = points.find(p => p.time !== undefined);
+      if (firstTimePt && firstTimePt.time) {
+        const offsetMs = now.getTime() - firstTimePt.time.getTime();
+        points.forEach(p => {
+          if (p.time) {
+            p.time = new Date(p.time.getTime() + offsetMs);
+          }
+        });
+      }
+    } else if (points.length > 0) {
       let currentTimeMs = Date.now() - 3600 * 2000; // Start 2 hours ago
       points[0].time = new Date(currentTimeMs);
       for (let i = 1; i < points.length; i++) {
@@ -568,8 +695,9 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       activityName += ` - ${fileName.replace(/\.[^/.]+$/, "") || "Unbenannter Track"}`;
     }
 
+    const activityType = detectActivityType(points, activityName, fileName);
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
-    const powerStats = calculatePowerStats(points);
+    const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     const surfaceStats = generateMockSurfaceStats(totalDist);
     const climbs = findClimbs(points);
     
@@ -596,6 +724,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       descent,
       maxSlope,
       visible: true,
+      activityType,
       powerStats,
       surfaceStats,
       climbs,
@@ -612,7 +741,8 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
   const combinedPoints: GPXPoint[] = tracks.flatMap(t => t.points);
   const names = tracks.map(t => t.name).join(" → ");
   const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(combinedPoints);
-  const powerStats = calculatePowerStats(combinedPoints);
+  const activityType = tracks[0]?.activityType || 'cycling';
+  const powerStats = calculatePowerStats(combinedPoints, 250, 75, 15, activityType);
   const surfaceStats = generateMockSurfaceStats(totalDist);
   const climbs = findClimbs(combinedPoints);
   
@@ -626,6 +756,7 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
     descent,
     maxSlope,
     visible: true,
+    activityType,
     powerStats,
     surfaceStats,
     climbs

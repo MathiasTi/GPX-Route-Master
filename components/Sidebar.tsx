@@ -2,8 +2,8 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus } from 'lucide-react';
-import { calculateDistance } from '../utils/gpxUtils';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
 import { 
   DndContext, 
   closestCenter, 
@@ -27,12 +27,14 @@ interface TrackItemProps {
   onMark: (id: string) => void;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
+  onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   estimatedSpeed: number;
   onOpenAnalytics?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
+  onOpenSegments?: (id: string) => void;
 }
 
-const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, onToggleVisibility, onRemoveTrack, estimatedSpeed, onOpenAnalytics, onOpenClimbs }) => {
+const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, onToggleVisibility, onRemoveTrack, onChangeActivityType, estimatedSpeed, onOpenAnalytics, onOpenClimbs, onOpenSegments }) => {
   const {
     attributes,
     listeners,
@@ -61,23 +63,66 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
         </div>
         
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <div className="w-3 h-3 rounded-full shrink-0 shadow-sm border border-black/10" style={{ backgroundColor: track.color }}></div>
-            <span className={`text-sm truncate ${isMarked ? 'font-bold text-blue-900' : 'font-semibold text-slate-800'}`}>{track.name}</span>
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-3 h-3 rounded-full shrink-0 shadow-sm border border-black/10" style={{ backgroundColor: track.color }}></div>
+              <span className={`text-sm truncate ${isMarked ? 'font-bold text-blue-900' : 'font-semibold text-slate-800'}`}>{track.name}</span>
+            </div>
+            
+            <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => onChangeActivityType?.(track.id, 'cycling')}
+                className={`p-0.5 px-1.5 rounded text-[10px] font-bold transition-all ${
+                  track.activityType !== 'running'
+                    ? 'bg-indigo-650 text-white shadow-sm'
+                    : 'bg-slate-50 text-slate-500 border border-slate-200 hover:bg-slate-100'
+                }`}
+                title="Als Fahrrad-Aktivität festlegen"
+              >
+                🚴 Rad
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeActivityType?.(track.id, 'running')}
+                className={`p-0.5 px-1.5 rounded text-[10px] font-bold transition-all ${
+                  track.activityType === 'running'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100'
+                }`}
+                title="Als Lauf-Aktivität festlegen"
+              >
+                🏃 Lauf
+              </button>
+            </div>
           </div>
           
           <div className="flex flex-col gap-1 ml-5">
-            <div className="text-[11px] text-slate-500 flex items-center gap-2">
-              <span className={`${isMarked ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'} px-1.5 py-0.5 rounded font-mono`}>{track.distance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</span>
+            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className={`${isMarked ? 'bg-indigo-100 text-indigo-700 border border-indigo-200/30 font-bold' : 'bg-slate-100 text-slate-600'} px-1.5 py-0.5 rounded font-mono text-[10px]`}>{track.distance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</span>
               {track.duration ? (
                 <>
                   <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-0.5"><Clock className="w-3 h-3" /> {Math.floor(track.duration / 3600)}h {Math.floor((track.duration % 3600) / 60)}m</span>
+                  <span className="flex items-center gap-0.5 text-[10px] font-semibold"><Clock className="w-3 h-3 text-slate-400" /> {Math.floor(track.duration / 3600)}h {Math.floor((track.duration % 3600) / 60)}m</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="font-mono text-[10px] font-semibold bg-blue-50 text-blue-700 px-1 rounded border border-blue-100/50">
+                    {track.activityType === 'running' 
+                      ? formatPace(track.duration, track.distance)
+                      : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+                    }
+                  </span>
                 </>
               ) : (
                 <>
                   <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-0.5"><Clock className="w-3 h-3" /> {Math.floor((track.distance / estimatedSpeed))}h {Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m</span>
+                  <span className="flex items-center gap-0.5 text-[10px] font-semibold"><Clock className="w-3 h-3 text-slate-400" /> {Math.floor((track.distance / estimatedSpeed))}h {Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="font-mono text-[10px] font-semibold bg-blue-50 text-blue-700 px-1 rounded border border-blue-100/50">
+                    {track.activityType === 'running'
+                      ? getPaceString(estimatedSpeed)
+                      : `${estimatedSpeed} km/h`
+                    }
+                  </span>
                 </>
               )}
             </div>
@@ -99,7 +144,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
             </div>
             {track.powerStats && (
               <div className="text-[10px] text-amber-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono mt-1 pt-1 border-t border-slate-100">
-                <Zap className="w-3 h-3 shrink-0" />
+                <Zap className="w-3.5 h-3.5 shrink-0" />
                 <span title="Normalized Power" className="font-bold">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
                 <span title="Intensity Factor">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
                 <span title="Training Stress Score">TSS {Math.round(track.powerStats.tss || 0)}</span>
@@ -130,6 +175,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
 
         <div className="flex flex-col gap-1 items-center bg-slate-50 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
           <button 
+            type="button"
             onClick={(e) => { e.stopPropagation(); onToggleVisibility(track.id); }} 
             className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors" 
             title="Sichtbarkeit umschalten"
@@ -139,6 +185,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
           
           {track.powerStats && (
             <button 
+              type="button"
               onClick={(e) => { e.stopPropagation(); onOpenAnalytics?.(track.id); }} 
               className="p-1 hover:bg-indigo-100 rounded text-indigo-600 transition-colors" 
               title="Erweiterte Analyse"
@@ -149,6 +196,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
 
           {track.climbs && track.climbs.length > 0 && (
             <button 
+              type="button"
               onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }} 
               className="p-1 hover:bg-emerald-100 rounded text-emerald-600 transition-colors" 
               title="Steigungs- & Bergwertungs-Analyse öffnen"
@@ -158,6 +206,16 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
           )}
 
           <button 
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onOpenSegments?.(track.id); }} 
+            className="p-1 hover:bg-yellow-100 rounded text-yellow-650 transition-colors" 
+            title="Sektor- & Bestenlisten-Analyse öffnen"
+          >
+            <Trophy className="w-3.5 h-3.5" />
+          </button>
+
+          <button 
+            type="button"
             onClick={(e) => { e.stopPropagation(); onRemoveTrack(track.id); }} 
             className="p-1 hover:bg-red-100 rounded text-red-500 transition-colors" 
             title="Track entfernen"
@@ -174,6 +232,7 @@ interface SidebarProps {
   tracks: GPXTrack[];
   markedTrackId: string | null;
   onMarkTrack: (id: string) => void;
+  onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
@@ -202,8 +261,12 @@ interface SidebarProps {
   userAge: number;
   setUserAge: (age: number) => void;
   suggestedFtp: number | null;
+  onOpenComparison: () => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
+  onOpenSegments: (id: string) => void;
+  selectionBounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
+  onAddSegment: (name: string) => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
@@ -216,6 +279,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   tracks, 
   markedTrackId,
   onMarkTrack,
+  onChangeActivityType,
   onUpload, 
   onToggleVisibility, 
   onRemoveTrack, 
@@ -244,8 +308,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   userAge,
   setUserAge,
   suggestedFtp,
+  onOpenComparison,
   onOpenAnalytics,
   onOpenClimbs,
+  onOpenSegments,
+  selectionBounds,
+  onAddSegment,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
@@ -288,88 +356,49 @@ const Sidebar: React.FC<SidebarProps> = ({
         fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
-        ${isCollapsed ? 'md:w-16' : 'md:w-80'} 
-        h-full shadow-2xl flex flex-col border-r border-slate-200 overflow-hidden bg-white
+        ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none' : 'md:w-80 shadow-2xl bg-white border-r border-slate-200'}
+        h-full flex flex-col overflow-visible bg-transparent
       `}>
-        {/* Mobile Close Button */}
+        {/* Toggle Collapse Button (remains interactive and visible when collapsed to 0 width) */}
         <button 
-          onClick={() => setIsMobileMenuOpen(false)}
-          className="md:hidden absolute right-4 top-4 p-2 bg-slate-100 rounded-xl text-slate-600 z-50"
+          onClick={onToggleCollapse}
+          style={{ right: isCollapsed ? '-20px' : '-12px' }}
+          className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-white border border-slate-200 rounded-full flex items-center justify-center shadow-md hover:bg-slate-50 transition-all z-[90] group cursor-pointer"
+          title={isCollapsed ? "Menü ausklappen" : "Menü einklappen"}
         >
-          <X size={20} />
+          {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" />}
         </button>
 
-        {/* AI Generated Background Image */}
-      <div 
-        className="absolute inset-0 z-0 opacity-60 pointer-events-none"
-        style={{
-          backgroundImage: 'url("https://images.unsplash.com/photo-1524661135-423995f22d0b?q=80&w=800&auto=format&fit=crop")',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center'
-        }}
-      />
-      <div className="absolute inset-0 z-0 bg-white/60 backdrop-blur-md pointer-events-none" />
+        {/* Inner Content Wrapper */}
+        <div className={`w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 ${isCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+          {/* Mobile Close Button */}
+          <button 
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="md:hidden absolute right-4 top-4 p-2 bg-slate-100 rounded-xl text-slate-600 z-50"
+          >
+            <X size={20} />
+          </button>
 
-      <button 
-        onClick={onToggleCollapse}
-        className="absolute top-1/2 -right-3 -translate-y-1/2 w-6 h-12 bg-white border border-slate-200 rounded-full flex items-center justify-center shadow-md hover:bg-slate-50 transition-colors z-40 group"
-        title={isCollapsed ? "Menü ausklappen" : "Menü einklappen"}
-      >
-        {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" />}
-      </button>
+          {/* AI Generated Background Image */}
+          <div 
+            className="absolute inset-0 z-0 opacity-60 pointer-events-none"
+            style={{
+              backgroundImage: 'url("https://images.unsplash.com/photo-1524661135-423995f22d0b?q=80&w=800&auto=format&fit=crop")',
+              backgroundSize: 'cover',
+              backgroundPosition: 'center'
+            }}
+          />
+          <div className="absolute inset-0 z-0 bg-white/60 backdrop-blur-md pointer-events-none" />
 
-      <div className={`relative z-10 p-6 bg-slate-900/95 text-white flex items-center ${isCollapsed ? 'justify-center' : 'gap-2'}`}>
-        <Layers className={`w-6 h-6 text-blue-400 shrink-0 ${isCollapsed ? '' : ''}`} />
-        {!isCollapsed && (
-          <div>
-            <h1 className="text-xl font-bold whitespace-nowrap">GPX Master</h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest">OSM Pro Tools</p>
-          </div>
-        )}
-      </div>
-
-      <div className={`relative z-10 flex-1 overflow-y-auto p-4 space-y-6 ${isCollapsed ? 'items-center flex flex-col' : ''}`}>
-        {isCollapsed ? (
-          <div className="flex flex-col gap-6 items-center pt-4">
-            <label className="p-3 bg-slate-100 rounded-xl cursor-pointer hover:bg-slate-200 transition-colors text-slate-600" title="GPX/FIT hochladen">
-              <Upload className="w-6 h-6" />
-              <input type="file" className="hidden" accept=".gpx, .fit, .FIT, application/gpx+xml, application/octet-stream, application/x-garmin-fit" multiple onChange={onUpload} />
-            </label>
-            
-            <button 
-              onClick={() => setIs3D(!is3D)}
-              className={`p-3 rounded-xl transition-all ${is3D ? 'bg-purple-600 text-white shadow-lg shadow-purple-200' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-              title="3D Ansicht umschalten"
-            >
-              <Box className="w-6 h-6" />
-            </button>
-
-            <div className="w-8 h-px bg-slate-200" />
-
-            <div className="flex flex-col gap-2">
-              {Object.values(MapLayer).map((layer) => (
-                <button
-                  key={layer}
-                  onClick={() => setActiveLayer(layer)}
-                  className={`w-10 h-10 flex items-center justify-center rounded-lg text-[10px] font-bold transition-colors border ${activeLayer === layer ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-slate-400 border-transparent hover:bg-slate-50'}`}
-                  title={layer}
-                >
-                  {layer.substring(0, 2).toUpperCase()}
-                </button>
-              ))}
-            </div>
-
-            <div className="w-8 h-px bg-slate-200" />
-            
-            <div className="relative">
-              <div className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full absolute -top-2 -right-2 z-10">
-                {tracks.length}
-              </div>
-              <Menu className="w-6 h-6 text-slate-400" />
+          <div className="relative z-10 p-6 bg-slate-900/95 text-white flex items-center gap-2">
+            <Layers className="w-6 h-6 text-blue-400 shrink-0" />
+            <div>
+              <h1 className="text-xl font-bold whitespace-nowrap">GPX Master</h1>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest">OSM Pro Tools</p>
             </div>
           </div>
-        ) : (
-          <>
+
+          <div className="relative z-10 flex-1 overflow-y-auto p-4 space-y-6">
             <section>
               <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
@@ -409,6 +438,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                   3D Ansicht {is3D ? 'aktiv' : ''}
                 </button>
               </div>
+              <button 
+                onClick={onOpenComparison}
+                disabled={tracks.length < 2}
+                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 disabled:hover:bg-indigo-600 disabled:cursor-not-allowed shadow-md shadow-indigo-100 transition-all"
+                title={tracks.length < 2 ? "Lade mindestens 2 Aktivitäten hoch, um sie zu vergleichen" : "Aktivitäten vergleichen"}
+              >
+                <GitCompare className="w-4 h-4" />
+                Aktivitäten vergleichen
+              </button>
             </section>
 
             <section className="space-y-3">
@@ -615,6 +653,63 @@ const Sidebar: React.FC<SidebarProps> = ({
 
             <section className="space-y-4">
               <div className="flex justify-between items-center">
+                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Trophy className="text-amber-500 w-3.5 h-3.5" />
+                  Sektoren & Bestenlisten
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => onOpenSegments?.(markedTrackId || '')}
+                  className="text-[10px] bg-yellow-50 hover:bg-yellow-105 dark:bg-yellow-950/40 text-yellow-600 dark:text-yellow-400 font-extrabold px-2 py-1 rounded-lg transition-all border border-yellow-100/50 cursor-pointer"
+                  title="Segment-Analysedashboard und Leaderboards öffnen"
+                >
+                  Öffnen ➔
+                </button>
+              </div>
+
+              {selectionBounds ? (
+                <div className="p-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-xl space-y-2">
+                  <p className="text-[11px] font-bold text-amber-850 dark:text-amber-300 flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                    Bereich ausgewählt!
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Erstelle ein neues Segment aus dem auf der Karte markierten Ausschnitt.
+                  </p>
+                  <div className="space-y-1.5 pt-1 font-sans">
+                    <input
+                      id="custom-segment-name-input"
+                      type="text"
+                      placeholder="z.B. Hausrunde Sprint"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none text-slate-705 dark:text-slate-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const el = document.getElementById('custom-segment-name-input') as HTMLInputElement;
+                        const name = el?.value.trim();
+                        if (name) {
+                          onAddSegment?.(name);
+                          if (el) el.value = '';
+                        } else {
+                          alert('Bitte gib einen Segment-Namen ein.');
+                        }
+                      }}
+                      className="w-full text-center bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-1.5 rounded-lg text-xs shadow-sm transition-colors cursor-pointer"
+                    >
+                      Sektor speichern
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-400 dark:text-slate-505 font-medium bg-slate-100/50 dark:bg-slate-950/10 p-3 rounded-xl border border-dashed border-slate-200/40 text-center leading-normal">
+                  Nutze das <span className="text-slate-600 dark:text-slate-300 font-bold">Auswahl-Tool (Box-Symbol)</span> links auf der Karte, um einen Sektor zu markieren und abzuspeichern.
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-4">
+              <div className="flex justify-between items-center">
                 <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Erweiterte Nutzerdaten</h2>
               </div>
               
@@ -692,6 +787,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           onMark={onMarkTrack}
                           onToggleVisibility={onToggleVisibility} 
                           onRemoveTrack={onRemoveTrack} 
+                          onChangeActivityType={onChangeActivityType}
                           estimatedSpeed={estimatedSpeed}
                           onOpenAnalytics={onOpenAnalytics}
                           onOpenClimbs={onOpenClimbs}
@@ -702,16 +798,13 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </DndContext>
               </div>
             </section>
-          </>
-        )}
-      </div>
+          </div>
 
-      {!isCollapsed && (
-        <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 text-center font-medium">
-          Reihenfolge bestimmt Verbindungssequenz
+          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 text-center font-medium rounded-b-xl">
+            Reihenfolge bestimmt Verbindungssequenz
+          </div>
         </div>
-      )}
-    </div>
+      </div>
     </>
   );
 };

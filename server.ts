@@ -7,14 +7,39 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Middleware to parse JSON payloads
-  app.use(express.json());
+  // Set security headers to follow best security practices safely (without breaking AI Studio iframe bounds)
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
+
+  // Middleware to parse JSON payloads with strict limit
+  app.use(express.json({ limit: "15mb" }));
 
   // API route to resolve weather using Open-Meteo and OpenStreetMap Nominatim (High limits - completely free, no API key required)
   app.post("/api/weather", async (req, res) => {
     const { lat, lng, date } = req.body;
-    if (lat === undefined || lng === undefined) {
+    
+    // Rigorously validate against type pollution, nulls, undefineds
+    if (lat === undefined || lat === null || lng === undefined || lng === null) {
       return res.status(400).json({ error: "Missing coordinates (lat, lng)" });
+    }
+
+    const parsedLat = parseFloat(String(lat));
+    const parsedLng = parseFloat(String(lng));
+
+    if (isNaN(parsedLat) || isNaN(parsedLng) || parsedLat < -90 || parsedLat > 90 || parsedLng < -180 || parsedLng > 180) {
+      return res.status(400).json({ error: "Invalid coordinates format or value out of bounds (Latitude must be -90 to 90, Longitude -180 to 180)." });
+    }
+
+    // Safely parse date and enforce rigid format checks to prevent injection vectors
+    const inputDate = typeof date === "string" ? date : "";
+    const targetDate = inputDate ? inputDate.split('T')[0] : new Date().toISOString().split('T')[0];
+    
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+      return res.status(400).json({ error: "Invalid date format. Expected standard YYYY-MM-DD format." });
     }
 
     // Map WMO codes from Open-Meteo to our condition strings
@@ -96,9 +121,16 @@ async function startServer() {
     };
 
     // Level 1: Resolve high-quality Location Name with OpenStreetMap Nominatim Reverse Geocoding
-    let locationName = `GPS: ${Number(lat).toFixed(4)}, ${Number(lng).toFixed(4)}`;
+    // Leverage URLSearchParams to natively encode query parameters securely
+    let locationName = `GPS: ${parsedLat.toFixed(4)}, ${parsedLng.toFixed(4)}`;
     try {
-      const geoResponse = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=de`, {
+      const geoUrl = new URL("https://nominatim.openstreetmap.org/reverse");
+      geoUrl.searchParams.set("lat", String(parsedLat));
+      geoUrl.searchParams.set("lon", String(parsedLng));
+      geoUrl.searchParams.set("format", "json");
+      geoUrl.searchParams.set("accept-language", "de");
+
+      const geoResponse = await fetch(geoUrl.toString(), {
         headers: {
           "User-Agent": "GPXRouteMasterApplet/1.0 (mtirtasana@gmail.com)"
         },
@@ -123,8 +155,6 @@ async function startServer() {
 
     try {
       // Level 2: Fetch meteorological data from Open-Meteo API
-      const targetDate = date ? date.split('T')[0] : new Date().toISOString().split('T')[0];
-      
       // Determine if date is within forecast range, otherwise fall back gracefully
       const specDate = new Date(targetDate);
       const today = new Date();
@@ -134,10 +164,17 @@ async function startServer() {
 
       // Open-Meteo free forecast range allows tomorrow up to 16 days out
       if (diffDays >= -2 && diffDays <= 15) {
-        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&start_date=${targetDate}&end_date=${targetDate}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max&timezone=auto`;
-        console.log(`[Weather API] Querying Open-Meteo for date ${targetDate}: ${weatherUrl}`);
+        const weatherUrl = new URL("https://api.open-meteo.com/v1/forecast");
+        weatherUrl.searchParams.set("latitude", String(parsedLat));
+        weatherUrl.searchParams.set("longitude", String(parsedLng));
+        weatherUrl.searchParams.set("start_date", targetDate);
+        weatherUrl.searchParams.set("end_date", targetDate);
+        weatherUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max");
+        weatherUrl.searchParams.set("timezone", "auto");
+
+        console.log(`[Weather API] Querying Open-Meteo for date ${targetDate}: ${weatherUrl.toString()}`);
         
-        const response = await fetch(weatherUrl);
+        const response = await fetch(weatherUrl.toString());
         if (!response.ok) {
           throw new Error(`Open-Meteo responded with status ${response.status}`);
         }
@@ -164,7 +201,7 @@ async function startServer() {
             humidity: 65, // Standard average humidity estimation for sport comfort
             windSpeed,
             precipitationProbability: pProb,
-            sourceUrl: `https://open-meteo.com/en/forecast?latitude=${Number(lat).toFixed(3)}&longitude=${Number(lng).toFixed(3)}`,
+            sourceUrl: `https://open-meteo.com/en/forecast?latitude=${parsedLat.toFixed(3)}&longitude=${parsedLng.toFixed(3)}`,
             forecastSummary: summary,
             isFallback: false
           });
@@ -177,14 +214,14 @@ async function startServer() {
       
       // Calculate high-quality realistic weather metrics as a fallback
       // Seed-based generation ensures consistency if the user checks the same track coordinates & date
-      const numericDate = date ? new Date(date).getTime() : Date.now();
-      const seed = Math.abs(Math.sin(lat * 12.9898 + lng * 78.233 + (numericDate % 100000)) * 43758.5453);
+      const numericDate = typeof date === "string" ? new Date(date).getTime() : Date.now();
+      const seed = Math.abs(Math.sin(parsedLat * 12.9898 + parsedLng * 78.233 + (numericDate % 100000)) * 43758.5453);
       
       // Latitude-based realistic temperature estimation
-      let calculatedTemp = Math.round(30 - Math.abs(lat) * 0.45);
+      let calculatedTemp = Math.round(30 - Math.abs(parsedLat) * 0.45);
       
       // Seasonal hemisphere adjustments for May/June
-      const isNorthernHemisphere = lat >= 0;
+      const isNorthernHemisphere = parsedLat >= 0;
       calculatedTemp += isNorthernHemisphere ? 4 : -4;
       
       // Pseudo-random variance from seed

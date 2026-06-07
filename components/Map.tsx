@@ -564,7 +564,9 @@ const Map: React.FC<MapProps> = ({
           >
             <Popup 
               position={[pendingMarker.lat, pendingMarker.lng]}
-              onClose={() => setPendingMarker(null)}
+              eventHandlers={{
+                remove: () => setPendingMarker(null)
+              }}
             >
               <div 
                 className="p-1.5 w-44 space-y-2 text-xs"

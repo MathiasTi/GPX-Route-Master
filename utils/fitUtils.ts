@@ -1,6 +1,6 @@
 
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType } from './gpxUtils';
 import { fit2json, parseRecords } from 'fit-decoder';
 
 const HIGH_CONTRAST_COLORS = [
@@ -90,7 +90,8 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     }
 
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
-    const powerStats = calculatePowerStats(points);
+    const activityType = detectActivityType(points, name, fileName);
+    const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     const surfaceStats = generateMockSurfaceStats(totalDist);
     
     let duration: number | undefined;
@@ -116,6 +117,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       descent,
       maxSlope,
       visible: true,
+      activityType,
       powerStats,
       surfaceStats,
       duration,

@@ -46,6 +46,7 @@ export interface GPXTrack {
   descent: number; // in meters
   maxSlope: number; // in percent
   visible: boolean;
+  activityType?: 'cycling' | 'running';
   powerStats?: PowerStats;
   surfaceStats?: SurfaceSegment[];
   climbs?: ClimbSegment[];
@@ -110,4 +111,30 @@ export interface TextMarker {
   trackId?: string; // Associated track if created from a track point
   distanceAlongTrack?: number; // Distance in km from start of that track
 }
+
+export interface LeaderboardEntry {
+  id: string;
+  rank: number;
+  athleteName: string;
+  timeInSeconds: number;
+  avgPower?: number;
+  avgSpeedKmh: number;
+  date: string;
+  isUser?: boolean;
+}
+
+export interface Segment {
+  id: string;
+  name: string;
+  startLat: number;
+  startLng: number;
+  endLat: number;
+  endLng: number;
+  distanceMeter: number;
+  ascentMeter: number;
+  avgGradient: number;
+  leaderboard: LeaderboardEntry[];
+  isCustom?: boolean;
+}
+
 

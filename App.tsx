@@ -230,6 +230,73 @@ const App: React.FC = () => {
       setMapView(prev => ({ ...prev, pitch: 0, bearing: 0 }));
     }
   }, []);
+
+  const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
+
+  const analyzeTrackSurface = useCallback(async (trackId: string) => {
+    setTracks(currentTracks => {
+      const track = currentTracks.find(t => t.id === trackId);
+      if (!track || track.points.length === 0 || analyzingSurfaces[trackId]) return currentTracks;
+
+      (async () => {
+        setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
+        try {
+          const result = await fetch("/api/analyze-surface", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              points: track.points.map(p => ({ lat: p.lat, lng: p.lng, ele: p.ele }))
+            })
+          });
+
+          if (!result.ok) throw new Error("Surface analyzer API error");
+          const data = await result.json();
+
+          if (data.surfaces && data.surfaceStats) {
+            setTracks(prev => prev.map(t => {
+              if (t.id === trackId) {
+                const updatedPoints = t.points.map((p, idx) => ({
+                  ...p,
+                  surface: data.surfaces[idx] || "Asphalt"
+                }));
+                return {
+                  ...t,
+                  points: updatedPoints,
+                  surfaceStats: data.surfaceStats
+                };
+              }
+              return t;
+            }));
+          }
+        } catch (err) {
+          console.error("[Surface Analyzer] Error for track", trackId, err);
+        } finally {
+          setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: false }));
+        }
+      })();
+
+      return currentTracks;
+    });
+  }, [analyzingSurfaces]);
+
+  useEffect(() => {
+    if (markedTrackId) {
+      setTracks(currentTracks => {
+        const track = currentTracks.find(t => t.id === markedTrackId);
+        if (track && track.points.length > 0) {
+          const hasSurfaces = track.points.some(p => p.surface && p.surface !== "Asphalt");
+          if (!hasSurfaces && !analyzingSurfaces[markedTrackId]) {
+            setTimeout(() => {
+              analyzeTrackSurface(markedTrackId);
+            }, 50);
+          }
+        }
+        return currentTracks;
+      });
+    }
+  }, [markedTrackId, analyzeTrackSurface, analyzingSurfaces]);
  
   // Auto-select first track if none is selected and tracks exist
   useEffect(() => {
@@ -494,6 +561,8 @@ const App: React.FC = () => {
             bearing: view.bearing
           });
         }}
+        onAnalyzeSurface={analyzeTrackSurface}
+        analyzingSurfaces={analyzingSurfaces}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {/* Mobile Header */}

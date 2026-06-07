@@ -7,6 +7,7 @@ export interface GPXPoint {
   power?: number;
   hr?: number;
   cadence?: number;
+  surface?: string;
 }
 
 export interface PowerStats {

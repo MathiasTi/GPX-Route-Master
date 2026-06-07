@@ -80,7 +80,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (!track.points || track.points.length === 0) return null;
 
     let totalDist = 0;
-    const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number }[] = [];
+    const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
     
     const hasElevation = track.points.some(p => p.ele !== undefined);
     if (!hasElevation) return null;
@@ -96,7 +96,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       hr: track.points[0].hr,
       time: track.points[0].time,
       cadence: track.points[0].cadence,
-      speed: 0
+      speed: 0,
+      surface: track.points[0].surface
     });
 
     for (let i = 1; i < track.points.length; i++) {
@@ -127,12 +128,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         hr: track.points[i].hr,
         time: track.points[i].time,
         cadence: track.points[i].cadence,
-        speed: s
+        speed: s,
+        surface: track.points[i].surface
       });
     }
 
     // Apply smoothing if enabled
-    const smoothedData: { dist: number; ele: number; lat: number; lng: number; power?: number; displayPower?: number; hr?: number; time?: Date; cadence?: number; speed?: number }[] = rawData.map(d => ({ ...d, displayPower: d.power }));
+    const smoothedData: { dist: number; ele: number; lat: number; lng: number; power?: number; displayPower?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = rawData.map(d => ({ ...d, displayPower: d.power }));
     if (isSmoothed) {
       const windowSize = 5; // Moving average window
       for (let i = 0; i < rawData.length; i++) {
@@ -196,7 +198,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
-    const data: { dist: number; ele: number; slope: number; lat: number; lng: number; power?: number; displayPower?: number; hr?: number; time?: Date; cadence?: number; speed?: number }[] = [];
+    const data: { dist: number; ele: number; slope: number; lat: number; lng: number; power?: number; displayPower?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
     data.push({ ...smoothedData[0], slope: 0 });
 
     let maxPosSlopeVal = 0;
@@ -599,38 +601,34 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       selectedPolylines.push(currentPolyline.join(' '));
     }
     
-    // Generate mock surface stats for the selected distance
+    // Generate real surface stats for the selected distance by walking the in-bounds points
     if (selectedDistance > 0) {
-      // Use a deterministic seed based on track ID and selected distance so it doesn't flicker
-      const seed = track.id.length + selectedDistance;
-      const types = ['Asphalt', 'Fahrradweg', 'Schotter', 'Waldweg', 'Straße'];
-      const segments = [];
-      let remainingDist = selectedDistance;
+      const statsMap: Record<string, number> = {};
       
-      const numSegments = Math.floor((seed % 3)) + 1;
-      
-      for (let i = 0; i < numSegments - 1; i++) {
-        const dist = remainingDist * (((seed + i) % 40) / 100 + 0.1);
-        segments.push({
-          type: types[(Math.floor(seed) + i) % types.length],
-          distance: dist
-        });
-        remainingDist -= dist;
+      for (let i = 1; i < data.length; i++) {
+        const pCurrent = data[i];
+        const pPrevious = data[i - 1];
+        
+        const currentInBounds = pCurrent.lat >= selectionBounds.minLat && pCurrent.lat <= selectionBounds.maxLat &&
+                               pCurrent.lng >= selectionBounds.minLng && pCurrent.lng <= selectionBounds.maxLng;
+        const previousInBounds = pPrevious.lat >= selectionBounds.minLat && pPrevious.lat <= selectionBounds.maxLat &&
+                                pPrevious.lng >= selectionBounds.minLng && pPrevious.lng <= selectionBounds.maxLng;
+        
+        if (currentInBounds && previousInBounds) {
+          const stepDist = pCurrent.dist - pPrevious.dist;
+          const sType = pCurrent.surface || "Asphalt";
+          statsMap[sType] = (statsMap[sType] || 0) + stepDist;
+        }
       }
-      
-      segments.push({
-        type: types[(Math.floor(seed) + numSegments) % types.length],
-        distance: remainingDist
-      });
-      
-      const grouped = segments.reduce((acc, curr) => {
-        acc[curr.type] = (acc[curr.type] || 0) + curr.distance;
-        return acc;
-      }, {} as Record<string, number>);
-      
-      selectedSurfaceStats = Object.entries(grouped)
-        .map(([type, distance]) => ({ type, distance: distance as number }))
+
+      selectedSurfaceStats = Object.entries(statsMap)
+        .map(([type, distance]) => ({ type, distance }))
         .sort((a, b) => b.distance - a.distance);
+
+      // Symmetrical fallback if no specific surfaces are designated in the selection yet
+      if (selectedSurfaceStats.length === 0) {
+        selectedSurfaceStats = [{ type: "Asphalt", distance: selectedDistance }];
+      }
     }
   }
 

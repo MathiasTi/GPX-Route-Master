@@ -37,35 +37,29 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
   userAge,
   estimatedSpeed
 }) => {
-  // We need at least 2 tracks to offer a valid dropdown comparison
   const [track1Id, setTrack1Id] = useState<string>(tracks[0]?.id || '');
   const [track2Id, setTrack2Id] = useState<string>(tracks[1]?.id || tracks[0]?.id || '');
 
   const track1 = useMemo(() => tracks.find(t => t.id === track1Id), [tracks, track1Id]);
   const track2 = useMemo(() => tracks.find(t => t.id === track2Id), [tracks, track2Id]);
 
-  // Compute rich metrics for Track 1
   const stats1 = useMemo(() => {
     if (!track1) return null;
     const points = track1.points;
     const hasElevation = points.some(p => p.ele !== undefined);
     
-    // Altitude metrics
     const elevations = points.filter(p => p.ele !== undefined).map(p => p.ele!);
     const maxEle = elevations.length > 0 ? Math.max(...elevations) : 0;
     const minEle = elevations.length > 0 ? Math.min(...elevations) : 0;
     const avgEle = elevations.length > 0 ? elevations.reduce((a, b) => a + b, 0) / elevations.length : 0;
 
-    // Heart rate metrics
     const hrs = points.filter(p => p.hr !== undefined).map(p => p.hr!);
     const maxHr = hrs.length > 0 ? Math.max(...hrs) : 0;
     const avgHr = hrs.length > 0 ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
 
-    // Cadence metrics
     const cadences = points.filter(p => p.cadence !== undefined && p.cadence > 0).map(p => p.cadence!);
     const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0;
 
-    // Calculate speed metrics
     let totalDist = 0;
     let totalMovingTime = 0;
     const speedPoints: number[] = [];
@@ -81,7 +75,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
         if (dt > 0 && dt < 120) {
           totalMovingTime += dt;
           const s = distStep / (dt / 3600);
-          if (s > 1 && s < 120) { // filter realistic motion
+          if (s > 1 && s < 120) {
             speedPoints.push(s);
           }
         }
@@ -92,24 +86,20 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     const avgSpeed = durationSecs > 0 ? (track1.distance / (durationSecs / 3600)) : estimatedSpeed;
     const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
 
-    // Fat / Calories estimations based on MET (Metabolic Equivalent of Task)
     const isRunning = track1?.activityType === 'running';
-    let met = 4; // default light cycling
+    let met = 4;
     if (isRunning) {
-      const speedKmh = avgSpeed;
-      if (speedKmh > 12) met = 12.5;
-      else if (speedKmh > 10) met = 11;
-      else if (speedKmh > 8) met = 9;
+      if (avgSpeed > 12) met = 12.5;
+      else if (avgSpeed > 10) met = 11;
+      else if (avgSpeed > 8) met = 9;
       else met = 8;
     } else {
-      const speedKmh = avgSpeed;
-      if (speedKmh > 30) met = 12;
-      else if (speedKmh > 25) met = 10;
-      else if (speedKmh > 20) met = 8;
-      else if (speedKmh > 15) met = 6;
+      if (avgSpeed > 30) met = 12;
+      else if (avgSpeed > 25) met = 10;
+      else if (avgSpeed > 20) met = 8;
+      else if (avgSpeed > 15) met = 6;
     }
     
-    // Calories = MET * weight_kg * duration_hours
     const durationHours = durationSecs / 3600;
     const calories = Math.round(met * userWeight * durationHours);
 
@@ -128,28 +118,23 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     };
   }, [track1, estimatedSpeed, userWeight]);
 
-  // Compute rich metrics for Track 2
   const stats2 = useMemo(() => {
     if (!track2) return null;
     const points = track2.points;
     const hasElevation = points.some(p => p.ele !== undefined);
     
-    // Altitude metrics
     const elevations = points.filter(p => p.ele !== undefined).map(p => p.ele!);
     const maxEle = elevations.length > 0 ? Math.max(...elevations) : 0;
     const minEle = elevations.length > 0 ? Math.min(...elevations) : 0;
     const avgEle = elevations.length > 0 ? elevations.reduce((a, b) => a + b, 0) / elevations.length : 0;
 
-    // Heart rate metrics
     const hrs = points.filter(p => p.hr !== undefined).map(p => p.hr!);
     const maxHr = hrs.length > 0 ? Math.max(...hrs) : 0;
     const avgHr = hrs.length > 0 ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
 
-    // Cadence metrics
     const cadences = points.filter(p => p.cadence !== undefined && p.cadence > 0).map(p => p.cadence!);
     const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0;
 
-    // Calculate speed metrics
     let totalDist = 0;
     let totalMovingTime = 0;
     const speedPoints: number[] = [];
@@ -176,21 +161,18 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     const avgSpeed = durationSecs > 0 ? (track2.distance / (durationSecs / 3600)) : estimatedSpeed;
     const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
 
-    // Fat / Calories estimations
     const isRunning = track2?.activityType === 'running';
     let met = 4;
     if (isRunning) {
-      const speedKmh = avgSpeed;
-      if (speedKmh > 12) met = 12.5;
-      else if (speedKmh > 10) met = 11;
-      else if (speedKmh > 8) met = 9;
+      if (avgSpeed > 12) met = 12.5;
+      else if (avgSpeed > 10) met = 11;
+      else if (avgSpeed > 8) met = 9;
       else met = 8;
     } else {
-      const speedKmh = avgSpeed;
-      if (speedKmh > 30) met = 12;
-      else if (speedKmh > 25) met = 10;
-      else if (speedKmh > 20) met = 8;
-      else if (speedKmh > 15) met = 6;
+      if (avgSpeed > 30) met = 12;
+      else if (avgSpeed > 25) met = 10;
+      else if (avgSpeed > 20) met = 8;
+      else if (avgSpeed > 15) met = 6;
     }
     
     const durationHours = durationSecs / 3600;
@@ -211,19 +193,54 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     };
   }, [track2, estimatedSpeed, userWeight]);
 
+  // Check if either compared track represents a running activity
+  const isRunningComp = useMemo(() => {
+    return (track1?.activityType === 'running' || track2?.activityType === 'running');
+  }, [track1, track2]);
+
   // Compute sampled chart records
   const chartData1 = useMemo(() => {
     if (!track1) return [];
     let currentDist = 0;
+    
+    const rawSpeeds = track1.points.map((p, idx) => {
+      if (idx === 0) return 0;
+      const p1 = track1.points[idx - 1];
+      const d = calculateDistance(p1, p);
+      if (p1.time && p.time) {
+        const dt = (new Date(p.time).getTime() - new Date(p1.time).getTime()) / 1000;
+        if (dt > 0 && dt < 120) {
+          return d / (dt / 3600);
+        }
+      }
+      return 0;
+    });
+
+    const smoothedSpeeds = rawSpeeds.map((_, i) => {
+      const window = 2;
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - window); j <= Math.min(track1.points.length - 1, i + window); j++) {
+        if (rawSpeeds[j] !== undefined) {
+          sum += rawSpeeds[j];
+          count++;
+        }
+      }
+      return count > 0 ? sum / count : 0;
+    });
+
     const raw = track1.points.map((p, idx) => {
       if (idx > 0) {
         currentDist += calculateDistance(track1.points[idx - 1], p);
       }
+      const speedValue = smoothedSpeeds[idx] || 0;
+      const paceValue = speedValue > 2 ? 60 / speedValue : 0;
       return {
         distance: currentDist,
         elevation: p.ele || 0,
         hr: p.hr || 0,
-        power: p.power || 0
+        power: p.power || 0,
+        speed: speedValue,
+        pace: paceValue
       };
     });
     return samplePoints(raw, 180);
@@ -232,26 +249,62 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
   const chartData2 = useMemo(() => {
     if (!track2) return [];
     let currentDist = 0;
+
+    const rawSpeeds = track2.points.map((p, idx) => {
+      if (idx === 0) return 0;
+      const p1 = track2.points[idx - 1];
+      const d = calculateDistance(p1, p);
+      if (p1.time && p.time) {
+        const dt = (new Date(p.time).getTime() - new Date(p1.time).getTime()) / 1000;
+        if (dt > 0 && dt < 120) {
+          return d / (dt / 3600);
+        }
+      }
+      return 0;
+    });
+
+    const smoothedSpeeds = rawSpeeds.map((_, i) => {
+      const window = 2;
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - window); j <= Math.min(track2.points.length - 1, i + window); j++) {
+        if (rawSpeeds[j] !== undefined) {
+          sum += rawSpeeds[j];
+          count++;
+        }
+      }
+      return count > 0 ? sum / count : 0;
+    });
+
     const raw = track2.points.map((p, idx) => {
       if (idx > 0) {
         currentDist += calculateDistance(track2.points[idx - 1], p);
       }
+      const speedValue = smoothedSpeeds[idx] || 0;
+      const paceValue = speedValue > 2 ? 60 / speedValue : 0;
       return {
         distance: currentDist,
         elevation: p.ele || 0,
         hr: p.hr || 0,
-        power: p.power || 0
+        power: p.power || 0,
+        speed: speedValue,
+        pace: paceValue
       };
     });
     return samplePoints(raw, 180);
   }, [track2]);
 
   // Unified overlay charts for comparative overlay
-  // Align them on 0% to 100% axis to compare profiles easily side-by-side or on same plot
   const unifiedChartData = useMemo(() => {
     if (chartData1.length === 0 || chartData2.length === 0) return [];
     const pointsCount = 100;
-    const data: { percent: number; ele1?: number; ele2?: number; power1?: number; power2?: number; hr1?: number; hr2?: number }[] = [];
+    const data: { 
+      percent: number; 
+      ele1?: number; ele2?: number; 
+      power1?: number; power2?: number; 
+      hr1?: number; hr2?: number;
+      speed1?: number; speed2?: number;
+      pace1?: number; pace2?: number;
+    }[] = [];
     
     for (let i = 0; i <= pointsCount; i++) {
       const pct = i;
@@ -265,7 +318,11 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
         power1: Math.round(chartData1[index1]?.power || 0),
         power2: Math.round(chartData2[index2]?.power || 0),
         hr1: Math.round(chartData1[index1]?.hr || 0),
-        hr2: Math.round(chartData2[index2]?.hr || 0)
+        hr2: Math.round(chartData2[index2]?.hr || 0),
+        speed1: Number((chartData1[index1]?.speed || 0).toFixed(1)),
+        speed2: Number((chartData2[index2]?.speed || 0).toFixed(1)),
+        pace1: Number((chartData1[index1]?.pace || 0).toFixed(2)),
+        pace2: Number((chartData2[index2]?.pace || 0).toFixed(2)),
       });
     }
     return data;
@@ -278,14 +335,48 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     return `${h} Std. ${m} Min. ${s} Sek.`;
   };
 
+  const formatPaceDecimal = (paceDecimal: number | undefined) => {
+    if (!paceDecimal || paceDecimal === Infinity || paceDecimal <= 0) return '--:--';
+    const mins = Math.floor(paceDecimal);
+    const secs = Math.round((paceDecimal - mins) * 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}/km`;
+  };
+
+  // State to toggle metrics on diagrams
+  const [compareChartMetric, setCompareChartMetric] = useState<string>(
+    isRunningComp ? 'pace' : 'elevation'
+  );
+
+  const [overlayChartMetric, setOverlayChartMetric] = useState<string>(
+    isRunningComp ? 'pace' : 'elevation'
+  );
+
+  // Available comparison chart metrics definitions
+  const chartMetricsDef = [
+    { key: 'elevation', label: 'Höhenprofil [m]', color1: '#3b82f6', color2: '#10b981', displayFn: (v: number) => `${v} m` },
+    { key: 'pace', label: 'Pace / Tempo [min/km]', color1: '#f97316', color2: '#06b6d4', isPace: true, displayFn: (v: number) => formatPaceDecimal(v) },
+    { key: 'speed', label: 'Geschwindigkeit [km/h]', color1: '#a855f7', color2: '#eab308', displayFn: (v: number) => `${v.toFixed(1)} km/h` },
+    { key: 'hr', label: 'Herzfrequenz [bpm]', color1: '#ef4444', color2: '#ec4899', displayFn: (v: number) => `${v} bpm` },
+    { key: 'power', label: 'Leistung / Watt [W]', color1: '#facc15', color2: '#14b8a6', displayFn: (v: number) => `${v} W` }
+  ];
+
+  const allowedMetrics = chartMetricsDef.filter(m => {
+    if (m.key === 'hr' && !tracks.some(t => t.points.some(p => p.hr !== undefined))) return false;
+    if (m.key === 'power' && !tracks.some(t => t.points.some(p => p.power !== undefined))) return false;
+    return true;
+  });
+
+  const activeCompareDef = chartMetricsDef.find(m => m.key === compareChartMetric) || chartMetricsDef[0];
+  const activeOverlayDef = chartMetricsDef.find(m => m.key === overlayChartMetric) || chartMetricsDef[0];
+
   return (
     <motion.div 
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 15 }}
-      className="fixed inset-0 bg-slate-900/45 backdrop-blur-md z-[200] flex items-center justify-center p-4 md:p-8"
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6 md:p-10 flex items-center justify-center overflow-hidden"
     >
-      <div className="bg-white dark:bg-slate-950 rounded-3xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200 dark:border-slate-800">
+      <div className="bg-white dark:bg-slate-900 w-full max-w-6xl h-full rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-900 dark:text-zinc-100">
         
         {/* Header Section */}
         <div className="p-6 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center shrink-0">
@@ -295,7 +386,9 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-bold text-slate-900 dark:text-white">Aktivitäten-Vergleich</h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest font-extrabold">Side-by-Side Leistungsanalyse</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest font-extrabold text-indigo-650 dark:text-indigo-400">
+                {isRunningComp ? '🏃‍♀️ Lauf- & Sportdatenanalyse' : '🚴‍♀️ Radsport Leistungsanalyse'}
+              </p>
             </div>
           </div>
           <button 
@@ -331,7 +424,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 dark:bg-slate-900/30 p-4 border border-slate-200/60 dark:border-slate-800 rounded-2xl">
               <div className="space-y-1">
                 <label className="text-[10px] font-black tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: track1?.color || '#3b82f6' }} />
+                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: '#2563eb' }} />
                   Aktivität 1 (Blau/Referenz)
                 </label>
                 <select
@@ -341,7 +434,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                 >
                   {tracks.map(t => (
                     <option key={t.id} value={t.id} disabled={t.id === track2Id}>
-                      {t.name} ({t.distance.toFixed(1)} km)
+                      {t.name} ({t.distance.toFixed(1)} km - {t.activityType === 'running' ? '🏃 Laufen' : '🚴 Rad'})
                     </option>
                   ))}
                 </select>
@@ -349,7 +442,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
 
               <div className="space-y-1">
                 <label className="text-[10px] font-black tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: track2?.color || '#10b981' }} />
+                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: '#10b981' }} />
                   Aktivität 2 (Grün)
                 </label>
                 <select
@@ -359,7 +452,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                 >
                   {tracks.map(t => (
                     <option key={t.id} value={t.id} disabled={t.id === track1Id}>
-                      {t.name} ({t.distance.toFixed(1)} km)
+                      {t.name} ({t.distance.toFixed(1)} km - {t.activityType === 'running' ? '🏃 Laufen' : '🚴 Rad'})
                     </option>
                   ))}
                 </select>
@@ -371,7 +464,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
               
               {/* Category: Streckendaten */}
               <div className="bg-slate-50/40 dark:bg-slate-950 border border-slate-150 dark:border-slate-850 p-5 rounded-2xl space-y-4">
-                <h4 className="text-xs font-black tracking-wider text-slate-400 uppercase flex items-center gap-1.5">
+                <h4 className="text-xs font-black tracking-wider text-slate-400 uppercase flex items-center gap-1.5 font-sans">
                   <Compass size={14} className="text-blue-500" />
                   Routendaten & Distanz
                 </h4>
@@ -406,7 +499,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                   {/* Average Speed / Pace */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
                     <span className="text-[10px] text-slate-400 font-bold uppercase">
-                      { (track1?.activityType === 'running' || track2?.activityType === 'running') ? "Ø Pace / Ø Geschwindigkeit" : "Ø Geschwindigkeit" }
+                      Ø Pace / Ø Geschwindigkeit
                     </span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
                       <div className={`p-1 rounded ${stats1 && stats2 && stats1.avgSpeed >= stats2.avgSpeed ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
@@ -503,7 +596,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                 </div>
               </div>
 
-              {/* Category: Leistungsanalyse (FIT / Power / HR Stats) */}
+              {/* Category: Leistungsanalyse (Power / HR Stats) */}
               <div className="bg-slate-50/40 dark:bg-slate-950 border border-slate-150 dark:border-slate-850 p-5 rounded-2xl space-y-4">
                 <h4 className="text-xs font-black tracking-wider text-slate-400 uppercase flex items-center gap-1.5">
                   <Zap size={14} className="text-amber-500" />
@@ -524,14 +617,14 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                     </div>
                   </div>
 
-                  {/* NP (Normalized Power) */}
+                  {/* Normalized Power */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Normalized Power (NP)</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase">Normalized Power</span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                      <div className={`p-1 rounded ${track1?.powerStats?.normalizedPower && track2?.powerStats?.normalizedPower && track1.powerStats.normalizedPower >= track2.powerStats.normalizedPower ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
+                      <div className="p-1">
                         {track1?.powerStats?.normalizedPower ? `${Math.round(track1.powerStats.normalizedPower)} W` : 'Keine Daten'}
                       </div>
-                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${track1?.powerStats?.normalizedPower && track2?.powerStats?.normalizedPower && track2.powerStats.normalizedPower > track1.powerStats.normalizedPower ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''}`}>
+                      <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2">
                         {track2?.powerStats?.normalizedPower ? `${Math.round(track2.powerStats.normalizedPower)} W` : 'Keine Daten'}
                       </div>
                     </div>
@@ -539,36 +632,26 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
 
                   {/* Avg Heart Rate */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Ø Herzfrequenz</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase">Ø Heart Rate (Puls)</span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                      <div className="p-1 flex items-center gap-1">
-                        {stats1 && stats1.avgHr > 0 ? (
-                          <>
-                            <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0 fill-rose-500/10" />
-                            <span>{Math.round(stats1.avgHr)} bpm</span>
-                          </>
-                        ) : 'Keine Daten'}
+                      <div className={`p-1 rounded ${stats1 && stats2 && stats1.avgHr >= stats2.avgHr ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
+                        {stats1?.avgHr ? `${Math.round(stats1.avgHr)} bpm` : 'Keine Daten'}
                       </div>
-                      <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2 flex items-center gap-1">
-                        {stats2 && stats2.avgHr > 0 ? (
-                          <>
-                            <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0 fill-rose-500/10" />
-                            <span>{Math.round(stats2.avgHr)} bpm</span>
-                          </>
-                        ) : 'Keine Daten'}
+                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${stats1 && stats2 && stats2.avgHr > stats1.avgHr ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''}`}>
+                        {stats2?.avgHr ? `${Math.round(stats2.avgHr)} bpm` : 'Keine Daten'}
                       </div>
                     </div>
                   </div>
 
-                  {/* Avg Cadence */}
+                  {/* Max Heart Rate */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Ø Trittfrequenz</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase">Maximaler Puls</span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
                       <div className="p-1">
-                        {stats1 && stats1.avgCadence > 0 ? `${Math.round(stats1.avgCadence)} rpm` : 'Keine Daten'}
+                        {stats1?.maxHr ? `${stats1.maxHr} bpm` : 'Keine Daten'}
                       </div>
                       <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2">
-                        {stats2 && stats2.avgCadence > 0 ? `${Math.round(stats2.avgCadence)} rpm` : 'Keine Daten'}
+                        {stats2?.maxHr ? `${stats2.maxHr} bpm` : 'Keine Daten'}
                       </div>
                     </div>
                   </div>
@@ -576,155 +659,197 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
               </div>
             </div>
 
-            {/* Side-by-Side Altitude & Elevation Graphs */}
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                  <Activity className="w-4 h-4 text-indigo-500" />
-                  Höhenprofil-Vergleich (Relative Distanz 0-100%)
-                </h3>
-                <span className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-900 border px-2 py-1 rounded">
-                  Zeigt die Profile beider Routen skaliert auf die Gesamtlänge
-                </span>
-              </div>
-
-              {/* Side-by-side Elevation Profiles */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-64">
-                {/* Graph Track 1 */}
-                <div className="border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-4 rounded-2xl flex flex-col shadow-sm">
-                  <span className="text-xs font-extrabold text-blue-600 mb-2 truncate">
-                    {track1?.name} ({track1?.distance.toFixed(1)} km)
-                  </span>
-                  <div className="flex-1 min-h-0">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData1} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="colorEle1" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.15)" />
-                        <XAxis 
-                          dataKey="distance" 
-                          stroke="#94a3b8" 
-                          fontSize={10} 
-                          tickLine={false}
-                          tickFormatter={(val) => `${val.toFixed(1)}km`}
-                        />
-                        <YAxis 
-                          stroke="#94a3b8" 
-                          fontSize={10} 
-                          tickLine={false}
-                          tickFormatter={(val) => `${val}m`}
-                          domain={['auto', 'auto']}
-                        />
-                        <Tooltip 
-                          contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px' }}
-                          labelStyle={{ color: '#94a3b8', fontSize: '10px' }}
-                          itemStyle={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
-                          formatter={(value: any) => [`${value} m`, 'Höhe']}
-                        />
-                        <Area type="monotone" dataKey="elevation" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorEle1)" />
-                      </AreaChart>
-                    </ResponsiveContainer>
+            {/* Dynamic Diagrams Comparison Suite */}
+            <div className="space-y-6 pt-4 border-t border-slate-200 dark:border-slate-800">
+              
+              {/* Section 1: Side by Side Comparative Diagrams */}
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Activity className="w-5 h-5 text-indigo-500" />
+                      Side-by-Side Diagramm-Vergleich
+                    </h3>
+                    <p className="text-xs text-slate-400">Vergleiche die Aktivitätsprofile über die absolute Distanz.</p>
+                  </div>
+                  
+                  {/* Selector Tabs matching "Mache zusätzliche Metriken in den Diagrammen verfügbar" */}
+                  <div className="flex flex-wrap gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
+                    {allowedMetrics.map(m => (
+                      <button
+                        key={m.key}
+                        onClick={() => setCompareChartMetric(m.key)}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                          compareChartMetric === m.key 
+                            ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-xs' 
+                            : 'text-slate-500 hover:text-slate-705'
+                        }`}
+                      >
+                        {m.label.split(' ')[0]}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                {/* Graph Track 2 */}
-                <div className="border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-4 rounded-2xl flex flex-col shadow-sm">
-                  <span className="text-xs font-extrabold text-emerald-600 mb-2 truncate">
-                    {track2?.name} ({track2?.distance.toFixed(1)} km)
-                  </span>
-                  <div className="flex-1 min-h-0">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData2} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="colorEle2" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                            <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.15)" />
-                        <XAxis 
-                          dataKey="distance" 
-                          stroke="#94a3b8" 
-                          fontSize={10} 
-                          tickLine={false}
-                          tickFormatter={(val) => `${val.toFixed(1)}km`}
-                        />
-                        <YAxis 
-                          stroke="#94a3b8" 
-                          fontSize={10} 
-                          tickLine={false}
-                          tickFormatter={(val) => `${val}m`}
-                          domain={['auto', 'auto']}
-                        />
-                        <Tooltip 
-                          contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px' }}
-                          labelStyle={{ color: '#94a3b8', fontSize: '10px' }}
-                          itemStyle={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
-                          formatter={(value: any) => [`${value} m`, 'Höhe']}
-                        />
-                        <Area type="monotone" dataKey="elevation" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorEle2)" />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-64 text-zinc-900">
+                  {/* Graph 1 */}
+                  <div className="border border-slate-200 dark:border-slate-810 bg-white dark:bg-slate-900 p-4 rounded-2xl flex flex-col shadow-sm">
+                    <span className="text-xs font-black text-blue-600 dark:text-blue-400 mb-2 truncate">
+                      {track1?.name} ({track1?.distance.toFixed(1)} km)
+                    </span>
+                    <div className="flex-1 min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData1} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="compGrad1" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor={activeCompareDef.color1} stopOpacity={0.35}/>
+                              <stop offset="95%" stopColor={activeCompareDef.color1} stopOpacity={0.0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.15)" />
+                          <XAxis 
+                            dataKey="distance" 
+                            fontSize={10} 
+                            tickLine={false}
+                            stroke="rgba(148, 163, 184, 0.6)"
+                            tickFormatter={(val) => `${val.toFixed(1)}km`}
+                          />
+                          <YAxis 
+                            fontSize={10} 
+                            tickLine={false}
+                            stroke="rgba(148, 163, 184, 0.6)"
+                            tickFormatter={(val) => activeCompareDef.key === 'pace' ? formatPaceDecimal(val) : `${val}`}
+                            domain={['auto', 'auto']}
+                            reversed={activeCompareDef.isPace}
+                          />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px' }}
+                            labelStyle={{ color: '#94a3b8', fontSize: '10px' }}
+                            itemStyle={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
+                            formatter={(value: any) => [activeCompareDef.displayFn(value), activeCompareDef.label.split(' ')[0]]}
+                          />
+                          <Area type="monotone" dataKey={activeCompareDef.key} stroke={activeCompareDef.color1} strokeWidth={2.5} fillOpacity={1} fill="url(#compGrad1)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Graph 2 */}
+                  <div className="border border-slate-200 dark:border-slate-810 bg-white dark:bg-slate-900 p-4 rounded-2xl flex flex-col shadow-sm">
+                    <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 mb-2 truncate">
+                      {track2?.name} ({track2?.distance.toFixed(1)} km)
+                    </span>
+                    <div className="flex-1 min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData2} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="compGrad2" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor={activeCompareDef.color2} stopOpacity={0.35}/>
+                              <stop offset="95%" stopColor={activeCompareDef.color2} stopOpacity={0.0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.15)" />
+                          <XAxis 
+                            dataKey="distance" 
+                            fontSize={10} 
+                            tickLine={false}
+                            stroke="rgba(148, 163, 184, 0.6)"
+                            tickFormatter={(val) => `${val.toFixed(1)}km`}
+                          />
+                          <YAxis 
+                            fontSize={10} 
+                            tickLine={false}
+                            stroke="rgba(148, 163, 184, 0.6)"
+                            tickFormatter={(val) => activeCompareDef.key === 'pace' ? formatPaceDecimal(val) : `${val}`}
+                            domain={['auto', 'auto']}
+                            reversed={activeCompareDef.isPace}
+                          />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px' }}
+                            labelStyle={{ color: '#94a3b8', fontSize: '10px' }}
+                            itemStyle={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
+                            formatter={(value: any) => [activeCompareDef.displayFn(value), activeCompareDef.label.split(' ')[0]]}
+                          />
+                          <Area type="monotone" dataKey={activeCompareDef.key} stroke={activeCompareDef.color2} strokeWidth={2.5} fillOpacity={1} fill="url(#compGrad2)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* Combined/Aligned Chart Overlay */}
-            <div className="border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-5 rounded-2xl space-y-3 shadow-sm">
-              <div className="flex flex-col">
-                <h4 className="text-xs font-bold text-slate-850 dark:text-slate-200 uppercase tracking-wide">
-                  Überlagerungs-Höhenprofil (0% bis 100% Verlauf)
-                </h4>
-                <p className="text-[10px] text-slate-400">Nutze dieses Diagramm, um das Profil und die Steigungsmuster der beiden Strecken direkt aufeinander abgeglichen zu vergleichen.</p>
-              </div>
+              {/* Section 2: Unified aligned Overlay Diagram (0% to 100% path) */}
+              <div className="border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 rounded-2xl space-y-4 shadow-sm text-zinc-900 dark:text-zinc-100">
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                  <div>
+                    <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wide">
+                      Direkter Überlagerungsvergleich (Skalierter Routenverlauf 0-100%)
+                    </h4>
+                    <p className="text-[10px] text-slate-400">Perfekt angeglichener Vergleich über den relativen Fortschritt des Tracks.</p>
+                  </div>
 
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={unifiedChartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                    <XAxis 
-                      dataKey="percent" 
-                      stroke="#94a3b8" 
-                      fontSize={10} 
-                      tickLine={false}
-                      tickFormatter={(val) => `${val}%`}
-                    />
-                    <YAxis 
-                      stroke="#94a3b8" 
-                      fontSize={10} 
-                      tickLine={false}
-                      tickFormatter={(val) => `${val}m`}
-                      domain={['auto', 'auto']}
-                    />
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.12)" />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }}
-                      labelStyle={{ color: '#94a3b8', fontSize: '10px', fontWeight: 'bold' }}
-                      itemStyle={{ fontSize: '12px', fontWeight: 'bold', padding: '2px 0' }}
-                      labelFormatter={(pct) => `Routenverlauf: ${pct}%`}
-                    />
-                    <Area 
-                      type="monotone" 
-                      name={`${track1?.name || 'Aktivität 1'}`} 
-                      dataKey="ele1" 
-                      stroke="#3b82f6" 
-                      strokeWidth={2.5} 
-                      fill="none" 
-                    />
-                    <Area 
-                      type="monotone" 
-                      name={`${track2?.name || 'Aktivität 2'}`} 
-                      dataKey="ele2" 
-                      stroke="#10b981" 
-                      strokeWidth={2.5} 
-                      fill="none" 
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
+                  {/* Selector tab for overlay */}
+                  <div className="flex flex-wrap gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 self-start sm:self-auto">
+                    {allowedMetrics.map(m => (
+                      <button
+                        key={m.key}
+                        onClick={() => setOverlayChartMetric(m.key)}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                          overlayChartMetric === m.key 
+                            ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-xs' 
+                            : 'text-slate-500 hover:text-slate-705'
+                        }`}
+                      >
+                        {m.label.split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={unifiedChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <XAxis 
+                        dataKey="percent" 
+                        stroke="#94a3b8" 
+                        fontSize={10} 
+                        tickLine={false}
+                        tickFormatter={(val) => `${val}%`}
+                      />
+                      <YAxis 
+                        stroke="#94a3b8" 
+                        fontSize={10} 
+                        tickLine={false}
+                        tickFormatter={(val) => activeOverlayDef.key === 'pace' ? formatPaceDecimal(val) : `${val}`}
+                        domain={['auto', 'auto']}
+                        reversed={activeOverlayDef.isPace}
+                      />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.12)" />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }}
+                        labelStyle={{ color: '#94a3b8', fontSize: '10px', fontWeight: 'bold' }}
+                        itemStyle={{ fontSize: '12px', fontWeight: 'bold', padding: '2px 0' }}
+                        labelFormatter={(pct) => `Relative Position: ${pct}%`}
+                      />
+                      <Area 
+                        type="monotone" 
+                        name={`${track1?.name || 'Aktivität 1'}`} 
+                        dataKey={activeOverlayDef.key === 'elevation' ? 'ele1' : activeOverlayDef.key + '1'} 
+                        stroke={activeOverlayDef.color1} 
+                        strokeWidth={2.5} 
+                        fill="none" 
+                      />
+                      <Area 
+                        type="monotone" 
+                        name={`${track2?.name || 'Aktivität 2'}`} 
+                        dataKey={activeOverlayDef.key === 'elevation' ? 'ele2' : activeOverlayDef.key + '2'} 
+                        stroke={activeOverlayDef.color2} 
+                        strokeWidth={2.5} 
+                        fill="none" 
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
@@ -735,7 +860,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
         <div className="p-4 bg-slate-50 dark:bg-slate-900/60 border-t border-slate-200 dark:border-slate-800/80 flex justify-end shrink-0 select-none">
           <button 
             onClick={onClose}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl text-sm transition-all shadow-md active:scale-95"
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl text-sm transition-all shadow-md active:scale-95 cursor-pointer"
           >
             Fertig
           </button>

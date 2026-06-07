@@ -547,6 +547,54 @@ export const getLocationName = async (lat: number, lng: number): Promise<string>
   }
 };
 
+export const getGPXPoints = (xml: Document): Element[] => {
+  try {
+    const allElements = xml.getElementsByTagName("*");
+    const trkpts: Element[] = [];
+    const rtepts: Element[] = [];
+    const wpts: Element[] = [];
+
+    for (let i = 0; i < allElements.length; i++) {
+      const elem = allElements[i];
+      const localName = (elem.localName || elem.nodeName).toLowerCase();
+      if (localName === "trkpt" || localName === "trackpoint") {
+        trkpts.push(elem);
+      } else if (localName === "rtept" || localName === "routepoint") {
+        rtepts.push(elem);
+      } else if (localName === "wpt" || localName === "waypoint") {
+        wpts.push(elem);
+      }
+    }
+
+    if (trkpts.length > 0) return trkpts;
+    if (rtepts.length > 0) return rtepts;
+    return wpts;
+  } catch (e) {
+    console.error("Error extracting GPX points:", e);
+    return [];
+  }
+};
+
+export const getChildNode = (parent: Element, tagName: string): Element | null => {
+  try {
+    let node = parent.querySelector(tagName);
+    if (node) return node;
+
+    const allChildren = parent.getElementsByTagName("*");
+    const targetLower = tagName.toLowerCase();
+    for (let i = 0; i < allChildren.length; i++) {
+      const child = allChildren[i];
+      const localName = (child.localName || child.nodeName).toLowerCase();
+      if (localName === targetLower) {
+        return child;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+};
+
 export const validateGPX = (xmlString: string): { isValid: boolean; error?: string } => {
   try {
     const parser = new DOMParser();
@@ -558,15 +606,20 @@ export const validateGPX = (xmlString: string): { isValid: boolean; error?: stri
       return { isValid: false, error: "Ungültiges XML-Format." };
     }
 
-    // Check for root <gpx> element
-    if (xml.documentElement.nodeName !== "gpx") {
-      return { isValid: false, error: "Keine gültige GPX-Datei (Root-Element fehlt)." };
+    // Check for root <gpx> element (ignoring namespace or casing)
+    const rootName = (xml.documentElement.localName || xml.documentElement.nodeName).toLowerCase().split(":").pop();
+    if (rootName !== "gpx") {
+      // Find out if we have any trackpoints anyway
+      const ptsCount = getGPXPoints(xml).length;
+      if (ptsCount === 0) {
+        return { isValid: false, error: "Keine gültige GPX-Datei (Root-Element fehlt)." };
+      }
     }
 
-    // Check for track points
-    const trkpts = xml.querySelectorAll("trkpt");
-    if (trkpts.length === 0) {
-      return { isValid: false, error: "Die Datei enthält keine Trackpunkte (trkpt)." };
+    // Check for any points (trackpoints, routepoints, or waypoints)
+    const pts = getGPXPoints(xml);
+    if (pts.length === 0) {
+      return { isValid: false, error: "Die Datei enthält keine gültigen Trackpunkte oder Routepunkte." };
     }
 
     return { isValid: true };
@@ -617,33 +670,35 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
   try {
     const parser = new DOMParser();
     const xml = parser.parseFromString(xmlString, "text/xml");
-    const trkpts = xml.querySelectorAll("trkpt");
+    const trkpts = getGPXPoints(xml);
     
     const points: GPXPoint[] = Array.from(trkpts).map((pt) => {
-      const lat = parseFloat(pt.getAttribute("lat") || "0");
-      const lng = parseFloat(pt.getAttribute("lon") || "0");
-      const eleNode = pt.querySelector("ele");
+      const latAttr = pt.getAttribute("lat") || pt.getAttribute("latitude") || "0";
+      const lngAttr = pt.getAttribute("lon") || pt.getAttribute("lng") || pt.getAttribute("longitude") || "0";
+      const lat = parseFloat(latAttr);
+      const lng = parseFloat(lngAttr);
+      const eleNode = getChildNode(pt, "ele");
       const ele = eleNode ? parseFloat(eleNode.textContent || "0") : undefined;
-      const timeStr = pt.querySelector("time")?.textContent;
+      const timeStr = getChildNode(pt, "time")?.textContent;
       const time = timeStr ? new Date(timeStr) : undefined;
       
       // Extract power from extensions
       let power: number | undefined;
-      const powerNode = pt.querySelector("power") || pt.querySelector("extensions power") || pt.querySelector("trackpointExtension power");
+      const powerNode = getChildNode(pt, "power");
       if (powerNode) {
         power = parseFloat(powerNode.textContent || "0");
       }
 
       // Extract HR from extensions
       let hr: number | undefined;
-      const hrNode = pt.querySelector("hr") || pt.querySelector("extensions hr") || pt.querySelector("trackpointExtension hr") || pt.getElementsByTagNameNS("*", "hr")[0];
+      const hrNode = getChildNode(pt, "hr");
       if (hrNode) {
         hr = parseInt(hrNode.textContent || "0", 10);
       }
 
       // Extract Cadence from extensions
       let cadence: number | undefined;
-      const cadNode = pt.querySelector("cad") || pt.querySelector("extensions cad") || pt.querySelector("trackpointExtension cad") || pt.getElementsByTagNameNS("*", "cad")[0];
+      const cadNode = getChildNode(pt, "cad");
       if (cadNode) {
         cadence = parseInt(cadNode.textContent || "0", 10);
       }

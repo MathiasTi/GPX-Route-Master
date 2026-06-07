@@ -2,7 +2,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
 import { 
   DndContext, 
@@ -32,9 +32,24 @@ interface TrackItemProps {
   onOpenAnalytics?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
   onOpenSegments?: (id: string) => void;
+  onAnalyzeSurface?: (id: string) => void;
+  isAnalyzing?: boolean;
 }
 
-const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, onToggleVisibility, onRemoveTrack, onChangeActivityType, estimatedSpeed, onOpenAnalytics, onOpenClimbs, onOpenSegments }) => {
+const SortableTrackItem: React.FC<TrackItemProps> = ({ 
+  track, 
+  isMarked, 
+  onMark, 
+  onToggleVisibility, 
+  onRemoveTrack, 
+  onChangeActivityType, 
+  estimatedSpeed, 
+  onOpenAnalytics, 
+  onOpenClimbs, 
+  onOpenSegments,
+  onAnalyzeSurface,
+  isAnalyzing
+}) => {
   const {
     attributes,
     listeners,
@@ -170,6 +185,27 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({ track, isMarked, onMark, 
                 ))}
               </div>
             )}
+            <div className="mt-2 pt-1.5 border-t border-slate-100/80 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+              <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1 uppercase tracking-wider">
+                <Layers size={10} className="text-slate-400 stroke-[2.5]" /> OSM-Untergrund:
+              </span>
+              <button
+                type="button"
+                disabled={isAnalyzing}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAnalyzeSurface?.(track.id);
+                }}
+                className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
+                  isAnalyzing
+                    ? "bg-blue-105 text-blue-600 border-blue-200 animate-pulse cursor-wait"
+                    : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200 hover:border-blue-300"
+                }`}
+                title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+              >
+                {isAnalyzing ? "Analysiere..." : "OSM ermitteln"}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -273,6 +309,8 @@ interface SidebarProps {
   onUpdateTextMarker: (id: string, updates: Partial<TextMarker>) => void;
   hoveredPoint: any;
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
+  onAnalyzeSurface?: (id: string) => void;
+  analyzingSurfaces?: Record<string, boolean>;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -319,8 +357,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   onDeleteTextMarker,
   onUpdateTextMarker,
   hoveredPoint,
-  onMapViewChange
+  onMapViewChange,
+  onAnalyzeSurface,
+  analyzingSurfaces
 }) => {
+  const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
@@ -708,59 +749,81 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
             </section>
 
-            <section className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Erweiterte Nutzerdaten</h2>
-              </div>
+            <section className="space-y-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-4">
+              <button 
+                onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                className="w-full flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-100/80 dark:hover:bg-slate-900/40 transition-all group text-left cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-900 text-slate-500 group-hover:bg-blue-50 dark:group-hover:bg-blue-950 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    <Settings size={14} className="stroke-[2.5]" />
+                  </div>
+                  <div>
+                    <h2 className="text-xs font-bold text-slate-600 dark:text-slate-300">FTP & Nutzerdaten</h2>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500">Pulszone, VO2max & Watt</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {!showAdvancedSettings && ftp && (
+                    <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950/30 text-amber-650 dark:text-amber-450 border border-amber-200/50 dark:border-amber-800/50 rounded-md font-mono">
+                      {ftp}W
+                    </span>
+                  )}
+                  {showAdvancedSettings ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+                </div>
+              </button>
               
-              <div className="space-y-3 p-3 bg-slate-50/50 rounded-xl border border-slate-200/50">
-                <div className="space-y-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 rounded transition-all">
-                  <div className="flex justify-between items-center">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase">FTP (Watt)</label>
-                    <span className="text-[11px] font-black text-amber-600">{ftp} W</span>
-                  </div>
-                  <input 
-                    type="range" 
-                    min="100" 
-                    max="500" 
-                    step="5" 
-                    value={ftp} 
-                    onChange={(e) => setFtp(Number(e.target.value))}
-                    className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase">Gewicht (kg)</label>
+              {showAdvancedSettings && (
+                <div className="space-y-3 p-3 bg-slate-50/50 dark:bg-slate-950/20 rounded-xl border border-slate-200/50 dark:border-slate-800/60 transition-all">
+                  <div className="space-y-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 rounded transition-all">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">FTP (Watt)</label>
+                      <span className="text-[11px] font-black text-amber-600 dark:text-amber-500">{ftp} W</span>
+                    </div>
                     <input 
-                      type="number"
-                      value={userWeight}
-                      onChange={(e) => setUserWeight(Number(e.target.value))}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      type="range" 
+                      min="100" 
+                      max="500" 
+                      step="5" 
+                      value={ftp} 
+                      onChange={(e) => setFtp(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                     />
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase">Alter</label>
-                    <input 
-                      type="number"
-                      value={userAge}
-                      onChange={(e) => setUserAge(Number(e.target.value))}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
-                    />
-                  </div>
-                </div>
 
-                {suggestedFtp && Math.abs(suggestedFtp - ftp) > 2 && (
-                  <button 
-                    onClick={() => setFtp(suggestedFtp)}
-                    className="w-full text-[9px] bg-amber-100 text-amber-700 px-1.5 py-1 rounded font-black hover:bg-amber-200 transition-colors animate-pulse"
-                  >
-                    FTP-Vorschlag basierend auf Bestleistung: {suggestedFtp}W
-                  </button>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-400 italic">Diese Daten ermöglichen eine genauere Schätzung von VO2max und Kalorienverbrauch.</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Gewicht (kg)</label>
+                      <input 
+                        type="number"
+                        value={userWeight}
+                        onChange={(e) => setUserWeight(Number(e.target.value))}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Alter</label>
+                      <input 
+                        type="number"
+                        value={userAge}
+                        onChange={(e) => setUserAge(Number(e.target.value))}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {suggestedFtp && Math.abs(suggestedFtp - ftp) > 2 && (
+                    <button 
+                      onClick={() => setFtp(suggestedFtp)}
+                      className="w-full text-[9px] bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-450 px-1.5 py-1 rounded font-black hover:bg-amber-200 transition-colors animate-pulse"
+                    >
+                      FTP-Vorschlag basierend auf Bestleistung: {suggestedFtp}W
+                    </button>
+                  )}
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 italic">Diese Daten ermöglichen eine genauere Schätzung von VO2max und Kalorienverbrauch.</p>
+                </div>
+              )}
             </section>
 
             <section className="space-y-3">
@@ -791,6 +854,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                           estimatedSpeed={estimatedSpeed}
                           onOpenAnalytics={onOpenAnalytics}
                           onOpenClimbs={onOpenClimbs}
+                          onAnalyzeSurface={onAnalyzeSurface}
+                          isAnalyzing={analyzingSurfaces?.[track.id] || false}
                         />
                       ))}
                     </div>

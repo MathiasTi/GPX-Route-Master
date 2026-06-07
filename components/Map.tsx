@@ -330,9 +330,43 @@ const Map: React.FC<MapProps> = ({
             }
           }
 
+          // Build continuous segments of identical surface types
+          const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
+          if (track.points.length > 0) {
+            let currentSurface = track.points[0].surface || "Asphalt";
+            let currentPositions: [number, number][] = [[track.points[0].lat, track.points[0].lng]];
+
+            for (let i = 1; i < track.points.length; i++) {
+              const pt = track.points[i];
+              const surf = pt.surface || "Asphalt";
+              if (surf === currentSurface) {
+                currentPositions.push([pt.lat, pt.lng]);
+              } else {
+                currentPositions.push([pt.lat, pt.lng]); // connect segment overlaps
+                surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
+                currentPositions = [[pt.lat, pt.lng]];
+                currentSurface = surf;
+              }
+            }
+            if (currentPositions.length > 0) {
+              surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
+            }
+          }
+
+          const getSurfaceColor = (surf: string, defaultColor: string) => {
+            switch (surf) {
+              case "Asphalt": return "#4f46e5";
+              case "Schotter": return "#ea580c";
+              case "Waldweg": return "#16a34a";
+              case "Fahrradweg": return "#8b5cf6";
+              case "Kopfsteinpflaster": return "#db2777";
+              default: return defaultColor;
+            }
+          };
+
           return (
             <React.Fragment key={track.id}>
-              {/* Invisible thick line for easier hovering/clicking */}
+              {/* Invisible thick line for easier hovering/clicking that holds the Popup */}
               <LeafletPolyline 
                 positions={positions}
                 color="#000000"
@@ -361,14 +395,6 @@ const Map: React.FC<MapProps> = ({
                     if (onHoverPoint) onHoverPoint(null);
                   }
                 }}
-              />
-              {/* Visible line */}
-              <LeafletPolyline 
-                positions={positions}
-                color={track.color}
-                weight={isMarked ? 8 : 4}
-                opacity={isMarked ? 1.0 : 0.6}
-                interactive={false}
               >
                 <Popup>
                     <div className="font-bold">{track.name}</div>
@@ -389,6 +415,28 @@ const Map: React.FC<MapProps> = ({
                     )}
                 </Popup>
               </LeafletPolyline>
+
+              {/* Visible line(s) either segmented by surface or solid default */}
+              {surfaceSegments.length > 1 ? (
+                surfaceSegments.map((seg, sIdx) => (
+                  <LeafletPolyline
+                    key={`seg-${sIdx}`}
+                    positions={seg.positions}
+                    color={getSurfaceColor(seg.surface, track.color)}
+                    weight={isMarked ? 8 : 4}
+                    opacity={isMarked ? 1.0 : 0.6}
+                    interactive={false}
+                  />
+                ))
+              ) : (
+                <LeafletPolyline 
+                  positions={positions}
+                  color={track.color}
+                  weight={isMarked ? 8 : 4}
+                  opacity={isMarked ? 1.0 : 0.6}
+                  interactive={false}
+                />
+              )}
 
               {/* Selection Highlights */}
               {selectedPolylines.map((pts, i) => (
@@ -670,6 +718,31 @@ const Map: React.FC<MapProps> = ({
           </LeafletMarker>
         )}
       </LeafletMapContainer>
+
+      {/* Premium Map Legend explaining Surface Types */}
+      <div className="absolute bottom-4 left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none">
+        <div className="font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">Untergrund Legende</div>
+        <div className="flex items-center gap-2">
+          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#4f46e5" }}></span>
+          <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ea580c" }}></span>
+          <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#16a34a" }}></span>
+          <span className="font-bold text-slate-700 dark:text-slate-350">Waldweg / Trail</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#8b5cf6" }}></span>
+          <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#db2777" }}></span>
+          <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
+        </div>
+      </div>
     </div>
   );
 };

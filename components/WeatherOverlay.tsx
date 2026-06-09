@@ -16,6 +16,7 @@ import {
   Info
 } from 'lucide-react';
 import { GPXTrack, WeatherData } from '../types';
+import { getApiUrl } from '../utils/api';
 
 interface WeatherOverlayProps {
   track: GPXTrack | undefined;
@@ -23,6 +24,8 @@ interface WeatherOverlayProps {
   setSelectedDate: (date: string) => void;
   selectedTime: string;
   setSelectedTime: (time: string) => void;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({ 
@@ -30,18 +33,21 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
   selectedDate,
   setSelectedDate,
   selectedTime,
-  setSelectedTime
+  setSelectedTime,
+  isOpen,
+  onOpenChange
 }) => {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isVisible, setIsVisible] = useState(true);
 
   const fetchWeather = async (lat: number, lng: number, dateStr: string) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/weather', {
+      const apiUrl = getApiUrl('/api/weather');
+
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lat, lng, date: dateStr }),
@@ -129,19 +135,19 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
   return (
     <div className="absolute top-4 right-4 z-[990] max-w-sm w-[90vw] md:w-80">
       {/* Mini toggle bar when collapsed */}
-      {!isVisible && weather && (
+      {!isOpen && (
         <button
-          onClick={() => setIsVisible(true)}
+          onClick={() => onOpenChange(true)}
           className="flex items-center gap-2 px-3 py-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-lg border border-slate-100 dark:border-slate-800 rounded-2xl text-xs font-black text-slate-700 dark:text-slate-300 hover:scale-105 transition-all cursor-pointer float-right"
         >
-          {getWeatherIcon(weather.condition)}
-          <span>{weather.locationName.split(',')[0]} (Wetter anzeigen)</span>
+          {weather ? getWeatherIcon(weather.condition) : <span className="text-base">🌤️</span>}
+          <span>{weather ? `${weather.locationName.split(',')[0]} (Wetter)` : 'Routen-Wetter anzeigen'}</span>
         </button>
       )}
 
       {/* Main expanded weather card */}
       <AnimatePresence>
-        {isVisible && (
+        {isOpen && (
           <motion.div
             initial={{ opacity: 0, scale: 0.92, y: -10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -171,7 +177,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                   <RefreshCw size={12} className={loading ? 'animate-spin text-indigo-600' : ''} />
                 </button>
                 <button
-                  onClick={() => setIsVisible(false)}
+                  onClick={() => onOpenChange(false)}
                   title="Einklappen"
                   className="p-1 px-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors font-black text-xs cursor-pointer"
                 >

@@ -597,6 +597,12 @@ export const getChildNode = (parent: Element, tagName: string): Element | null =
 
 export const validateGPX = (xmlString: string): { isValid: boolean; error?: string } => {
   try {
+    // Security check: Ignore custom ENTITY, DOCTYPE, or SYSTEM tags to avoid XXE/Billion-Laughs attacks
+    const lowerXml = xmlString.toLowerCase();
+    if (lowerXml.includes('<!entity') || lowerXml.includes('<!doctype') || lowerXml.includes('<!system')) {
+      return { isValid: false, error: "Sicherheitsfehler: Benutzerdefinierte DOCTYPE- oder ENTITY-Definitionen sind im GPX nicht erlaubt." };
+    }
+
     const parser = new DOMParser();
     const xml = parser.parseFromString(xmlString, "text/xml");
     

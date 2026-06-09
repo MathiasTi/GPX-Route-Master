@@ -4,10 +4,11 @@ import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2 } from 'lucide-react';
+import { Activity, BarChart2, Menu } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker, Segment } from './types';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
+import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
 import AdvancedAnalytics from './components/AdvancedAnalytics';
 import { TrackComparison } from './components/TrackComparison';
@@ -17,6 +18,8 @@ import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { SegmentsAnalysis } from './components/SegmentsAnalysis';
 import { getFamousSegments, extractSegmentsFromTrack, generateProLeaderboard } from './utils/segmentUtils';
+import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
+import { getApiUrl } from './utils/api';
 
 const App: React.FC = () => {
   const [tracks, setTracks] = useState<GPXTrack[]>([]);
@@ -58,6 +61,8 @@ const App: React.FC = () => {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
+  const [weatherOpen, setWeatherOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [mapView, setMapView] = useState({
     lat: 51.1657,
@@ -197,6 +202,7 @@ const App: React.FC = () => {
   }, [tracks]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [userWeight, setUserWeight] = useState(75);
   const [userAge, setUserAge] = useState(35);
   const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
@@ -234,69 +240,70 @@ const App: React.FC = () => {
   const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
 
   const analyzeTrackSurface = useCallback(async (trackId: string) => {
+    if (analyzingSurfaces[trackId]) return;
+
+    let pointsToAnalyze: any[] = [];
     setTracks(currentTracks => {
       const track = currentTracks.find(t => t.id === trackId);
-      if (!track || track.points.length === 0 || analyzingSurfaces[trackId]) return currentTracks;
-
-      (async () => {
-        setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
-        try {
-          const result = await fetch("/api/analyze-surface", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              points: track.points.map(p => ({ lat: p.lat, lng: p.lng, ele: p.ele }))
-            })
-          });
-
-          if (!result.ok) throw new Error("Surface analyzer API error");
-          const data = await result.json();
-
-          if (data.surfaces && data.surfaceStats) {
-            setTracks(prev => prev.map(t => {
-              if (t.id === trackId) {
-                const updatedPoints = t.points.map((p, idx) => ({
-                  ...p,
-                  surface: data.surfaces[idx] || "Asphalt"
-                }));
-                return {
-                  ...t,
-                  points: updatedPoints,
-                  surfaceStats: data.surfaceStats
-                };
-              }
-              return t;
-            }));
-          }
-        } catch (err) {
-          console.error("[Surface Analyzer] Error for track", trackId, err);
-        } finally {
-          setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: false }));
-        }
-      })();
-
+      if (track) {
+        pointsToAnalyze = track.points.map(p => ({ lat: p.lat, lng: p.lng, ele: p.ele }));
+      }
       return currentTracks;
     });
+
+    if (pointsToAnalyze.length === 0) return;
+
+    setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
+    try {
+      const apiUrl = getApiUrl("/api/analyze-surface");
+
+      const result = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          points: pointsToAnalyze
+        })
+      });
+
+      if (!result.ok) throw new Error("Surface analyzer API error");
+      const data = await result.json();
+
+      if (data.surfaces && data.surfaceStats) {
+        setTracks(prev => prev.map(t => {
+          if (t.id === trackId) {
+            const updatedPoints = t.points.map((p, idx) => ({
+              ...p,
+              surface: data.surfaces[idx] || "Asphalt"
+            }));
+            return {
+              ...t,
+              points: updatedPoints,
+              surfaceStats: data.surfaceStats
+            };
+          }
+          return t;
+        }));
+      }
+    } catch (err) {
+      console.error("[Surface Analyzer] Error for track", trackId, err);
+    } finally {
+      setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: false }));
+    }
   }, [analyzingSurfaces]);
 
   useEffect(() => {
     if (markedTrackId) {
-      setTracks(currentTracks => {
-        const track = currentTracks.find(t => t.id === markedTrackId);
-        if (track && track.points.length > 0) {
-          const hasSurfaces = track.points.some(p => p.surface && p.surface !== "Asphalt");
-          if (!hasSurfaces && !analyzingSurfaces[markedTrackId]) {
-            setTimeout(() => {
-              analyzeTrackSurface(markedTrackId);
-            }, 50);
-          }
+      const track = tracks.find(t => t.id === markedTrackId);
+      if (track && track.points.length > 0) {
+        const hasSurfaces = track.points.some(p => p.surface && p.surface !== "Asphalt");
+        if (!hasSurfaces && !analyzingSurfaces[markedTrackId]) {
+          analyzeTrackSurface(markedTrackId);
         }
-        return currentTracks;
-      });
+      }
     }
-  }, [markedTrackId, analyzeTrackSurface, analyzingSurfaces]);
+  }, [markedTrackId, tracks, analyzeTrackSurface, analyzingSurfaces]);
  
   // Auto-select first track if none is selected and tracks exist
   useEffect(() => {
@@ -321,6 +328,43 @@ const App: React.FC = () => {
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
+
+    const processFitBuffer = async (buffer: ArrayBuffer, name: string) => {
+      const parsed = await parseFIT(buffer, name);
+      if (parsed) {
+        parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
+        newTracks.push(parsed);
+        
+        // Extract date of the FIT file
+        const firstPtWithTime = parsed.points.find(p => p.time !== undefined);
+        if (firstPtWithTime && firstPtWithTime.time) {
+          const dt = new Date(firstPtWithTime.time);
+          fitDate = dt.toISOString().split('T')[0];
+          const hrs = String(dt.getHours()).padStart(2, '0');
+          const mins = String(dt.getMinutes()).padStart(2, '0');
+          fitTime = `${hrs}:${mins}`;
+          hasAddedFit = true;
+        }
+      } else {
+        errors.push(`${name}: Fehler beim Verarbeiten der FIT-Datei.`);
+      }
+    };
+
+    const processGpxText = async (text: string, name: string) => {
+      const validation = validateGPX(text);
+      if (!validation.isValid) {
+        errors.push(`${name}: ${validation.error}`);
+        return;
+      }
+
+      const parsed = await parseGPX(text, name);
+      if (parsed) {
+        parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
+        newTracks.push(parsed);
+      } else {
+        errors.push(`${name}: Fehler beim Verarbeiten der GPX-Datei.`);
+      }
+    };
  
     setErrorMessage(null);
     const newTracks: GPXTrack[] = [];
@@ -332,47 +376,60 @@ const App: React.FC = () => {
  
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const isFit = file.name.toLowerCase().endsWith('.fit');
- 
+      const lowerName = file.name.toLowerCase();
+      const isFit = lowerName.endsWith('.fit');
+      const isZip = lowerName.endsWith('.zip');
+
       try {
-        if (isFit) {
-          const buffer = await file.arrayBuffer();
-          const parsed = await parseFIT(buffer, file.name);
-          if (parsed) {
-            parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
-            newTracks.push(parsed);
-            
-            // Extract date of the FIT file
-            const firstPtWithTime = parsed.points.find(p => p.time !== undefined);
-            if (firstPtWithTime && firstPtWithTime.time) {
-              const dt = new Date(firstPtWithTime.time);
-              fitDate = dt.toISOString().split('T')[0];
-              const hrs = String(dt.getHours()).padStart(2, '0');
-              const mins = String(dt.getMinutes()).padStart(2, '0');
-              fitTime = `${hrs}:${mins}`;
-              hasAddedFit = true;
-            }
-          } else {
-            errors.push(`${file.name}: Fehler beim Verarbeiten der FIT-Datei.`);
-          }
-        } else {
-          const text = await file.text();
-          const validation = validateGPX(text);
-          if (!validation.isValid) {
-            errors.push(`${file.name}: ${validation.error}`);
+        if (isZip) {
+          // Zip-Bomb Protection: limit zip file size to 30 MB
+          if (file.size > 30 * 1024 * 1024) {
+            errors.push(`${file.name}: ZIP-Datei ist zu groß (maximal 30 MB erlaubt).`);
             continue;
           }
- 
-          const parsed = await parseGPX(text, file.name);
-          if (parsed) {
-            parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
-            newTracks.push(parsed);
-          } else {
-            errors.push(`${file.name}: Fehler beim Verarbeiten der GPX-Datei.`);
+
+          const arrayBuffer = await file.arrayBuffer();
+          const zipUint8 = new Uint8Array(arrayBuffer);
+          const unzipped = unzipSync(zipUint8);
+          
+          let totalUncompressedSize = 0;
+          const MAX_UNCOMPRESSED_TOTAL = 100 * 1024 * 1024; // 100 MB max uncompressed
+
+          for (const [filepath, fileData] of Object.entries(unzipped)) {
+            // Zip-Slip (Directory Traversal) protection
+            if (filepath.includes('..') || filepath.split('/').some(part => part === '..')) {
+              console.warn(`Sicherheitswarnung: Pfad-Traversierung in ZIP ignoriert: ${filepath}`);
+              continue;
+            }
+
+            // Decompression security: tracking total decompressed bytes to avoid exhausting memory
+            totalUncompressedSize += fileData.length;
+            if (totalUncompressedSize > MAX_UNCOMPRESSED_TOTAL) {
+              throw new Error("Decompressions-Limit überschritten (Zip-Bomb-Schutz). Max. unkomprimierte Gesamtgröße ist 100 MB.");
+            }
+
+            const baseName = filepath.split('/').pop() || '';
+            if (!baseName) continue; // skip directories
+
+            const entryLowerName = baseName.toLowerCase();
+            if (entryLowerName.endsWith('.fit')) {
+              const buffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
+              await processFitBuffer(buffer, baseName);
+            } else if (entryLowerName.endsWith('.gpx')) {
+              const textDecoder = new TextDecoder('utf-8');
+              const text = textDecoder.decode(fileData);
+              await processGpxText(text, baseName);
+            }
           }
+        } else if (isFit) {
+          const buffer = await file.arrayBuffer();
+          await processFitBuffer(buffer, file.name);
+        } else {
+          const text = await file.text();
+          await processGpxText(text, file.name);
         }
-      } catch (err) {
-        errors.push(`${file.name}: Unerwarteter Fehler.`);
+      } catch (err: any) {
+        errors.push(`${file.name}: Unerwarteter Fehler (${err.message || err}).`);
         console.error(err);
       }
     }
@@ -489,14 +546,18 @@ const App: React.FC = () => {
     }
   }, [flyProgress, isFlying, markedTrack]);
 
-  const [showHint, setShowHint] = useState(true);
+  const [showHint, setShowHint] = useState(false);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans text-slate-900">
       <Sidebar 
         tracks={tracks}
         markedTrackId={markedTrackId}
-        onMarkTrack={setMarkedTrackId}
+        onMarkTrack={(id) => {
+          setMarkedTrackId(id);
+          setIsMobileMenuOpen(false);
+          setIsProfileCollapsed(false);
+        }}
         onChangeActivityType={handleChangeActivityType}
         onUpload={handleFileUpload}
         onToggleVisibility={toggleVisibility}
@@ -528,6 +589,13 @@ const App: React.FC = () => {
         suggestedFtp={suggestedFtp}
         onOpenComparison={() => {
           setComparisonOpen(true);
+          setIsMobileMenuOpen(false);
+         }}
+        onOpenTrainingZones={(id) => {
+          if (id) {
+            setMarkedTrackId(id);
+          }
+          setTrainingZonesOpen(true);
           setIsMobileMenuOpen(false);
         }}
         onOpenAnalytics={() => {
@@ -609,9 +677,11 @@ const App: React.FC = () => {
               onMapViewChange={setMapView}
               estimatedSpeed={estimatedSpeed}
               isFlying={isFlying}
+              ftp={ftp}
               textMarkers={textMarkers}
               onAddTextMarker={handleAddTextMarker}
               onDeleteTextMarker={handleDeleteTextMarker}
+              hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || segmentsOpen || comparisonOpen}
             />
           )}
 
@@ -621,6 +691,8 @@ const App: React.FC = () => {
             setSelectedDate={setSelectedDate}
             selectedTime={selectedTime}
             setSelectedTime={setSelectedTime}
+            isOpen={weatherOpen}
+            onOpenChange={setWeatherOpen}
           />
 
           <AnimatePresence>
@@ -675,6 +747,16 @@ const App: React.FC = () => {
             )}
           </AnimatePresence>
           
+          <AnimatePresence>
+            {trainingZonesOpen && (
+              <TrainingZonesAnalysis 
+                tracks={tracks}
+                activeTrackId={markedTrackId}
+                onClose={() => setTrainingZonesOpen(false)}
+              />
+            )}
+          </AnimatePresence>
+          
           {showHint && (
             <div 
               className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-indigo-600/90 backdrop-blur-md text-white px-6 py-3 rounded-2xl shadow-2xl text-sm font-medium transition-all hover:bg-indigo-700 flex items-center gap-4 max-w-[90vw] md:max-w-none"
@@ -723,7 +805,7 @@ const App: React.FC = () => {
         </div>
 
         {markedTrack && (
-          <div className="h-56 bg-white border-t border-slate-200 px-6 py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all">
+          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-52 md:h-56'} bg-white border-t border-slate-200 px-3 md:px-6 py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
             <ElevationProfile 
               track={markedTrack} 
               onHoverPoint={setHoveredPoint} 
@@ -747,8 +829,20 @@ const App: React.FC = () => {
                   setIsFlying(true);
                 }
               }}
+              onCollapse={() => setIsProfileCollapsed(true)}
             />
           </div>
+        )}
+
+        {markedTrack && isProfileCollapsed && (
+          <button
+            onClick={() => setIsProfileCollapsed(false)}
+            className="fixed bottom-4 right-4 z-[99] bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-1.5 font-bold text-xs transition-all cursor-pointer border border-indigo-500 hover:scale-105 active:scale-95 animate-fade-in"
+            title="Höhenprofil anzeigen"
+          >
+            <BarChart2 size={14} />
+            <span>Höhenprofil einblenden</span>
+          </button>
         )}
 
         <VideoExportModal

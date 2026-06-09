@@ -217,12 +217,56 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   // Pace zones calculation
   const paceZones = useMemo(() => {
     const zones = [
-      { name: 'Z1 Regeneration / Recovery', min: thresholdPaceSecs * 1.25, max: 9999, color: '#94a3b8', duration: 0 },
-      { name: 'Z2 GA1 Grundlagen / Endurance', min: thresholdPaceSecs * 1.15, max: thresholdPaceSecs * 1.25, color: '#22c55e', duration: 0 },
-      { name: 'Z3 GA2 Tempo / Aerob', min: thresholdPaceSecs * 1.05, max: thresholdPaceSecs * 1.15, color: '#eab308', duration: 0 },
-      { name: 'Z4 Entwicklungsbereich / Threshold', min: thresholdPaceSecs * 0.95, max: thresholdPaceSecs * 1.05, color: '#f97316', duration: 0 },
-      { name: 'Z5 VO2 Max / Intervalle', min: thresholdPaceSecs * 0.85, max: thresholdPaceSecs * 0.95, color: '#ef4444', duration: 0 },
-      { name: 'Z6 Spitzenbereich / Anaerob', min: 0, max: thresholdPaceSecs * 0.85, color: '#be185d', duration: 0 },
+      { 
+        name: 'KB', 
+        fullName: 'KB – Kompensationsbereich (Erholung)',
+        min: thresholdPaceSecs * 1.25, 
+        max: 9999, 
+        color: '#3b82f6', 
+        duration: 0,
+        desc: 'Vollkommen entspannte Fortbewegung zum lockeren Auslaufen oder Regenerieren.',
+        benefit: 'Beschleunigt den Abbau von Stoffwechselprodukten und fördert die aktive Erholung.'
+      },
+      { 
+        name: 'GA1', 
+        fullName: 'GA1 – Grundlagenausdauer 1',
+        min: thresholdPaceSecs * 1.15, 
+        max: thresholdPaceSecs * 1.25, 
+        color: '#10b981', 
+        duration: 0,
+        desc: 'Lockerer Dauerlauf im aeroben Bereich. Optimal zur Steigerung des Fettstoffwechsels.',
+        benefit: 'Entwickelt die aerobe Basis-Ausdauer und stärkt das Herz-Kreislauf-System dauerhaft.'
+      },
+      { 
+        name: 'GA2', 
+        fullName: 'GA2 – Grundlagenausdauer 2',
+        min: thresholdPaceSecs * 1.05, 
+        max: thresholdPaceSecs * 1.15, 
+        color: '#eab308', 
+        duration: 0,
+        desc: 'Zügigeres Tempo mit erhöhtem Atemreiz. Mischbereich aus Fett- und Kohlenhydratverbrennung.',
+        benefit: 'Steigert das aerobe Leistungsvermögen und schult das spezifische Renntempo.'
+      },
+      { 
+        name: 'EB', 
+        fullName: 'EB – Entwicklungsbereich',
+        min: thresholdPaceSecs * 0.95, 
+        max: thresholdPaceSecs * 1.05, 
+        color: '#f97316', 
+        duration: 0,
+        desc: 'Laufen nahe an der individuellen anaeroben Schwelle. Die Laktatbildung hält sich gerade noch die Waage.',
+        benefit: 'Erhöht die Schwellen-Geschwindigkeit und schult das Laufen unter sauren Bedingungen.'
+      },
+      { 
+        name: 'SB', 
+        fullName: 'SB – Spitzenbereich',
+        min: 0, 
+        max: thresholdPaceSecs * 0.95, 
+        color: '#ef4444', 
+        duration: 0,
+        desc: 'Hochintensives Intervalltraining im Bereich der maximalen Sauerstoffaufnahme und anaeroben Sprints.',
+        benefit: 'Maximiert VO2Max, neuromuskuläre Rekrutierung und trainiert die Tempohärte unter extremen Bedingungen.'
+      },
     ];
 
     let totalMovingSecs = 0;
@@ -259,16 +303,60 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
     }).reverse();
   }, [enrichedTimelineData, thresholdPaceSecs, analysisPoints]);
 
+  // Loaded custom training zones base or defaults
+  const customHrZonesBase = useMemo(() => {
+    try {
+      const saved = localStorage.getItem('velo_hr_zones');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length >= 5) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return [
+      { key: 'KB', name: 'KB', fullName: 'KB – Kompensationsbereich (Erholung)', min: 96, max: 112, color: '#3b82f6', desc: 'Aktive Erholung, sehr geringe Intensität. Dient dem lockeren Ausrollen, Aufwärmen oder der aktiven Erholung nach harten Einheiten.', benefit: 'Fördert die Regeneration und beschleunigt den Abbau von Stoffwechselnebenprodukten.' },
+      { key: 'GA1', name: 'GA1', fullName: 'GA1 – Grundlagenausdauer 1', min: 112, max: 136, color: '#10b981', desc: 'Klassisches Ausdauertraining im aeroben Bereich mit sehr hohem Fettstoffwechselanteil.', benefit: 'Verbessert die aerobe Grundausdauer, ökonomisiert die Herzarbeit und stärkt das Immunsystem.' },
+      { key: 'GA2', name: 'GA2', fullName: 'GA2 – Grundlagenausdauer 2', min: 136, max: 152, color: '#eab308', desc: 'Mischbereich aus aerobem und anaerobem Stoffwechsel. Höhere Intensität mit kontrolliert vertiefter Atmung.', benefit: 'Steigert das spezifische Renntempo und verbessert die Glykogenspeicherung in den Muskeln.' },
+      { key: 'EB', name: 'EB', fullName: 'EB – Entwicklungsbereich', min: 152, max: 168, color: '#f97316', desc: 'Intensives Training nahe der individuellen anaeroben Schwelle. Die Laktatbildung hält sich gerade noch die Waage.', benefit: 'Verschiebt die anaerobe Schwelle nach oben, verbessert die Kraftausdauer und Laktattoleranz.' },
+      { key: 'SB', name: 'SB', fullName: 'SB – Spitzenbereich', min: 168, max: 170, color: '#ef4444', desc: 'Maximale Belastung (Hochintensives Intervalltraining - HIIT). Rein laktazides bzw. anaerobes Milieu.', benefit: 'Maximiert die VO2max, die neuromuskuläre Rekrutierung und die anaerobe Leistungsfähigkeit.' }
+    ];
+  }, []);
+
+  const effectiveHrZones = useMemo(() => {
+    if (track.activityType === 'running') {
+      return customHrZonesBase.map(z => ({
+        ...z,
+        min: z.min + 10,
+        max: z.max + 10
+      }));
+    }
+    return customHrZonesBase;
+  }, [customHrZonesBase, track.activityType]);
+
   // Heart Rate Zones calculation
   const hrZones = useMemo(() => {
-    const maxHrValue = 220 - userAge;
-    const zones = [
-      { name: 'Z1 Aktivierung / Easy', min: 0.50 * maxHrValue, max: 0.60 * maxHrValue, color: '#94a3b8', duration: 0 },
-      { name: 'Z2 Fettverbrennung / Aerob', min: 0.60 * maxHrValue, max: 0.70 * maxHrValue, color: '#22c55e', duration: 0 },
-      { name: 'Z3 Ausdauer / GA2', min: 0.70 * maxHrValue, max: 0.80 * maxHrValue, color: '#eab308', duration: 0 },
-      { name: 'Z4 Schwelle / Threshold', min: 0.80 * maxHrValue, max: 0.90 * maxHrValue, color: '#f97316', duration: 0 },
-      { name: 'Z5 Maximal / Spitzenbereich', min: 0.90 * maxHrValue, max: 250, color: '#ef4444', duration: 0 },
-    ];
+    const zones = effectiveHrZones.map((z, idx) => {
+      let minVal = z.min;
+      let maxVal = z.max;
+      if (idx === 0) {
+        minVal = 0;
+      }
+      if (idx === 4) {
+        maxVal = 250;
+      }
+      return {
+        key: z.key,
+        name: z.key,
+        fullName: z.fullName,
+        min: minVal,
+        max: maxVal,
+        color: z.color,
+        duration: 0,
+        desc: z.desc,
+        benefit: z.benefit
+      };
+    });
 
     let totalHrSecs = 0;
     analysisPoints.forEach((p, idx) => {
@@ -287,29 +375,78 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       }
     });
 
-    return zones.map(z => {
+    return zones.map((z, idx) => {
       const mins = Math.floor(z.duration / 60);
       const secs = Math.floor(z.duration % 60);
+      const realMin = effectiveHrZones[idx]?.min ?? z.min;
+      const realMax = effectiveHrZones[idx]?.max ?? z.max;
       return {
         ...z,
         percent: totalHrSecs > 0 ? (z.duration / totalHrSecs) * 100 : 0,
         timeStr: mins > 0 ? `${mins}m ${secs}s` : `${secs}s`,
         seconds: Math.floor(z.duration),
-        rangeStr: `${Math.round(z.min)}-${Math.round(z.max)} bpm`
+        rangeStr: idx === 0 
+          ? `< ${Math.round(realMax)} bpm`
+          : idx === 4 
+            ? `> ${Math.round(realMin)} bpm`
+            : `${Math.round(realMin)}-${Math.round(realMax)} bpm`
       };
     });
-  }, [analysisPoints, userAge]);
+  }, [effectiveHrZones, analysisPoints]);
 
   // Cycling Power Zones
   const powerZones = useMemo(() => {
     const zones = [
-      { name: 'Z1 Recovery', min: 0, max: 0.55 * ftp, color: '#94a3b8', duration: 0 },
-      { name: 'Z2 Endurance', min: 0.55 * ftp, max: 0.75 * ftp, color: '#22c55e', duration: 0 },
-      { name: 'Z3 Tempo', min: 0.75 * ftp, max: 0.90 * ftp, color: '#eab308', duration: 0 },
-      { name: 'Z4 Threshold', min: 0.90 * ftp, max: 1.05 * ftp, color: '#f97316', duration: 0 },
-      { name: 'Z5 VO2 Max', min: 1.05 * ftp, max: 1.20 * ftp, color: '#ef4444', duration: 0 },
-      { name: 'Z6 Anaerobic', min: 1.20 * ftp, max: 1.50 * ftp, color: '#be185d', duration: 0 },
-      { name: 'Z7 Neuromuscular', min: 1.50 * ftp, max: 2500, color: '#701a75', duration: 0 },
+      { 
+        name: 'KB', 
+        fullName: 'KB – Kompensationsbereich (Erholung)',
+        min: 0, 
+        max: 0.55 * ftp, 
+        color: '#3b82f6', 
+        duration: 0,
+        desc: 'Besonders leichtes Kurbeln zur Entlastung des Muskel- und Skelettsystems nach Wettkämpfen.',
+        benefit: 'Regeneriert den Muskeltonus und fördert die Durchblutung ohne nennenswerte Ermüdung.'
+      },
+      { 
+        name: 'GA1', 
+        fullName: 'GA1 – Grundlagenausdauer 1',
+        min: 0.55 * ftp, 
+        max: 0.75 * ftp, 
+        color: '#10b981', 
+        duration: 0,
+        desc: 'Klassische Grundlagenausdauer 1. Das Fundament für jeden Radsportler.',
+        benefit: 'Erhöht die Mitochondriendichte, verbessert die Sauerstoffnutzung und optimiert die Fettverbrennung.'
+      },
+      { 
+        name: 'GA2', 
+        fullName: 'GA2 – Grundlagenausdauer 2',
+        min: 0.75 * ftp, 
+        max: 0.90 * ftp, 
+        color: '#eab308', 
+        duration: 0,
+        desc: 'Zügiges Reisetempo oder langes Bergfahren bei moderater bis mittlerer Atemanstrengung.',
+        benefit: 'Trainiert die Kohlenhydratspeicher-Ökonomie und erhöht die aerobe Ausdauerleistung.'
+      },
+      { 
+        name: 'EB', 
+        fullName: 'EB – Entwicklungsbereich',
+        min: 0.90 * ftp, 
+        max: 1.05 * ftp, 
+        color: '#f97316', 
+        duration: 0,
+        desc: 'Fahren direkt im Bereich der funktionellen Schwellenleistung (FTP). Laktat-Aufbau und -Abbau im Gleichgewicht.',
+        benefit: 'Verschiebt die anaerobe Schwelle nach oben, perfekt für lange Alpenpässe oder Zeitfahren.'
+      },
+      { 
+        name: 'SB', 
+        fullName: 'SB – Spitzenbereich',
+        min: 1.05 * ftp, 
+        max: 2500, 
+        color: '#ef4444', 
+        duration: 0,
+        desc: 'Maximale Leistung nahe der maximalen Sauerstoffaufnahme, anaerobe Sprints und neuromuskuläre Spitzenreize.',
+        benefit: 'Maximiert VO2max, die neuromuskuläre Rekrutierung, die Laktattoleranz und die anaerobe Sprintkapazität.'
+      },
     ];
 
     let totalEffectiveSeconds = 0;
@@ -329,7 +466,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       }
     });
 
-    return zones.map(z => {
+    return zones.map((z, idx) => {
       const mins = Math.floor(z.duration / 60);
       const secs = Math.floor(z.duration % 60);
       return {
@@ -337,7 +474,11 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
         percent: totalEffectiveSeconds > 0 ? (z.duration / totalEffectiveSeconds) * 100 : 0,
         timeStr: mins > 0 ? `${mins}m ${secs}s` : `${secs}s`,
         seconds: Math.floor(z.duration),
-        rangeStr: `${Math.round(z.min)}-${Math.round(z.max)} W`
+        rangeStr: idx === 0 
+          ? `< ${Math.round(0.55 * ftp)} W`
+          : idx === 4 
+            ? `> ${Math.round(1.05 * ftp)} W`
+            : `${Math.round(z.min)}-${Math.round(z.max)} W`
       };
     });
   }, [analysisPoints, ftp]);
@@ -451,36 +592,38 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       initial={{ opacity: 0, y: 50 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 50 }}
-      className="fixed inset-0 z-[100] bg-slate-50 dark:bg-slate-950 flex flex-col overflow-hidden"
+      className="fixed inset-0 z-[2000] bg-slate-50 dark:bg-slate-950 flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-8 py-5 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-indigo-600 rounded-xl text-white shadow-lg shadow-indigo-100 dark:shadow-none">
-            <Activity size={28} />
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-8 py-3 sm:py-5 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+          <div className="p-2 sm:p-3 bg-indigo-600 rounded-xl text-white shadow-lg shrink-0">
+            <Activity className="w-5 h-5 sm:w-7 sm:h-7" />
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              {track.name}
-              <span className={`text-[11px] font-black uppercase px-2.5 py-1 rounded-full ${isRunning ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-blue-100 text-blue-700 border border-blue-200'}`}>
-                {isRunning ? '🏃 Laufen / Running' : '🚴 Radfahren / Cycling'}
-              </span>
-              {selectionBounds && (
-                <span className="text-xs bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-350 px-3 py-1 rounded-full font-bold uppercase tracking-wider">
-                  Auswahl-Fokus
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-2xl font-bold text-slate-900 dark:text-white flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 truncate">
+              <span className="truncate">{track.name}</span>
+              <div className="flex flex-wrap gap-1 items-center">
+                <span className={`text-[9px] sm:text-[11px] font-black uppercase px-2 py-0.5 rounded-full ${isRunning ? 'bg-orange-100 text-orange-700 border border-orange-200 shadow-2xs' : 'bg-blue-100 text-blue-700 border border-blue-200 shadow-2xs'}`}>
+                  {isRunning ? '🏃 Laufen' : '🚴 Rad'}
                 </span>
-              )}
+                {selectionBounds && (
+                  <span className="text-[9px] sm:text-xs bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-350 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                    Auswahl
+                  </span>
+                )}
+              </div>
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">
-              Erweiterte Performance- & {isRunning ? 'Pace-Analyse' : 'Leistungsdaten'}
+            <p className="text-slate-500 dark:text-slate-400 text-[10px] sm:text-sm font-medium">
+              Performance- & {isRunning ? 'Pace-Analyse' : 'Leistungsdaten'}
             </p>
           </div>
         </div>
         <button 
           onClick={onClose}
-          className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+          className="p-1.5 sm:p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 shrink-0 cursor-pointer"
         >
-          <X size={32} />
+          <X className="w-6 h-6 sm:w-8 sm:h-8" />
         </button>
       </header>
 
@@ -489,7 +632,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
           
           {/* Dynamic Metric Cards Grid depending on Activity Type */}
           {isRunning ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="flex sm:grid overflow-x-auto sm:overflow-x-visible pb-1 sm:pb-0 gap-4 sm:grid-cols-2 lg:grid-cols-5 snap-x max-w-full no-scrollbar">
               <MetricCard 
                 label="Ø Pace (Tempo)" 
                 value={formatPaceDecimal(averagePaceSeconds / 60)} 
@@ -532,7 +675,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
               />
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="flex sm:grid overflow-x-auto sm:overflow-x-visible pb-1 sm:pb-0 gap-4 sm:grid-cols-2 lg:grid-cols-5 snap-x max-w-full no-scrollbar">
               <MetricCard 
                 label="Normalized Power" 
                 value={`${Math.round(powerStats?.normalizedPower || 0)} W`} 
@@ -670,7 +813,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
             </div>
 
             {/* Zone Distribution Profile */}
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col relative">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                   <Zap size={20} className="text-amber-500" />
@@ -733,10 +876,10 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                         if (active && payload && payload.length) {
                           const data = payload[0].payload;
                           return (
-                            <div className="bg-white p-3 rounded-xl shadow-xl border border-slate-100">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{data.name}</p>
+                            <div className="bg-white dark:bg-slate-800 p-3 rounded-xl shadow-xl border border-slate-150 dark:border-slate-700">
+                              <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1">{data.name}</p>
                               <div className="flex items-baseline gap-2">
-                                <span className="text-lg font-black text-slate-900">{data.percent.toFixed(1)}%</span>
+                                <span className="text-lg font-black text-slate-900 dark:text-white">{data.percent.toFixed(1)}%</span>
                                 <span className="text-xs font-semibold text-slate-400">({data.timeStr})</span>
                               </div>
                             </div>
@@ -754,25 +897,50 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                 </ResponsiveContainer>
               </div>
 
-              {/* Tabular summary */}
-              <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2 mt-auto">
-                <div className="grid grid-cols-4 text-[9px] font-black uppercase text-slate-400 tracking-wider">
+              {/* Tabular summary with hover explanations */}
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2 mt-auto relative">
+                <div className="grid grid-cols-4 text-[9px] font-black uppercase text-slate-400 dark:text-slate-500 tracking-wider">
                   <div className="col-span-2">Bereich</div>
                   <div className="text-right">Anteil</div>
                   <div className="text-right">Dauer</div>
                 </div>
                 {activeZoneData.map((entry, index) => (
-                  <div key={index} className="grid grid-cols-4 text-xs font-semibold items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 p-1 rounded transition-colors text-slate-700 dark:text-slate-300">
+                  <div 
+                    key={index} 
+                    className="relative group grid grid-cols-4 text-xs font-semibold items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 p-1 rounded transition-colors text-slate-700 dark:text-slate-300 cursor-help"
+                  >
                     <div className="col-span-2 flex items-center gap-2 overflow-hidden truncate">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
-                      <span className="font-bold truncate">{entry.name.substring(0, 16)}...</span>
-                      <span className="text-[9px] text-slate-400 font-mono hidden sm:inline-block">({entry.rangeStr})</span>
+                      <span className="font-bold truncate" title={entry.name}>{entry.name}</span>
+                      <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono hidden sm:inline-block">({entry.rangeStr})</span>
                     </div>
-                    <div className="text-right font-mono font-bold text-slate-900 dark:text-white">
+                    <div className="text-right font-mono font-bold text-slate-800 dark:text-slate-100">
                       {entry.percent.toFixed(1)}%
                     </div>
-                    <div className="text-right font-mono text-slate-400">
+                    <div className="text-right font-mono text-slate-400 dark:text-slate-500">
                       {entry.timeStr}
+                    </div>
+
+                    {/* Popover Hover Tooltip explanation */}
+                    <div className="absolute left-[2%] bottom-[125%] hidden group-hover:flex flex-col z-[3000] bg-slate-900/95 border border-slate-800 text-white rounded-2xl p-4 w-72 shadow-2xl pointer-events-none transition-all duration-200 scale-95 group-hover:scale-100 origin-bottom backdrop-blur-md">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                        <span className="font-extrabold text-xs text-slate-100 tracking-wider">
+                          {entry.fullName || entry.name}
+                        </span>
+                      </div>
+                      <div className="text-[9px] font-mono text-slate-400 mb-2">Grenzwerte: {entry.rangeStr}</div>
+                      <p className="text-[11px] text-slate-300 leading-relaxed font-semibold">
+                        {entry.desc}
+                      </p>
+                      {entry.benefit && (
+                        <div className="mt-2 pt-2 border-t border-slate-800/80 flex flex-col gap-0.5">
+                          <span className="text-[9px] font-black uppercase text-emerald-400 tracking-wider">Sportliche Wirkung:</span>
+                          <span className="text-[10.5px] text-slate-350 leading-snug font-medium">
+                            {entry.benefit}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1092,12 +1260,18 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                                 if (active && payload && payload.length) {
                                   const d = payload[0].payload;
                                   return (
-                                    <div className="bg-slate-800 p-4 rounded-2xl border border-white/10">
+                                    <div className="bg-slate-800 p-4 rounded-2xl border border-white/10 max-w-xs">
                                       <p className="text-[10px] font-black text-indigo-400 tracking-widest uppercase mb-1">{d.name}</p>
-                                      <div className="flex items-baseline gap-2">
+                                      <div className="flex items-baseline gap-2 mb-2">
                                         <span className="text-2xl font-black text-white">{d.percent.toFixed(1)}%</span>
-                                        <span className="text-sm font-bold text-slate-400">({d.timeStr})</span>
+                                        <span className="text-sm font-bold text-slate-450">({d.timeStr})</span>
                                       </div>
+                                      <p className="text-xs text-slate-300 leading-relaxed border-t border-white/5 pt-2 font-medium">{d.desc}</p>
+                                      {d.benefit && (
+                                        <p className="text-[11px] text-emerald-400 mt-2 font-semibold">
+                                          Wirkung: <span className="text-slate-200 font-medium">{d.benefit}</span>
+                                        </p>
+                                      )}
                                     </div>
                                   );
                                 }
@@ -1161,7 +1335,7 @@ const MetricCard = ({
 
   return (
     <>
-      <div className={`p-6 rounded-2xl border ${color} shadow-sm transition-all hover:shadow-md group relative`}>
+      <div className={`p-4 sm:p-6 rounded-2xl border ${color} shadow-sm transition-all hover:shadow-md group relative w-[220px] sm:w-auto shrink-0 snap-center`}>
         <div className="flex items-center justify-between mb-4">
           <div className="p-2 bg-white dark:bg-slate-900 rounded-lg shadow-sm group-hover:scale-110 transition-transform">
             {icon}

@@ -19,6 +19,7 @@ interface ElevationProfileProps {
   onOpenAnalytics?: () => void;
   onOpenVideoExport?: () => void;
   ftp: number;
+  onCollapse?: () => void;
 }
 
 interface HoverInfo {
@@ -49,11 +50,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onToggleFlyover,
   onOpenAnalytics,
   onOpenVideoExport,
-  ftp
+  ftp,
+  onCollapse
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [isSmoothed, setIsSmoothed] = useState(false);
+  const [showSettingsPopover, setShowSettingsPopover] = useState(false);
   const [showElevation, setShowElevation] = useState(true);
   const [showPower, setShowPower] = useState(true);
   const [showHr, setShowHr] = useState(true);
@@ -651,11 +654,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const maxEleY = height - padding.bottom - ((maxElePoint.ele - minEle) / eleRange) * graphHeight;
 
   return (
-    <div className="h-full w-full flex flex-col select-none">
-      <div className="flex justify-between items-center mb-2 px-2">
+    <div className="h-full w-full flex flex-col select-none relative">
+      {/* Desktop Topbar */}
+      <div className="hidden lg:flex justify-between items-center mb-2 px-2">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: track.color }}></div>
-          <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider truncate max-w-[200px]">
+          <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider md:max-w-md lg:max-w-xl break-words whitespace-normal leading-tight" title={track.name}>
             {track.name}
           </h3>
         </div>
@@ -699,10 +703,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-200 transition-all cursor-pointer"
             title="Video-Überflug der Aktivität exportieren"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1-2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            <svg xmlns="http://www.w3.org/2005/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1-2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
             Video Export
           </button>
-          {track.powerStats && (
+          {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
             <button
               onClick={onOpenAnalytics}
               className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-amber-500 text-white shadow-lg shadow-amber-200 hover:bg-amber-600 transition-all"
@@ -733,7 +737,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </label>
             )}
             {profileData.hasHr && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-red-500 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-550 hover:text-red-500 transition-colors uppercase tracking-wider">
                 <input 
                   type="checkbox" 
                   checked={showHr} 
@@ -764,18 +768,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </label>
             )}
             {profileData.hasCadence && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-purple-600 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-550 hover:text-purple-600 transition-colors uppercase tracking-wider">
                 <input 
                   type="checkbox" 
                   checked={showCadence} 
                   onChange={(e) => setShowCadence(e.target.checked)}
-                  className="w-3.5 h-3.5 text-purple-500 rounded bg-slate-100 border-slate-300 focus:ring-purple-500 cursor-pointer"
+                  className="w-3.5 h-3.5 text-purple-550 rounded bg-slate-100 border-slate-300 focus:ring-purple-550 cursor-pointer"
                 />
                 Trittfrequenz
               </label>
             )}
           </div>
-          <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors">
+          <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-505 hover:text-slate-700 transition-colors">
             <input 
               type="checkbox" 
               className="sr-only" 
@@ -791,10 +795,209 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <div className="flex items-center gap-2 ml-2">
               <label className="text-[10px] font-bold text-slate-500 tracking-wider">FTP:</label>
               <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-0.5 shadow-sm">
-                <span className="text-xs font-bold text-slate-700 w-10 text-center">{ftp}W</span>
+                <span className="text-xs font-bold text-slate-750 w-10 text-center">{ftp}W</span>
               </div>
             </div>
           )}
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-400 hover:text-slate-600 transition-colors ml-1 cursor-pointer"
+              title="Höhenprofil einklappen"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Mobile/Tablet Compact Topbar */}
+      <div className="flex lg:hidden justify-between items-center mb-1.5 px-1 bg-slate-50/50 p-1.5 rounded-xl border border-slate-100">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: track.color }}></div>
+          <span className="text-[10.5px] font-black text-slate-700 truncate max-w-[130px]" title={track.name}>
+            {track.name}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Settings trigger */}
+          <button
+            onClick={() => setShowSettingsPopover(!showSettingsPopover)}
+            className={`p-1.5 rounded-lg transition-all ${
+              showSettingsPopover 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-white text-slate-650 border border-slate-200'
+            }`}
+            title="Anzeige-Einstellungen"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+
+          {/* Uberflug trigger */}
+          <button
+            onClick={onToggleFlyover}
+            className={`p-1.5 rounded-lg transition-all ${
+              isFlying 
+                ? 'bg-rose-500 text-white animate-pulse' 
+                : 'bg-indigo-600 text-white shadow-xs'
+            }`}
+            title={isFlying ? "Überflug stoppen" : "Überflug starten"}
+          >
+            {isFlying ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="m7 3 14 9-14 9z"/></svg>
+            )}
+          </button>
+
+          {/* Video Export */}
+          <button 
+            onClick={onOpenVideoExport}
+            className="p-1.5 rounded-lg bg-emerald-600 text-white shadow-xs"
+            title="Video Export"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1-2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </button>
+
+          {/* Analyse */}
+          {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
+            <button 
+              onClick={onOpenAnalytics}
+              className="p-1.5 rounded-lg bg-amber-500 text-white"
+              title="Datenanalyse öffnen"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            </button>
+          )}
+
+          {/* Close/Minimize */}
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 transition-colors font-bold"
+              title="Ausblenden"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Floating Settings Popover for Mobile/Tablet */}
+      {showSettingsPopover && (
+        <div className="absolute top-12 right-2 z-[2000] bg-white/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 shadow-2xl flex flex-col gap-3 w-64 text-left select-none font-sans">
+          <div className="flex items-center justify-between border-b pb-1.5">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-550">Anzeige-Optionen</span>
+            <button 
+              onClick={() => setShowSettingsPopover(false)}
+              className="text-[11px] font-black text-slate-400 hover:text-slate-650 cursor-pointer p-0.5"
+            >
+              ✕
+            </button>
+          </div>
+          
+          {/* Tempo Slider */}
+          <div className="flex flex-col gap-1 bg-slate-50 p-2 rounded-xl border border-slate-100">
+            <div className="flex justify-between items-center text-[10px] font-bold text-slate-600">
+              <span>Überflug-Spezialtempo:</span>
+              <span className="text-indigo-650 font-black">{flySpeed}x</span>
+            </div>
+            <input 
+              type="range" 
+              min="0.5" 
+              max="10" 
+              step="0.5" 
+              value={flySpeed} 
+              onChange={(e) => onFlySpeedChange?.(parseFloat(e.target.value))}
+              className="w-full h-1 bg-indigo-150 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1"
+            />
+          </div>
+
+          {/* Toggle series checkboxes */}
+          <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-500">
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-700">
+              <input 
+                type="checkbox" 
+                checked={showElevation} 
+                onChange={(e) => setShowElevation(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-slate-650"
+              />
+              Höhe
+            </label>
+            {profileData.hasPower && (
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
+                <input 
+                  type="checkbox" 
+                  checked={showPower} 
+                  onChange={(e) => setShowPower(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-550"
+                />
+                Watt
+              </label>
+            )}
+            {profileData.hasHr && (
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-red-500">
+                <input 
+                  type="checkbox" 
+                  checked={showHr} 
+                  onChange={(e) => setShowHr(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-red-550"
+                />
+                HF
+              </label>
+            )}
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-pink-600">
+              <input 
+                type="checkbox" 
+                checked={showSlope} 
+                onChange={(e) => setShowSlope(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-pink-500"
+              />
+              Steigung
+            </label>
+            {profileData.hasSpeed && (
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-teal-600">
+                <input 
+                  type="checkbox" 
+                  checked={showSpeed} 
+                  onChange={(e) => setShowSpeed(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-teal-500"
+                />
+                Tempo
+              </label>
+            )}
+            {profileData.hasCadence && (
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-purple-600">
+                <input 
+                  type="checkbox" 
+                  checked={showCadence} 
+                  onChange={(e) => setShowCadence(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-purple-500"
+                />
+                Trittfrequenz
+              </label>
+            )}
+          </div>
+
+          <div className="border-t border-dashed my-0.5" />
+
+          {/* Smooth Toggle */}
+          <label className="flex items-center justify-between cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-700">
+            <span>Datenwerte glätten:</span>
+            <div className="flex items-center gap-2">
+              <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={isSmoothed} 
+                onChange={(e) => setIsSmoothed(e.target.checked)} 
+              />
+              <div className={`relative w-7 h-3.5 rounded-full transition-colors ${isSmoothed ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full transition-transform ${isSmoothed ? 'translate-x-3' : 'translate-x-0'}`} />
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold font-mono text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-100 shadow-sm">
             {selectionBounds && selectedRegions.length > 0 ? (
               <>
@@ -834,12 +1037,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 <span className="flex gap-1 items-center"><span className="text-emerald-600 text-[14px]">▲</span> <span className="text-sm text-slate-700">{track.ascent.toFixed(0)}m</span></span>
                 <span className="flex gap-1 items-center"><span className="text-rose-600 text-[14px]">▼</span> <span className="text-sm text-slate-700">{track.descent.toFixed(0)}m</span></span>
                 <span className="flex gap-1 items-center"><span className="text-slate-400">MAX STEIGUNG:</span> <span className="text-emerald-700 text-sm">{track.maxSlope.toFixed(1)}%</span></span>
-                <span className="flex gap-1 items-center"><span className="text-slate-400">MIN/MAX:</span> <span className="text-slate-700 text-sm">{minEle.toFixed(0)}/{maxEle.toFixed(0)}m</span></span>
+                <span className="flex gap-1 items-center"><span className="text-slate-400">MIN/MAX:</span> <span className="text-slate-700 text-sm">{`${minEle.toFixed(0)}/${maxEle.toFixed(0)}`}m</span></span>
               </>
             )}
           </div>
-        </div>
-      </div>
       
       <div className="flex-1 min-h-0 relative">
         <svg 

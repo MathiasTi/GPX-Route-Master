@@ -14,6 +14,15 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
+const escapeHtml = (unsafe: string): string => {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
 interface MapProps {
   tracks: GPXTrack[];
   activeLayer: MapLayer;
@@ -30,6 +39,8 @@ interface MapProps {
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
+  hideLegend?: boolean;
+  ftp?: number;
 }
 
 const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
@@ -277,17 +288,78 @@ const Map: React.FC<MapProps> = ({
   isFlying = false,
   textMarkers,
   onAddTextMarker,
-  onDeleteTextMarker
+  onDeleteTextMarker,
+  hideLegend = false,
+  ftp = 250
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
+  const [isLegendVisible, setIsLegendVisible] = useState(true);
+  const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power'>('default');
 
-  const MapClickHandle = () => {
-    useMapEvents({
-      click(e) {
-        setPendingMarker({ lat: e.latlng.lat, lng: e.latlng.lng });
+  const hrZones = React.useMemo(() => {
+    let baseZones = [
+      { key: 'KB', color: '#3b82f6', min: 96, max: 112 },
+      { key: 'GA1', color: '#10b981', min: 112, max: 136 },
+      { key: 'GA2', color: '#eab308', min: 136, max: 152 },
+      { key: 'EB', color: '#f97316', min: 152, max: 168 },
+      { key: 'SB', color: '#ef4444', min: 168, max: 250 }
+    ];
+    try {
+      const saved = localStorage.getItem('velo_hr_zones');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length >= 5) {
+          baseZones = parsed.map((z: any) => ({
+            key: z.key,
+            color: z.color,
+            min: z.min,
+            max: z.max
+          }));
+        }
       }
-    });
+    } catch (e) {}
+    return baseZones;
+  }, []);
+
+  const powerZones = React.useMemo(() => {
+    return [
+      { key: 'KB', color: '#3b82f6', min: 0, max: 0.55 * ftp },
+      { key: 'GA1', color: '#10b981', min: 0.55 * ftp, max: 0.75 * ftp },
+      { key: 'GA2', color: '#eab308', min: 0.75 * ftp, max: 0.90 * ftp },
+      { key: 'EB', color: '#f97316', min: 0.90 * ftp, max: 1.05 * ftp },
+      { key: 'SB', color: '#ef4444', min: 1.05 * ftp, max: 2500 }
+    ];
+  }, [ftp]);
+
+  const getPointColorMode = (pt: GPXPoint, activityType?: 'cycling' | 'running') => {
+    if (colorMode === 'hr') {
+      if (pt.hr === undefined) return null;
+      const effectiveZones = activityType === 'running'
+        ? hrZones.map(z => ({ ...z, min: z.min + 10, max: z.max + 10 }))
+        : hrZones;
+
+      const hr = pt.hr;
+      if (hr < effectiveZones[0].min) return '#64748b';
+      for (const z of effectiveZones) {
+        if (hr >= z.min && hr <= z.max) {
+          return z.color;
+        }
+      }
+      return effectiveZones[effectiveZones.length - 1].color;
+    }
+
+    if (colorMode === 'power') {
+      if (pt.power === undefined) return null;
+      const power = pt.power;
+      for (const z of powerZones) {
+        if (power >= z.min && power <= z.max) {
+          return z.color;
+        }
+      }
+      return powerZones[powerZones.length - 1].color;
+    }
+
     return null;
   };
 
@@ -350,6 +422,49 @@ const Map: React.FC<MapProps> = ({
             }
             if (currentPositions.length > 0) {
               surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
+            }
+          }
+
+          // Build continuous segments of identical zone colors
+          const zoneSegments: { color: string; positions: [number, number][] }[] = [];
+          if (colorMode !== 'default' && track.points.length > 0) {
+            let activeSegmentColor: string | null = null;
+            let currentPositions: [number, number][] = [];
+
+            track.points.forEach((pt) => {
+              const color = getPointColorMode(pt, track.activityType);
+              const latlng: [number, number] = [pt.lat, pt.lng];
+
+              if (color === null) {
+                const fallbackColor = '#94a3b8'; // gray fallback
+                if (activeSegmentColor === null) {
+                  currentPositions = [latlng];
+                  activeSegmentColor = fallbackColor;
+                } else if (activeSegmentColor !== fallbackColor) {
+                  currentPositions.push(latlng);
+                  zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+                  currentPositions = [latlng];
+                  activeSegmentColor = fallbackColor;
+                } else {
+                  currentPositions.push(latlng);
+                }
+              } else {
+                if (activeSegmentColor === null) {
+                  currentPositions = [latlng];
+                  activeSegmentColor = color;
+                } else if (color === activeSegmentColor) {
+                  currentPositions.push(latlng);
+                } else {
+                  currentPositions.push(latlng);
+                  zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+                  currentPositions = [latlng];
+                  activeSegmentColor = color;
+                }
+              }
+            });
+
+            if (currentPositions.length > 0 && activeSegmentColor !== null) {
+              zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
             }
           }
 
@@ -416,8 +531,19 @@ const Map: React.FC<MapProps> = ({
                 </Popup>
               </LeafletPolyline>
 
-              {/* Visible line(s) either segmented by surface or solid default */}
-              {surfaceSegments.length > 1 ? (
+              {/* Visible line(s) either segmented by surface, training zones or solid default */}
+              {colorMode !== 'default' && zoneSegments.length > 0 ? (
+                zoneSegments.map((seg, sIdx) => (
+                  <LeafletPolyline
+                    key={`zone-seg-${track.id}-${sIdx}`}
+                    positions={seg.positions}
+                    color={seg.color}
+                    weight={isMarked ? 8 : 4}
+                    opacity={isMarked ? 1.0 : 0.6}
+                    interactive={false}
+                  />
+                ))
+              ) : surfaceSegments.length > 1 ? (
                 surfaceSegments.map((seg, sIdx) => (
                   <LeafletPolyline
                     key={`seg-${sIdx}`}
@@ -539,7 +665,7 @@ const Map: React.FC<MapProps> = ({
           />
         )}
 
-        <MapClickHandle />
+
 
         {textMarkers.map(marker => {
           const colorMap: Record<string, string> = {
@@ -560,7 +686,7 @@ const Map: React.FC<MapProps> = ({
                 html: `
                   <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -100%); margin-top: -12px;">
                     <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1" style="background-color: ${bgColor};">
-                      <span>🏷️</span> ${marker.label}
+                      <span>🏷️</span> ${escapeHtml(marker.label)}
                     </div>
                     <div class="w-2.5 h-2.5 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white" style="background-color: ${bgColor};"></div>
                   </div>
@@ -719,30 +845,184 @@ const Map: React.FC<MapProps> = ({
         )}
       </LeafletMapContainer>
 
-      {/* Premium Map Legend explaining Surface Types */}
-      <div className="absolute bottom-4 left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none">
-        <div className="font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">Untergrund Legende</div>
-        <div className="flex items-center gap-2">
-          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#4f46e5" }}></span>
-          <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt</span>
+      {/* Strecken-Farbmodus Switcher (oben rechts) */}
+      <div className="absolute top-4 right-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none max-w-[240px]">
+        <div className="font-extrabold text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-2">
+          <span>Strecken-Farbmodus</span>
+          <span className="text-[12px]">🎨</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ea580c" }}></span>
-          <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
+        
+        <div className="flex flex-col gap-1 text-[11px]">
+          <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            <input 
+              type="radio" 
+              name="colorMode" 
+              value="default"
+              checked={colorMode === 'default'} 
+              onChange={() => setColorMode('default')} 
+              className="accent-blue-600 font-sans"
+            />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Standard / Untergrund</span>
+          </label>
+          
+          <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            <input 
+              type="radio" 
+              name="colorMode" 
+              value="hr"
+              checked={colorMode === 'hr'} 
+              onChange={() => setColorMode('hr')} 
+              className="accent-blue-600 font-sans"
+            />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Herzfrequenz-Zonen</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            <input 
+              type="radio" 
+              name="colorMode" 
+              value="power"
+              checked={colorMode === 'power'} 
+              onChange={() => setColorMode('power')} 
+              className="accent-blue-600"
+            />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Leistungs-Zonen (Watt)</span>
+          </label>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#16a34a" }}></span>
-          <span className="font-bold text-slate-700 dark:text-slate-350">Waldweg / Trail</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#8b5cf6" }}></span>
-          <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#db2777" }}></span>
-          <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
-        </div>
+
+        {/* Warnungsmeldung falls ausgewählte Strecke keine entsprechenden Daten enthält */}
+        {(() => {
+          const markedTrack = tracks.find(t => t.id === markedTrackId);
+          if (!markedTrack) return null;
+          const hasHr = markedTrack.points.some(p => p.hr !== undefined);
+          const hasPower = markedTrack.points.some(p => p.power !== undefined);
+          
+          if (colorMode === 'hr' && !hasHr) {
+            return (
+              <div className="text-[9px] text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900/40 p-1.5 rounded leading-tight">
+                ⚠️ Keine Herzfrequenzdaten in dieser Strecke vorhanden.
+              </div>
+            );
+          }
+          if (colorMode === 'power' && !hasPower) {
+            return (
+              <div className="text-[9px] text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900/40 p-1.5 rounded leading-tight">
+                ⚠️ Keine Leistungsdaten (Watt) in dieser Strecke vorhanden.
+              </div>
+            );
+          }
+          return null;
+        })()}
       </div>
+
+      {/* Premium Map Legend explaining Surface Types or Zone Ranges */}
+      {!hideLegend && (
+        isLegendVisible ? (
+          <div className="absolute bottom-4 left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px]">
+            <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
+              <span>{colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : 'Leistung'}</span>
+              <button
+                onClick={() => setIsLegendVisible(false)}
+                className="text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 font-bold text-[11px] leading-none cursor-pointer p-0.5"
+                title="Einklappen"
+              >
+                ✕
+              </button>
+            </div>
+            {colorMode === 'default' ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#4f46e5" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ea580c" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#16a34a" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Waldweg / Trail</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#8b5cf6" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#db2777" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
+                </div>
+              </>
+            ) : (() => {
+              const markedTrack = tracks.find(t => t.id === markedTrackId);
+              const isRunning = markedTrack?.activityType === 'running';
+              const effectiveZones = isRunning 
+                ? hrZones.map(z => ({ ...z, min: z.min + 10, max: z.max + 10 }))
+                : hrZones;
+              
+              if (colorMode === 'hr') {
+                return (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#3b82f6" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">KB: &lt; {effectiveZones[0].max} bpm</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#10b981" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">GA1: {effectiveZones[1].min}-{effectiveZones[1].max} bpm</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#eab308" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">GA2: {effectiveZones[2].min}-{effectiveZones[2].max} bpm</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#f97316" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">EB: {effectiveZones[3].min}-{effectiveZones[3].max} bpm</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ef4444" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">SB: &gt; {effectiveZones[4].min} bpm</span>
+                    </div>
+                  </>
+                );
+              } else {
+                return (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#3b82f6" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">KB: &lt; {Math.round(0.55 * ftp)} W</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#10b981" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">GA1: {Math.round(0.55 * ftp)}-{Math.round(0.75 * ftp)} W</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#eab308" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">GA2: {Math.round(0.75 * ftp)}-{Math.round(0.90 * ftp)} W</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#f97316" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">EB: {Math.round(0.90 * ftp)}-{Math.round(1.05 * ftp)} W</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ef4444" }}></span>
+                      <span className="font-bold text-slate-700 dark:text-slate-350">SB: &gt; {Math.round(1.05 * ftp)} W</span>
+                    </div>
+                  </>
+                );
+              }
+            })()}
+          </div>
+        ) : (
+          <button
+            onClick={() => setIsLegendVisible(true)}
+            className="absolute bottom-4 left-4 z-[400] flex items-center gap-2 px-3 py-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-lg border border-slate-200/60 dark:border-slate-800 rounded-xl text-[10px] font-bold text-slate-700 dark:text-slate-300 hover:scale-105 transition-all cursor-pointer font-mono select-none"
+            title="Legende anzeigen"
+          >
+            <span className="text-xs">🗺️</span>
+            <span>Legende</span>
+          </button>
+        )
+      )}
     </div>
   );
 };

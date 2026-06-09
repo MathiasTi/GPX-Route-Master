@@ -17,6 +17,7 @@
     "@google/genai": "^2.6.0",
     "@types/recharts": "^1.8.29",
     "express": "^5.2.1",
+    "fflate": "^0.8.3",
     "fit-decoder": "^1.0.5",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.562.0",

@@ -2,7 +2,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
 import { 
   DndContext, 
@@ -30,6 +30,7 @@ interface TrackItemProps {
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   estimatedSpeed: number;
   onOpenAnalytics?: (id: string) => void;
+  onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
   onOpenSegments?: (id: string) => void;
   onAnalyzeSurface?: (id: string) => void;
@@ -45,6 +46,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onChangeActivityType, 
   estimatedSpeed, 
   onOpenAnalytics, 
+  onOpenTrainingZones,
   onOpenClimbs, 
   onOpenSegments,
   onAnalyzeSurface,
@@ -65,6 +67,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
     zIndex: isDragging ? 50 : 'auto',
   };
 
+  const hasPower = track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0);
+  const hasHR = track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0);
+  const showAnalyticsAndZones = hasPower && hasHR;
+
   return (
     <div 
       ref={setNodeRef} 
@@ -81,7 +87,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
           <div className="flex items-center justify-between gap-2 mb-0.5">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-3 h-3 rounded-full shrink-0 shadow-sm border border-black/10" style={{ backgroundColor: track.color }}></div>
-              <span className={`text-sm truncate ${isMarked ? 'font-bold text-blue-900' : 'font-semibold text-slate-800'}`}>{track.name}</span>
+              <span className={`text-sm break-words leading-tight whitespace-normal ${isMarked ? 'font-bold text-blue-900' : 'font-semibold text-slate-800'}`} title={track.name}>{track.name}</span>
             </div>
             
             <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -137,6 +143,14 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                       ? getPaceString(estimatedSpeed)
                       : `${estimatedSpeed} km/h`
                     }
+                  </span>
+                </>
+              )}
+              {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
+                <>
+                  <span className="text-slate-300">•</span>
+                  <span className="flex items-center gap-0.5 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 shadow-sm leading-none">
+                    <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HR
                   </span>
                 </>
               )}
@@ -209,51 +223,148 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-col gap-1 items-center bg-slate-50 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        {/* Horizontal Actions Dock for Touch Devices / Active Track */}
+        {isMarked && (
+          <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-700/60 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-extrabold uppercase text-slate-400 dark:text-slate-500 tracking-wider">Aktivitäts-Optionen</span>
+              <span className="text-[9px] text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-950/50 px-1.5 py-0.5 rounded">Aktiv</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button 
+                type="button"
+                onClick={() => onToggleVisibility(track.id)} 
+                className={`p-2 rounded-xl border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black ${
+                  track.visible 
+                    ? 'bg-slate-50/80 hover:bg-slate-100 text-slate-700 border-slate-200/65 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
+                    : 'bg-amber-50/80 hover:bg-amber-100 text-amber-700 border-amber-200/65'
+                }`}
+                title="Sichtbarkeit umschalten"
+              >
+                {track.visible ? <Eye className="w-4 h-4 text-slate-500" /> : <EyeOff className="w-4 h-4 text-amber-600" />}
+                <span>{track.visible ? "Sichtbar" : "Versteckt"}</span>
+              </button>
+              
+              {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
+                <button 
+                  type="button"
+                  onClick={() => onOpenAnalytics(track.id)} 
+                  className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-xl border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  title="Ausführliche Daten- & Leistungsanalyse"
+                >
+                  <BarChart2 className="w-4 h-4 text-indigo-650 dark:text-indigo-400" />
+                  <span>Analyse</span>
+                </button>
+              )}
+
+              {track.climbs && track.climbs.length > 0 && onOpenClimbs && (
+                <button 
+                  type="button"
+                  onClick={() => onOpenClimbs(track.id)} 
+                  className="p-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-xl border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  title="Steigungs- & Bergwertungs-Analyse öffnen"
+                >
+                  <TrendingUp className="w-4 h-4 text-emerald-650 dark:text-emerald-400" />
+                  <span>Climbs ({track.climbs.length})</span>
+                </button>
+              )}
+
+              {onOpenSegments && (
+                <button 
+                  type="button"
+                  onClick={() => onOpenSegments(track.id)} 
+                  className="p-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-850 dark:bg-yellow-950/40 dark:text-yellow-350 rounded-xl border border-yellow-250/20 dark:border-yellow-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  title="Sektor- & Bestenlisten-Analyse öffnen"
+                >
+                  <Trophy className="w-4 h-4 text-yellow-650 dark:text-yellow-400" />
+                  <span>Sektoren</span>
+                </button>
+              )}
+
+              {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
+                <button 
+                  type="button"
+                  onClick={() => onOpenTrainingZones(track.id)} 
+                  className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-xl border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  title="Trainingszonen & Puls-Analyse öffnen"
+                >
+                  <Heart className="w-4 h-4 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
+                  <span>Zonen</span>
+                </button>
+              )}
+
+              <button 
+                type="button"
+                onClick={() => onRemoveTrack(track.id)} 
+                className="p-2 bg-red-50 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-xl border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                title="Track vollständig entfernen"
+              >
+                <Trash2 className="w-4 h-4 text-red-650 dark:text-rose-400" />
+                <span>Entfernen</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Hover actions panel on the right of the card, only visible on md screens & above */}
+        <div className="hidden md:flex flex-col gap-1 items-center bg-slate-50 dark:bg-slate-900 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
           <button 
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleVisibility(track.id); }} 
-            className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors" 
+            className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors cursor-pointer" 
             title="Sichtbarkeit umschalten"
           >
             {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
           
-          {track.powerStats && (
+          {track.powerStats && showAnalyticsAndZones && onOpenAnalytics && (
             <button 
               type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenAnalytics?.(track.id); }} 
-              className="p-1 hover:bg-indigo-100 rounded text-indigo-600 transition-colors" 
+              onClick={(e) => { e.stopPropagation(); onOpenAnalytics(track.id); }} 
+              className="p-1 hover:bg-indigo-100 rounded text-indigo-600 transition-colors cursor-pointer" 
               title="Erweiterte Analyse"
             >
               <BarChart2 className="w-3.5 h-3.5" />
             </button>
           )}
 
-          {track.climbs && track.climbs.length > 0 && (
+          {track.climbs && track.climbs.length > 0 && onOpenClimbs && (
             <button 
               type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }} 
-              className="p-1 hover:bg-emerald-100 rounded text-emerald-600 transition-colors" 
+              onClick={(e) => { e.stopPropagation(); onOpenClimbs(track.id); }} 
+              className="p-1 hover:bg-emerald-100 rounded text-emerald-600 transition-colors cursor-pointer" 
               title="Steigungs- & Bergwertungs-Analyse öffnen"
             >
               <TrendingUp className="w-3.5 h-3.5" />
             </button>
           )}
 
-          <button 
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onOpenSegments?.(track.id); }} 
-            className="p-1 hover:bg-yellow-100 rounded text-yellow-650 transition-colors" 
-            title="Sektor- & Bestenlisten-Analyse öffnen"
-          >
-            <Trophy className="w-3.5 h-3.5" />
-          </button>
+          {onOpenSegments && (
+            <button 
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenSegments(track.id); }} 
+              className="p-1 hover:bg-yellow-100 rounded text-yellow-650 transition-colors cursor-pointer" 
+              title="Sektor- & Bestenlisten-Analyse öffnen"
+            >
+              <Trophy className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {showAnalyticsAndZones && onOpenTrainingZones && (
+            <button 
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenTrainingZones(track.id); }} 
+              className="p-1 hover:bg-rose-100 rounded text-rose-600 transition-colors cursor-pointer" 
+              title="Trainingszonen & Puls-Analyse öffnen"
+            >
+              <Heart className="w-3.5 h-3.5 fill-rose-100" />
+            </button>
+          )}
 
           <button 
             type="button"
             onClick={(e) => { e.stopPropagation(); onRemoveTrack(track.id); }} 
-            className="p-1 hover:bg-red-100 rounded text-red-500 transition-colors" 
+            className="p-1 hover:bg-red-100 rounded text-red-500 transition-colors cursor-pointer" 
             title="Track entfernen"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -298,6 +409,7 @@ interface SidebarProps {
   setUserAge: (age: number) => void;
   suggestedFtp: number | null;
   onOpenComparison: () => void;
+  onOpenTrainingZones?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
   onOpenSegments: (id: string) => void;
@@ -347,6 +459,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   setUserAge,
   suggestedFtp,
   onOpenComparison,
+  onOpenTrainingZones,
   onOpenAnalytics,
   onOpenClimbs,
   onOpenSegments,
@@ -368,6 +481,11 @@ const Sidebar: React.FC<SidebarProps> = ({
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+
+  const markedTrack = tracks.find(t => t.id === markedTrackId);
+  const markedHasPower = markedTrack?.points?.some(p => p.power !== undefined && p.power !== null && p.power > 0) || false;
+  const markedHasHR = markedTrack?.points?.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) || false;
+  const markedShowAnalyticsAndZones = markedHasPower && markedHasHR;
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -397,21 +515,22 @@ const Sidebar: React.FC<SidebarProps> = ({
         fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
-        ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none' : 'md:w-80 shadow-2xl bg-white border-r border-slate-200'}
-        h-full flex flex-col overflow-visible bg-transparent
+        w-[290px] md:w-auto bg-white border-r border-slate-200 shadow-2xl md:shadow-none
+        ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none md:bg-transparent' : 'md:w-80 md:shadow-2xl md:bg-white md:border-r md:border-slate-200'}
+        h-full flex flex-col overflow-visible
       `}>
         {/* Toggle Collapse Button (remains interactive and visible when collapsed to 0 width) */}
         <button 
           onClick={onToggleCollapse}
           style={{ right: isCollapsed ? '-20px' : '-12px' }}
-          className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-white border border-slate-200 rounded-full flex items-center justify-center shadow-md hover:bg-slate-50 transition-all z-[90] group cursor-pointer"
+          className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-white border border-slate-200 rounded-full hidden md:flex items-center justify-center shadow-md hover:bg-slate-50 transition-all z-[90] group cursor-pointer"
           title={isCollapsed ? "Menü ausklappen" : "Menü einklappen"}
         >
           {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" />}
         </button>
 
         {/* Inner Content Wrapper */}
-        <div className={`w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 ${isCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
           {/* Mobile Close Button */}
           <button 
             onClick={() => setIsMobileMenuOpen(false)}
@@ -444,9 +563,9 @@ const Sidebar: React.FC<SidebarProps> = ({
               <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
                   <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                  <p className="text-sm text-slate-500 font-medium">GPX oder FIT Datei hochladen</p>
+                  <p className="text-sm text-slate-500 font-medium">GPX, FIT oder ZIP hochladen</p>
                 </div>
-                <input type="file" className="hidden" accept=".gpx, .fit, .FIT, application/gpx+xml, application/octet-stream, application/x-garmin-fit" multiple onChange={onUpload} />
+                <input type="file" className="hidden" accept=".gpx, .fit, .FIT, .zip, .ZIP, application/gpx+xml, application/octet-stream, application/x-garmin-fit, application/zip, application/x-zip-compressed" multiple onChange={onUpload} />
               </label>
             </section>
 
@@ -488,6 +607,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <GitCompare className="w-4 h-4" />
                 Aktivitäten vergleichen
               </button>
+              
+              {markedShowAnalyticsAndZones && (
+                <button 
+                  onClick={() => onOpenTrainingZones?.(markedTrackId || undefined)}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-100 transition-all"
+                  title="Puls-Trainingsbereiche anzeigen und analysieren"
+                >
+                  <Heart className="w-4 h-4 fill-white animate-pulse" />
+                  Trainingsbereiche & Puls
+                </button>
+              )}
             </section>
 
             <section className="space-y-3">
@@ -853,6 +983,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           onChangeActivityType={onChangeActivityType}
                           estimatedSpeed={estimatedSpeed}
                           onOpenAnalytics={onOpenAnalytics}
+                          onOpenTrainingZones={onOpenTrainingZones}
                           onOpenClimbs={onOpenClimbs}
                           onAnalyzeSurface={onAnalyzeSurface}
                           isAnalyzing={analyzingSurfaces?.[track.id] || false}

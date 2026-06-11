@@ -2,8 +2,10 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
+import { HeartRateZones } from './HeartRateZones';
+import { TrackLibrary } from './TrackLibrary';
 import { 
   DndContext, 
   closestCenter, 
@@ -35,6 +37,7 @@ interface TrackItemProps {
   onOpenSegments?: (id: string) => void;
   onAnalyzeSurface?: (id: string) => void;
   isAnalyzing?: boolean;
+  onSaveTrackToLibrary?: (id: string) => void;
 }
 
 const SortableTrackItem: React.FC<TrackItemProps> = ({ 
@@ -50,7 +53,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onOpenClimbs, 
   onOpenSegments,
   onAnalyzeSurface,
-  isAnalyzing
+  isAnalyzing,
+  onSaveTrackToLibrary
 }) => {
   const {
     attributes,
@@ -76,28 +80,37 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
       ref={setNodeRef} 
       style={style}
       onClick={() => onMark(track.id)}
-      className={`group cursor-pointer bg-white border rounded-lg p-3 hover:shadow-md transition-all ${isDragging ? 'shadow-xl opacity-50 bg-slate-50' : ''} ${isMarked ? 'border-blue-500 ring-1 ring-blue-500 bg-blue-50/30' : 'border-slate-200'}`}
+      className={`group cursor-pointer bg-white dark:bg-slate-900 border rounded-xl p-3 hover:shadow-md transition-all ${
+        isDragging ? 'shadow-xl opacity-50 bg-slate-50 dark:bg-slate-800' : ''
+      } ${
+        isMarked 
+          ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/10 shadow-sm bg-blue-50/10 dark:bg-blue-950/20' 
+          : 'border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/10'
+      }`}
     >
       <div className="flex items-start gap-2">
-        <div {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} className="drag-handle p-1 mt-0.5 hover:bg-slate-100 rounded text-slate-400 shrink-0">
+        <div {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} className="drag-handle p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 dark:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing">
           <GripVertical className="w-4 h-4" />
         </div>
         
         <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2 mb-0.5">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-3 h-3 rounded-full shrink-0 shadow-sm border border-black/10" style={{ backgroundColor: track.color }}></div>
-              <span className={`text-sm break-words leading-tight whitespace-normal ${isMarked ? 'font-bold text-blue-900' : 'font-semibold text-slate-800'}`} title={track.name}>{track.name}</span>
+          {/* Header row: color dot, title, activity toggle buttons */}
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100/60 dark:border-slate-800/60 pb-2 mb-2">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: track.color || '#3b82f6' }}></div>
+              <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
+                {track.name}
+              </span>
             </div>
             
             <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
                 onClick={() => onChangeActivityType?.(track.id, 'cycling')}
-                className={`p-0.5 px-1.5 rounded text-[10px] font-bold transition-all ${
+                className={`p-1 px-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
                   track.activityType !== 'running'
-                    ? 'bg-indigo-650 text-white shadow-sm'
-                    : 'bg-slate-50 text-slate-500 border border-slate-200 hover:bg-slate-100'
+                    ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-xs font-black'
+                    : 'bg-slate-55 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-755'
                 }`}
                 title="Als Fahrrad-Aktivität festlegen"
               >
@@ -106,10 +119,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               <button
                 type="button"
                 onClick={() => onChangeActivityType?.(track.id, 'running')}
-                className={`p-0.5 px-1.5 rounded text-[10px] font-bold transition-all ${
+                className={`p-1 px-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
                   track.activityType === 'running'
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : 'bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100'
+                    ? 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-xs font-black'
+                    : 'bg-slate-55 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-755'
                 }`}
                 title="Als Lauf-Aktivität festlegen"
               >
@@ -118,141 +131,31 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             </div>
           </div>
           
-          <div className="flex flex-col gap-1 ml-5">
-            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <span className={`${isMarked ? 'bg-indigo-100 text-indigo-700 border border-indigo-200/30 font-bold' : 'bg-slate-100 text-slate-600'} px-1.5 py-0.5 rounded font-mono text-[10px]`}>{track.distance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</span>
-              {track.duration ? (
-                <>
-                  <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-0.5 text-[10px] font-semibold"><Clock className="w-3 h-3 text-slate-400" /> {Math.floor(track.duration / 3600)}h {Math.floor((track.duration % 3600) / 60)}m</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="font-mono text-[10px] font-semibold bg-blue-50 text-blue-700 px-1 rounded border border-blue-100/50">
-                    {track.activityType === 'running' 
-                      ? formatPace(track.duration, track.distance)
-                      : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
-                    }
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-0.5 text-[10px] font-semibold"><Clock className="w-3 h-3 text-slate-400" /> {Math.floor((track.distance / estimatedSpeed))}h {Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="font-mono text-[10px] font-semibold bg-blue-50 text-blue-700 px-1 rounded border border-blue-100/50">
-                    {track.activityType === 'running'
-                      ? getPaceString(estimatedSpeed)
-                      : `${estimatedSpeed} km/h`
-                    }
-                  </span>
-                </>
-              )}
-              {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
-                <>
-                  <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-0.5 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 shadow-sm leading-none">
-                    <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HR
-                  </span>
-                </>
-              )}
-            </div>
-            <div className={`text-[11px] font-bold py-1 px-2 rounded-lg flex items-center justify-between font-mono ${isMarked ? 'bg-indigo-100/60 text-indigo-950 border border-indigo-200/40' : 'bg-slate-50/75 text-slate-700 border border-slate-100'}`}>
-              <span className="flex items-center gap-1 text-emerald-700">
-                <TrendingUp className="w-3.5 h-3.5" />
-                Anstieg: +{Math.round(track.ascent).toLocaleString('de-DE')}m
-              </span>
-              <span className="text-slate-300">|</span>
-              <span className="flex items-center gap-1 text-rose-700">
-                <TrendingDown className="w-3.5 h-3.5" />
-                Abstieg: -{Math.round(track.descent).toLocaleString('de-DE')}m
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-400 flex items-center gap-3 font-mono">
-              <span className="text-slate-500">Max Steigung: {track.maxSlope.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</span>
-              <span className="text-slate-300">•</span>
-              <span>{track.points.length.toLocaleString('de-DE')} Pkt</span>
-            </div>
-            {track.powerStats && (
-              <div className="text-[10px] text-amber-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono mt-1 pt-1 border-t border-slate-100">
-                <Zap className="w-3.5 h-3.5 shrink-0" />
-                <span title="Normalized Power" className="font-bold">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
-                <span title="Intensity Factor">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
-                <span title="Training Stress Score">TSS {Math.round(track.powerStats.tss || 0)}</span>
-                <span title="Arbeit">Work {Math.round(track.powerStats.work || 0)}kJ</span>
-              </div>
-            )}
-            {track.climbs && track.climbs.length > 0 && (
-              <div 
-                className="text-[10px] text-indigo-600 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono mt-1 pt-1 border-t border-slate-100 group/climbs cursor-pointer hover:text-indigo-800"
-                onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
-                title="Bergwertungs-Analyse auf separater Seite öffnen"
-              >
-                <TrendingUp className="w-3 h-3 shrink-0 animate-pulse" />
-                <span className="font-extrabold underline">Bergwertung ({track.climbs.length}) ➔</span>
-              </div>
-            )}
-            {track.surfaceStats && track.surfaceStats.length > 0 && (
-              <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono mt-1 pt-1 border-t border-slate-100">
-                {track.surfaceStats.map((surface, idx) => (
-                  <span key={idx} className="bg-slate-100/80 px-1.5 py-0.5 rounded border border-slate-200/50">
-                    {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="mt-2 pt-1.5 border-t border-slate-100/80 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
-              <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1 uppercase tracking-wider">
-                <Layers size={10} className="text-slate-400 stroke-[2.5]" /> OSM-Untergrund:
-              </span>
-              <button
-                type="button"
-                disabled={isAnalyzing}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAnalyzeSurface?.(track.id);
-                }}
-                className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
-                  isAnalyzing
-                    ? "bg-blue-105 text-blue-600 border-blue-200 animate-pulse cursor-wait"
-                    : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200 hover:border-blue-300"
-                }`}
-                title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
-              >
-                {isAnalyzing ? "Analysiere..." : "OSM ermitteln"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Horizontal Actions Dock for Touch Devices / Active Track */}
-        {isMarked && (
-          <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-700/60 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-extrabold uppercase text-slate-400 dark:text-slate-500 tracking-wider">Aktivitäts-Optionen</span>
-              <span className="text-[9px] text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-950/50 px-1.5 py-0.5 rounded">Aktiv</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
+          {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
+          {isMarked && (
+            <div className="grid grid-cols-3 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
               <button 
                 type="button"
                 onClick={() => onToggleVisibility(track.id)} 
-                className={`p-2 rounded-xl border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black ${
+                className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
                   track.visible 
-                    ? 'bg-slate-50/80 hover:bg-slate-100 text-slate-700 border-slate-200/65 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
-                    : 'bg-amber-50/80 hover:bg-amber-100 text-amber-700 border-amber-200/65'
+                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
                 }`}
                 title="Sichtbarkeit umschalten"
               >
-                {track.visible ? <Eye className="w-4 h-4 text-slate-500" /> : <EyeOff className="w-4 h-4 text-amber-600" />}
-                <span>{track.visible ? "Sichtbar" : "Versteckt"}</span>
+                {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
+                <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
               </button>
               
               {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
                 <button 
                   type="button"
                   onClick={() => onOpenAnalytics(track.id)} 
-                  className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-xl border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
                   title="Ausführliche Daten- & Leistungsanalyse"
                 >
-                  <BarChart2 className="w-4 h-4 text-indigo-650 dark:text-indigo-400" />
+                  <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
                   <span>Analyse</span>
                 </button>
               )}
@@ -261,11 +164,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 <button 
                   type="button"
                   onClick={() => onOpenClimbs(track.id)} 
-                  className="p-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-xl border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
                   title="Steigungs- & Bergwertungs-Analyse öffnen"
                 >
-                  <TrendingUp className="w-4 h-4 text-emerald-650 dark:text-emerald-400" />
-                  <span>Climbs ({track.climbs.length})</span>
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>Berge ({track.climbs.length})</span>
                 </button>
               )}
 
@@ -273,10 +176,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 <button 
                   type="button"
                   onClick={() => onOpenSegments(track.id)} 
-                  className="p-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-850 dark:bg-yellow-950/40 dark:text-yellow-350 rounded-xl border border-yellow-250/20 dark:border-yellow-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  className="p-1.5 bg-yellow-50/80 hover:bg-yellow-100 text-yellow-850 dark:bg-yellow-950/40 dark:text-yellow-350 rounded-lg border border-yellow-250/20 dark:border-yellow-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
                   title="Sektor- & Bestenlisten-Analyse öffnen"
                 >
-                  <Trophy className="w-4 h-4 text-yellow-650 dark:text-yellow-400" />
+                  <Trophy className="w-3.5 h-3.5 text-yellow-650 dark:text-yellow-400" />
                   <span>Sektoren</span>
                 </button>
               )}
@@ -285,26 +188,172 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 <button 
                   type="button"
                   onClick={() => onOpenTrainingZones(track.id)} 
-                  className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-xl border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                  className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
                   title="Trainingszonen & Puls-Analyse öffnen"
                 >
-                  <Heart className="w-4 h-4 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
+                  <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
                   <span>Zonen</span>
                 </button>
               )}
 
               <button 
                 type="button"
+                onClick={() => onSaveTrackToLibrary?.(track.id)} 
+                className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
+                title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
+              >
+                <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                <span>Sichern</span>
+              </button>
+
+              <button 
+                type="button"
                 onClick={() => onRemoveTrack(track.id)} 
-                className="p-2 bg-red-50 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-xl border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[10px] font-black" 
+                className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
                 title="Track vollständig entfernen"
               >
-                <Trash2 className="w-4 h-4 text-red-650 dark:text-rose-400" />
-                <span>Entfernen</span>
+                <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
+                <span>Löschen</span>
+              </button>
+            </div>
+          )}
+          
+          <div className="flex flex-col gap-1.5">
+            {/* Bento Grid Row 1: Strecke, Dauer, Pace */}
+            <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Strecke</span>
+                <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                  {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
+                </span>
+              </div>
+              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Dauer</span>
+                <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                  {track.duration ? (
+                    `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
+                  ) : (
+                    `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 65)}m`
+                  )}
+                </span>
+              </div>
+              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Tempo</span>
+                <span className="font-extrabold text-slate-700 dark:text-slate-300 truncate max-w-full">
+                  {track.duration ? (
+                    track.activityType === 'running' 
+                      ? formatPace(track.duration, track.distance)
+                      : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+                  ) : (
+                    track.activityType === 'running'
+                      ? getPaceString(estimatedSpeed)
+                      : `${estimatedSpeed} km/h`
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Bento Grid Row 2: Anstieg, Abstieg, Max. Steigung */}
+            <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+              <div className="bg-emerald-500/5 dark:bg-emerald-950/10 border border-emerald-100/30 dark:border-emerald-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-emerald-600 dark:text-emerald-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                  Anstieg
+                </span>
+                <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
+                  +{Math.round(track.ascent).toLocaleString('de-DE')}m
+                </span>
+              </div>
+              <div className="bg-rose-500/5 dark:bg-rose-950/10 border border-rose-100/30 dark:border-rose-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-rose-600 dark:text-rose-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                  Abstieg
+                </span>
+                <span className="font-extrabold text-rose-700 dark:text-rose-400">
+                  -{Math.round(track.descent).toLocaleString('de-DE')}m
+                </span>
+              </div>
+              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Steigung</span>
+                <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                  {(track.maxSlope ?? 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
+                </span>
+              </div>
+            </div>
+
+            {/* Miscellaneous status bar for HR or point length */}
+            <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/40 dark:border-slate-800/40 pt-1.5 mt-0.5">
+              <span>{track.points.length.toLocaleString('de-DE')} GPX-Punkte</span>
+              {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
+                <span className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5 px-1 py-0.5 rounded border border-rose-500/10 shadow-3xs">
+                  <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HF-Daten
+                </span>
+              )}
+            </div>
+
+            {/* Power Stats Widget */}
+            {track.powerStats && (
+              <div className="bg-amber-500/5 dark:bg-amber-950/10 border border-amber-100/40 dark:border-amber-900/20 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
+                <span className="flex items-center gap-1 text-amber-600 dark:text-amber-500 font-extrabold text-[8px] uppercase tracking-wider">
+                  <Zap className="w-3 h-3 fill-amber-500/10" /> NP Daten
+                </span>
+                <span className="text-slate-300 dark:text-slate-800">|</span>
+                <span className="font-bold text-slate-700 dark:text-slate-350" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
+                <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
+                <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">TSS {Math.round(track.powerStats.tss || 0)}</span>
+              </div>
+            )}
+
+            {/* Climb Analysis Info Box */}
+            {track.climbs && track.climbs.length > 0 && (
+              <div 
+                className="bg-indigo-50/20 dark:bg-indigo-950/15 border border-indigo-100/40 dark:border-indigo-900/25 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20"
+                onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
+                title="Bergwertungs-Analyse auf separater Seite öffnen"
+              >
+                <span className="flex items-center gap-1 text-indigo-700 dark:text-indigo-450 font-extrabold text-[8px] uppercase tracking-wider">
+                  <TrendingUp className="w-3 h-3 shrink-0 text-indigo-500" />
+                  <span>Anstiege / Berganalyse</span>
+                </span>
+                <span className="font-extrabold text-blue-650 dark:text-blue-400 underline hover:no-underline">
+                  {track.climbs.length} Berge ➔
+                </span>
+              </div>
+            )}
+
+            {/* Surface stats presentation */}
+            {track.surfaceStats && track.surfaceStats.length > 0 && (
+              <div className="text-[9.5px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-1 font-mono">
+                {track.surfaceStats.map((surface, idx) => (
+                  <span key={idx} className="bg-slate-50 dark:bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 text-[9px]">
+                    {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Surface analysis trigger */}
+            <div className="pt-1.5 border-t border-slate-100/60 dark:border-slate-800/40 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+              <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 flex items-center gap-1 uppercase tracking-wider">
+                <Layers size={10} className="text-slate-400 dark:text-slate-500 stroke-[2.5]" /> OSM-Untergrund:
+              </span>
+              <button
+                type="button"
+                disabled={isAnalyzing}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAnalyzeSurface?.(track.id);
+                }}
+                className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
+                  isAnalyzing
+                    ? "bg-blue-100/40 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900 animate-pulse cursor-wait"
+                    : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-450 hover:bg-blue-100 dark:hover:bg-blue-900/65 border-blue-100 dark:border-blue-900/50 hover:border-blue-300 dark:hover:border-blue-800"
+                }`}
+                title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+              >
+                {isAnalyzing ? "Analysiere..." : "OSM ermitteln"}
               </button>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Hover actions panel on the right of the card, only visible on md screens & above */}
         <div className="hidden md:flex flex-col gap-1 items-center bg-slate-50 dark:bg-slate-900 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -407,6 +456,8 @@ interface SidebarProps {
   setUserWeight: (weight: number) => void;
   userAge: number;
   setUserAge: (age: number) => void;
+  userMaxHr: number;
+  setUserMaxHr: (maxHr: number) => void;
   suggestedFtp: number | null;
   onOpenComparison: () => void;
   onOpenTrainingZones?: (id?: string) => void;
@@ -423,6 +474,8 @@ interface SidebarProps {
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
   onAnalyzeSurface?: (id: string) => void;
   analyzingSurfaces?: Record<string, boolean>;
+  onLoadLibraryTrack?: (track: GPXTrack) => void;
+  onSaveTrackToLibrary?: (id: string) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -457,6 +510,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   setUserWeight,
   userAge,
   setUserAge,
+  userMaxHr,
+  setUserMaxHr,
   suggestedFtp,
   onOpenComparison,
   onOpenTrainingZones,
@@ -472,9 +527,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   hoveredPoint,
   onMapViewChange,
   onAnalyzeSurface,
-  analyzingSurfaces
+  analyzingSurfaces,
+  onLoadLibraryTrack,
+  onSaveTrackToLibrary
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
@@ -822,6 +880,20 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </section>
 
+            {markedTrack && (
+              <section className="space-y-3 pt-4 border-t border-slate-100/60 dark:border-slate-800/40">
+                <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Heart className="text-rose-500 w-3.5 h-3.5 fill-rose-500/10" />
+                  Herzfrequenz-Zonen
+                </h2>
+                <HeartRateZones 
+                  track={markedTrack}
+                  maxHr={userMaxHr}
+                  onMaxHrChange={setUserMaxHr}
+                />
+              </section>
+            )}
+
             <section className="space-y-4">
               <div className="flex justify-between items-center">
                 <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -922,9 +994,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-2">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Gewicht (kg)</label>
+                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Gewicht">Gewicht (kg)</label>
                       <input 
                         type="number"
                         value={userWeight}
@@ -933,12 +1005,21 @@ const Sidebar: React.FC<SidebarProps> = ({
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Alter</label>
+                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Alter">Alter</label>
                       <input 
                         type="number"
                         value={userAge}
                         onChange={(e) => setUserAge(Number(e.target.value))}
                         className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Max HR">Max. Puls</label>
+                      <input 
+                        type="number"
+                        value={userMaxHr}
+                        onChange={(e) => setUserMaxHr(Number(e.target.value))}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-rose-650 dark:text-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none"
                       />
                     </div>
                   </div>
@@ -957,42 +1038,79 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
 
             <section className="space-y-3">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Routen ({tracks.length})</h2>
-              <div className="space-y-2 pb-6">
-                {tracks.length === 0 && (
-                  <p className="text-xs text-slate-400 italic text-center py-8 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">Noch keine Routen geladen.</p>
-                )}
-                <DndContext 
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
+              <div className="flex border-b border-slate-201/80 dark:border-slate-800 pb-0.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('active')}
+                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
+                    activeTab === 'active'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
                 >
-                  <SortableContext 
-                    items={tracks.map(t => t.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <div className="space-y-2">
-                      {tracks.map((track) => (
-                        <SortableTrackItem 
-                          key={track.id} 
-                          track={track} 
-                          isMarked={markedTrackId === track.id}
-                          onMark={onMarkTrack}
-                          onToggleVisibility={onToggleVisibility} 
-                          onRemoveTrack={onRemoveTrack} 
-                          onChangeActivityType={onChangeActivityType}
-                          estimatedSpeed={estimatedSpeed}
-                          onOpenAnalytics={onOpenAnalytics}
-                          onOpenTrainingZones={onOpenTrainingZones}
-                          onOpenClimbs={onOpenClimbs}
-                          onAnalyzeSurface={onAnalyzeSurface}
-                          isAnalyzing={analyzingSurfaces?.[track.id] || false}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DndContext>
+                  Workspace ({tracks.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('library')}
+                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
+                    activeTab === 'library'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Bibliothek (DB)
+                </button>
               </div>
+
+              {activeTab === 'active' ? (
+                <div className="space-y-2 pb-6">
+                  {tracks.length === 0 && (
+                    <p className="text-xs text-slate-400 italic text-center py-8 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Noch keine Routen geladen.</p>
+                  )}
+                  <DndContext 
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleDragEnd}
+                  >
+                    <SortableContext 
+                      items={tracks.map(t => t.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <div className="space-y-2">
+                        {tracks.map((track) => (
+                          <SortableTrackItem 
+                            key={track.id} 
+                            track={track} 
+                            isMarked={markedTrackId === track.id}
+                            onMark={onMarkTrack}
+                            onToggleVisibility={onToggleVisibility} 
+                            onRemoveTrack={onRemoveTrack} 
+                            onChangeActivityType={onChangeActivityType}
+                            estimatedSpeed={estimatedSpeed}
+                            onOpenAnalytics={onOpenAnalytics}
+                            onOpenTrainingZones={onOpenTrainingZones}
+                            onOpenClimbs={onOpenClimbs}
+                            onAnalyzeSurface={onAnalyzeSurface}
+                            isAnalyzing={analyzingSurfaces?.[track.id] || false}
+                            onSaveTrackToLibrary={onSaveTrackToLibrary}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                </div>
+              ) : (
+                <div className="pb-6">
+                  <TrackLibrary 
+                    onLoadTrack={(track) => {
+                      onLoadLibraryTrack?.(track);
+                      setActiveTab('active');
+                    }}
+                    onActiveTrackId={markedTrackId}
+                  />
+                </div>
+              )}
             </section>
           </div>
 

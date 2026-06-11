@@ -115,7 +115,7 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ track, onClose, 
           <div className="bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-800/80 shadow-sm flex flex-col justify-between">
             <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block mb-1">Maximalgefälle</span>
             <span className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono">
-              {track.maxSlope.toFixed(1)}%
+              {(track.maxSlope ?? 0).toFixed(1)}%
             </span>
           </div>
         </div>

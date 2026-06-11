@@ -1036,7 +1036,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <>
                 <span className="flex gap-1 items-center"><span className="text-emerald-600 text-[14px]">▲</span> <span className="text-sm text-slate-700">{track.ascent.toFixed(0)}m</span></span>
                 <span className="flex gap-1 items-center"><span className="text-rose-600 text-[14px]">▼</span> <span className="text-sm text-slate-700">{track.descent.toFixed(0)}m</span></span>
-                <span className="flex gap-1 items-center"><span className="text-slate-400">MAX STEIGUNG:</span> <span className="text-emerald-700 text-sm">{track.maxSlope.toFixed(1)}%</span></span>
+                <span className="flex gap-1 items-center"><span className="text-slate-400">MAX STEIGUNG:</span> <span className="text-emerald-700 text-sm">{(track.maxSlope ?? 0).toFixed(1)}%</span></span>
                 <span className="flex gap-1 items-center"><span className="text-slate-400">MIN/MAX:</span> <span className="text-slate-700 text-sm">{`${minEle.toFixed(0)}/${maxEle.toFixed(0)}`}m</span></span>
               </>
             )}

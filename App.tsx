@@ -73,6 +73,16 @@ const App: React.FC = () => {
   });
   const [hoveredPoint, setHoveredPoint] = useState<GPXPoint | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
 
   const [segmentsOpen, setSegmentsOpen] = useState(false);
   const [customSegments, setCustomSegments] = useState<Segment[]>(() => {
@@ -205,6 +215,29 @@ const App: React.FC = () => {
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [userWeight, setUserWeight] = useState(75);
   const [userAge, setUserAge] = useState(35);
+  const [userMaxHr, setUserMaxHr] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('velo_user_max_hr');
+      if (saved) return Number(saved);
+    } catch (e) {}
+    return 220 - 35; // default 185
+  });
+
+  const handleMaxHrChange = (newMaxHr: number) => {
+    setUserMaxHr(newMaxHr);
+    try {
+      localStorage.setItem('velo_user_max_hr', String(newMaxHr));
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('velo_user_max_hr');
+      if (!saved) {
+        setUserMaxHr(220 - userAge);
+      }
+    } catch (e) {}
+  }, [userAge]);
   const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const today = new Date();
@@ -493,6 +526,38 @@ const App: React.FC = () => {
     }));
   }, [saveToHistory, ftp, userWeight, estimatedSpeed]);
 
+  const handleLoadLibraryTrack = useCallback((track: GPXTrack) => {
+    setTracks(prev => {
+      if (prev.some(t => t.id === track.id)) {
+        return prev.map(t => t.id === track.id ? { ...t, visible: true } : t);
+      }
+      return [...prev, { ...track, visible: true }];
+    });
+    setMarkedTrackId(track.id);
+  }, []);
+
+  const handleSaveTrackToLibrary = useCallback(async (id: string) => {
+    const track = tracks.find(t => t.id === id);
+    if (!track) return;
+
+    try {
+      const response = await fetch(getApiUrl('/api/library'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(track)
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccessMessage(`"${track.name}" wurde erfolgreich in der Bibliothek gespeichert!`);
+      } else {
+        setErrorMessage(data.error || 'Fehler beim Speichern in der Bibliothek.');
+      }
+    } catch (err) {
+      console.error('Failed to save track to library:', err);
+      setErrorMessage('Speichern in der Bibliothek fehlgeschlagen.');
+    }
+  }, [tracks]);
+
   const markedTrack = tracks.find(t => t.id === markedTrackId);
   const suggestedFtp = markedTrack?.powerStats?.best20m ? Math.round(markedTrack.powerStats.best20m * 0.95) : null;
  
@@ -586,7 +651,11 @@ const App: React.FC = () => {
         setUserWeight={setUserWeight}
         userAge={userAge}
         setUserAge={setUserAge}
+        userMaxHr={userMaxHr}
+        setUserMaxHr={handleMaxHrChange}
         suggestedFtp={suggestedFtp}
+        onLoadLibraryTrack={handleLoadLibraryTrack}
+        onSaveTrackToLibrary={handleSaveTrackToLibrary}
         onOpenComparison={() => {
           setComparisonOpen(true);
           setIsMobileMenuOpen(false);
@@ -794,6 +863,24 @@ const App: React.FC = () => {
                 </svg>
                 <span>{errorMessage}</span>
                 <button onClick={() => setErrorMessage(null)} className="ml-2 hover:opacity-70">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 6 6 18" />
+                    <path d="m6 6 12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {successMessage && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-emerald-550/95 dark:bg-emerald-600/90 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-xs md:text-sm font-bold animate-bounce-in max-w-md text-center">
+              <div className="flex items-center gap-3">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                  <polyline points="22 4 12 14.01 9 11.01" />
+                </svg>
+                <span>{successMessage}</span>
+                <button onClick={() => setSuccessMessage(null)} className="ml-2 hover:opacity-70">
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 6 6 18" />
                     <path d="m6 6 12 12" />

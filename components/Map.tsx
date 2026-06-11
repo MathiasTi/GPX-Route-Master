@@ -61,6 +61,24 @@ const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
   return null;
 };
 
+const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | null; tracks: GPXTrack[] }) => {
+  const map = useMap();
+  const prevMarkedId = React.useRef<string | null>(null);
+
+  useEffect(() => {
+    if (markedTrackId && markedTrackId !== prevMarkedId.current) {
+      const track = tracks.find(t => t.id === markedTrackId);
+      if (track && track.points && track.points.length > 0) {
+        const bounds = L.latLngBounds(track.points.map(p => [p.lat, p.lng]));
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
+    prevMarkedId.current = markedTrackId;
+  }, [markedTrackId, tracks, map]);
+
+  return null;
+};
+
 const ZoomToSelection = ({ bounds }: { bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null }) => {
   const map = useMap();
   useEffect(() => {
@@ -627,6 +645,7 @@ const Map: React.FC<MapProps> = ({
         })}
 
         <ZoomToTracks tracks={tracks} />
+        <ZoomToMarkedTrack markedTrackId={markedTrackId} tracks={tracks} />
         <ZoomToSelection bounds={selectionBounds} />
         <MapResizer markedTrackId={markedTrackId} tracksLength={tracks.length} />
         <FlyoverFollow point={hoveredPoint || null} active={isFlying} />

@@ -585,11 +585,11 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
                     <span className="text-[10px] text-slate-400 font-bold uppercase">Maximale Steigung</span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                      <div className={`p-1 rounded ${track1 && track2 && track1.maxSlope >= track2.maxSlope ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
-                        {track1?.maxSlope.toFixed(1)}%
+                      <div className={`p-1 rounded ${track1 && track2 && (track1.maxSlope ?? 0) >= (track2.maxSlope ?? 0) ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
+                        {track1 ? `${(track1.maxSlope ?? 0).toFixed(1)}%` : '-'}
                       </div>
-                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${track1 && track2 && track2.maxSlope > track1.maxSlope ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''}`}>
-                        {track2?.maxSlope.toFixed(1)}%
+                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${track1 && track2 && (track2.maxSlope ?? 0) > (track1.maxSlope ?? 0) ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''}`}>
+                        {track2 ? `${(track2.maxSlope ?? 0).toFixed(1)}%` : '-'}
                       </div>
                     </div>
                   </div>

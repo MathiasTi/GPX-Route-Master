@@ -2,10 +2,14 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack } from "./utils/db.js";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Initialize the SQLite database
+  initDb();
 
   // Set security headers to follow best security practices safely (without breaking AI Studio iframe bounds)
   app.use((req, res, next) => {
@@ -689,6 +693,175 @@ async function startServer() {
         isFallback: true,
         fallbackNotice: "OSM-Daten wurden simuliert basierend auf Geländemerkmale des Tracks.",
       });
+    }
+  });
+
+  // Library API: Search and list tracks
+  app.get("/api/library", (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      const activityType = typeof req.query.activityType === "string" ? req.query.activityType : "all";
+      const records = searchTracks(q, activityType);
+      
+      // Map to thin, metadata-focused structure for the list view
+      const mapped = records.map(r => ({
+        id: r.id,
+        name: r.name,
+        distance: r.distance,
+        ascent: r.ascent,
+        descent: r.descent,
+        duration: r.duration,
+        activityType: r.activity_type,
+        description: r.description || "",
+        tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+        dateCreated: r.date_created,
+        originalFilename: r.original_filename,
+        maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+        color: r.color || '#3b82f6',
+        hasTimestamps: r.has_timestamps === 1
+      }));
+      
+      res.json({ success: true, tracks: mapped });
+    } catch (err: any) {
+      console.error("Error listed library tracks:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to load library" });
+    }
+  });
+
+  // Library API: Get full track details by ID
+  app.get("/api/library/:id", (req, res) => {
+    try {
+      const { id } = req.params;
+      const r = getTrackDetails(id);
+      
+      if (!r) {
+        return res.status(404).json({ success: false, error: "Track not found in library" });
+      }
+
+      // Reconstruct fully hydrated track structure
+      const track = {
+        id: r.id,
+        name: r.name,
+        distance: r.distance,
+        ascent: r.ascent,
+        descent: r.descent,
+        duration: r.duration,
+        activityType: r.activity_type,
+        description: r.description || "",
+        tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+        dateCreated: r.date_created,
+        originalFilename: r.original_filename,
+        points: JSON.parse(r.points_json),
+        powerStats: r.power_stats_json ? JSON.parse(r.power_stats_json) : undefined,
+        surfaceStats: r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined,
+        climbs: r.climbs_json ? JSON.parse(r.climbs_json) : undefined,
+        maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+        color: r.color || '#3b82f6',
+        hasTimestamps: r.has_timestamps === 1,
+        visible: true
+      };
+
+      res.json({ success: true, track });
+    } catch (err: any) {
+      console.error("Error reading track details:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to retrieve track" });
+    }
+  });
+
+  // Library API: Save/insert a track to the database
+  app.post("/api/library", (req, res) => {
+    try {
+      const {
+        id,
+        name,
+        distance,
+        ascent,
+        descent,
+        duration,
+        activityType,
+        description,
+        tags,
+        dateCreated,
+        originalFilename,
+        points,
+        powerStats,
+        surfaceStats,
+        climbs,
+        maxSlope,
+        color,
+        hasTimestamps
+      } = req.body;
+
+      if (!id || !name || !points || !Array.isArray(points)) {
+        return res.status(400).json({ success: false, error: "Incomplete track data. Missing id, name, or points array." });
+      }
+
+      const tagsStr = Array.isArray(tags) ? tags.join(",") : (tags || "");
+
+      saveTrack({
+        id,
+        name,
+        distance: parseFloat(String(distance)) || 0,
+        ascent: parseFloat(String(ascent)) || 0,
+        descent: parseFloat(String(descent)) || 0,
+        duration: duration ? parseInt(String(duration), 10) : undefined,
+        activityType,
+        description,
+        tags: tagsStr,
+        dateCreated,
+        originalFilename,
+        points,
+        powerStats,
+        surfaceStats,
+        climbs,
+        maxSlope: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : undefined,
+        color,
+        hasTimestamps: hasTimestamps === true || hasTimestamps === 1
+      });
+
+      res.json({ success: true, id });
+    } catch (err: any) {
+      console.error("Error saving track to library:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to save track" });
+    }
+  });
+
+  // Library API: Update metadata of a specific track
+  app.put("/api/library/:id", (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, description, tags, activityType, dateCreated } = req.body;
+
+      if (!name) {
+        return res.status(400).json({ success: false, error: "Name is a required field." });
+      }
+
+      const tagsStr = Array.isArray(tags) ? tags.join(",") : (tags || "");
+
+      updateTrackMetadata(id, {
+        name,
+        description,
+        tags: tagsStr,
+        activityType,
+        dateCreated
+      });
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating track metadata:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to update track metadata" });
+    }
+  });
+
+  // Library API: Delete a track from the library
+  app.delete("/api/library/:id", (req, res) => {
+    try {
+      const { id } = req.params;
+      deleteTrack(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error deleting track:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to delete track" });
     }
   });
 

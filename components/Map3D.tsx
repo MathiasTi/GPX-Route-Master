@@ -119,6 +119,34 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
     prevTracksLength.current = visibleTracks.length;
   }, [visibleTracks]);
 
+  const prevMarkedId = useRef<string | null>(null);
+  useEffect(() => {
+    if (markedTrackId && markedTrackId !== prevMarkedId.current && mapRef.current) {
+      const track = tracks.find(t => t.id === markedTrackId);
+      if (track && track.points && track.points.length > 0) {
+        let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
+        track.points.forEach(p => {
+          if (p.lng < minLng) minLng = p.lng;
+          if (p.lng > maxLng) maxLng = p.lng;
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lat > maxLat) maxLat = p.lat;
+        });
+        if (minLng <= maxLng && minLat <= maxLat) {
+          const map = mapRef.current.getMap();
+          try {
+            map.fitBounds(
+              [[minLng, minLat], [maxLng, maxLat]],
+              { padding: 50, duration: 1000 }
+            );
+          } catch (e) {
+            console.error("Error fitting bounds to marked track in 3D Map:", e);
+          }
+        }
+      }
+    }
+    prevMarkedId.current = markedTrackId;
+  }, [markedTrackId, tracks]);
+
   useEffect(() => {
     if (selectionBounds && mapRef.current) {
       const map = mapRef.current.getMap();

@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds } from "./utils/db.js";
 
 async function startServer() {
   const app = express();
@@ -693,6 +693,43 @@ async function startServer() {
         isFallback: true,
         fallbackNotice: "OSM-Daten wurden simuliert basierend auf Geländemerkmale des Tracks.",
       });
+    }
+  });
+
+  // Library API: Search tracks passing through map bounds
+  app.get("/api/library/search-by-bounds", (req, res) => {
+    try {
+      const minLat = parseFloat(req.query.minLat as string);
+      const maxLat = parseFloat(req.query.maxLat as string);
+      const minLng = parseFloat(req.query.minLng as string);
+      const maxLng = parseFloat(req.query.maxLng as string);
+
+      if (isNaN(minLat) || isNaN(maxLat) || isNaN(minLng) || isNaN(maxLng)) {
+        return res.status(400).json({ success: false, error: "Ungültige Grenzwerte (Bounds params missing or NaN)." });
+      }
+
+      const records = getTracksInBounds(minLat, maxLat, minLng, maxLng);
+      const mapped = records.map(r => ({
+        id: r.id,
+        name: r.name,
+        distance: r.distance,
+        ascent: r.ascent,
+        descent: r.descent,
+        duration: r.duration,
+        activityType: r.activity_type || 'cycling',
+        description: r.description || "",
+        tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+        dateCreated: r.date_created,
+        originalFilename: r.original_filename,
+        maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+        color: r.color || '#3b82f6',
+        hasTimestamps: r.has_timestamps === 1
+      }));
+
+      res.json({ success: true, tracks: mapped });
+    } catch (err: any) {
+      console.error("Error searching library by bounds:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to search library by bounds" });
     }
   });
 

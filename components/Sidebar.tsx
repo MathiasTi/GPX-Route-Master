@@ -1,10 +1,9 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database } from 'lucide-react';
-import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
-import { HeartRateZones } from './HeartRateZones';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString, findClimbs } from '../utils/gpxUtils';
 import { TrackLibrary } from './TrackLibrary';
 import { 
   DndContext, 
@@ -34,7 +33,6 @@ interface TrackItemProps {
   onOpenAnalytics?: (id: string) => void;
   onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
-  onOpenSegments?: (id: string) => void;
   onAnalyzeSurface?: (id: string) => void;
   isAnalyzing?: boolean;
   onSaveTrackToLibrary?: (id: string) => void;
@@ -51,7 +49,6 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onOpenAnalytics, 
   onOpenTrainingZones,
   onOpenClimbs, 
-  onOpenSegments,
   onAnalyzeSurface,
   isAnalyzing,
   onSaveTrackToLibrary
@@ -74,6 +71,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   const hasPower = track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0);
   const hasHR = track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0);
   const showAnalyticsAndZones = hasPower && hasHR;
+
+  const trackClimbs = useMemo(() => {
+    return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
+  }, [track.climbs, track.points]);
 
   return (
     <div 
@@ -130,93 +131,78 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               </button>
             </div>
           </div>
-          
-          {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
-          {isMarked && (
-            <div className="grid grid-cols-3 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
+             {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
+          <div className="grid grid-cols-3 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
+            <button 
+              type="button"
+              onClick={() => onToggleVisibility(track.id)} 
+              className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
+                track.visible 
+                  ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
+                  : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+              }`}
+              title="Sichtbarkeit umschalten"
+            >
+              {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
+              <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
+            </button>
+            
+            {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
               <button 
                 type="button"
-                onClick={() => onToggleVisibility(track.id)} 
-                className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
-                  track.visible 
-                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
-                    : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
-                }`}
-                title="Sichtbarkeit umschalten"
+                onClick={() => onOpenAnalytics(track.id)} 
+                className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                title="Ausführliche Daten- & Leistungsanalyse"
               >
-                {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
-                <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
+                <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                <span>Analyse</span>
               </button>
-              
-              {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-                <button 
-                  type="button"
-                  onClick={() => onOpenAnalytics(track.id)} 
-                  className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                  title="Ausführliche Daten- & Leistungsanalyse"
-                >
-                  <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
-                  <span>Analyse</span>
-                </button>
-              )}
+            )}
 
-              {track.climbs && track.climbs.length > 0 && onOpenClimbs && (
-                <button 
-                  type="button"
-                  onClick={() => onOpenClimbs(track.id)} 
-                  className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                  title="Steigungs- & Bergwertungs-Analyse öffnen"
-                >
-                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  <span>Berge ({track.climbs.length})</span>
-                </button>
-              )}
-
-              {onOpenSegments && (
-                <button 
-                  type="button"
-                  onClick={() => onOpenSegments(track.id)} 
-                  className="p-1.5 bg-yellow-50/80 hover:bg-yellow-100 text-yellow-850 dark:bg-yellow-950/40 dark:text-yellow-350 rounded-lg border border-yellow-250/20 dark:border-yellow-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                  title="Sektor- & Bestenlisten-Analyse öffnen"
-                >
-                  <Trophy className="w-3.5 h-3.5 text-yellow-650 dark:text-yellow-400" />
-                  <span>Sektoren</span>
-                </button>
-              )}
-
-              {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-                <button 
-                  type="button"
-                  onClick={() => onOpenTrainingZones(track.id)} 
-                  className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                  title="Trainingszonen & Puls-Analyse öffnen"
-                >
-                  <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
-                  <span>Zonen</span>
-                </button>
-              )}
-
+            {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
               <button 
                 type="button"
-                onClick={() => onSaveTrackToLibrary?.(track.id)} 
-                className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
-                title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
+                onClick={() => onOpenClimbs(track.id)} 
+                className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                title="Steigungs- & Bergwertungs-Analyse öffnen"
               >
-                <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
-                <span>Sichern</span>
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Berge ({trackClimbs.length})</span>
               </button>
+            )}
 
+            {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
               <button 
                 type="button"
-                onClick={() => onRemoveTrack(track.id)} 
-                className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                title="Track vollständig entfernen"
+                onClick={() => onOpenTrainingZones(track.id)} 
+                className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                title="Trainingszonen & Puls-Analyse öffnen"
               >
-                <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
-                <span>Löschen</span>
+                <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
+                <span>Zonen</span>
               </button>
-            </div>
-          )}
+            )}
+
+            <button 
+              type="button"
+              onClick={() => onSaveTrackToLibrary?.(track.id)} 
+              className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
+              title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
+            >
+              <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+              <span>Sichern</span>
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => onRemoveTrack(track.id)} 
+              className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+              title="Track vollständig entfernen"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
+              <span>Löschen</span>
+            </button>
+          </div>
           
           <div className="flex flex-col gap-1.5">
             {/* Bento Grid Row 1: Strecke, Dauer, Pace */}
@@ -303,7 +289,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             )}
 
             {/* Climb Analysis Info Box */}
-            {track.climbs && track.climbs.length > 0 && (
+            {trackClimbs && trackClimbs.length > 0 && (
               <div 
                 className="bg-indigo-50/20 dark:bg-indigo-950/15 border border-indigo-100/40 dark:border-indigo-900/25 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20"
                 onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
@@ -314,7 +300,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <span>Anstiege / Berganalyse</span>
                 </span>
                 <span className="font-extrabold text-blue-650 dark:text-blue-400 underline hover:no-underline">
-                  {track.climbs.length} Berge ➔
+                  {trackClimbs.length} Berge ➔
                 </span>
               </div>
             )}
@@ -377,7 +363,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             </button>
           )}
 
-          {track.climbs && track.climbs.length > 0 && onOpenClimbs && (
+          {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
             <button 
               type="button"
               onClick={(e) => { e.stopPropagation(); onOpenClimbs(track.id); }} 
@@ -385,17 +371,6 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               title="Steigungs- & Bergwertungs-Analyse öffnen"
             >
               <TrendingUp className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          {onOpenSegments && (
-            <button 
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenSegments(track.id); }} 
-              className="p-1 hover:bg-yellow-100 rounded text-yellow-650 transition-colors cursor-pointer" 
-              title="Sektor- & Bestenlisten-Analyse öffnen"
-            >
-              <Trophy className="w-3.5 h-3.5" />
             </button>
           )}
 
@@ -463,9 +438,7 @@ interface SidebarProps {
   onOpenTrainingZones?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
-  onOpenSegments: (id: string) => void;
-  selectionBounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
-  onAddSegment: (name: string) => void;
+  onOpenSegments?: () => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
@@ -476,6 +449,14 @@ interface SidebarProps {
   analyzingSurfaces?: Record<string, boolean>;
   onLoadLibraryTrack?: (track: GPXTrack) => void;
   onSaveTrackToLibrary?: (id: string) => void;
+  selectionBounds?: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
+  onClearSelection?: () => void;
+  isDark?: boolean;
+  onToggleTheme?: () => void;
+  showCyclingHeatmap?: boolean;
+  setShowCyclingHeatmap?: (show: boolean) => void;
+  showRunningHeatmap?: boolean;
+  setShowRunningHeatmap?: (show: boolean) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -518,8 +499,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenAnalytics,
   onOpenClimbs,
   onOpenSegments,
-  selectionBounds,
-  onAddSegment,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
@@ -529,10 +508,25 @@ const Sidebar: React.FC<SidebarProps> = ({
   onAnalyzeSurface,
   analyzingSurfaces,
   onLoadLibraryTrack,
-  onSaveTrackToLibrary
+  onSaveTrackToLibrary,
+  selectionBounds,
+  onClearSelection,
+  isDark,
+  onToggleTheme,
+  showCyclingHeatmap = false,
+  setShowCyclingHeatmap,
+  showRunningHeatmap = false,
+  setShowRunningHeatmap
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
+
+  // Auto-switch to Library tab when user draws a selection bound
+  React.useEffect(() => {
+    if (selectionBounds) {
+      setActiveTab('library');
+    }
+  }, [selectionBounds]);
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
@@ -608,12 +602,28 @@ const Sidebar: React.FC<SidebarProps> = ({
           />
           <div className="absolute inset-0 z-0 bg-white/60 backdrop-blur-md pointer-events-none" />
 
-          <div className="relative z-10 p-6 bg-slate-900/95 text-white flex items-center gap-2">
-            <Layers className="w-6 h-6 text-blue-400 shrink-0" />
-            <div>
-              <h1 className="text-xl font-bold whitespace-nowrap">GPX Master</h1>
-              <p className="text-[10px] text-slate-400 uppercase tracking-widest">OSM Pro Tools</p>
+          <div className="relative z-10 p-6 bg-slate-900/95 text-white flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <Layers className="w-6 h-6 text-blue-400 shrink-0" />
+              <div>
+                <h1 className="text-xl font-bold whitespace-nowrap">GPX Master</h1>
+                <p className="text-[10px] text-slate-400 uppercase tracking-widest">OSM Pro Tools</p>
+              </div>
             </div>
+            
+            {onToggleTheme && (
+              <button 
+                onClick={onToggleTheme}
+                className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition-all cursor-pointer shadow border border-slate-700/60 flex items-center justify-center group shrink-0"
+                title={isDark ? "In hellen Modus wechseln" : "In dunklen Modus wechseln"}
+              >
+                {isDark ? (
+                  <Sun className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform" />
+                ) : (
+                  <Moon className="w-4 h-4 text-slate-300 group-hover:-rotate-12 transition-transform" />
+                )}
+              </button>
+            )}
           </div>
 
           <div className="relative z-10 flex-1 overflow-y-auto p-4 space-y-6">
@@ -665,6 +675,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <GitCompare className="w-4 h-4" />
                 Aktivitäten vergleichen
               </button>
+
+              <button 
+                onClick={onOpenSegments}
+                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-md shadow-amber-100 transition-all"
+                title="Sektor-Bestenlisten anzeigen und Pacing-Szenarien planen"
+              >
+                <Trophy className="w-4 h-4 animate-pulse" />
+                Sektoren & Pacing-Planer
+              </button>
               
               {markedShowAnalyticsAndZones && (
                 <button 
@@ -685,11 +704,58 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     key={layer}
                     onClick={() => setActiveLayer(layer)}
-                    className={`text-left px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-colors ${activeLayer === layer ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'text-slate-600 hover:bg-slate-50 border border-transparent'}`}
+                    className={`text-left px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-colors ${activeLayer === layer ? 'bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent'}`}
                   >
                     {layer}
                   </button>
                 ))}
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Beliebtheits-Heatmap Overlays</h2>
+              <div className="space-y-2">
+                {setShowCyclingHeatmap && (
+                  <button
+                    onClick={() => setShowCyclingHeatmap(!showCyclingHeatmap)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
+                      showCyclingHeatmap 
+                        ? 'bg-amber-500/10 text-amber-600 border-amber-300 dark:border-amber-700/60 dark:text-amber-400' 
+                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">🚲</span>
+                      <span className="text-left leading-tight">Beliebte Radsport-Routen</span>
+                    </div>
+                    <div className="relative">
+                      <div className={`w-8 h-4 rounded-full transition-colors ${showCyclingHeatmap ? 'bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showCyclingHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </div>
+                    </div>
+                  </button>
+                )}
+
+                {setShowRunningHeatmap && (
+                  <button
+                    onClick={() => setShowRunningHeatmap(!showRunningHeatmap)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
+                      showRunningHeatmap 
+                        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-300 dark:border-emerald-700/60 dark:text-emerald-400' 
+                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">🏃</span>
+                      <span className="text-left leading-tight">Wander- & Laufrouten</span>
+                    </div>
+                    <div className="relative">
+                      <div className={`w-8 h-4 rounded-full transition-colors ${showRunningHeatmap ? 'bg-emerald-500' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showRunningHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </div>
+                    </div>
+                  </button>
+                )}
               </div>
             </section>
 
@@ -712,244 +778,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               </section>
             )}
 
-            <section className="space-y-3">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Startzeit & Datum</h2>
-              <div className="grid grid-cols-2 gap-2 bg-slate-50/50 dark:bg-slate-950/40 p-2.5 rounded-xl border border-slate-200/55 dark:border-slate-800/40">
-                <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase">Datum</label>
-                  <input 
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-850 rounded-lg px-2 py-1 text-xs font-bold text-slate-700 dark:text-slate-200 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase">Startzeit</label>
-                  <input 
-                    type="time"
-                    value={selectedTime}
-                    onChange={(e) => setSelectedTime(e.target.value)}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-850 rounded-lg px-2 py-1 text-xs font-bold text-slate-700 dark:text-slate-200 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
-                  />
-                </div>
-              </div>
-              <p className="text-[10px] text-slate-400 font-medium">Beeinflusst die Wettervorhersage und die Zeitberechnung im Höhenprofil.</p>
-            </section>
 
-            <section className="space-y-3">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <MapPin className="text-blue-500 w-3.5 h-3.5" />
-                  Rennnotizen & Wegpunkte
-                </h2>
-                <span className="text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 px-1.5 py-0.5 rounded-full">
-                  {textMarkers.length}
-                </span>
-              </div>
-              
-              {hoveredPoint ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    let dist: number | undefined = undefined;
-                    const track = tracks.find(t => t.id === markedTrackId);
-                    if (track) {
-                      let closestIdx = 0;
-                      let minDist = Infinity;
-                      for (let i = 0; i < track.points.length; i++) {
-                        const pt = track.points[i];
-                        const diff = Math.abs(pt.lat - hoveredPoint.lat) + Math.abs(pt.lng - hoveredPoint.lng);
-                        if (diff < minDist) {
-                          minDist = diff;
-                          closestIdx = i;
-                        }
-                      }
-                      let sum = 0;
-                      for (let i = 1; i <= closestIdx; i++) {
-                        sum += calculateDistance(track.points[i-1], track.points[i]);
-                      }
-                      dist = sum;
-                    }
-                    
-                    onAddTextMarker({
-                      lat: hoveredPoint.lat,
-                      lng: hoveredPoint.lng,
-                      label: dist ? `Notiz km ${dist.toFixed(1)}` : 'Wegpunkt',
-                      color: 'indigo',
-                      trackId: markedTrackId || undefined,
-                      distanceAlongTrack: dist
-                    });
-                  }}
-                  className="w-full flex items-center justify-center gap-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/40 border border-dashed border-blue-200 dark:border-blue-800/80 p-2 rounded-xl text-xs font-bold text-blue-600 dark:text-blue-400 transition-colors cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Notiz an Zeigerposition erstellen</span>
-                </button>
-              ) : (
-                <div className="text-[11px] text-slate-400 dark:text-slate-500 font-medium bg-slate-50/50 dark:bg-slate-950/10 p-2.5 rounded-xl border border-slate-150 dark:border-slate-850/50 text-center">
-                  Bewege die Maus über die Karte/Notenprofil, um den Zeiger zu positionieren und hier Notizen zu erstellen.
-                </div>
-              )}
-
-              <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                {textMarkers.length === 0 ? (
-                  <div className="text-[10px] text-slate-400 dark:text-slate-550 italic text-center py-4 bg-slate-50/20 dark:bg-slate-950/10 rounded-xl border border-dashed border-slate-200/40">
-                    Noch keine Rennnotizen. Klicke auf die Karte oder den Höhenrücken, um Notizen und Wegmarken zu platzieren.
-                  </div>
-                ) : (
-                  textMarkers.map(marker => {
-                    const colors = [
-                      { name: 'indigo', hex: 'bg-indigo-500' },
-                      { name: 'emerald', hex: 'bg-emerald-500' },
-                      { name: 'rose', hex: 'bg-rose-500' },
-                      { name: 'amber', hex: 'bg-amber-500' },
-                      { name: 'slate', hex: 'bg-slate-500' }
-                    ];
-                    
-                    return (
-                      <div
-                        key={marker.id}
-                        className="group flex flex-col gap-1 p-2 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl hover:shadow-sm transition-all text-xs"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const currentIdx = colors.findIndex(c => c.name === marker.color);
-                              const nextIdx = (currentIdx + 1) % colors.length;
-                              onUpdateTextMarker(marker.id, { color: colors[nextIdx].name });
-                            }}
-                            className={`w-3.5 h-3.5 rounded-full shrink-0 border border-white dark:border-slate-750 shadow-sm cursor-pointer ${
-                              colors.find(c => c.name === marker.color)?.hex || 'bg-indigo-500'
-                            }`}
-                            title="Farbe wechseln"
-                          />
-                          
-                          <input
-                            type="text"
-                            value={marker.label}
-                            onChange={(e) => onUpdateTextMarker(marker.id, { label: e.target.value })}
-                            className="flex-1 font-bold text-slate-700 dark:text-slate-200 bg-transparent border-b border-transparent hover:border-slate-250 focus:border-blue-500 outline-none px-1 py-0.5"
-                            placeholder="Notiz eingeben..."
-                          />
-                          
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onMapViewChange({
-                                lat: marker.lat,
-                                lng: marker.lng,
-                                zoom: 14,
-                                pitch: 0,
-                                bearing: 0
-                              });
-                            }}
-                            className="p-1 text-slate-405 hover:text-blue-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded transition-colors"
-                            title="Auf Karte weisen"
-                          >
-                            <MapPin className="w-3.5 h-3.5" />
-                          </button>
-                          
-                          <button
-                            type="button"
-                            onClick={() => onDeleteTextMarker(marker.id)}
-                            className="p-1 text-slate-405 hover:text-red-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded transition-colors"
-                            title="Löschen"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        
-                        <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-medium pl-5 pr-1">
-                          <span>
-                            {marker.distanceAlongTrack !== undefined ? (
-                              <span className="text-blue-600 dark:text-blue-400 font-bold">km {marker.distanceAlongTrack.toFixed(2)}</span>
-                            ) : (
-                              <span className="text-slate-450">{marker.lat.toFixed(4)}, {marker.lng.toFixed(4)}</span>
-                            )}
-                          </span>
-                          <span className="text-slate-400 dark:text-slate-500 text-[9px] font-mono">
-                            GPS-Punkt
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-
-            {markedTrack && (
-              <section className="space-y-3 pt-4 border-t border-slate-100/60 dark:border-slate-800/40">
-                <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                  <Heart className="text-rose-500 w-3.5 h-3.5 fill-rose-500/10" />
-                  Herzfrequenz-Zonen
-                </h2>
-                <HeartRateZones 
-                  track={markedTrack}
-                  maxHr={userMaxHr}
-                  onMaxHrChange={setUserMaxHr}
-                />
-              </section>
-            )}
-
-            <section className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Trophy className="text-amber-500 w-3.5 h-3.5" />
-                  Sektoren & Bestenlisten
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => onOpenSegments?.(markedTrackId || '')}
-                  className="text-[10px] bg-yellow-50 hover:bg-yellow-105 dark:bg-yellow-950/40 text-yellow-600 dark:text-yellow-400 font-extrabold px-2 py-1 rounded-lg transition-all border border-yellow-100/50 cursor-pointer"
-                  title="Segment-Analysedashboard und Leaderboards öffnen"
-                >
-                  Öffnen ➔
-                </button>
-              </div>
-
-              {selectionBounds ? (
-                <div className="p-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-xl space-y-2">
-                  <p className="text-[11px] font-bold text-amber-850 dark:text-amber-300 flex items-center gap-1">
-                    <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-                    Bereich ausgewählt!
-                  </p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                    Erstelle ein neues Segment aus dem auf der Karte markierten Ausschnitt.
-                  </p>
-                  <div className="space-y-1.5 pt-1 font-sans">
-                    <input
-                      id="custom-segment-name-input"
-                      type="text"
-                      placeholder="z.B. Hausrunde Sprint"
-                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none text-slate-705 dark:text-slate-100"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const el = document.getElementById('custom-segment-name-input') as HTMLInputElement;
-                        const name = el?.value.trim();
-                        if (name) {
-                          onAddSegment?.(name);
-                          if (el) el.value = '';
-                        } else {
-                          alert('Bitte gib einen Segment-Namen ein.');
-                        }
-                      }}
-                      className="w-full text-center bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-1.5 rounded-lg text-xs shadow-sm transition-colors cursor-pointer"
-                    >
-                      Sektor speichern
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-[10px] text-slate-400 dark:text-slate-505 font-medium bg-slate-100/50 dark:bg-slate-950/10 p-3 rounded-xl border border-dashed border-slate-200/40 text-center leading-normal">
-                  Nutze das <span className="text-slate-600 dark:text-slate-300 font-bold">Auswahl-Tool (Box-Symbol)</span> links auf der Karte, um einen Sektor zu markieren und abzuspeichern.
-                </div>
-              )}
-            </section>
 
             <section className="space-y-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-4">
               <button 
@@ -1108,6 +937,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                       setActiveTab('active');
                     }}
                     onActiveTrackId={markedTrackId}
+                    selectionBounds={selectionBounds}
+                    onClearSelection={onClearSelection}
                   />
                 </div>
               )}

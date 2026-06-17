@@ -8,6 +8,8 @@ import { calculateElevationStats } from '../utils/gpxUtils';
 interface TrackLibraryProps {
   onLoadTrack: (track: GPXTrack) => void;
   onActiveTrackId?: string | null;
+  selectionBounds?: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
+  onClearSelection?: () => void;
 }
 
 interface LibraryTrackThin {
@@ -25,12 +27,39 @@ interface LibraryTrackThin {
   originalFilename?: string;
 }
 
-export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiveTrackId }) => {
+export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiveTrackId, selectionBounds, onClearSelection }) => {
   const [tracks, setTracks] = useState<LibraryTrackThin[]>([]);
+  const [boundsTracks, setBoundsTracks] = useState<LibraryTrackThin[]>([]);
+  const [isBoundsLoading, setIsBoundsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectionBounds) {
+      setBoundsTracks([]);
+      return;
+    }
+
+    const fetchBoundsTracks = async () => {
+      setIsBoundsLoading(true);
+      try {
+        const { minLat, maxLat, minLng, maxLng } = selectionBounds;
+        const res = await fetch(getApiUrl(`/api/library/search-by-bounds?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}`));
+        const data = await res.json();
+        if (data.success) {
+          setBoundsTracks(data.tracks);
+        }
+      } catch (e) {
+        console.error('Failed to fetch bounds-filtered tracks:', e);
+      } finally {
+        setIsBoundsLoading(false);
+      }
+    };
+
+    fetchBoundsTracks();
+  }, [selectionBounds]);
 
   // States for Editing/Metadata Mask
   const [editingTrack, setEditingTrack] = useState<LibraryTrackThin | null>(null);
@@ -210,6 +239,68 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
 
   return (
     <div className="space-y-4 h-full flex flex-col">
+      {selectionBounds && (
+        <div className="p-3 bg-indigo-50/90 dark:bg-indigo-950/45 border border-indigo-200/60 dark:border-indigo-900 rounded-xl space-y-2 shrink-0">
+          <div className="flex justify-between items-center">
+            <span className="text-xs font-black text-indigo-750 dark:text-indigo-400 flex items-center gap-1">
+              <MapPin className="w-3.5 h-3.5" />
+              Bereich ausgewählt
+            </span>
+            <button 
+              onClick={onClearSelection} 
+              className="text-[10px] bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-900/50 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer"
+            >
+              Aufheben
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+            Es werden alle Aktivitäten angezeigt, die durch den markierten Bereich verlaufen.
+          </p>
+
+          {isBoundsLoading ? (
+            <div className="flex items-center gap-2 text-xs text-indigo-600/70 p-2 justify-center">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              Sucht in der Datenbank...
+            </div>
+          ) : boundsTracks.length > 0 ? (
+            <div className="space-y-1.5 pt-1.5 border-t border-indigo-100 dark:border-indigo-900/40">
+              <span className="text-[9px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Gefundene Aktivitäten ({boundsTracks.length})
+              </span>
+              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1 font-sans">
+                {boundsTracks.map(track => (
+                  <div 
+                    key={`bounds-tr-${track.id}`}
+                    onClick={() => handleLoadTrack(track.id)}
+                    className="flex items-center justify-between p-2 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950 border border-slate-100 dark:border-slate-850 rounded-lg cursor-pointer transition-all gap-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-black text-slate-750 dark:text-slate-200 truncate" title={track.name}>
+                        {track.name}
+                      </div>
+                      <div className="flex items-center gap-1 text-[9px] text-slate-400 dark:text-slate-500 mt-0.5 font-bold">
+                        <span>{track.activityType === 'cycling' ? '🚲' : '🏃'}</span>
+                        <span>{track.distance.toFixed(1)} km</span>
+                        <span>•</span>
+                        <span>+{Math.round(track.ascent)}m</span>
+                      </div>
+                    </div>
+                    <span 
+                      className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-0.5 shadow-sm transition-all shrink-0"
+                    >
+                      Laden
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-[10px] text-slate-400 dark:text-slate-505 font-medium bg-slate-150/40 dark:bg-slate-950/20 p-2 rounded-lg border border-dashed border-slate-200/40 dark:border-slate-800 text-center leading-normal">
+              Keine Routen kreuzen diesen Bereich.
+            </div>
+          )}
+        </div>
+      )}
       {/* Search and Filters */}
       <div className="space-y-2.5 shrink-0">
         <div className="relative">

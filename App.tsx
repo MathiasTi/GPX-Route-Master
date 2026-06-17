@@ -54,6 +54,26 @@ const App: React.FC = () => {
     setTextMarkers(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
   }, []);
   const [activeLayer, setActiveLayer] = useState<MapLayer>(MapLayer.OSM);
+  const [showCyclingHeatmap, setShowCyclingHeatmap] = useState(false);
+  const [showRunningHeatmap, setShowRunningHeatmap] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('gpx_theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch (e) {}
+    return 'light';
+  });
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    localStorage.setItem('gpx_theme', theme);
+  }, [theme]);
+
   const [selectionBounds, setSelectionBounds] = useState<{minLat: number, maxLat: number, minLng: number, maxLng: number} | null>(null);
   const [markedTrackId, setMarkedTrackId] = useState<string | null>(null);
   const [is3D, setIs3D] = useState(false);
@@ -474,23 +494,53 @@ const App: React.FC = () => {
     }
  
     if (newTracks.length > 0) {
-      saveToHistory();
-      setTracks(prev => [...prev, ...newTracks]);
-      
-      if (hasAddedFit && fitDate && fitTime) {
-        setSelectedDate(fitDate);
-        setSelectedTime(fitTime);
-      } else {
-        const today = new Date();
-        const formattedDate = today.toISOString().split('T')[0];
-        const hours = String(today.getHours()).padStart(2, '0');
-        const minutes = String(today.getMinutes()).padStart(2, '0');
-        setSelectedDate(formattedDate);
-        setSelectedTime(`${hours}:${minutes}`);
+      const duplicates: string[] = [];
+      const uniqueNewTracks: GPXTrack[] = [];
+
+      for (const nt of newTracks) {
+        const isDuplicate = tracks.some(t => {
+          const samePointsCount = t.points.length === nt.points.length;
+          const veryCloseDistance = Math.abs(t.distance - nt.distance) < 0.01;
+          const sameName = t.name.toLowerCase() === nt.name.toLowerCase();
+          return (samePointsCount && veryCloseDistance) || (sameName && veryCloseDistance);
+        }) || uniqueNewTracks.some(t => {
+          const samePointsCount = t.points.length === nt.points.length;
+          const veryCloseDistance = Math.abs(t.distance - nt.distance) < 0.01;
+          const sameName = t.name.toLowerCase() === nt.name.toLowerCase();
+          return (samePointsCount && veryCloseDistance) || (sameName && veryCloseDistance);
+        });
+
+        if (isDuplicate) {
+          duplicates.push(nt.name);
+        } else {
+          uniqueNewTracks.push(nt);
+        }
+      }
+
+      if (duplicates.length > 0) {
+        setErrorMessage(`Hinweis: ${duplicates.length} Aktivität(en) wurden ignoriert, da sie bereits geladen sind: ${duplicates.join(", ")}`);
+        setTimeout(() => setErrorMessage(null), 8000);
+      }
+
+      if (uniqueNewTracks.length > 0) {
+        saveToHistory();
+        setTracks(prev => [...prev, ...uniqueNewTracks]);
+        
+        if (hasAddedFit && fitDate && fitTime) {
+          setSelectedDate(fitDate);
+          setSelectedTime(fitTime);
+        } else {
+          const today = new Date();
+          const formattedDate = today.toISOString().split('T')[0];
+          const hours = String(today.getHours()).padStart(2, '0');
+          const minutes = String(today.getMinutes()).padStart(2, '0');
+          setSelectedDate(formattedDate);
+          setSelectedTime(`${hours}:${minutes}`);
+        }
       }
     }
     e.target.value = '';
-  }, [saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
+  }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
  
   const toggleVisibility = useCallback((id: string) => {
     setTracks(prev => prev.map(t => t.id === id ? { ...t, visible: !t.visible } : t));
@@ -527,13 +577,18 @@ const App: React.FC = () => {
   }, [saveToHistory, ftp, userWeight, estimatedSpeed]);
 
   const handleLoadLibraryTrack = useCallback((track: GPXTrack) => {
+    let alreadyExists = false;
     setTracks(prev => {
       if (prev.some(t => t.id === track.id)) {
+        alreadyExists = true;
         return prev.map(t => t.id === track.id ? { ...t, visible: true } : t);
       }
       return [...prev, { ...track, visible: true }];
     });
     setMarkedTrackId(track.id);
+    if (alreadyExists) {
+      setSuccessMessage(`Aktivität "${track.name}" ist bereits im Workspace geladen.`);
+    }
   }, []);
 
   const handleSaveTrackToLibrary = useCallback(async (id: string) => {
@@ -541,6 +596,36 @@ const App: React.FC = () => {
     if (!track) return;
 
     try {
+      // 1. Fetch library to see if it is already stored there
+      const libResponse = await fetch(getApiUrl('/api/library'));
+      const libData = await libResponse.json();
+      let isAlreadyInLibrary = false;
+      
+      if (libData.success && Array.isArray(libData.tracks)) {
+        isAlreadyInLibrary = libData.tracks.some((t: any) => 
+          t.id === track.id || 
+          (t.name === track.name && Math.abs(t.distance - track.distance) < 0.05) ||
+          (t.pointsLength === track.points?.length && Math.abs(t.distance - track.distance) < 0.05)
+        );
+      }
+
+      // 2. Check if a duplicate exists in the workspace
+      const isDuplicateInWorkspace = tracks.some(t => 
+        t.id !== track.id && 
+        t.name === track.name &&
+        Math.abs(t.distance - track.distance) < 0.05
+      );
+
+      if (isAlreadyInLibrary) {
+        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits in der Bibliothek.`);
+        return;
+      }
+
+      if (isDuplicateInWorkspace) {
+        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits im Workspace.`);
+        return;
+      }
+
       const response = await fetch(getApiUrl('/api/library'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -614,7 +699,7 @@ const App: React.FC = () => {
   const [showHint, setShowHint] = useState(false);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans text-slate-900">
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-105 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50">
       <Sidebar 
         tracks={tracks}
         markedTrackId={markedTrackId}
@@ -675,15 +760,10 @@ const App: React.FC = () => {
           setClimbsOpen(true);
           setIsMobileMenuOpen(false);
         }}
-        onOpenSegments={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
+        onOpenSegments={() => {
           setSegmentsOpen(true);
           setIsMobileMenuOpen(false);
         }}
-        selectionBounds={selectionBounds}
-        onAddSegment={handleAddNewSegment}
         textMarkers={textMarkers}
         onAddTextMarker={handleAddTextMarker}
         onDeleteTextMarker={handleDeleteTextMarker}
@@ -700,17 +780,25 @@ const App: React.FC = () => {
         }}
         onAnalyzeSurface={analyzeTrackSurface}
         analyzingSurfaces={analyzingSurfaces}
+        selectionBounds={selectionBounds}
+        onClearSelection={() => setSelectionBounds(null)}
+        isDark={theme === 'dark'}
+        onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+        showCyclingHeatmap={showCyclingHeatmap}
+        setShowCyclingHeatmap={setShowCyclingHeatmap}
+        showRunningHeatmap={showRunningHeatmap}
+        setShowRunningHeatmap={setShowRunningHeatmap}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {/* Mobile Header */}
-        <div className="md:hidden flex items-center justify-between p-4 bg-white border-b border-slate-200 z-[60]">
+        <div className="md:hidden flex items-center justify-between p-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60]">
           <div className="flex items-center gap-2">
-            <Activity className="text-indigo-600" size={24} />
-            <span className="font-black tracking-tight text-lg">VeloAnalytics</span>
+            <Activity className="text-indigo-600 dark:text-indigo-400" size={24} />
+            <span className="font-black tracking-tight text-lg text-slate-950 dark:text-slate-100">VeloAnalytics</span>
           </div>
           <button 
             onClick={() => setIsMobileMenuOpen(true)}
-            className="p-2.5 bg-slate-50 text-slate-600 rounded-xl border border-slate-200"
+            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl border border-slate-200 dark:border-slate-700"
           >
             <BarChart2 size={24} />
           </button>
@@ -750,7 +838,10 @@ const App: React.FC = () => {
               textMarkers={textMarkers}
               onAddTextMarker={handleAddTextMarker}
               onDeleteTextMarker={handleDeleteTextMarker}
-              hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || segmentsOpen || comparisonOpen}
+              hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || comparisonOpen}
+              isDark={theme === 'dark'}
+              showCyclingHeatmap={showCyclingHeatmap}
+              showRunningHeatmap={showRunningHeatmap}
             />
           )}
 
@@ -788,20 +879,7 @@ const App: React.FC = () => {
             )}
           </AnimatePresence>
 
-          <AnimatePresence>
-            {segmentsOpen && (
-              <SegmentsAnalysis 
-                tracks={tracks}
-                activeTrack={markedTrack || undefined}
-                segments={customSegments}
-                onDeleteSegment={handleDeleteSegment}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                activeLayer={activeLayer}
-                onClose={() => setSegmentsOpen(false)} 
-              />
-            )}
-          </AnimatePresence>
+
           
           <AnimatePresence>
             {comparisonOpen && (
@@ -822,6 +900,24 @@ const App: React.FC = () => {
                 tracks={tracks}
                 activeTrackId={markedTrackId}
                 onClose={() => setTrainingZonesOpen(false)}
+                userMaxHr={userMaxHr}
+                onMaxHrChange={handleMaxHrChange}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {segmentsOpen && (
+              <SegmentsAnalysis 
+                tracks={tracks}
+                activeTrack={markedTrack || undefined}
+                onClose={() => setSegmentsOpen(false)}
+                activeLayer={activeLayer}
+                segments={customSegments}
+                onDeleteSegment={handleDeleteSegment}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+                ftp={ftp}
               />
             )}
           </AnimatePresence>

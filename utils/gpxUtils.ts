@@ -2,10 +2,10 @@
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment } from '../types';
 
 export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
-  if (points.length < 20) return [];
+  if (points.length < 5) return [];
   
-  const minClimbDistance = 500; // meters
-  const minAvgGradient = 3.0; // percent
+  const minClimbDistance = 150; // meters (highly inclusive minimum length)
+  const minAvgGradient = 1.5; // percent (very mild, ensures rolling hills and gentle climbs are detected)
   
   // Calculate cumulative distance and filled elevation
   const cumDist = new Float64Array(points.length);
@@ -22,29 +22,52 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
     }
   }
 
+  // Smooth elevation data first to eliminate GPS micro-jitter (using a 30m rolling window)
+  const smoothedEle = new Float64Array(points.length);
+  const SMOOTH_WINDOW_M = 30;
+  for (let i = 0; i < points.length; i++) {
+    let sum = 0, count = 0;
+    let j = i;
+    while (j >= 0 && cumDist[i] - cumDist[j] <= SMOOTH_WINDOW_M / 2) {
+      sum += filledEle[j];
+      count++;
+      j--;
+    }
+    j = i + 1;
+    while (j < points.length && cumDist[j] - cumDist[i] <= SMOOTH_WINDOW_M / 2) {
+      sum += filledEle[j];
+      count++;
+      j++;
+    }
+    smoothedEle[i] = count > 0 ? sum / count : filledEle[i];
+  }
+
   const climbs: ClimbSegment[] = [];
   
-  for (let i = 0; i < points.length - 20; i++) {
-    // Look for a point at least 500m ahead
-    for (let j = i + 10; j < points.length; j++) {
+  for (let i = 0; i < points.length - 2; i++) {
+    // Look for a point at least 150m ahead
+    for (let j = i + 1; j < points.length; j++) {
       const dist = cumDist[j] - cumDist[i];
       if (dist < minClimbDistance) continue;
       
-      const eleDiff = filledEle[j] - filledEle[i];
+      const eleDiff = smoothedEle[j] - smoothedEle[i];
       const avgGrad = (eleDiff / dist) * 100;
       
       if (avgGrad >= minAvgGradient) {
-        // Potential climb found, now try to extend it
+        // Potential climb found, now try to extend it point-by-point
         let currentEnd = j;
         let runningMaxGrad = avgGrad;
         
-        while (currentEnd < points.length - 5) {
-          const nextDist = cumDist[currentEnd + 5] - cumDist[currentEnd];
-          const nextEle = filledEle[currentEnd + 5] - filledEle[currentEnd];
-          const segmentGrad = (nextEle / nextDist) * 100;
+        while (currentEnd < points.length - 1) {
+          const nextDist = cumDist[currentEnd + 1] - cumDist[currentEnd];
+          const nextEle = smoothedEle[currentEnd + 1] - smoothedEle[currentEnd];
+          const segmentGrad = nextDist > 0 ? (nextEle / nextDist) * 105 : 0; // slight scaling factor for short intervals
           
-          if (segmentGrad > 1.0 || (filledEle[currentEnd + 5] - filledEle[i]) / (cumDist[currentEnd + 5] - cumDist[i]) * 100 > minAvgGradient) {
-            currentEnd += 5;
+          // Allow minor flats or downhills (up to -2.0%) as part of a climb
+          // as long as the overall average gradient remains above the minimum average gradient
+          const overallAvgGrad = ((smoothedEle[currentEnd + 1] - smoothedEle[i]) / (cumDist[currentEnd + 1] - cumDist[i])) * 100;
+          if (segmentGrad > -2.0 || overallAvgGrad > minAvgGradient) {
+            currentEnd += 1;
             if (segmentGrad > runningMaxGrad) runningMaxGrad = segmentGrad;
           } else {
             break;
@@ -52,7 +75,7 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
         }
         
         const finalDist = cumDist[currentEnd] - cumDist[i];
-        const finalAscent = filledEle[currentEnd] - filledEle[i];
+        const finalAscent = smoothedEle[currentEnd] - smoothedEle[i];
         const finalAvgGrad = (finalAscent / finalDist) * 100;
         
         if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient) {
@@ -67,8 +90,8 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
           i = currentEnd; // Skip processed points
           break;
         }
-      } else if (avgGrad < -2) {
-        // If it's a significant descent, stop looking from this i
+      } else if (avgGrad < -3) {
+        // If it's a significant descent, stop looking from this start point
         break;
       }
     }

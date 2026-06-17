@@ -1,1 +1,28 @@
 @import "tailwindcss";
+
+/* Leaflet dark-tiles filter - preserves map contrast in dark mode beautifully */
+.dark .dark-tiles .leaflet-tile-container {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(105%);
+}
+
+/* Fix colors for custom leaflet components inside dark mode, so they stay crisp and readable */
+.dark .leaflet-bar button {
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}
+
+.dark .leaflet-bar button:hover {
+  background-color: #334155 !important;
+}
+
+.dark .leaflet-popup-content-wrapper {
+  background-color: #111827 !important;
+  color: #f1f5f9 !important;
+  border: 1px solid #374151;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.dark .leaflet-popup-tip {
+  background-color: #111827 !important;
+}

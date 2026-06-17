@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Activity, Zap, TrendingUp, BarChart2, Shield, Heart, Clock, Maximize2 } from 'lucide-react';
+import { X, Activity, Zap, TrendingUp, BarChart2, Shield, Heart, Clock, Maximize2, Flame, Settings, HelpCircle, Info } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
-import { calculatePowerStats, calculateDistance, getPaceString } from '../utils/gpxUtils';
+import { calculatePowerStats, calculateDistance, getPaceString, findClimbs } from '../utils/gpxUtils';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar, Cell, LineChart, Line, Legend } from 'recharts';
 
 const formatPaceDecimal = (paceDecimal: number) => {
@@ -22,6 +22,82 @@ interface AdvancedAnalyticsProps {
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
+const METRIC_EXPLANATIONS: Record<string, { title: string; subtitle: string; formula: string; text: string }> = {
+  avgPower: {
+    title: "Ø Sim-Leistung (Simulierte Leistung)",
+    subtitle: "Aerodynamische, mechanische & gravitationelle Leistungsberechnung",
+    formula: "P_gesamt = P_steigo + P_roll + P_aero | Multipliziert mit 1.05 Antriebsverlust (Fahrrad)",
+    text: "Die physikalische Durchschnittsleistung (in Watt) summiert alle mechanischen Widerstände über jedes einzelne GPS-Segment:\n\n" +
+          "• **Gravitationsleistung (Steigung)**:\n  P_steigo = (Körpergewicht + Maschinengewicht) * g * v * sin(arctan(S))\n  S ist das Steigungsverhältnis (Höhenunterschied / Distanz). v ist die Geschwindigkeit in m/s. g ist die Erdbeschleunigung (9.81 m/s²). Bei steilem Gefälle kann dieser Wert negativ sein.\n\n" +
+          "• **Rollwiderstand**:\n  P_roll = (Körpergewicht + Maschinengewicht) * g * v * cos(arctan(S)) * C_rr\n  Hierbei fließt der gewählte Reifentyp direkt ein (C_rr für Straße = 0.0040, Gravel = 0.0065, MTB = 0.0090).\n\n" +
+          "• **Aero-Luftwiderstand**:\n  P_aero = 0.5 * CdA * rho * (v + v_wind)² * v\n  Die projizierte Stirnfläche mal Luftwiderstandsbeiwert (CdA) bildet deinen Windschatten (Unterlenker = 0.26, Bremsgriffe = 0.32, Aufrechte Sitzposition = 0.40). rho ist die Luftdichte auf Meereshöhe (1.225 kg/m³) und v_wind die Gegenwind-Geschwindigkeit.\n\n" +
+          "• **Antriebseffizienz**:\n  Beim Radfahren werden 5% Kraftübertragungsverlust (Drivetrain Loss = 0.95 Effizienz) hinzugerechnet. Beim Laufen wird eine biomechanische Laufleistungskonstante (1.04 * Gewicht * v) und ein Steigungsfaktor verwendet."
+  },
+  workKj: {
+    title: "Physikalische Arbeit (in kJ)",
+    subtitle: "Die gesamte an die Kurbel oder Füße übertragene mechanische Energie",
+    formula: "Arbeit (kJ) = Summe(Leistung (W) * Dauer (Sekunden)) / 1000",
+    text: "Die physikalische Arbeit misst die reine Bewegungsenergie, die du auf die Straße gebracht hast.\n\n" +
+          "1 Wattsekunde entspricht exakt 1 Joule. Wenn du beispielsweise 1 Stunde lang mit konstant 200 Watt fährst:\n" +
+          "Arbeit = 200 W * 3600 h_sek = 720.000 Joule = 720 Kilojoule (kJ).\n\n" +
+          "Die physikalische Arbeit ist extrem wertvoll, da sie ein von Herzfrequenzschwankungen und Tagesform unbeeinflusstes, absolut objektives Maß für den mechanischen Energieaufwand deiner Fahrt darstellt."
+  },
+  calories: {
+    title: "Metabolische Energie (Kalorien in kcal)",
+    subtitle: "Der biologische Energieverbrauch (Bruttoumsatz) deines Stoffwechsels",
+    formula: "Metabolische kcal = Arbeit (kJ) / (Muskelwirkungsgrad * 4.184)",
+    text: "Warum verbraucht man mehr kcal als kJ Arbeit auf der Anzeige stehen?\n\n" +
+          "Der menschliche Körper ist thermodynamisch betrachtet kein idealer Motor. Nur etwa 21% bis 23% der im Muskel durch Nahrung (Fett und Glykogen) freigesetzten chemischen Energie können in mechanische Kurbelarbeit umgewandelt werden. Der Rest (77% bis 79%) verpufft ungenutzt als Körperwärme und Schweißverdunstung.\n\n" +
+          "• **Radfahren**: Wirkungsgrad von ca. 23% (da der Oberkörper weitgehend stabilisiert und rollend gelagert ist).\n" +
+          "• **Laufen**: Wirkungsgrad von ca. 21% (aufgrund zusätzlicher exzentrischer Stoßarbeit und aktiver Halte- und Stützmuskulatur).\n\n" +
+          "Da 1 kcal = 4.184 kJ beträgt, ergibt sich durch den Wirkungsgrad von 23%:\n" +
+          "kcal = kJ / (0.23 * 4.184) ≈ kJ * 1.04\n" +
+          "(Bei 21% Wirkungsgrad sind es ca. kJ * 1.13). Du verbrennst also biologisch in etwa so viele Kilokalorien, wie du mechanische Kilojoule leistest!"
+  },
+  fatOx: {
+    title: "Fettschmelze-Anteil (Fat Oxidation)",
+    subtitle: "Die Verbrennungsquote aus freien Fettsäuren zur Energiegewinnung",
+    formula: "Fett (g) = (Energetischer Anteil aus Fett in kcal) / 9.3 kcal/g",
+    text: "Die Verfeuerung körpereigener Fette (Lipolyse) liefert nahezu unbegrenzte Energie, benötigt jedoch viel Sauerstoff (aerobes System) und läuft bei niedriger Intensität am besten:\n\n" +
+          "Der Algorithmus berechnet das Intensitätsverhältnis (Power / FTP) für jede Sekunde:\n" +
+          "• **Unter 55% FTP (Regenerativ)**: Der Fettanteil liegt bei ca. 70% der benötigten Energie. Hier schmilzt der Speck optimal!\n" +
+          "• **55% bis 75% FTP (GA1)**: Der Fettanteil sinkt auf ca. 52% ab. Kohlenhydrate übernehmen die andere Hälfte.\n" +
+          "• **75% bis 90% FTP (GA2 / Schwelle)**: Fett steuert nur noch etwa 30% bei.\n" +
+          "• **Über 90% FTP (VO2max / Anaerob)**: Der Fettanteil bricht auf unter 12% bis zu 2% zusammen. Der Körper brennt fast ausschließlich reines Glykogen aus den Speichern ab.\n\n" +
+          "Umgerechnet in Gramm: 1 Gramm Fett lagert ca. 9.3 Kilokalorien Energie ein."
+  },
+  carbOx: {
+    title: "Kohlenhydrat-Anteil (Glykogenbeladung)",
+    subtitle: "Die Verbrennung von Muskelzucker/Glykogen bei ansteigender Wattzahl",
+    formula: "Kohlenhydrate (g) = (Energetischer Anteil aus Carbs in kcal) / 4.1 kcal/g",
+    text: "Kohlenhydrate (Glukose) sind der hocheffiziente Treibstoff für dein Gehirn und sportliche Tempoläufe bzw. Sprints.\n\n" +
+          "Da sie enzymatisch viel schneller gespalten werden können als Fette und pro Liter verbrauchtem Sauerstoff mehr Energie (ATP) freisetzen, schaltet dein Körper bei mittlerer bis hoher Intensität (> 75% FTP) fast vollständig auf die Verbrennung von Glykogen um.\n\n" +
+          "Da deine Glykogenspeicher im Muskel und der Leber sehr begrenzt sind (ca. 400 Gramm beim trainierten Athleten, entsprechend ca. 1600 kcal), leert sich dieser Tank bei Fahrten im roten Bereich rasant.\n\n" +
+          "Umgerechnet in Gramm: 1 Gramm Kohlenhydrate besitzt einen physiologischen Brennwert von ca. 4.1 Kilokalorien."
+  },
+  slopeClassifier: {
+    title: "🧗 Steigungs-Klassifizierer",
+    subtitle: "Topografische Terraineinstufung nach Verteilungsverteilung",
+    formula: "Streckenprofil = F(Gefälle %, Ebene %, Wellig %, Moderat %, Schwer %, Wand %)",
+    text: "Der Routen-Klassifizierer teilt jeden Höhenmeter in sechs standardisierte Zonen ein:\n" +
+          "1. **Gefälle (< -1.5%)**: Negative Hangabtriebskraft wirkt beschleunigend.\n" +
+          "2. **Ebene (-1.5% bis 1.0%)**: Roll- und Luftwiderstand sind die dominanten Bremskräfte.\n" +
+          "3. **Wellig (1.0% bis 3.5%)**: Leichtes Ansteigen, auch 'Falsches Flachland' genannt.\n" +
+          "4. **Moderat (3.5% bis 6.5%)**: Spürbare Steigung, erfordert Rhythmuswechsel.\n" +
+          "5. **Schwere Steigungen (6.5% bis 11.0%)**: Deutlicher Kletteranteil, verlangt Bergübersetzung.\n" +
+          "6. **Steilrampe / Wand (> 11.0%)**: Extrem steiler Anstieg, oft Wiegetritt erforderlich.\n\n" +
+          "Anhand der prozentualen Verteilungen auf der Gesamtstrecke stufen wir den Charakter des GPX-Tracks ein (Rouleur, Puncheur oder Grimpeur)."
+  },
+  slopeClassifierAll: {
+    title: "Steigungsklassifizierung im Detail",
+    subtitle: "Wie Höhenmodelle digital analysiert und berechnet werden",
+    formula: "Glättungsfunktion: Gleitendes Mittelwertsfenster (Moving Average k = 11 Punkte)",
+    text: "GPX-Rohdaten enthalten oft beträchtliches Höhenrauschen (GPS-Jitter). Ein Teilstück kann barometrisch oder per Satellitenabgleich sprunghaft steigen oder fallen, obwohl der Weg flach ist.\n\n" +
+          "Aus diesem Grund wendet unser Algorithmus vor der Zuweisung zu den Steigungsklassen ein intelligentes Glättungsfenster an. Es mittelt jeden Punkt mit seinen jeweils 5 vorhergehenden und 5 nachfolgenden Nachbarn. Nur so wird verhindert, dass mikroskopische GPS-Ungenauigkeiten als scheinbar brutale Steilrampen detektiert werden.\n\n" +
+          "Damit entspricht die angezeigte Grafik exakt dem flüssigen Gefühl, das ein Sportler beim Befahren der Strecke wahrnimmt."
+  }
+};
+
 const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({ 
   track, 
   onClose, 
@@ -32,7 +108,24 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   onSelection 
 }) => {
   const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
+  const [selectedTheoryMetric, setSelectedTheoryMetric] = useState<string | null>(null);
+  const [showTheoryHandbook, setShowTheoryHandbook] = useState<boolean>(false);
+  const [activeHandbookTab, setActiveHandbookTab] = useState<'aero' | 'energy' | 'substrate' | 'slope'>('aero');
+  
   const isRunning = track.activityType === 'running';
+
+  const computedClimbs = useMemo(() => {
+    return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
+  }, [track.climbs, track.points]);
+
+  // State hooks for local dynamic Laboratory Simulation
+  const [labRiderWeight, setLabRiderWeight] = useState<number>(userWeight || 75);
+  const [labBikeWeight, setLabBikeWeight] = useState<number>(isRunning ? 1.5 : 9.5);
+  const [labWindSpeed, setLabWindSpeed] = useState<number>(0); // Wind speed in km/h
+  const [labRollingResistance, setLabRollingResistance] = useState<'road' | 'gravel' | 'mtb'>(
+    'road'
+  );
+  const [labPosition, setLabPosition] = useState<'hoods' | 'drops' | 'upright'>('hoods');
 
   // Filter points if selection bounds are provided
   const analysisPoints = useMemo(() => {
@@ -91,9 +184,22 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
             speedKmh = dStep / (dt / 3600);
           }
         }
-        if (dStep > 0.002 && p.ele !== undefined && analysisPoints[idx - 1].ele !== undefined) {
+        
+        // Windowed slope calculation (30 meters lookback) for stable and highly responsive points sloped gradient
+        let j = idx;
+        let dSum = 0;
+        const windowKm = 0.030; // 30 meters window
+        while (j > 0 && dSum < windowKm) {
+          dSum += calculateDistance(analysisPoints[j - 1], analysisPoints[j]);
+          j--;
+        }
+        
+        if (dSum >= 0.010 && p.ele !== undefined && analysisPoints[j].ele !== undefined) {
+          slope = ((p.ele - analysisPoints[j].ele!) / (dSum * 1000)) * 100;
+          if (Math.abs(slope) > 40) slope = 0; // Filter outlier GPS elevation jumps
+        } else if (dStep > 0.0005 && p.ele !== undefined && analysisPoints[idx - 1].ele !== undefined) {
           slope = ((p.ele - analysisPoints[idx - 1].ele!) / (dStep * 1000)) * 100;
-          if (Math.abs(slope) > 35) slope = 0; // Filter outlier GPS elevation jumps
+          if (Math.abs(slope) > 40) slope = 0;
         }
       }
 
@@ -134,6 +240,232 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   const [activeTimelineMetric, setActiveTimelineMetric] = useState<string>(
     isRunning ? 'pace' : 'power'
   );
+
+  // Steigungs-Klassifizierer: Berechne Distanz in verschiedenen Steigungsklassen
+  const slopeCategorization = useMemo(() => {
+    if (analysisPoints.length < 2) return null;
+
+    let distGefaelle = 0;
+    let distEbene = 0;
+    let distWellig = 0;
+    let distModerat = 0;
+    let distSteil = 0;
+    let distSteilrampe = 0;
+    let totalDist = 0;
+
+    // Smooth elevations first to avoid GPS jitter
+    const eleSmoothed = new Float64Array(analysisPoints.length);
+    const windowHalf = 5;
+    for (let i = 0; i < analysisPoints.length; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - windowHalf); j <= Math.min(analysisPoints.length - 1, i + windowHalf); j++) {
+        if (analysisPoints[j].ele !== undefined) {
+          sum += analysisPoints[j].ele!;
+          count++;
+        }
+      }
+      eleSmoothed[i] = count > 0 ? sum / count : (analysisPoints[i].ele ?? 0);
+    }
+
+    for (let i = 1; i < analysisPoints.length; i++) {
+      const pPrev = analysisPoints[i - 1];
+      const pCurr = analysisPoints[i];
+      const segmentDist = calculateDistance(pPrev, pCurr); // in km
+      if (segmentDist <= 0) continue;
+
+      const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
+      const slopePercent = (eleDiff / (segmentDist * 1000)) * 100;
+
+      totalDist += segmentDist;
+
+      if (slopePercent < -1.5) {
+        distGefaelle += segmentDist;
+      } else if (slopePercent >= -1.5 && slopePercent < 1.0) {
+        distEbene += segmentDist;
+      } else if (slopePercent >= 1.0 && slopePercent < 3.5) {
+        distWellig += segmentDist;
+      } else if (slopePercent >= 3.5 && slopePercent < 6.5) {
+        distModerat += segmentDist;
+      } else if (slopePercent >= 6.5 && slopePercent < 11.0) {
+        distSteil += segmentDist;
+      } else {
+        distSteilrampe += segmentDist;
+      }
+    }
+
+    if (totalDist === 0) return null;
+
+    const percentGefaelle = (distGefaelle / totalDist) * 100;
+    const percentEbene = (distEbene / totalDist) * 100;
+    const percentWellig = (distWellig / totalDist) * 100;
+    const percentModerat = (distModerat / totalDist) * 100;
+    const percentSteil = (distSteil / totalDist) * 100;
+    const percentSteilrampe = (distSteilrampe / totalDist) * 100;
+
+    // Classify overall track character
+    let trackCharacter = 'Ausgewogenes Terrain';
+    let trackDesc = 'Eine gute Mischung aus flachen, welligen und ansteigenden Segmenten.';
+    if (distEbene + distGefaelle > totalDist * 0.8) {
+      trackCharacter = 'Flachetappe (Rouleur)';
+      trackDesc = 'Sehr flache Strecke, ideal für Tempobolzer, Zeitfahren und Sprints.';
+    } else if (distWellig + distModerat > totalDist * 0.45 && distSteil + distSteilrampe < totalDist * 0.05) {
+      trackCharacter = 'Welliges Terrain (Puncheur)';
+      trackDesc = 'Kurze, knackige Hügel und welliges Profil, perfekt für hochexplosive Antritte.';
+    } else if (distSteil + distSteilrampe > totalDist * 0.12) {
+      trackCharacter = 'Kletter-Klassiker (Grimpeur)';
+      trackDesc = 'Anspruchsvolles Berggelände mit signifikanten Steigungsanteilen.';
+    } else if (computedClimbs && computedClimbs.length >= 3) {
+      trackCharacter = 'Gebirgsrunde (Grimpeur)';
+      trackDesc = 'Mehrere schwere Bergwertungen verlangen exzellente Ausdauer am Berg.';
+    }
+
+    return {
+      totalDist,
+      categories: [
+        { name: 'Gefälle / Bergab', dist: distGefaelle, pct: percentGefaelle, color: 'bg-indigo-500', desc: '< -1.5% Steigung', hex: '#6366f1' },
+        { name: 'Flaches Terrain', dist: distEbene, pct: percentEbene, color: 'bg-slate-400', desc: '-1.5% bis 1.0%', hex: '#94a3b8' },
+        { name: 'Falsches Flachland / Wellig', dist: distWellig, pct: percentWellig, color: 'bg-amber-400', desc: '1.0% bis 3.5%', hex: '#fbbf24' },
+        { name: 'Moderat ansteigend', dist: distModerat, pct: percentModerat, color: 'bg-orange-500', desc: '3.5% bis 6.5%', hex: '#f97316' },
+        { name: 'Schwere Steigungen', dist: distSteil, pct: percentSteil, color: 'bg-rose-600', desc: '6.5% bis 11.0%', hex: '#e11d48' },
+        { name: 'Steilrampe / Wand', dist: distSteilrampe, pct: percentSteilrampe, color: 'bg-red-800', desc: '> 11.0% Steigung!', hex: '#991b1b' },
+      ],
+      character: trackCharacter,
+      desc: trackDesc
+    };
+  }, [analysisPoints, computedClimbs]);
+
+  // Advanced Dynamic Performance & Calories Estimations
+  const labCalculations = useMemo(() => {
+    if (analysisPoints.length < 2) return null;
+
+    const g = 9.81;
+    const rho = 1.225; // Luftdichte
+
+    let crrVal = 0.004; // road
+    if (labRollingResistance === 'gravel') crrVal = 0.0065;
+    if (labRollingResistance === 'mtb') crrVal = 0.009;
+
+    let cdaVal = 0.32; // hoods
+    if (labPosition === 'drops') cdaVal = 0.26;
+    if (labPosition === 'upright') cdaVal = 0.40;
+
+    let totalEnergyJoules = 0;
+    let sumEstPower = 0;
+    let pointsCount = 0;
+    let totalTimeSec = 0;
+
+    // Categorized metabolic energy (Carb vs Fat)
+    let carbJoules = 0;
+    let fatJoules = 0;
+
+    // Smooth elevations to reduce GPS noise
+    const eleSmoothed = new Float64Array(analysisPoints.length);
+    const windowHalf = 5;
+    for (let i = 0; i < analysisPoints.length; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - windowHalf); j <= Math.min(analysisPoints.length - 1, i + windowHalf); j++) {
+        if (analysisPoints[j].ele !== undefined) {
+          sum += analysisPoints[j].ele!;
+          count++;
+        }
+      }
+      eleSmoothed[i] = count > 0 ? sum / count : (analysisPoints[i].ele ?? 0);
+    }
+
+    for (let i = 1; i < analysisPoints.length; i++) {
+      const pPrev = analysisPoints[i - 1];
+      const pCurr = analysisPoints[i];
+      if (!pPrev.time || !pCurr.time) continue;
+
+      const dt = (pCurr.time.getTime() - pPrev.time.getTime()) / 1000;
+      if (dt <= 0 || dt > 120) continue;
+
+      const distM = calculateDistance(pPrev, pCurr) * 1000;
+      const speedMs = distM / dt;
+      if (speedMs < 0.2) continue;
+
+      const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
+      const slope = distM > 0 ? eleDiff / distM : 0;
+
+      let power = 0;
+      if (isRunning) {
+        // running power formula
+        const runningFactor = 1.04;
+        power = runningFactor * labRiderWeight * speedMs;
+        if (slope > 0) {
+          power *= (1 + slope * (3.6 + labWindSpeed * 0.05));
+        } else if (slope < 0) {
+          power *= Math.max(0.60, 1 + slope * 1.5);
+        }
+      } else {
+        // cycling power formula
+        const fGrav = (labRiderWeight + labBikeWeight) * g * Math.sin(Math.atan(slope));
+        const fRoll = (labRiderWeight + labBikeWeight) * g * Math.cos(Math.atan(slope)) * crrVal;
+        
+        // headwind vector
+        const relativeAirSpeedMs = speedMs + (labWindSpeed / 3.6);
+        const fAero = 0.5 * rho * cdaVal * relativeAirSpeedMs * relativeAirSpeedMs;
+
+        const fNet = fGrav + fRoll + fAero;
+        let rawPower = fNet * speedMs;
+        power = rawPower / 0.95; // drivetrain loss
+
+        if (slope < -0.04) {
+          power = 0;
+        } else {
+          power = Math.max(10, Math.min(1000, power));
+        }
+      }
+
+      sumEstPower += power;
+      totalEnergyJoules += power * dt;
+      pointsCount++;
+      totalTimeSec += dt;
+
+      // Carb vs. Fat oxidation calculation
+      const intensity = power / (ftp || 250);
+      let fatPct = 0.60;
+      if (intensity < 0.55) {
+        fatPct = 0.70;
+      } else if (intensity < 0.75) {
+        fatPct = 0.52;
+      } else if (intensity < 0.90) {
+        fatPct = 0.30;
+      } else if (intensity < 1.05) {
+        fatPct = 0.12;
+      } else {
+        fatPct = 0.02;
+      }
+
+      const totalPctCarb = 1.0 - fatPct;
+      fatJoules += (power * dt) * fatPct;
+      carbJoules += (power * dt) * totalPctCarb;
+    }
+
+    const estimatedAvgPower = pointsCount > 0 ? sumEstPower / pointsCount : 0;
+    const workKj = totalEnergyJoules / 1000;
+
+    const metabolicEfficiency = isRunning ? 0.21 : 0.23;
+    const totalCal = workKj / (metabolicEfficiency * 4.184);
+
+    const fatCal = (fatJoules / 1000) / (metabolicEfficiency * 4.184);
+    const carbCal = (carbJoules / 1000) / (metabolicEfficiency * 4.184);
+
+    const fatGrams = fatCal / 9.3;
+    const carbGrams = carbCal / 4.1;
+
+    return {
+      avgPower: Math.round(estimatedAvgPower),
+      workKj: Math.round(workKj),
+      calories: Math.round(totalCal),
+      fatCal: Math.round(fatCal),
+      carbCal: Math.round(carbCal),
+      fatGrams: Number(fatGrams.toFixed(1)),
+      carbGrams: Number(carbGrams.toFixed(1)),
+      fatPct: Math.round((fatCal / (totalCal || 1)) * 100),
+      carbPct: Math.round((carbCal / (totalCal || 1)) * 100),
+    };
+  }, [analysisPoints, isRunning, labRiderWeight, labBikeWeight, labWindSpeed, labRollingResistance, labPosition, ftp]);
 
   // Power Stats or Estimates
   const powerStats = useMemo(() => {
@@ -630,6 +962,48 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 bg-slate-50 dark:bg-slate-950">
         <div className="max-w-7xl mx-auto space-y-8">
           
+          {/* Quick Navigation Anchor Bar */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xs font-sans">
+            <span className="text-xs font-black uppercase text-slate-500 tracking-wider flex items-center gap-1.5 px-2">
+              <Info size={14} className="text-indigo-600 dark:text-indigo-400" /> Schnellnavigation & Theorie:
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              <button 
+                onClick={() => {
+                  const el = document.getElementById('perf-lab');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }}
+                className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-xs rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                ⚡ Performance-Labor & Rechner
+              </button>
+              <button 
+                onClick={() => {
+                  const el = document.getElementById('slope-classifier');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }}
+                className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-bold text-xs rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                🧗 Steigungs-Klassifizierer
+              </button>
+              <button 
+                onClick={() => {
+                  const el = document.getElementById('elevation-analysis');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }}
+                className="px-3 py-1.5 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-300 font-bold text-xs rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                ⛰️ Höhenprofil & Steigungen
+              </button>
+              <button 
+                onClick={() => setShowTheoryHandbook(true)}
+                className="px-3 py-1.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 font-bold text-xs rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                📖 Theorie-Handbuch (Physik & Biomechanik)
+              </button>
+            </div>
+          </div>
+
           {/* Dynamic Metric Cards Grid depending on Activity Type */}
           {isRunning ? (
             <div className="flex sm:grid overflow-x-auto sm:overflow-x-visible pb-1 sm:pb-0 gap-4 sm:grid-cols-2 lg:grid-cols-5 snap-x max-w-full no-scrollbar">
@@ -1035,8 +1409,328 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
              <div className="absolute bottom-0 left-0 w-64 h-64 bg-indigo-500/10 rounded-full -ml-32 -mb-32 blur-3xl pointer-events-none" />
           </div>
 
+          {/* Dynamic Performance Laboratory & Terrain Profiler */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            
+            {/* Left: Dynamic Performance Laboratory */}
+            <div id="perf-lab" className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-6 scroll-mt-20">
+              <div className="space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-indigo-50 dark:bg-indigo-950/60 rounded-xl text-indigo-600 dark:text-indigo-400">
+                    <Settings size={20} className="animate-spin" style={{ animationDuration: '6s' }} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-800 dark:text-slate-100">
+                      ⚡ Performance-Labor & Rechner
+                    </h3>
+                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                      Passe Parameter an und sehe die berechnete Durchschnitts-Wattzahl sowie den Kalorienverbrauch in Echtzeit.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Slider / Config Controls Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 bg-slate-50 dark:bg-slate-950/40 p-4 rounded-xl border border-slate-100 dark:border-slate-800/80">
+                  
+                  {/* Rider Weight Input */}
+                  <div className="space-y-1.5 font-sans">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+                      <span>Körpergewicht (Gesamt)</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-200">{labRiderWeight} kg</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="45"
+                      max="140"
+                      step="1"
+                      value={labRiderWeight}
+                      onChange={(e) => setLabRiderWeight(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+
+                  {/* Wind speed input */}
+                  <div className="space-y-1.5 font-sans">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+                      <span>Gegenwind (Durchschnitt)</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-200">{labWindSpeed} km/h</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="45"
+                      step="1"
+                      value={labWindSpeed}
+                      onChange={(e) => setLabWindSpeed(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+
+                  {!isRunning ? (
+                    <>
+                      {/* Bicycle weight input */}
+                      <div className="space-y-1.5 font-sans">
+                        <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+                          <span>Fahrrad & Ausrüstung</span>
+                          <span className="font-mono text-slate-700 dark:text-slate-200">{labBikeWeight} kg</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="5"
+                          max="25"
+                          step="0.5"
+                          value={labBikeWeight}
+                          onChange={(e) => setLabBikeWeight(Number(e.target.value))}
+                          className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                        />
+                      </div>
+
+                      {/* Riding Position */}
+                      <div className="space-y-1.5 font-sans">
+                        <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block">Sitzposition (Aero)</span>
+                        <div className="grid grid-cols-3 gap-1 bg-white dark:bg-slate-900 p-1 rounded-lg border border-slate-105 dark:border-slate-800">
+                          {(['upright', 'hoods', 'drops'] as const).map((pos) => (
+                            <button
+                              key={pos}
+                              type="button"
+                              onClick={() => setLabPosition(pos)}
+                              className={`py-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                                labPosition === pos
+                                  ? 'bg-indigo-600 text-white shadow-sm'
+                                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              {pos === 'upright' ? 'Aufrecht' : pos === 'hoods' ? 'Griffe' : 'Lenker'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Tire Roll Resistance */}
+                      <div className="col-span-1 sm:col-span-2 space-y-1.5 font-sans">
+                        <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block">Reifentyp & Geländewiderstand</span>
+                        <div className="grid grid-cols-3 gap-1 bg-white dark:bg-slate-900 p-1 rounded-lg border border-slate-105 dark:border-slate-800">
+                          {(['road', 'gravel', 'mtb'] as const).map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => setLabRollingResistance(type)}
+                              className={`py-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                                labRollingResistance === type
+                                  ? 'bg-indigo-600 text-white shadow-sm'
+                                  : 'text-slate-505 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              {type === 'road' ? 'Road' : type === 'gravel' ? 'Gravel' : 'MTB'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Gear / Clothing weight */}
+                      <div className="space-y-1.5 font-sans">
+                        <div className="flex items-center justify-between text-xs font-bold text-slate-505 dark:text-slate-405">
+                          <span>Ausrüstung & Zusatzgewicht</span>
+                          <span className="font-mono text-slate-700 dark:text-slate-200">{labBikeWeight} kg</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="8"
+                          step="0.1"
+                          value={labBikeWeight}
+                          onChange={(e) => setLabBikeWeight(Number(e.target.value))}
+                          className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                        />
+                      </div>
+
+                      {/* Running Style Eco */}
+                      <div className="space-y-1.5 flex flex-col justify-end font-sans">
+                        <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-705 dark:text-indigo-300 rounded-xl border border-indigo-100/30 text-[10.5px] leading-relaxed font-semibold">
+                          💡 <strong>Lauf-Biomechanik:</strong> Der metabolische Wirkungsgrad wird automatisch an die Steigungen angepasst, um die erhöhte elastische Speichereffizienz thermodynamisch abzubilden.
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Dynamic Lab Results Grid */}
+              {labCalculations && (
+                <div className="space-y-4 font-sans pt-4 border-t border-slate-100 dark:border-slate-800/80">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
+                      <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
+                        Ø Sim-Leistung
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('avgPower')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Physikalische Leistungsformel anzeigen"
+                        >
+                          <HelpCircle size={11} />
+                        </button>
+                      </span>
+                      <span className="text-base font-black text-slate-800 dark:text-white font-mono">{labCalculations.avgPower} W</span>
+                    </div>
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative animate-pulse" style={{ animationDuration: '4s' }}>
+                      <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
+                        Phys. Arbeit
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('workKj')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Physikalische Arbeit erklären"
+                        >
+                          <HelpCircle size={11} />
+                        </button>
+                      </span>
+                      <span className="text-base font-black text-indigo-650 dark:text-indigo-400 font-mono">{labCalculations.workKj} kJ</span>
+                    </div>
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
+                      <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
+                        Metabol. Energie
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('calories')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Thermodynamischen Wirkungsgrad erklären"
+                        >
+                          <HelpCircle size={11} />
+                        </button>
+                      </span>
+                      <span className="text-base font-black text-rose-500 font-mono">{labCalculations.calories} kcal</span>
+                    </div>
+                  </div>
+
+                  {/* Fat vs Carb Oxidation segment */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950/50 rounded-xl border border-slate-100 dark:border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
+                      <span className="flex items-center gap-1">
+                        <Flame size={14} className="text-amber-500 animate-pulse" /> 
+                        Fettschmelze-Anteil (Fat-Ox)
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('fatOx')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Fettverbrennungs-Zusammenhang einblenden"
+                        >
+                          <HelpCircle size={12} />
+                        </button>
+                      </span>
+                      <span className="flex items-center gap-1">
+                        Kohlenhydrate (Glykogen)
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('carbOx')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Glykogen-Entleerungs-Modell einblenden"
+                        >
+                          <HelpCircle size={12} />
+                        </button>
+                      </span>
+                    </div>
+                    
+                    {/* Double progress bar */}
+                    <div className="h-2.5 w-full bg-slate-205 dark:bg-slate-800 rounded-full overflow-hidden flex shadow-inner">
+                      <div className="bg-amber-500 h-full transition-all" style={{ width: `${labCalculations.fatPct}%` }} />
+                      <div className="bg-rose-500 h-full transition-all" style={{ width: `${labCalculations.carbPct}%` }} />
+                    </div>
+
+                    <div className="flex items-center justify-between font-mono text-[9.5px] text-slate-400 dark:text-slate-500 font-bold">
+                      <span>{labCalculations.fatPct}% ({labCalculations.fatGrams}g Fett)</span>
+                      <span>{labCalculations.carbPct}% ({labCalculations.carbGrams}g Carbs)</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+             {/* Right: Automatic Slope Classifier */}
+            <div id="slope-classifier" className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-6 scroll-mt-20">
+              
+              <div className="space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-50 dark:bg-emerald-950/60 rounded-xl text-emerald-600 dark:text-emerald-400">
+                    <TrendingUp size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      🧗 Steigungs-Klassifizierer
+                      <button 
+                        onClick={() => setSelectedTheoryMetric('slopeClassifierAll')}
+                        className="p-1 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition cursor-pointer"
+                        title="Theorie der Höhenglättung & Einteilung anzeigen"
+                      >
+                        <HelpCircle size={15} />
+                      </button>
+                    </h3>
+                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                      Automatische Analyse der Gradienten-Sektionen und topologische Einstufung der Route.
+                    </p>
+                  </div>
+                </div>
+
+                {slopeCategorization && (
+                  <div className="space-y-5 font-sans">
+                    {/* Overall Classification Character Card */}
+                    <div className="p-4 bg-gradient-to-br from-emerald-500/5 to-teal-500/5 dark:from-emerald-950/10 dark:to-teal-950/10 rounded-xl border border-emerald-500/10 dark:border-emerald-500/10 relative">
+                      <div className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400 tracking-wider flex items-center gap-1">
+                        Topografische Einstufung:
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('slopeClassifier')}
+                          className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition cursor-pointer"
+                          title="Berechnungsmethode & Einstufungskriterien anzeigen"
+                        >
+                          <HelpCircle size={11} />
+                        </button>
+                      </div>
+                      <div className="text-lg font-black text-slate-800 dark:text-slate-100 mt-1">{slopeCategorization.character}</div>
+                      <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 font-semibold leading-relaxed">{slopeCategorization.desc}</p>
+                    </div>
+
+                    {/* Gradient stacked progress bar */}
+                    <div className="space-y-2">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">Verlauf über die Gesamtstrecke</span>
+                      <div className="h-4 w-full bg-slate-100 dark:bg-slate-850 rounded-full flex overflow-hidden shadow-inner font-mono text-[9px] text-white font-extrabold select-none">
+                        {slopeCategorization.categories.map((cat, idx) => (
+                          cat.pct > 0.01 && (
+                            <div
+                              key={idx}
+                              className={`${cat.color} h-full transition-all flex items-center justify-center cursor-help`}
+                              style={{ width: `${cat.pct}%` }}
+                              title={`${cat.name}: ${cat.pct.toFixed(1)}% (${cat.dist.toFixed(2)} km)`}
+                            >
+                              {cat.pct > 7 && `${Math.round(cat.pct)}%`}
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Categorization list */}
+              {slopeCategorization && (
+                <div className="grid grid-cols-2 gap-3 mt-6 border-t border-slate-100 dark:border-slate-800 pt-5 text-left font-sans">
+                  {slopeCategorization.categories.map((cat, idx) => (
+                    <div key={idx} className="flex gap-2.5 items-start">
+                      <span className={`w-3 h-3 rounded-full mt-1 shrink-0 ${cat.color}`} />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-black text-slate-705 dark:text-slate-350 leading-tight truncate" title={cat.name}>
+                          {cat.name}
+                        </div>
+                        <div className="text-[10px] font-mono font-bold text-slate-400 dark:text-slate-500">
+                          {cat.dist.toFixed(2)} km <span className="text-slate-400 dark:text-slate-600">({cat.pct.toFixed(1)}%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Elevation PROFILE Analysis */}
-          <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div id="elevation-analysis" className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 scroll-mt-20">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
@@ -1059,16 +1753,16 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
               )}
             </div>
 
-            {!track.climbs || track.climbs.length === 0 ? (
+            {!computedClimbs || computedClimbs.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 px-6 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-center">
                 <p className="text-sm font-bold text-slate-500">Keine signifikanten Steilstücke erkannt</p>
-                <p className="text-xs max-w-md mt-1 text-slate-400">
-                  Auf diesem Track wurden keine Anstiege mit einer Länge über 500 Meter und einer mittleren Steigung von mindestens 3.0 % identifiziert.
+                <p className="text-xs max-w-md mt-1 text-slate-400 font-semibold">
+                  Auf diesem Track wurden keine Anstiege mit einer Länge über 150 Meter und einer mittleren Steigung von mindestens 1.5% identifiziert.
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {track.climbs.map((climb, idx) => {
+                {computedClimbs.map((climb, idx) => {
                   const cat = climbCategory(climb.ascent, climb.avgGradient, climb.distance);
                   const vam = calculateVAM(climb.ascent, climb.startIndex, climb.endIndex);
                   const avgPower = getClimbAvgPower(climb.startIndex, climb.endIndex);
@@ -1303,6 +1997,378 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                       className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition"
                     >
                       Zurück zur Analyse
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+
+            {/* Individual Metric Explanation Modal */}
+            {selectedTheoryMetric && (() => {
+              const explanation = METRIC_EXPLANATIONS[selectedTheoryMetric];
+              if (!explanation) return null;
+              return (
+                <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 sm:p-6 select-none">
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setSelectedTheoryMetric(null)}
+                    className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                  />
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                    className="relative w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[28px] shadow-2xl overflow-hidden text-slate-900 dark:text-slate-100 flex flex-col font-sans max-h-[90vh]"
+                  >
+                    {/* Header */}
+                    <div className="p-6 sm:p-8 bg-slate-50 dark:bg-slate-950 border-b border-slate-150 dark:border-slate-850 flex items-start justify-between gap-4">
+                      <div>
+                        <span className="text-[10px] font-black tracking-widest uppercase text-indigo-600 dark:text-indigo-400">Wissenschaftliche Erklärung</span>
+                        <h4 className="text-xl sm:text-2xl font-black tracking-tight text-slate-950 dark:text-white mt-1">
+                          {explanation.title}
+                        </h4>
+                        <p className="text-xs text-slate-400 dark:text-slate-500 font-semibold mt-1">
+                          {explanation.subtitle}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={() => setSelectedTheoryMetric(null)}
+                        className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition text-slate-450 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+
+                    {/* Content Scroll */}
+                    <div className="p-6 sm:p-8 space-y-6 overflow-y-auto max-h-[50vh]">
+                      {/* Formula Card */}
+                      <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl border border-white/5 font-mono text-center">
+                        <div className="text-[9px] font-black uppercase text-indigo-400 tracking-widest mb-2.5">Mathematische Formel</div>
+                        <div className="text-xs sm:text-sm font-bold text-indigo-200 break-words leading-relaxed select-text select-all">
+                          {explanation.formula}
+                        </div>
+                      </div>
+
+                      {/* Explanation Text */}
+                      <div className="space-y-4 text-slate-600 dark:text-slate-350 text-sm leading-relaxed font-medium">
+                        {explanation.text.split('\n\n').map((paragraph, pIdx) => (
+                          <p key={pIdx} className="whitespace-pre-line">
+                            {paragraph}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="p-6 bg-slate-50 dark:bg-slate-950 border-t border-slate-150 dark:border-slate-850 flex items-center justify-between gap-4">
+                      <button 
+                        onClick={() => {
+                          setSelectedTheoryMetric(null);
+                          setShowTheoryHandbook(true);
+                          // Auto Switch Tab corresponding to metric types
+                          if (selectedTheoryMetric === 'avgPower') setActiveHandbookTab('aero');
+                          else if (selectedTheoryMetric === 'workKj' || selectedTheoryMetric === 'calories') setActiveHandbookTab('energy');
+                          else if (selectedTheoryMetric === 'fatOx' || selectedTheoryMetric === 'carbOx') setActiveHandbookTab('substrate');
+                          else if (selectedTheoryMetric.includes('slope')) setActiveHandbookTab('slope');
+                        }}
+                        className="text-xs text-indigo-650 dark:text-indigo-400 hover:underline font-bold transition flex items-center gap-1.5"
+                      >
+                        📖 Ausführliches Theorie-Handbuch öffnen
+                      </button>
+                      <button 
+                        onClick={() => setSelectedTheoryMetric(null)}
+                        className="py-2.5 px-6 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl font-bold transition-all shadow-sm text-xs cursor-pointer"
+                      >
+                        Schließen
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              );
+            })()}
+
+            {/* Scientific Theory Handbook Modal */}
+            {showTheoryHandbook && (
+              <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 sm:p-6 select-none">
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setShowTheoryHandbook(false)}
+                  className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                />
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                  className="relative w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[32px] shadow-2xl overflow-hidden text-slate-900 dark:text-slate-100 flex flex-col font-sans h-[85vh]"
+                >
+                  {/* Header Title */}
+                  <div className="p-6 sm:p-8 bg-slate-50 dark:bg-slate-950 border-b border-slate-150 dark:border-slate-855/80 flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-rose-50 dark:bg-rose-955/40 text-rose-600 dark:text-rose-400 rounded-2xl">
+                        📖
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black tracking-widest uppercase text-rose-600 dark:text-rose-450">Physikalische Trainingswissenschaft</span>
+                        <h3 className="text-xl sm:text-2xl font-black tracking-tight text-slate-950 dark:text-white mt-0.5">
+                          Wissenschaftliches Theorie-Handbuch
+                        </h3>
+                        <p className="text-xs text-slate-400 dark:text-slate-500 font-semibold mt-0.5">
+                          Die physikalischen, thermodynamischen und human-biomechanischen Modelle hinter den Simulationen
+                        </p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setShowTheoryHandbook(false)}
+                      className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition text-slate-455 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      <X size={22} />
+                    </button>
+                  </div>
+
+                  {/* Horizontal Tabs Navigation */}
+                  <div className="bg-slate-100 dark:bg-slate-950/60 p-2 border-b border-slate-200 dark:border-slate-850 flex overflow-x-auto gap-1 no-scrollbar shrink-0">
+                    <button
+                      onClick={() => setActiveHandbookTab('aero')}
+                      className={`px-4 py-2.5 font-bold text-xs rounded-xl transition cursor-pointer shrink-0 ${
+                        activeHandbookTab === 'aero'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-650 dark:text-white shadow-xs'
+                          : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      💨 Aerodynamik & Widerstand
+                    </button>
+                    <button
+                      onClick={() => setActiveHandbookTab('energy')}
+                      className={`px-4 py-2.5 font-bold text-xs rounded-xl transition cursor-pointer shrink-0 ${
+                        activeHandbookTab === 'energy'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-650 dark:text-white shadow-xs'
+                          : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      ⚡ Thermodynamik & Wirkungsgrad
+                    </button>
+                    <button
+                      onClick={() => setActiveHandbookTab('substrate')}
+                      className={`px-4 py-2.5 font-bold text-xs rounded-xl transition cursor-pointer shrink-0 ${
+                        activeHandbookTab === 'substrate'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-650 dark:text-white shadow-xs'
+                          : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      🔥 Fett- & Carbobxidation
+                    </button>
+                    <button
+                      onClick={() => setActiveHandbookTab('slope')}
+                      className={`px-4 py-2.5 font-bold text-xs rounded-xl transition cursor-pointer shrink-0 ${
+                        activeHandbookTab === 'slope'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-650 dark:text-white shadow-xs'
+                          : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      🧗 GPS-Profil & Höhenglättung
+                    </button>
+                  </div>
+
+                  {/* Tab Scroll Content */}
+                  <div className="flex-1 p-6 sm:p-8 overflow-y-auto space-y-6 select-text">
+                    {activeHandbookTab === 'aero' && (
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <h4 className="text-lg font-black text-slate-900 dark:text-white">💨 Aerodynamik und Strömungswiderstand</h4>
+                          <p className="text-slate-600 dark:text-slate-350 text-sm leading-relaxed">
+                            Bei Geschwindigkeiten über 15 km/h wird der aerodynamische Widerstand zur dominierenden Bremskraft auf ebener Strecke. Das mathematische Modell berechnet die dafür erforderliche Überwindungsleistung in Watt auf Basis der Strömungsgleichung:
+                          </p>
+                        </div>
+
+                        <div className="bg-slate-950 p-4 rounded-xl font-mono text-center border border-white/5">
+                          <div className="text-xs text-indigo-400 font-bold">P_aero = 0.5 * CdA * rho * (v_speed + v_wind)² * v_speed</div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-850">
+                            <h5 className="font-extrabold text-xs text-slate-400 uppercase tracking-widest mb-3">CdA-Werte (Aerodynamischer Widerstandsbeiwert)</h5>
+                            <ul className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 font-medium">
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Unterlenker (Drops)</span>
+                                <span className="font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded font-black">CdA = 0.26 m²</span>
+                              </li>
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Standard Griffe (Hoods)</span>
+                                <span className="font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded font-black">CdA = 0.32 m²</span>
+                              </li>
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Aufrechte Position (Upright)</span>
+                                <span className="font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded font-black">CdA = 0.40 m²</span>
+                              </li>
+                            </ul>
+                          </div>
+
+                          <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-850">
+                            <h5 className="font-extrabold text-xs text-slate-400 uppercase tracking-widest mb-3">Cr-Werte (Reifen-Rollwiderstand)</h5>
+                            <p className="text-slate-500 dark:text-slate-400 text-xs leading-relaxed mb-3">
+                              Dämpfung und Profilverformung schlucken mechanische Kraft. Je rauer der Reifentyp, desto höher der C_rr:
+                            </p>
+                            <ul className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 font-medium">
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Straßenslicks (Road)</span>
+                                <span className="font-mono bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded font-black">C_rr = 0.0040</span>
+                              </li>
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Gravel-Noppen (Gravel)</span>
+                                <span className="font-mono bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded font-black">C_rr = 0.0065</span>
+                              </li>
+                              <li className="flex justify-between items-center bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                                <span className="font-bold">Stollenprofil (MTB)</span>
+                                <span className="font-mono bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded font-black">C_rr = 0.0090</span>
+                              </li>
+                            </ul>
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-indigo-50/50 dark:bg-indigo-950/25 border border-indigo-150 dark:border-indigo-900 rounded-2xl text-xs text-indigo-700 dark:text-indigo-300 leading-relaxed font-semibold">
+                          💡 <strong>Zusatzfaktor Gegenwind:</strong> Gegenwind oder Rückenwind fließt quadratisch in die Form ein. Da P_aero mit der dritten Potenz der Gesamtgeschwindigkeit skaliert, bremst dich Gegenwind extrem viel stärker ab, als dich Rückenwind gleicher Stärke beschleunigen kann!
+                        </div>
+                      </div>
+                    )}
+
+                    {activeHandbookTab === 'energy' && (
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <h4 className="text-lg font-black text-slate-900 dark:text-white">⚡ Thermodynamische Erhaltungssätze</h4>
+                          <p className="text-slate-600 dark:text-slate-350 text-sm leading-relaxed">
+                            Die gesamte Energiebilanz deines Trainings unterliegt dem Ersten Hauptsatz der Thermodynamik. Die Formel ermittelt exakt, wie chemische Energie aus Lebensmitteln in mechanische Fortbewegung umgerechnet wird.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 font-mono space-y-4">
+                            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Formel: Mechanische Arbeit</div>
+                            <div className="text-sm text-indigo-300 font-bold text-center">Arbeit (kJ) = [ Ø Watt * Sekunden ] / 1000</div>
+                            <p className="text-slate-400 text-xs leading-relaxed font-sans">
+                              1 Watt ist die Erbringung von 1 Joule mechanischer Arbeit pro Sekunde. Beispielsweise leistet eine Athletin bei einer Fahrt über 2 Stunden (= 7200 Sek) bei durchschnittlich 180 Watt exakt 1.296.000 Joule Arbeit (entspricht 1296 kJ).
+                            </p>
+                          </div>
+
+                          <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 font-mono space-y-4">
+                            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Formel: Biologischer Umsatz</div>
+                            <div className="text-sm text-rose-300 font-bold text-center">kcal = Arbeit (kJ) / [ Wirkungsgrad * 4.184 ]</div>
+                            <p className="text-slate-400 text-xs leading-relaxed font-sans">
+                              Da der menschliche Muskel einen typischen metabolischen Brutto-Wirkungsgrad von ca. 21% bis 23% besitzt, muss das Vierfache an Stoffwechselenergie in Form von verbrannten Kohlenhydraten und Fetten aufgewendet werden. Der Rest verpufft als ungenutzte Abwärme (Heizleistung des Körpers).
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-850 space-y-3">
+                          <h5 className="font-extrabold text-xs text-slate-400 uppercase tracking-widest">Wirkungsgrade im Vergleich</h5>
+                          <div className="space-y-3 text-xs">
+                            <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                              <div className="flex justify-between font-bold mb-1">
+                                <span>🚴 Radfahren (ca. 23%)</span>
+                                <span className="font-mono text-indigo-600">Faktor: kJ * 1.04</span>
+                              </div>
+                              <p className="text-slate-500 dark:text-slate-400">Geringere Verlustleistung, da der Sportler passiv auf dem Sattel sitzt und elastische Halte- und Stoßdämpfungsarbeit wegfällt.</p>
+                            </div>
+                            <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                              <div className="flex justify-between font-bold mb-1">
+                                <span>🏃 Laufen (ca. 21%)</span>
+                                <span className="font-mono text-rose-600">Faktor: kJ * 1.14</span>
+                              </div>
+                              <p className="text-slate-500 dark:text-slate-400">Höherer biomechanischer Aufwand. Der Körper muss bei jedem Schritt Stoßbelastungen abfangen, den Schwerpunkt aktiv anheben und Stabilisierungsarbeit verrichten.</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {activeHandbookTab === 'substrate' && (
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <h4 className="text-lg font-black text-slate-900 dark:text-white">🔥 Bioenergetische Substrat-Partitionierung</h4>
+                          <p className="text-slate-600 dark:text-slate-350 text-sm leading-relaxed">
+                            Zur Aufrechterhaltung der Zellfunktion spaltet der Muskel Adenosintriphosphat (ATP). Dieses wird aus zwei unterschiedlichen biochemischen Depots regeneriert: freien Fettsäuren (Lipide) und Glykogen (Glucose). Das physiologische Modell berechnet das genaue Verhältnis basierend auf der aktuellen Belastungsintensität zur FTP.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-semibold">
+                          <div className="p-5 bg-amber-500/5 rounded-2xl border border-amber-500/10 space-y-3">
+                            <h5 className="font-black text-amber-650 flex items-center gap-1.5"><Flame size={14} /> Lipidstoffwechsel (Fett-Oxidation)</h5>
+                            <p className="text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
+                              Fette verfeuern langsam unter hohem Sauerstoffumsatz. Sie liefern enorme Energiemengen (9.3 kcal/g), eignen sich jedoch nur bis zu einer moderaten Belastung von unter 75% FTP. Bei intensivem Schwellentraining bricht die Enzymaktivität der Lipolyse ein, da die Atmungskette im Mitochondrium mit dem Sauerstoffnachschub nicht mehr hinterherkommt.
+                            </p>
+                          </div>
+
+                          <div className="p-5 bg-rose-500/5 rounded-2xl border border-rose-500/10 space-y-3">
+                            <h5 className="font-black text-rose-600 flex items-center gap-1.5">🍭 Kohlenhydratstoffwechsel (Glykogen)</h5>
+                            <p className="text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
+                              Glykogen liefert hocheffizient und schnell ATP (Brennwert 4.1 kcal/g). Auch ohne optimalen Sauerstoffüberschuss (anaerobe Glykolyse) kann hieraus rasch Energie gewonnen werden - perfekt für dicke Oberschenkel am Berg, harte Intervalle oder Tempoläufe. Die Depots sind jedoch nach ca. 90-120 Minuten leer.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border border-slate-100 dark:border-slate-850">
+                          <h5 className="font-extrabold text-xs text-slate-400 uppercase tracking-widest mb-3">Zusammenhang zwischen Intensität (% FTP) und Fett-Oxidation</h5>
+                          <div className="h-28 w-full flex items-end gap-1 font-mono text-[9px] text-slate-400 dark:text-slate-500 font-extrabold pb-2 select-none">
+                            <div className="flex-1 flex flex-col items-center">
+                              <span className="text-amber-500">70% Fett</span>
+                              <div className="w-full bg-amber-500 h-16 rounded mt-1" />
+                              <span className="mt-1">Regenerativ ({"<55%"})</span>
+                            </div>
+                            <div className="flex-1 flex flex-col items-center">
+                              <span className="text-amber-500">52% Fett</span>
+                              <div className="w-full bg-amber-500 h-12 rounded mt-1" />
+                              <span className="mt-1">GA1 (55%-75%)</span>
+                            </div>
+                            <div className="flex-1 flex flex-col items-center">
+                              <span className="text-slate-400">30% Fett</span>
+                              <div className="w-full bg-slate-400 h-7 rounded mt-1" />
+                              <span className="mt-1">GA2 (75%-90%)</span>
+                            </div>
+                            <div className="flex-1 flex flex-col items-center">
+                              <span className="text-rose-500">2% Fett</span>
+                              <div className="w-full bg-rose-500 h-1.5 rounded mt-1" />
+                              <span className="mt-1">Anaerob ({">90%"})</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {activeHandbookTab === 'slope' && (
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <h4 className="text-lg font-black text-slate-900 dark:text-white">🧗 Glättung & Signalbearbeitung digitaler GPX-Dateien</h4>
+                          <p className="text-slate-600 dark:text-slate-350 text-sm leading-relaxed">
+                            GPS-Empfänger weisen systembedingt bei der Höhenmessung periodenhafte Signalstörungen und Messjitter (Rauschen) auf. Ohne Filterung würden scheinbare 'Mini-Krater' und Steilrampen die Analyse völlig verzerren.
+                          </p>
+                        </div>
+
+                        <div className="p-5 bg-emerald-500/5 rounded-2xl border border-emerald-500/10 space-y-4 text-sm font-semibold text-slate-650 dark:text-slate-300">
+                          <h5 className="font-black text-emerald-600 dark:text-emerald-400">Gleitendes Mittelwert-Filter (Moving Average)</h5>
+                          <p className="leading-relaxed">
+                            Um das mathematische Höhenprofil zu bereinigen, verwenden wir einen Algorithmus der digitalen Signalverarbeitung (DSP). Jeder Punkt des GPX-Tracks wird mit einem symmetrischen Filterfenster über seine Nachbarpunkte geglättet:
+                          </p>
+                          <div className="bg-slate-950 p-4 rounded-xl font-mono text-center text-xs text-indigo-400 font-bold border border-white/5">
+                            H_geglättet(i) = [ H(i-5) + H(i-4) + ... + H(i) + ... + H(i+5) ] / 11
+                          </div>
+                          <p className="leading-relaxed">
+                            Durch diesen gleitenden Mittelwert über 11 Punkte (entspricht im Schnitt ca. 20-40 Metern an Strecke) werden Messausreißer zuverlässig flachgebügelt. Die Steigungen der verbleibenden Abschnitte werden harmonisch und präzise ausgelesen.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer close */}
+                  <div className="p-6 bg-slate-50 dark:bg-slate-950 border-t border-slate-150 dark:border-slate-855 flex items-center justify-end">
+                    <button 
+                      onClick={() => setShowTheoryHandbook(false)}
+                      className="py-3 px-8 bg-slate-950 dark:bg-slate-800 hover:bg-slate-850 dark:hover:bg-slate-700 text-white rounded-2xl font-bold transition-all shadow-sm text-sm cursor-pointer"
+                    >
+                      Handbuch schließen
                     </button>
                   </div>
                 </motion.div>

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Heart, Clock, AlertCircle, Sparkles, TrendingUp, BarChart2, Check, RefreshCw, Layers, ShieldAlert, Award, Activity } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
 import { ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
+import { HeartRateZones } from './HeartRateZones';
 
 export interface HRZoneConfig {
   key: 'KB' | 'GA1' | 'GA2' | 'EB' | 'SB';
@@ -19,6 +20,8 @@ interface TrainingZonesAnalysisProps {
   tracks: GPXTrack[];
   activeTrackId: string | null;
   onClose: () => void;
+  userMaxHr: number;
+  onMaxHrChange: (maxHr: number) => void;
 }
 
 const DEFAULT_HR_ZONES: HRZoneConfig[] = [
@@ -77,7 +80,9 @@ const DEFAULT_HR_ZONES: HRZoneConfig[] = [
 export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
   tracks,
   activeTrackId,
-  onClose
+  onClose,
+  userMaxHr,
+  onMaxHrChange
 }) => {
   // Try to load custom training zones from localStorage, otherwise use default
   const [zones, setZones] = useState<HRZoneConfig[]>(() => {
@@ -759,6 +764,19 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
                           )}
                         </p>
                       </div>
+                    </div>
+
+                    {/* Detaillierte Pulszonen-Verteilung (from HeartRateZones) */}
+                    <div className="bg-white border border-slate-150 p-6 rounded-3xl shadow-sm space-y-4">
+                      <h3 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                        <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500/10" />
+                        Detaillierte Pulszonen-Verteilung & Analyse
+                      </h3>
+                      <HeartRateZones 
+                        track={currentTrack}
+                        maxHr={userMaxHr}
+                        onMaxHrChange={onMaxHrChange}
+                      />
                     </div>
 
                   </div>

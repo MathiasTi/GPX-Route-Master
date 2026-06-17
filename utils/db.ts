@@ -186,3 +186,22 @@ export function deleteTrack(id: string) {
   const statement = db.prepare('DELETE FROM tracks WHERE id = ?');
   statement.run(id);
 }
+
+export function getTracksInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbTrackRecord[] {
+  // Select columns including points_json to filter by coordinates
+  const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json FROM tracks');
+  const allTracks = statement.all() as DbTrackRecord[];
+  
+  return allTracks.filter(track => {
+    try {
+      const points = JSON.parse(track.points_json);
+      if (!Array.isArray(points)) return false;
+      return points.some(pt => 
+        pt.lat >= minLat && pt.lat <= maxLat && 
+        pt.lng >= minLng && pt.lng <= maxLng
+      );
+    } catch (e) {
+      return false;
+    }
+  });
+}

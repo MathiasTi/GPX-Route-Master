@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, TrendingUp, Compass, ArrowRight, Layers, BarChart3, HelpCircle, Star } from 'lucide-react';
 import { GPXTrack, MapLayer } from '../types';
 import { ClimbMiniMap } from './ClimbMiniMap';
+import { findClimbs } from '../utils/gpxUtils';
 
 interface ClimbsAnalysisProps {
   track: GPXTrack;
@@ -14,8 +15,8 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ track, onClose, 
   const [selectedClimbIndex, setSelectedClimbIndex] = useState<number | null>(null);
 
   const climbs = useMemo(() => {
-    return track.climbs || [];
-  }, [track.climbs]);
+    return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
+  }, [track.climbs, track.points]);
 
   // Calculate difficulty categories
   const getClimbCategory = (ascent: number, avgGrad: number, distM: number) => {
@@ -128,8 +129,8 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ track, onClose, 
                 <Compass size={32} />
               </div>
               <h3 className="text-base font-black text-slate-700 dark:text-slate-350">Keine signifikanten Anstiege gefunden</h3>
-              <p className="max-w-md text-xs text-slate-400 leading-relaxed">
-                Diese Route ist nach den sportlichen Kriterien (mind. 500 Meter Länge und über 3% Steigung) eher flach oder wellig.
+              <p className="max-w-md text-xs text-slate-400 leading-relaxed font-semibold">
+                Diese Route ist nach den sportlichen Kriterien (mind. 150 Meter Länge und über 1.5% Steigung) eher flach oder wellig.
               </p>
             </div>
           ) : (

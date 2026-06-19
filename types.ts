@@ -53,6 +53,7 @@ export interface GPXTrack {
   climbs?: ClimbSegment[];
   duration?: number; // in seconds
   hasTimestamps?: boolean;
+  description?: string;
 }
 
 export enum MapLayer {

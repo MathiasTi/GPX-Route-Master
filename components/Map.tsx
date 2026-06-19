@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup,
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker } from '../types';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -89,6 +89,19 @@ const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | 
     }
     prevMarkedId.current = markedTrackId;
   }, [markedTrackId, tracks, map]);
+
+  return null;
+};
+
+const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXTrack | null; recenterTrigger: number }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (activeTrack && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
+      const bounds = L.latLngBounds(activeTrack.points.map(p => [p.lat, p.lng]));
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+  }, [recenterTrigger, activeTrack, map]);
 
   return null;
 };
@@ -345,6 +358,13 @@ const Map: React.FC<MapProps> = ({
   });
   const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power'>('default');
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
+  const [recenterTrigger, setRecenterTrigger] = useState(0);
+
+  useEffect(() => {
+    if (markedTrackId) {
+      setRecenterTrigger(prev => prev + 1);
+    }
+  }, [markedTrackId]);
 
   const activeTrack = React.useMemo(() => {
     if (markedTrackId) {
@@ -587,6 +607,7 @@ const Map: React.FC<MapProps> = ({
                   click: (e) => {
                     L.DomEvent.stopPropagation(e);
                     onMarkTrack(track.id);
+                    setRecenterTrigger(prev => prev + 1);
                   },
                   mousemove: (e) => {
                     if (onHoverPoint) {
@@ -850,6 +871,7 @@ const Map: React.FC<MapProps> = ({
 
         <ZoomToTracks tracks={tracks} />
         <ZoomToMarkedTrack markedTrackId={markedTrackId} tracks={tracks} />
+        <ZoomToActiveTrack activeTrack={activeTrack} recenterTrigger={recenterTrigger} />
         <ZoomToSelection bounds={selectionBounds} />
         <MapResizer markedTrackId={markedTrackId} tracksLength={tracks.length} />
         <FlyoverFollow point={hoveredPoint || null} active={isFlying} />
@@ -1277,9 +1299,12 @@ const Map: React.FC<MapProps> = ({
         >
           {isStatsCollapsed ? (
             <button
-              onClick={() => setIsStatsCollapsed(false)}
+              onClick={() => {
+                setIsStatsCollapsed(false);
+                setRecenterTrigger(prev => prev + 1);
+              }}
               className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-750 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer transition-colors"
-              title="Statistiken ausklappen"
+              title="Statistiken ausklappen und Aktivität zentrieren"
             >
               <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: activeTrack.color || '#3b82f6' }} />
               {activeTrack.activityType === 'running' ? (
@@ -1298,15 +1323,20 @@ const Map: React.FC<MapProps> = ({
             <div className="flex flex-col p-3 sm:p-3.5">
               {/* Header */}
               <div className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-2 mb-2.5">
-                <div className="flex items-center gap-2 truncate">
+                <div 
+                  onClick={() => setRecenterTrigger(prev => prev + 1)}
+                  className="flex items-center gap-2 truncate cursor-pointer hover:opacity-85 active:scale-[0.98] transition-all bg-slate-50/70 hover:bg-slate-105 dark:bg-slate-800/45 dark:hover:bg-slate-800 px-2 py-1 rounded-lg border border-slate-100 dark:border-slate-800/80"
+                  title="Aktivität auf Karte zentrieren"
+                >
                   <div className="w-3 h-3 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: activeTrack.color || '#3b82f6' }} />
                   {activeTrack.activityType === 'running' ? (
                     <Activity className="w-4 h-4 text-emerald-500 shrink-0" />
                   ) : (
                     <Bike className="w-4 h-4 text-indigo-500 shrink-0" />
                   )}
-                  <h4 className="font-black text-xs sm:text-sm text-slate-800 dark:text-slate-200 truncate" title={activeTrack.name}>
+                  <h4 className="font-black text-xs sm:text-sm text-slate-800 dark:text-slate-200 truncate flex items-center gap-1.5" title={activeTrack.name}>
                     {activeTrack.name}
+                    <Target className="w-3.5 h-3.5 text-indigo-500 hover:rotate-45 transition-transform" />
                   </h4>
                 </div>
                 <button

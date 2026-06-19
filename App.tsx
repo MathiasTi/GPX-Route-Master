@@ -19,6 +19,7 @@ import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { SegmentsAnalysis } from './components/SegmentsAnalysis';
 import { getFamousSegments, extractSegmentsFromTrack, generateProLeaderboard } from './utils/segmentUtils';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
+import { SummaryReportModal } from './components/SummaryReportModal';
 import { getApiUrl } from './utils/api';
 
 const App: React.FC = () => {
@@ -82,6 +83,7 @@ const App: React.FC = () => {
   const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
+  const [summaryReportOpen, setSummaryReportOpen] = useState(false);
   const [weatherOpen, setWeatherOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [mapView, setMapView] = useState({
@@ -752,6 +754,13 @@ const App: React.FC = () => {
           setTrainingZonesOpen(true);
           setIsMobileMenuOpen(false);
         }}
+        onOpenSummaryReport={(id) => {
+          if (id) {
+            setMarkedTrackId(id);
+          }
+          setSummaryReportOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenAnalytics={() => {
           setAnalyticsOpen(true);
           setIsMobileMenuOpen(false);
@@ -902,6 +911,16 @@ const App: React.FC = () => {
                 onClose={() => setTrainingZonesOpen(false)}
                 userMaxHr={userMaxHr}
                 onMaxHrChange={handleMaxHrChange}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {summaryReportOpen && markedTrack && (
+              <SummaryReportModal 
+                track={markedTrack}
+                onClose={() => setSummaryReportOpen(false)}
+                ftp={ftp}
               />
             )}
           </AnimatePresence>

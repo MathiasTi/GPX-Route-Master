@@ -664,52 +664,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </h3>
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-1 rounded-full border border-slate-200">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">Tempo:</span>
-            <input 
-              type="range" 
-              min="0.5" 
-              max="10" 
-              step="0.5" 
-              value={flySpeed} 
-              onChange={(e) => onFlySpeedChange?.(parseFloat(e.target.value))}
-              className="w-24 h-1.5 bg-indigo-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-            />
-            <span className="text-[10px] font-bold text-indigo-700 w-4">{flySpeed}x</span>
-          </div>
-          <button
-            onClick={onToggleFlyover}
-            className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold transition-all ${
-              isFlying 
-                ? 'bg-rose-500 text-white shadow-lg shadow-rose-200 hover:bg-rose-600 scale-105' 
-                : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 hover:bg-indigo-700'
-            }`}
-          >
-            {isFlying ? (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-                Stoppen
-              </>
-            ) : (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="m7 3 14 9-14 9z"/></svg>
-                Überflug
-              </>
-            )}
-          </button>
-          
-          <button
-            onClick={onOpenVideoExport}
-            className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-200 transition-all cursor-pointer"
-            title="Video-Überflug der Aktivität exportieren"
-          >
-            <svg xmlns="http://www.w3.org/2005/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1-2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            Video Export
-          </button>
           {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
             <button
               onClick={onOpenAnalytics}
-              className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-amber-500 text-white shadow-lg shadow-amber-200 hover:bg-amber-600 transition-all"
+              className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-amber-500 text-white shadow-lg shadow-amber-200 hover:bg-amber-600 transition-all cursor-pointer"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
               Analyse
@@ -831,32 +789,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             title="Anzeige-Einstellungen"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          </button>
-
-          {/* Uberflug trigger */}
-          <button
-            onClick={onToggleFlyover}
-            className={`p-1.5 rounded-lg transition-all ${
-              isFlying 
-                ? 'bg-rose-500 text-white animate-pulse' 
-                : 'bg-indigo-600 text-white shadow-xs'
-            }`}
-            title={isFlying ? "Überflug stoppen" : "Überflug starten"}
-          >
-            {isFlying ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="m7 3 14 9-14 9z"/></svg>
-            )}
-          </button>
-
-          {/* Video Export */}
-          <button 
-            onClick={onOpenVideoExport}
-            className="p-1.5 rounded-lg bg-emerald-600 text-white shadow-xs"
-            title="Video Export"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1-2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
           </button>
 
           {/* Analyse */}

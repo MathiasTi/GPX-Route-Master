@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Activity, Zap, TrendingUp, BarChart2, Shield, Heart, Clock, Maximize2, Flame, Settings, HelpCircle, Info } from 'lucide-react';
+import { X, Activity, Zap, TrendingUp, BarChart2, Shield, Heart, Clock, Maximize2, Flame, Settings, HelpCircle, Info, ChevronUp, ChevronDown } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
 import { calculatePowerStats, calculateDistance, getPaceString, findClimbs } from '../utils/gpxUtils';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar, Cell, LineChart, Line, Legend } from 'recharts';
@@ -111,6 +111,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   const [selectedTheoryMetric, setSelectedTheoryMetric] = useState<string | null>(null);
   const [showTheoryHandbook, setShowTheoryHandbook] = useState<boolean>(false);
   const [activeHandbookTab, setActiveHandbookTab] = useState<'aero' | 'energy' | 'substrate' | 'slope'>('aero');
+  const [isZoneExplanationOpen, setIsZoneExplanationOpen] = useState(false);
   
   const isRunning = track.activityType === 'running';
 
@@ -267,14 +268,13 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       eleSmoothed[i] = count > 0 ? sum / count : (analysisPoints[i].ele ?? 0);
     }
 
-    for (let i = 1; i < analysisPoints.length; i++) {
-      const pPrev = analysisPoints[i - 1];
-      const pCurr = analysisPoints[i];
-      const segmentDist = calculateDistance(pPrev, pCurr); // in km
+    for (let i = 1; i < enrichedTimelineData.length; i++) {
+      const pPrev = enrichedTimelineData[i - 1];
+      const pCurr = enrichedTimelineData[i];
+      const segmentDist = calculateDistance(analysisPoints[i - 1], analysisPoints[i]); // in km
       if (segmentDist <= 0) continue;
 
-      const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
-      const slopePercent = (eleDiff / (segmentDist * 1000)) * 100;
+      const slopePercent = pCurr.slope; // Highly accurate 30-meter sliding-window slope!
 
       totalDist += segmentDist;
 
@@ -332,7 +332,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       character: trackCharacter,
       desc: trackDesc
     };
-  }, [analysisPoints, computedClimbs]);
+  }, [analysisPoints, computedClimbs, enrichedTimelineData]);
 
   // Advanced Dynamic Performance & Calories Estimations
   const labCalculations = useMemo(() => {
@@ -1162,14 +1162,60 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                         reversed={activeTimelineMetric === 'pace'} // reverse pace chart so faster is higher
                       />
                       <Tooltip 
-                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                        formatter={(value: any) => {
-                          if (activeTimelineMetric === 'pace') {
-                            return [formatPaceDecimal(Number(value)), 'Pace'];
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            return (
+                              <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-xl font-sans min-w-[200px] text-xs pointer-events-none">
+                                <div className="font-extrabold text-slate-505 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 pb-1 mb-2 flex justify-between items-center">
+                                  <span>DISTANZ</span>
+                                  <span className="font-mono text-slate-800 dark:text-slate-200 font-extrabold">{data.distance.toFixed(2)} km</span>
+                                </div>
+                                <div className="space-y-1.5 font-medium text-slate-600 dark:text-slate-400">
+                                  <div className="flex justify-between items-center gap-4">
+                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Höhe:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{data.elevation} m</span>
+                                  </div>
+                                  <div className="flex justify-between items-center gap-4">
+                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Steigung:</span>
+                                    <span className={`font-black font-mono ${data.slope >= 3.5 ? 'text-rose-600 dark:text-rose-400' : data.slope <= -1.5 ? 'text-indigo-500' : 'text-slate-800 dark:text-slate-200'}`}>
+                                      {data.slope > 0 ? `+${data.slope}` : data.slope}%
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center gap-4">
+                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Geschwindigkeit:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{data.speed} km/h</span>
+                                  </div>
+                                  {isRunning && data.pace > 0 && (
+                                    <div className="flex justify-between items-center gap-4">
+                                      <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Pace:</span>
+                                      <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{formatPaceDecimal(data.pace)}/km</span>
+                                    </div>
+                                  )}
+                                  {data.hr > 0 && (
+                                    <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
+                                      <span className="text-rose-500 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">❤️ Puls:</span>
+                                      <span className="font-black text-rose-600 dark:text-rose-450 font-mono">{data.hr} bpm</span>
+                                    </div>
+                                  )}
+                                  {data.power > 0 && (
+                                    <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
+                                      <span className="text-amber-500 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">⚡ Leistung:</span>
+                                      <span className="font-black text-amber-500 font-mono">{data.power} W</span>
+                                    </div>
+                                  )}
+                                  {data.cadence > 0 && (
+                                    <div className="flex justify-between items-center gap-4">
+                                      <span className="text-indigo-500 font-bold uppercase text-[9px] tracking-wider">{isRunning ? 'Schrittfreq.' : 'Trittfreq.'}:</span>
+                                      <span className="font-bold text-indigo-500 font-mono">{data.cadence}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
                           }
-                          return [`${value}${activeTimelineDef.unit}`, activeTimelineDef.name];
+                          return null;
                         }}
-                        labelFormatter={(dist) => `Distanz: ${dist} km`}
                       />
                       <Area 
                         type="monotone" 
@@ -1318,6 +1364,45 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* Professional explanation accordion for HR vs Power Zone mismatch */}
+              <div className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-3 text-[11px]">
+                <button
+                  onClick={() => setIsZoneExplanationOpen(!isZoneExplanationOpen)}
+                  className="w-full flex items-center justify-between text-left text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-bold tracking-tight select-none cursor-pointer"
+                >
+                  <span className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-450 font-black uppercase">
+                    💡 Herz- vs. Power-Zonen erklärt
+                  </span>
+                  {isZoneExplanationOpen ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+                </button>
+                
+                {isZoneExplanationOpen && (
+                  <div className="mt-2 text-slate-600 dark:text-slate-400 space-y-2 bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-150/50 dark:border-slate-850">
+                    <p className="leading-relaxed">
+                      Einer der häufigsten Irrtümer im Ausdauersport ist die Annahme, dass <strong>Herz-Zonen (innere Belastung)</strong> und <strong>Leistungs-Zonen (äußere Leistung)</strong> zu jedem Zeitpunkt deckungsgleich sein müssen. Dies ist aus trainingsphysiologischer Sicht falsch.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div className="space-y-1">
+                        <span className="font-extrabold text-slate-800 dark:text-slate-200 block text-[10px] uppercase tracking-wider text-rose-500">❤️ Innere Belastung (Frequenz)</span>
+                        <p className="leading-relaxed">
+                          Die <strong>Herzfrequenz</strong> misst die vegetative Reaktion des Körpers auf die Belastung. Das Herz reagiert mit einer <strong>Trägheit von 15 bis 45 Sekunden</strong> auf Wattänderungen. Sie wird durch Schlafmangel, Hitze, Dehydration und Koffein beeinflusst.
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="font-extrabold text-slate-800 dark:text-slate-200 block text-[10px] uppercase tracking-wider text-amber-500">⚡ Äußere Leistung (Watt / Tempo)</span>
+                        <p className="leading-relaxed">
+                          Der <strong>Leistungsmesser (oder die Pace)</strong> misst direkt und <strong>absolut verzögerungsfrei</strong> die mechanische Energie (Aktion). Sie ist unbeeinflusst von Wind, Tagesform oder Psyche und zeigt sofort die tatsächliche Arbeitslast an.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="border-t border-slate-150 dark:border-slate-800/80 pt-2 text-[10px] sm:text-[10.5px] leading-relaxed">
+                      <strong>Warum weichen die Verteilungen ab (Mismatches)?</strong><br />
+                      Wenn Du einen kurzen Hügel hinaufsprintest (z.B. 20 Sek. mit 500W), bist Du leistungsmäßig sofort im <strong>Spitzenbereich (Z5/EB/SB)</strong>. Deine Herzfrequenz bemerkt den Sprint aber erst verzögert und ist zu Beginn noch im <strong>Grundlagenbereich (Z1/Z2)</strong>. Sie steigt erst an, wenn der Sprint vorbei ist (die sogenannte <i>Herzfrequenz-Latenz</i>). Bei sehr welligem oder Intervall-betontem Training ist eine ungleiche Zonenverteilung daher völlig normal und physiologisch korrekt.
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

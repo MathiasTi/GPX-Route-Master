@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Heart, Clock, AlertCircle, Sparkles, TrendingUp, BarChart2, Check, RefreshCw, Layers, ShieldAlert, Award, Activity } from 'lucide-react';
+import { X, Heart, Clock, AlertCircle, Sparkles, TrendingUp, BarChart2, Check, RefreshCw, Layers, ShieldAlert, Award, Activity, Info } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
 import { ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
 import { HeartRateZones } from './HeartRateZones';
@@ -98,6 +98,134 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(activeTrackId);
   const [isSimulationMode, setIsSimulationMode] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [modalActiveTab, setModalActiveTab] = useState<'comparison' | 'drift'>('comparison');
+  const [userFtp, setUserFtp] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('velo_user_ftp');
+      if (saved) return parseInt(saved, 10);
+    } catch (e) {}
+    return 250; // default standard FTP in Watts
+  });
+
+  const handleFtpChange = (val: number) => {
+    setUserFtp(val);
+    try {
+      localStorage.setItem('velo_user_ftp', val.toString());
+    } catch (e) {}
+  };
+
+  const [selectedCorrLevel, setSelectedCorrLevel] = useState<number>(2);
+
+  const correlationZones = useMemo(() => {
+    return [
+      {
+        level: 1,
+        name: 'Regeneration',
+        hrName: 'Z1 Erholung',
+        hrPct: '50% - 60%',
+        powerName: 'L1 Active Recovery',
+        powerPct: '< 55%',
+        color: '#3b82f6', // blue
+        bgColor: 'bg-blue-50/40 border-blue-100/60',
+        activeBgColor: 'bg-blue-100/60 border-blue-300',
+        badgeColor: 'bg-blue-100 text-blue-800 border-blue-200',
+        minHr: Math.round(userMaxHr * 0.50),
+        maxHr: Math.round(userMaxHr * 0.60),
+        minPower: 0,
+        maxPower: Math.round(userFtp * 0.55),
+        desc: 'Aktive Erholung, extrem lockeres Tempo. Erholung nach harten Trainingstagen.',
+        feeling: 'Sehr locker, flüssiges Pedalieren ohne Kraftaufwand.',
+        energy: 'Lipolyse (Fettstoffwechsel) > 95%, extrem geringe Kohlenhydratverbrennung.',
+        duration: '30 - 90 Minuten',
+        metabolicEffect: 'Fördert die kapillare Durchblutung und beschleunigt den Abtransport von oxidativem Stress.'
+      },
+      {
+        level: 2,
+        name: 'Fettverbrennung / Grundlage 1',
+        hrName: 'Z2 GA1',
+        hrPct: '60% - 70%',
+        powerName: 'L2 Endurance',
+        powerPct: '55% - 75%',
+        color: '#10b981', // emerald
+        bgColor: 'bg-emerald-50/40 border-emerald-100/60',
+        activeBgColor: 'bg-emerald-100/60 border-emerald-300',
+        badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        minHr: Math.round(userMaxHr * 0.60),
+        maxHr: Math.round(userMaxHr * 0.70),
+        minPower: Math.round(userFtp * 0.55),
+        maxPower: Math.round(userFtp * 0.75),
+        desc: 'Klassische Ausdauerbasis. Hervorragend zur Ökonomisierung des Herz-Kreislauf-Systems.',
+        feeling: 'Sprechen in vollständigen Sätzen flüssig und durchgehend möglich.',
+        energy: 'Lipolyse (Fettstoffwechsel) ~ 80%, Glykolyse (Kohlenhydrate) ~ 20%.',
+        duration: '2 - 6 Stunden',
+        metabolicEffect: 'Vergrößert Mitochondrien-Volumen und verbessert die aerobe Enzymkapazität.'
+      },
+      {
+        level: 3,
+        name: 'Tempotraining / Aerob-Anaerob',
+        hrName: 'Z3 GA2',
+        hrPct: '70% - 80%',
+        powerName: 'L3 Tempo',
+        powerPct: '76% - 90%',
+        color: '#eab308', // amber
+        bgColor: 'bg-amber-50/40 border-amber-100/60',
+        activeBgColor: 'bg-amber-100/60 border-amber-300',
+        badgeColor: 'bg-amber-100 text-amber-800 border-amber-200',
+        minHr: Math.round(userMaxHr * 0.70),
+        maxHr: Math.round(userMaxHr * 0.80),
+        minPower: Math.round(userFtp * 0.76),
+        maxPower: Math.round(userFtp * 0.90),
+        desc: 'Zügiges Reisetempo. Erhöhter Glykogenumsatz mit spürbar intensiverer Atmung.',
+        feeling: 'Sprechen nur noch in kurzen Sätzen möglich. Fokus erforderlich.',
+        energy: 'Ausgeglichenes Verhältnis: Fettstoffwechsel ~ 50%, Kohlenhydratverbrennung ~ 50%.',
+        duration: '1.5 - 3 Stunden',
+        metabolicEffect: 'Steigert die Glykogenspeicherkapazität der Arbeitsmuskulatur.'
+      },
+      {
+        level: 4,
+        name: 'Laktatschwelle / Entwicklungsbereich',
+        hrName: 'Z4 EB / Schwelle',
+        hrPct: '80% - 90%',
+        powerName: 'L4 Threshold',
+        powerPct: '91% - 105%',
+        color: '#f97316', // orange
+        bgColor: 'bg-orange-50/40 border-orange-100/60',
+        activeBgColor: 'bg-orange-100/60 border-orange-300',
+        badgeColor: 'bg-orange-100 text-orange-800 border-orange-200',
+        minHr: Math.round(userMaxHr * 0.80),
+        maxHr: Math.round(userMaxHr * 0.90),
+        minPower: Math.round(userFtp * 0.91),
+        maxPower: Math.round(userFtp * 1.05),
+        desc: 'Training an der individuellen anaeroben Schwelle (AnS). Laktat-Aufbau und -Abbau halten sich die Waage.',
+        feeling: 'Brennende Beine, tiefe Atmung, Unterhaltung unmöglich.',
+        energy: 'Fast reine Kohlenhydratverbrennung: Glykolyse > 85%, minimale Lipolyse.',
+        duration: '35 - 90 Minuten',
+        metabolicEffect: 'Erhöht die Laktatschwelle (FTP) und schult die laktatpuffernde Kompetenz.'
+      },
+      {
+        level: 5,
+        name: 'VO2max / Spitze',
+        hrName: 'Z5 SB / Spitze',
+        hrPct: '90% - 100%',
+        powerName: 'L5 VO2 Max',
+        powerPct: '106% - 120%',
+        color: '#ef4444', // red
+        bgColor: 'bg-rose-50/40 border-rose-100/60',
+        activeBgColor: 'bg-rose-100/60 border-rose-300',
+        badgeColor: 'bg-rose-100 text-rose-800 border-rose-200',
+        minHr: Math.round(userMaxHr * 0.90),
+        maxHr: userMaxHr,
+        minPower: Math.round(userFtp * 1.06),
+        maxPower: Math.round(userFtp * 1.20),
+        desc: 'Maximale aerobe Auslastung (HIIT). Reiz zur Optimierung der maximalen Sauerstoffaufnahme.',
+        feeling: 'Vollkommene Ausbelastung, extremes Hecheln, nur Minuten durchhaltbar.',
+        energy: '100% Anaerobe Glykolyse / energiereiche Phosphate.',
+        duration: '10 - 30 Minuten (akkumulierte Intervalldauer)',
+        metabolicEffect: 'Maximiert das Herzminutenvolumen, Schlagvolumen und die VO2max.'
+      }
+    ];
+  }, [userMaxHr, userFtp]);
 
   // Sync selected track if props change
   useEffect(() => {
@@ -430,7 +558,17 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
               <Heart className="w-6 h-6 fill-white" />
             </div>
             <div>
-              <h2 className="text-xl font-bold tracking-tight">Trainingszonen & Puls Analyse</h2>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-xl font-bold tracking-tight">Trainingszonen & Puls Analyse</h2>
+                <button 
+                  onClick={() => setIsInfoOpen(true)}
+                  className="p-1 hover:bg-white/10 rounded-lg text-white/90 hover:text-white transition-all cursor-pointer inline-flex items-center"
+                  title="Unterschied zwischen Herzfrequenzzonen und Leistungszonen erklären"
+                  id="btn-training-zones-info"
+                >
+                  <Info className="w-5 h-5 animate-pulse" />
+                </button>
+              </div>
               <p className="text-xs text-white/85">Konfiguriere deine Trainingsbereiche und analysiere deine Herzarbeit</p>
             </div>
           </div>
@@ -812,6 +950,356 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
             Schließen
           </button>
         </div>
+
+        {/* Info Modal */}
+        <AnimatePresence>
+          {isInfoOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-[2100] flex items-center justify-center p-4 md:p-6"
+              id="modal-training-zones-info-overlay"
+            >
+              <motion.div 
+                initial={{ scale: 0.95, y: 15 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 15 }}
+                className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto p-5 md:p-8 relative text-left"
+                id="modal-training-zones-info"
+              >
+                {/* Decorative background gradients */}
+                <div className="absolute top-0 right-0 w-64 h-64 bg-rose-200/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
+                <div className="absolute bottom-0 left-0 w-64 h-64 bg-indigo-200/10 rounded-full blur-3xl -ml-20 -mb-20 pointer-events-none" />
+
+                <button 
+                  onClick={() => setIsInfoOpen(false)}
+                  className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-xl transition-all cursor-pointer z-50"
+                  id="btn-training-zones-info-close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                <div className="space-y-6 relative z-10">
+                  
+                  {/* Header */}
+                  <div className="flex items-center gap-3">
+                    <div className="bg-indigo-50 p-2.5 rounded-2xl">
+                      <Sparkles className="w-5 h-5 text-indigo-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-extrabold text-slate-800 tracking-tight">
+                        Physiologischer &amp; Mechanischer Zonen-Zusammenhang
+                      </h3>
+                      <p className="text-xs text-slate-500 font-medium">Interaktive Korrelation von Herzfrequenz- (Puls) und Leistungsbereichen (ftp-relative Watt)</p>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Athlete Parameters Configuration */}
+                  <div className="bg-slate-50 border border-slate-150 p-4 rounded-2xl grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                          <Heart className="w-4 h-4 text-rose-500 fill-rose-100" />
+                          Maximalpuls (Max HR)
+                        </span>
+                        <span className="font-mono font-black text-rose-600">{userMaxHr} bpm</span>
+                      </div>
+                      <input 
+                        type="range"
+                        min={130}
+                        max={220}
+                        value={userMaxHr}
+                        onChange={(e) => onMaxHrChange(Number(e.target.value))}
+                        className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                      />
+                      <p className="text-[10px] text-slate-450 italic">Bestimmt deine physiologischen Belastungsgrenzen</p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                          <Activity className="w-4 h-4 text-indigo-500" />
+                          FTP-Schwellenwert (Watt)
+                        </span>
+                        <span className="font-mono font-black text-indigo-600">{userFtp} W</span>
+                      </div>
+                      <input 
+                        type="range"
+                        min={100}
+                        max={500}
+                        value={userFtp}
+                        onChange={(e) => handleFtpChange(Number(e.target.value))}
+                        className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                      />
+                      <p className="text-[10px] text-slate-450 italic">Bestimmt deine mechanische Schwellenleistung (Functional Threshold Power)</p>
+                    </div>
+                  </div>
+
+                  {/* Navigation Tabs */}
+                  <div className="flex border-b border-slate-100 space-x-2">
+                    <button
+                      onClick={() => setModalActiveTab('comparison')}
+                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer border-b-2 ${
+                        modalActiveTab === 'comparison'
+                          ? 'border-indigo-600 text-indigo-600'
+                          : 'border-transparent text-slate-450 hover:text-slate-650'
+                      }`}
+                    >
+                      Zonen Gegenüberstellung (Live)
+                    </button>
+                    <button
+                      onClick={() => setModalActiveTab('drift')}
+                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer border-b-2 ${
+                        modalActiveTab === 'drift'
+                          ? 'border-indigo-600 text-indigo-600'
+                          : 'border-transparent text-slate-450 hover:text-slate-650'
+                      }`}
+                    >
+                      Kardiovaskulärer Drift (Decoupling)
+                    </button>
+                  </div>
+
+                  {/* TAB 1: Comparison Matrix */}
+                  {modalActiveTab === 'comparison' && (
+                    <div className="space-y-6">
+                      <div className="text-xs text-slate-600 leading-relaxed">
+                        Die folgende Grafik stellt deine 5 kardiologischen Hauptzonen direkt deinen mechanischen Leistungsbereichen gegenüber. 
+                        <strong> Klicke auf ein Zonenpaar</strong>, um die genauen metabolischen Vorgänge, Energieträgernutzungen sowie Trainingsempfehlungen einzusehen.
+                      </div>
+
+                      {/* Visual Grid Comparison Bar and Ladders */}
+                      <div className="grid grid-cols-1 md:grid-cols-5 gap-3" id="zones-comparison-ladder">
+                        {correlationZones.map((z) => {
+                          const isSelected = selectedCorrLevel === z.level;
+                          return (
+                            <button
+                              key={z.level}
+                              onClick={() => setSelectedCorrLevel(z.level)}
+                              className={`p-3.5 rounded-2xl border text-left transition-all duration-300 relative overflow-hidden cursor-pointer flex flex-col justify-between ${
+                                isSelected 
+                                  ? `${z.activeBgColor} shadow-md ring-2 ring-indigo-500/10 scale-[1.02]` 
+                                  : `${z.bgColor} hover:bg-slate-50/80 hover:border-slate-300`
+                              }`}
+                            >
+                              {/* Left colored border stripe */}
+                              <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: z.color }} />
+
+                              <div className="pl-1.5 space-y-2">
+                                <span className="text-[10px] font-black tracking-wider uppercase opacity-80 block text-slate-500">Stufe {z.level}</span>
+                                <h4 className="text-xs font-black text-slate-800 leading-tight truncate">{z.name}</h4>
+                                
+                                <div className="space-y-1 pt-1 border-t border-slate-100">
+                                  <div className="flex items-center justify-between text-[10px] font-medium text-slate-500">
+                                    <span>Puls:</span>
+                                    <span className="font-bold text-rose-600 font-mono">{z.minHr}-{z.maxHr} bpm</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-medium text-slate-500">
+                                    <span>Watt:</span>
+                                    <span className="font-bold text-indigo-600 font-mono">{z.minPower}-{z.maxPower} W</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Interactive Detail Panel */}
+                      {(() => {
+                        const activeDetails = correlationZones.find(z => z.level === selectedCorrLevel);
+                        if (!activeDetails) return null;
+                        return (
+                          <motion.div 
+                            key={selectedCorrLevel}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-slate-50/60 border border-slate-200/80 rounded-2xl p-5 md:p-6 space-y-4"
+                          >
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-150">
+                              <div className="flex items-center gap-2">
+                                <span className="w-3.5 h-3.5 rounded-md shrink-0" style={{ backgroundColor: activeDetails.color }} />
+                                <h4 className="font-extrabold text-sm text-slate-800">
+                                  Level {activeDetails.level} Detailanalyse: {activeDetails.name}
+                                </h4>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <span className="px-2.5 py-1 text-[9px] font-bold rounded-lg bg-rose-50 border border-rose-100 text-rose-700">
+                                  Pulsbereich: {activeDetails.hrName} ({activeDetails.hrPct})
+                                </span>
+                                <span className="px-2.5 py-1 text-[9px] font-bold rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-700">
+                                  Leistungsbereich: {activeDetails.powerName} ({activeDetails.powerPct})
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                              <div className="space-y-3">
+                                <div>
+                                  <h5 className="font-bold text-slate-700">Allgemeine Definition &amp; Reiz</h5>
+                                  <p className="text-[11px] text-slate-600 leading-normal mt-0.5">{activeDetails.desc}</p>
+                                </div>
+                                <div>
+                                  <h5 className="font-bold text-slate-700">Substratnutzung (Energiebereitstellung)</h5>
+                                  <p className="text-[11px] text-slate-600 font-medium leading-normal mt-0.5 capitalize">{activeDetails.energy}</p>
+                                </div>
+                                <div>
+                                  <h5 className="font-bold text-slate-700">Zellulärer Trainingseffekt</h5>
+                                  <p className="text-[11px] text-slate-500 leading-normal mt-0.5">{activeDetails.metabolicEffect}</p>
+                                </div>
+                              </div>
+
+                              <div className="bg-white border border-slate-100 rounded-xl p-4 space-y-3">
+                                <div>
+                                  <h5 className="font-bold text-slate-700 flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                    Subjektives Belastungsgefühl (RPE-Skala)
+                                  </h5>
+                                  <p className="text-[11px] text-slate-600 mt-0.5 italic">"{activeDetails.feeling}"</p>
+                                </div>
+                                <div>
+                                  <h5 className="font-bold text-slate-700 flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                    Effektive Belastungsdauer
+                                  </h5>
+                                  <p className="text-[11px] text-slate-600 mt-0.5 font-semibold font-mono">{activeDetails.duration}</p>
+                                </div>
+                                <div className="bg-slate-50/50 p-2.5 rounded-lg border border-dashed border-slate-200">
+                                  <p className="text-[10px] text-slate-500 leading-tight">
+                                    <strong>Praxis-Tipp:</strong> Pulszonen hinken der Leistung hinterher. Bei Antritten stabilisiert sich der Puls erst nach zirka 45s. Verwende bei Intervallen unter 2 Min. ausschließlich Watt-Zielwerte.
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </motion.div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {/* TAB 2: Cardiovascular Drift Chart & Explanation */}
+                  {modalActiveTab === 'drift' && (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-indigo-700 font-extrabold text-sm">
+                            <TrendingUp className="w-4 h-4 text-indigo-600" />
+                            Kopplungs-Verlust &amp; Aerobic Decoupling (Pw:Hr)
+                          </div>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Obwohl Puls- und Leistungszonen perfekt mathematisch korellieren, trennen sich beide Werte bei langen Belastungen (ab 90 Minuten). Dieses Phänomen heißt <strong>Kardiovaskulärer Drift (Cardiac Drift)</strong>.
+                          </p>
+                          <p className="text-xs text-slate-500 leading-relaxed">
+                            Durch Schwitzen verlierst du Plasmawasser, was dein Blut verdickt. Um das sinkende Schlagvolumen pro Herzschlag zu kompensieren, <strong>muss dein Herz bei absolut GLEICHER konstanter Tretleistung (Watt) deutlich schneller schlagen</strong>.
+                          </p>
+                          <div className="p-3 bg-indigo-50 border border-indigo-150 rounded-xl">
+                            <span className="font-bold text-[10px] text-indigo-800 uppercase block mb-1">Entkopplungsfaktor (Drift)</span>
+                            <p className="text-[10px] text-slate-600 leading-normal text-left">
+                              Ein gut trainierter Fettstoffwechsel hält den Drift auf einer 2-stündigen Fahrt unter <strong>5%</strong>. Ein höherer Wert deutet auf Dehydrierung, unzureichende Kohlenhydratzufuhr oder Überhitzung hin.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Interactive Recharts visual simulation of cardiac drift over 2 hours */}
+                        <div className="bg-slate-50 border border-slate-150 p-4 rounded-2xl relative">
+                          <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-wider text-center mb-3">Simulation: Drift over 120 Minutes steady ride</h4>
+                          
+                          <div className="h-44 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart
+                                data={[
+                                  { min: 0, power: 175, hr: 130 },
+                                  { min: 10, power: 175, hr: 131 },
+                                  { min: 20, power: 175, hr: 133 },
+                                  { min: 30, power: 175, hr: 134 },
+                                  { min: 40, power: 175, hr: 136 },
+                                  { min: 50, power: 175, hr: 138 },
+                                  { min: 65, power: 175, hr: 141 },
+                                  { min: 80, power: 175, hr: 143 },
+                                  { min: 95, power: 175, hr: 146 },
+                                  { min: 110, power: 175, hr: 149 },
+                                  { min: 120, power: 175, hr: 152 },
+                                ]}
+                                margin={{ top: 5, right: 5, left: 0, bottom: 5 }}
+                              >
+                                <defs>
+                                  <linearGradient id="driftPowerGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.15}/>
+                                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0.01}/>
+                                  </linearGradient>
+                                  <linearGradient id="driftHrGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.25}/>
+                                    <stop offset="95%" stopColor="#f43f5e" stopOpacity={0.03}/>
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                <XAxis dataKey="min" fontSize={8} stroke="#94a3b8" unit=" min" />
+                                <YAxis yAxisId="power" domain={[100, 220]} fontSize={8} stroke="#6366f1" width={22} label={{ value: 'Watts', angle: -90, position: 'insideLeft', style: {fontSize: 7, fill: '#6366f1'} }} />
+                                <YAxis yAxisId="hr" orientation="right" domain={[110, 170]} fontSize={8} stroke="#f43f5e" width={22} label={{ value: 'BPM', angle: 90, position: 'insideRight', style: {fontSize: 7, fill: '#f43f5e'} }} />
+                                <Tooltip 
+                                  contentStyle={{ fontSize: '9px', borderRadius: '12px', border: '1px solid #e2e8f0' }} 
+                                  labelFormatter={(label) => `${label} Minuten`}
+                                />
+                                <Area 
+                                  yAxisId="power"
+                                  type="monotone" 
+                                  dataKey="power" 
+                                  stroke="#6366f1" 
+                                  strokeWidth={2}
+                                  name="Tretleistung (Power)"
+                                  fillOpacity={1} 
+                                  fill="url(#driftPowerGrad)" 
+                                />
+                                <Area 
+                                  yAxisId="hr"
+                                  type="monotone" 
+                                  dataKey="hr" 
+                                  stroke="#f43f5e" 
+                                  strokeWidth={2.5}
+                                  name="Herzfrequenz (Puls)"
+                                  fillOpacity={1} 
+                                  fill="url(#driftHrGrad)" 
+                                />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                          
+                          <div className="flex justify-center gap-4 mt-1 text-[9px] font-bold">
+                            <span className="flex items-center gap-1 text-indigo-600">
+                              <span className="w-2 h-1 bg-indigo-500 rounded-sm inline-block" />
+                              Leistung (Konstant 175W)
+                            </span>
+                            <span className="flex items-center gap-1 text-rose-600">
+                              <span className="w-2 h-1 bg-rose-500 rounded-sm inline-block animate-pulse" />
+                              Herzfrequenz (+17% Drift)
+                            </span>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Summary Callout Footer */}
+                  <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl text-xs text-slate-600 leading-relaxed" id="summary-zones-explanation">
+                    <strong>Das Zusammenspiel:</strong> Herzfrequenz ist das <em>Einspeisungssignal (physiologische interne Belastung)</em>, während Watt die <em>Ermittlung (mechanische externe Triebarbeit)</em> ist. Nur in Kombination beider Werte lässt sich die Effizienz deines Körpers an harten Pässen wie dem Timmelsjoch akkurat bestimmen.
+                  </div>
+
+                  {/* Action */}
+                  <div className="flex justify-end pt-2">
+                    <button 
+                      onClick={() => setIsInfoOpen(false)}
+                      className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl tracking-wide shadow-sm hover:shadow transition-all cursor-pointer uppercase"
+                      id="btn-training-zones-info-acknowledge"
+                    >
+                      Verstanden &amp; Sparen
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
       </motion.div>
     </motion.div>

@@ -1,6 +1,6 @@
 
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType, findClimbs } from './gpxUtils';
 import { fit2json, parseRecords } from 'fit-decoder';
 
 const HIGH_CONTRAST_COLORS = [
@@ -50,6 +50,11 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           // Check for FIT invalid values (if not handled by decoder)
           if (ele === 65535 || ele === 4294967295 || Math.abs(ele - 655.35) < 0.01 || Math.abs(ele - 42949672.95) < 0.01) {
             ele = undefined;
+          } else {
+            // Apply standard FIT scaling correction: fit-decoder returns ele divided by 100
+            // Standard FIT altitude uses scale of 5 and offset of 500 (value = (meters + 500) * 5)
+            // So meters = (ele_reported * 100) / 5 - 500 = ele_reported * 20 - 500
+            ele = ele * 20 - 500;
           }
         } else {
           ele = undefined;
@@ -69,30 +74,132 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       return null;
     }
 
-    const firstPoint = points.find(p => p.time !== undefined) || points[0];
-    const startDate = firstPoint?.time || new Date();
-    const dateStr = startDate.toLocaleDateString('de-DE', { 
-      year: 'numeric', 
-      month: '2-digit', 
-      day: '2-digit' 
-    });
-    const timeStr = startDate.toLocaleTimeString('de-DE', { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    
-    let name = `${dateStr}, ${timeStr}`;
-    if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
-      const location = await getLocationName(firstPoint.lat, firstPoint.lng);
-      name += ` (${location})`;
+    // Try to extract name and description/notes from the FIT records
+    let fitName: string | undefined = undefined;
+    let fitNotes: string | undefined = undefined;
+
+    if (fitData && Array.isArray(fitData.records)) {
+      for (const record of fitData.records) {
+        if (!record || !record.data) continue;
+
+        // Extract Course Name (very common if created from route creator or course file)
+        if (record.type === 'course' && record.data.name) {
+          const rawName = String(record.data.name).trim();
+          if (rawName && !fitName) {
+            fitName = rawName;
+          }
+        }
+
+        // Extract Workout Name
+        if (record.type === 'workout') {
+          const rawWName = (record.data.workout_name || record.data.name);
+          if (rawWName) {
+            const trimmed = String(rawWName).trim();
+            if (trimmed && !fitName) {
+              fitName = trimmed;
+            }
+          }
+        }
+
+        // Extract Session names and comments
+        if (record.type === 'session') {
+          if (record.data.name) {
+            const rawSName = String(record.data.name).trim();
+            // Ignore generic session names like "Session 1"
+            if (rawSName && !/session\s+\d+/i.test(rawSName) && !fitName) {
+              fitName = rawSName;
+            }
+          }
+          if (record.data.comment) {
+            const rawComment = String(record.data.comment).trim();
+            if (rawComment && !fitNotes) {
+              fitNotes = rawComment;
+            }
+          }
+          if (record.data.description) {
+            const rawDesc = String(record.data.description).trim();
+            if (rawDesc && !fitNotes) {
+              fitNotes = rawDesc;
+            }
+          }
+        }
+
+        // Extract Activity names and descriptions
+        if (record.type === 'activity') {
+          if (record.data.name) {
+            const rawAName = String(record.data.name).trim();
+            if (rawAName && !/activity/i.test(rawAName) && !fitName) {
+              fitName = rawAName;
+            }
+          }
+          if (record.data.description) {
+            const rawDesc = String(record.data.description).trim();
+            if (rawDesc && !fitNotes) {
+              fitNotes = rawDesc;
+            }
+          }
+          if (record.data.comment) {
+            const rawComment = String(record.data.comment).trim();
+            if (rawComment && !fitNotes) {
+              fitNotes = rawComment;
+            }
+          }
+        }
+
+        // General fallback/generic check for common descriptive fields
+        if (record.data.description && typeof record.data.description === 'string') {
+          const d = record.data.description.trim();
+          if (d && !fitNotes) fitNotes = d;
+        }
+        if (record.data.comment && typeof record.data.comment === 'string') {
+          const c = record.data.comment.trim();
+          if (c && !fitNotes) fitNotes = c;
+        }
+        if (record.data.notes && typeof record.data.notes === 'string') {
+          const n = record.data.notes.trim();
+          if (n && !fitNotes) fitNotes = n;
+        }
+      }
+    }
+
+    // Clean up generic/unwanted name strings
+    if (fitName) {
+      const lower = fitName.toLowerCase();
+      if (lower === 'activity' || lower === 'course' || lower === 'unnamed' || lower === 'workout') {
+        fitName = undefined;
+      }
+    }
+
+    let name = '';
+    if (fitName) {
+      name = fitName;
     } else {
-      name += ` - ${fileName.replace(/\.[^/.]+$/, "")}`;
+      const firstPoint = points.find(p => p.time !== undefined) || points[0];
+      const startDate = firstPoint?.time || new Date();
+      const dateStr = startDate.toLocaleDateString('de-DE', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit' 
+      });
+      const timeStr = startDate.toLocaleTimeString('de-DE', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+      
+      name = `${dateStr}, ${timeStr}`;
+      if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
+        const location = await getLocationName(firstPoint.lat, firstPoint.lng);
+        name += ` (${location})`;
+      } else {
+        name += ` - ${fileName.replace(/\.[^/.]+$/, "")}`;
+      }
     }
 
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
     const activityType = detectActivityType(points, name, fileName);
     const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     const surfaceStats = generateMockSurfaceStats(totalDist);
+    const climbs = findClimbs(points);
     
     let duration: number | undefined;
     const hasTimestamps = points.some(p => p.time !== undefined);
@@ -121,7 +228,9 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       powerStats,
       surfaceStats,
       duration,
-      hasTimestamps
+      hasTimestamps,
+      climbs,
+      description: fitNotes || ""
     };
   } catch (error) {
     console.error("Error parsing FIT:", error);

@@ -275,6 +275,14 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               )}
             </div>
 
+            {/* Description/Notes block if present */}
+            {track.description && (
+              <div className="bg-indigo-50/50 dark:bg-indigo-950/10 border border-indigo-100/45 dark:border-indigo-900/30 rounded-lg p-2 text-[10px] text-slate-650 dark:text-slate-300 leading-normal font-semibold text-left">
+                <span className="font-bold text-indigo-600 dark:text-indigo-400 block text-[8px] uppercase tracking-wider mb-0.5">Notiz / Kommentar</span>
+                {track.description}
+              </div>
+            )}
+
             {/* Power Stats Widget */}
             {track.powerStats && (
               <div className="bg-amber-500/5 dark:bg-amber-950/10 border border-amber-100/40 dark:border-amber-900/20 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
@@ -436,6 +444,7 @@ interface SidebarProps {
   suggestedFtp: number | null;
   onOpenComparison: () => void;
   onOpenTrainingZones?: (id?: string) => void;
+  onOpenSummaryReport?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
   onOpenSegments?: () => void;
@@ -496,6 +505,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   suggestedFtp,
   onOpenComparison,
   onOpenTrainingZones,
+  onOpenSummaryReport,
   onOpenAnalytics,
   onOpenClimbs,
   onOpenSegments,
@@ -684,6 +694,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <Trophy className="w-4 h-4 animate-pulse" />
                 Sektoren & Pacing-Planer
               </button>
+
+              {markedTrack && (
+                <button 
+                  onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-blue-650 hover:bg-blue-700 text-white shadow-md shadow-blue-100 transition-all cursor-pointer"
+                  title="Ausführlichen, druckbaren Aktivitäts-Report mit allen Statistiken anzeigen"
+                >
+                  <BarChart2 className="w-4 h-4" />
+                  Zusammenfassung & PDF-Report
+                </button>
+              )}
               
               {markedShowAnalyticsAndZones && (
                 <button 

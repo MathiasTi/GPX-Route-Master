@@ -26,3 +26,10 @@
 .dark .leaflet-popup-tip {
   background-color: #111827 !important;
 }
+
+/* Smooth hardware-accelerated transitions on Leaflet route paths */
+path.leaflet-interactive {
+  transition: stroke 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+              stroke-width 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+              stroke-opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}

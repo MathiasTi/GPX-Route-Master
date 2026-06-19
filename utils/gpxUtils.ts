@@ -1,11 +1,40 @@
 
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment } from '../types';
 
-export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
+export interface ClimbCriteria {
+  type: 'standard' | 'strava' | 'garmin' | 'custom';
+  minDistance: number;
+  minGradient: number;
+  minScore: number;
+  smoothingWindow: number;
+}
+
+export const getActiveClimbCriteria = (): ClimbCriteria => {
+  if (typeof window === 'undefined') {
+    return { type: 'standard', minDistance: 150, minGradient: 1.5, minScore: 0, smoothingWindow: 30 };
+  }
+  try {
+    const stored = localStorage.getItem('gpx_climb_criteria');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === 'object' && parsed.type) {
+        return parsed;
+      }
+    }
+  } catch (e) {}
+  return { type: 'standard', minDistance: 150, minGradient: 1.5, minScore: 0, smoothingWindow: 30 };
+};
+
+export const findClimbs = (
+  points: GPXPoint[],
+  criteria: ClimbCriteria = getActiveClimbCriteria()
+): ClimbSegment[] => {
   if (points.length < 5) return [];
   
-  const minClimbDistance = 150; // meters (highly inclusive minimum length)
-  const minAvgGradient = 1.5; // percent (very mild, ensures rolling hills and gentle climbs are detected)
+  const minClimbDistance = criteria.minDistance;
+  const minAvgGradient = criteria.minGradient;
+  const minScore = criteria.minScore || 0;
+  const SMOOTH_WINDOW_M = criteria.smoothingWindow || 30;
   
   // Calculate cumulative distance and filled elevation
   const cumDist = new Float64Array(points.length);
@@ -22,9 +51,8 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
     }
   }
 
-  // Smooth elevation data first to eliminate GPS micro-jitter (using a 30m rolling window)
+  // Smooth elevation data first to eliminate GPS micro-jitter (using a rolling window)
   const smoothedEle = new Float64Array(points.length);
-  const SMOOTH_WINDOW_M = 30;
   for (let i = 0; i < points.length; i++) {
     let sum = 0, count = 0;
     let j = i;
@@ -45,7 +73,7 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
   const climbs: ClimbSegment[] = [];
   
   for (let i = 0; i < points.length - 2; i++) {
-    // Look for a point at least 150m ahead
+    // Look for a point at least minClimbDistance ahead
     for (let j = i + 1; j < points.length; j++) {
       const dist = cumDist[j] - cumDist[i];
       if (dist < minClimbDistance) continue;
@@ -77,8 +105,9 @@ export const findClimbs = (points: GPXPoint[]): ClimbSegment[] => {
         const finalDist = cumDist[currentEnd] - cumDist[i];
         const finalAscent = smoothedEle[currentEnd] - smoothedEle[i];
         const finalAvgGrad = (finalAscent / finalDist) * 100;
+        const finalScore = finalDist * finalAvgGrad;
         
-        if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient) {
+        if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient && finalScore >= minScore) {
           climbs.push({
             startIndex: i,
             endIndex: currentEnd,
@@ -701,6 +730,13 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const xml = parser.parseFromString(xmlString, "text/xml");
     const trkpts = getGPXPoints(xml);
     
+    // Try to extract name and description from GPX XML
+    const gpxNameNode = xml.querySelector("gpx > metadata > name") || xml.querySelector("gpx > name") || xml.querySelector("trk > name") || xml.querySelector("rte > name");
+    const parsedGpxName = gpxNameNode?.textContent?.trim() || "";
+
+    const gpxDescNode = xml.querySelector("gpx > metadata > desc") || xml.querySelector("gpx > desc") || xml.querySelector("trk > desc") || xml.querySelector("rte > desc") || xml.querySelector("gpx > metadata > comment") || xml.querySelector("gpx > comment");
+    const parsedGpxDesc = gpxDescNode?.textContent?.trim() || "";
+
     const points: GPXPoint[] = Array.from(trkpts).map((pt) => {
       const latAttr = pt.getAttribute("lat") || pt.getAttribute("latitude") || "0";
       const lngAttr = pt.getAttribute("lon") || pt.getAttribute("lng") || pt.getAttribute("longitude") || "0";
@@ -759,24 +795,27 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       }
     }
 
-    const firstPoint = points.find(p => p.time !== undefined) || points[0];
-    const startDate = firstPoint?.time || new Date();
-    const dateStr = startDate.toLocaleDateString('de-DE', { 
-      year: 'numeric', 
-      month: '2-digit', 
-      day: '2-digit' 
-    });
-    const timeStr = startDate.toLocaleTimeString('de-DE', { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    
-    let activityName = `${dateStr}, ${timeStr}`;
-    if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
-      const location = await getLocationName(firstPoint.lat, firstPoint.lng);
-      activityName += ` (${location})`;
-    } else {
-      activityName += ` - ${fileName.replace(/\.[^/.]+$/, "") || "Unbenannter Track"}`;
+    let activityName = parsedGpxName;
+    if (!activityName) {
+      const firstPoint = points.find(p => p.time !== undefined) || points[0];
+      const startDate = firstPoint?.time || new Date();
+      const dateStr = startDate.toLocaleDateString('de-DE', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit' 
+      });
+      const timeStr = startDate.toLocaleTimeString('de-DE', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+      
+      activityName = `${dateStr}, ${timeStr}`;
+      if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
+        const location = await getLocationName(firstPoint.lat, firstPoint.lng);
+        activityName += ` (${location})`;
+      } else {
+        activityName += ` - ${fileName.replace(/\.[^/.]+$/, "") || "Unbenannter Track"}`;
+      }
     }
 
     const activityType = detectActivityType(points, activityName, fileName);
@@ -813,7 +852,8 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       surfaceStats,
       climbs,
       duration,
-      hasTimestamps
+      hasTimestamps,
+      description: parsedGpxDesc
     };
   } catch (error) {
     console.error("Error parsing GPX:", error);

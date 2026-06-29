@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -905,15 +905,28 @@ async function startServer() {
   });
 
   // Dynamic SQLite Import API
-  app.post("/api/import-sqlite", express.raw({ type: "application/octet-stream", limit: "100mb" }), async (req, res) => {
+  app.post("/api/import-sqlite", async (req, res) => {
+    req.setTimeout(0); // Disable socket timeout for very large database files
     let tempPath = "";
     try {
-      if (!req.body || req.body.length === 0) {
+      tempPath = path.join(os.tmpdir(), `upload_${Date.now()}_garmin.db`);
+      const writeStream = fs.createWriteStream(tempPath);
+      
+      // Stream the body directly to disk
+      await new Promise<void>((resolve, reject) => {
+        req.pipe(writeStream);
+        req.on("error", (err) => reject(err));
+        writeStream.on("error", (err) => reject(err));
+        writeStream.on("finish", () => resolve());
+      });
+
+      // Verify file is not empty
+      if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) {
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (e) {}
+        }
         return res.status(400).json({ success: false, error: "Empty database file uploaded." });
       }
-
-      tempPath = path.join(os.tmpdir(), `upload_${Date.now()}_garmin.db`);
-      fs.writeFileSync(tempPath, req.body);
 
       // Open uploaded db
       const DatabaseConstructor = (await import('better-sqlite3')).default;
@@ -951,40 +964,42 @@ async function startServer() {
             const remCol = findColumn(columns, ["rem", "rem_sleep", "rem_duration", "rem_sleep_duration"]);
             const awakeCol = findColumn(columns, ["awake", "awake_time", "awake_duration"]);
 
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0]; // Get YYYY-MM-DD
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0]; // Get YYYY-MM-DD
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              let durVal = parseFloat(row[durCol]);
-              if (isNaN(durVal)) continue;
-              // Normalize duration to minutes
-              if (durVal > 100000) durVal = durVal / 60000; // ms to min
-              else if (durVal > 2000) durVal = durVal / 60; // seconds to min
-              else if (durVal < 24) durVal = durVal * 60; // hours to min
+                let durVal = parseFloat(row[durCol]);
+                if (isNaN(durVal)) continue;
+                // Normalize duration to minutes
+                if (durVal > 100000) durVal = durVal / 60000; // ms to min
+                else if (durVal > 2000) durVal = durVal / 60; // seconds to min
+                else if (durVal < 24) durVal = durVal * 60; // hours to min
 
-              const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
-              const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
-              const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
-              const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
+                const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
+                const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
+                const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
+                const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
 
-              const normMin = (v: number) => {
-                if (v > 100000) return v / 60000;
-                if (v > 2000) return v / 60;
-                if (v < 24) return v * 60;
-                return v;
-              };
+                const normMin = (v: number) => {
+                  if (v > 100000) return v / 60000;
+                  if (v > 2000) return v / 60;
+                  if (v < 24) return v * 60;
+                  return v;
+                };
 
-              saveSleep(
-                dateVal,
-                durVal,
-                deepVal ? normMin(deepVal) : undefined,
-                lightVal ? normMin(lightVal) : undefined,
-                remVal ? normMin(remVal) : undefined,
-                awakeVal ? normMin(awakeVal) : undefined
-              );
-              sleepImported++;
-            }
+                saveSleep(
+                  dateVal,
+                  durVal,
+                  deepVal ? normMin(deepVal) : undefined,
+                  lightVal ? normMin(lightVal) : undefined,
+                  remVal ? normMin(remVal) : undefined,
+                  awakeVal ? normMin(awakeVal) : undefined
+                );
+                sleepImported++;
+              }
+            });
           }
         }
 
@@ -996,21 +1011,23 @@ async function startServer() {
             const bmiCol = findColumn(columns, ["bmi", "body_mass_index"]);
             const fatCol = findColumn(columns, ["body_fat", "fat", "fat_percent", "body_fat_percent", "bodyFat"]);
 
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              let wVal = parseFloat(row[weightCol]);
-              if (isNaN(wVal)) continue;
-              if (wVal > 1000) wVal = wVal / 1000; // g to kg
+                let wVal = parseFloat(row[weightCol]);
+                if (isNaN(wVal)) continue;
+                if (wVal > 1000) wVal = wVal / 1000; // g to kg
 
-              const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
-              const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
+                const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
+                const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
 
-              saveWeight(dateVal, wVal, bmiVal, fatVal);
-              weightImported++;
-            }
+                saveWeight(dateVal, wVal, bmiVal, fatVal);
+                weightImported++;
+              }
+            });
           }
         }
 
@@ -1019,17 +1036,19 @@ async function startServer() {
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const stressCol = findColumn(columns, ["avg_stress", "average_stress", "stress_level", "score", "averageStress", "stressLevel"]);
           if (dateCol && stressCol) {
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              const stressVal = parseFloat(row[stressCol]);
-              if (isNaN(stressVal)) continue;
+                const stressVal = parseFloat(row[stressCol]);
+                if (isNaN(stressVal)) continue;
 
-              saveStress(dateVal, stressVal);
-              stressImported++;
-            }
+                saveStress(dateVal, stressVal);
+                stressImported++;
+              }
+            });
           }
         }
 
@@ -1038,17 +1057,19 @@ async function startServer() {
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const rhrCol = findColumn(columns, ["rhr", "resting_heart_rate", "resting_hr", "resting", "restingHeartRate"]);
           if (dateCol && rhrCol) {
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              const rhrVal = parseFloat(row[rhrCol]);
-              if (isNaN(rhrVal)) continue;
+                const rhrVal = parseFloat(row[rhrCol]);
+                if (isNaN(rhrVal)) continue;
 
-              saveRhr(dateVal, rhrVal);
-              rhrImported++;
-            }
+                saveRhr(dateVal, rhrVal);
+                rhrImported++;
+              }
+            });
           }
         }
 
@@ -1060,21 +1081,23 @@ async function startServer() {
             const calCol = findColumn(columns, ["calories", "active_calories", "total_calories", "activeCalories", "totalCalories"]);
             const distCol = findColumn(columns, ["distance", "meters", "meters_traveled", "distanceMeters"]);
 
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              const stepsVal = parseInt(row[stepsCol], 10);
-              if (isNaN(stepsVal)) continue;
+                const stepsVal = parseInt(row[stepsCol], 10);
+                if (isNaN(stepsVal)) continue;
 
-              const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
-              let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
-              if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
+                const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
+                let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
+                if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
 
-              saveSteps(dateVal, stepsVal, calVal, distVal);
-              stepsImported++;
-            }
+                saveSteps(dateVal, stepsVal, calVal, distVal);
+                stepsImported++;
+              }
+            });
           }
         }
 
@@ -1092,27 +1115,29 @@ async function startServer() {
             const calCol = findColumn(columns, ["calories"]);
             const hrCol = findColumn(columns, ["avg_hr", "average_heart_rate", "averageHeartRate", "avg_heart_rate"]);
 
-            const rows = uploadedDb.prepare(`SELECT * FROM ${table.name}`).all() as any[];
-            for (const row of rows) {
-              let dateVal = String(row[dateCol]).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
 
-              const idVal = String(row[idCol]);
-              const nameVal = String(row[nameCol]);
-              const typeVal = typeCol && row[typeCol] ? String(row[typeCol]) : "cycling";
-              
-              let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : 0;
-              if (distVal > 1000) distVal = distVal / 1000; // m to km
+                const idVal = String(row[idCol]);
+                const nameVal = String(row[nameCol]);
+                const typeVal = typeCol && row[typeCol] ? String(row[typeCol]) : "cycling";
+                
+                let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : 0;
+                if (distVal > 1000) distVal = distVal / 1000; // m to km
 
-              const durVal = durCol && row[durCol] ? parseFloat(row[durCol]) : 0;
-              const ascentVal = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
-              const descentVal = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
-              const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
-              const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
+                const durVal = durCol && row[durCol] ? parseFloat(row[durCol]) : 0;
+                const ascentVal = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
+                const descentVal = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
+                const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
+                const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
 
-              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal);
-              activitiesImported++;
-            }
+                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal);
+                activitiesImported++;
+              }
+            });
           }
         }
       }
@@ -1176,7 +1201,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*all', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

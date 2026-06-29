@@ -108,20 +108,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
     setError(null);
     setSuccessMsg(null);
     try {
-      const reader = new FileReader();
-      
-      const arrayBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
-        reader.onload = () => resolve(reader.result as ArrayBuffer);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsArrayBuffer(file);
-      });
-
       const response = await fetch(getApiUrl('/api/import-sqlite'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream'
         },
-        body: arrayBuffer
+        body: file // Directly stream the file from disk instead of buffering in RAM
       });
 
       const result = await response.json();

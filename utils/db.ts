@@ -328,3 +328,9 @@ export function clearHealthMetrics() {
   db.exec('DELETE FROM garmin_steps');
   db.exec('DELETE FROM garmin_activities');
 }
+
+export function runInTransaction(fn: () => void) {
+  const trx = db.transaction(fn);
+  trx();
+}
+

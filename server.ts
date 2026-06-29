@@ -3,6 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds } from "./utils/db.js";
+import fs from "fs";
+import os from "os";
 
 async function startServer() {
   const app = express();
@@ -795,6 +797,7 @@ async function startServer() {
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
         hasTimestamps: r.has_timestamps === 1,
+        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined,
         visible: true
       };
 

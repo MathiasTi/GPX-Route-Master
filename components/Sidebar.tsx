@@ -2,8 +2,8 @@
 import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon } from 'lucide-react';
-import { calculateDistance, formatPace, getPaceString, findClimbs } from '../utils/gpxUtils';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
 import { TrackLibrary } from './TrackLibrary';
 import { 
   DndContext, 
@@ -36,6 +36,7 @@ interface TrackItemProps {
   onAnalyzeSurface?: (id: string) => void;
   isAnalyzing?: boolean;
   onSaveTrackToLibrary?: (id: string) => void;
+  onOpenRawData?: (id: string) => void;
 }
 
 const SortableTrackItem: React.FC<TrackItemProps> = ({ 
@@ -51,7 +52,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onOpenClimbs, 
   onAnalyzeSurface,
   isAnalyzing,
-  onSaveTrackToLibrary
+  onSaveTrackToLibrary,
+  onOpenRawData
 }) => {
   const {
     attributes,
@@ -66,6 +68,24 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
     transform: CSS.Transform.toString(transform),
     transition,
     zIndex: isDragging ? 50 : 'auto',
+  };
+
+  const handleExportGPX = () => {
+    try {
+      const xml = exportToGPX(track);
+      const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeName = track.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'track';
+      link.href = url;
+      link.setAttribute('download', `${safeName}.gpx`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Error exporting GPX:", e);
+    }
   };
 
   const hasPower = track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0);
@@ -131,8 +151,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               </button>
             </div>
           </div>
-             {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
-          <div className="grid grid-cols-3 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
+                      {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
+          <div className="grid grid-cols-4 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
             <button 
               type="button"
               onClick={() => onToggleVisibility(track.id)} 
@@ -182,6 +202,28 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 <span>Zonen</span>
               </button>
             )}
+
+            {onOpenRawData && (
+              <button 
+                type="button"
+                onClick={() => onOpenRawData(track.id)} 
+                className="p-1.5 bg-teal-50/80 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-350 rounded-lg border border-teal-250/20 dark:border-teal-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                title="Rohdaten & Telemetrie-Sätze inspizieren"
+              >
+                <FileCode className="w-3.5 h-3.5 text-teal-650 dark:text-teal-400" />
+                <span>Rohdaten</span>
+              </button>
+            )}
+
+            <button 
+              type="button"
+              onClick={handleExportGPX} 
+              className="p-1.5 bg-sky-50/80 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 rounded-lg border border-sky-250/20 dark:border-sky-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+              title="Track zurück als GPX-Datei exportieren"
+            >
+              <Download className="w-3.5 h-3.5 text-sky-655 dark:text-sky-450" />
+              <span>Export</span>
+            </button>
 
             <button 
               type="button"
@@ -447,7 +489,7 @@ interface SidebarProps {
   onOpenSummaryReport?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
-  onOpenSegments?: () => void;
+  onOpenRawData?: (id: string) => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
@@ -508,7 +550,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenSummaryReport,
   onOpenAnalytics,
   onOpenClimbs,
-  onOpenSegments,
+  onOpenRawData,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
@@ -684,15 +726,6 @@ const Sidebar: React.FC<SidebarProps> = ({
               >
                 <GitCompare className="w-4 h-4" />
                 Aktivitäten vergleichen
-              </button>
-
-              <button 
-                onClick={onOpenSegments}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-md shadow-amber-100 transition-all"
-                title="Sektor-Bestenlisten anzeigen und Pacing-Szenarien planen"
-              >
-                <Trophy className="w-4 h-4 animate-pulse" />
-                Sektoren & Pacing-Planer
               </button>
 
               {markedTrack && (
@@ -909,11 +942,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                       : 'border-transparent text-slate-400 hover:text-slate-600'
                   }`}
                 >
-                  Bibliothek (DB)
+                  Bibliothek
                 </button>
               </div>
 
-              {activeTab === 'active' ? (
+              {activeTab === 'active' && (
                 <div className="space-y-2 pb-6">
                   {tracks.length === 0 && (
                     <p className="text-xs text-slate-400 italic text-center py-8 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Noch keine Routen geladen.</p>
@@ -944,13 +977,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onAnalyzeSurface={onAnalyzeSurface}
                             isAnalyzing={analyzingSurfaces?.[track.id] || false}
                             onSaveTrackToLibrary={onSaveTrackToLibrary}
+                            onOpenRawData={onOpenRawData}
                           />
                         ))}
                       </div>
                     </SortableContext>
                   </DndContext>
                 </div>
-              ) : (
+              )}
+
+              {activeTab === 'library' && (
                 <div className="pb-6">
                   <TrackLibrary 
                     onLoadTrack={(track) => {

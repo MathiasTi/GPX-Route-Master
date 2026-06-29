@@ -115,6 +115,33 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   
   const isRunning = track.activityType === 'running';
 
+  // Dynamic Overlay metrics overlay mode toggles
+  const [isOverlayMode, setIsOverlayMode] = useState<boolean>(true);
+  const [overlayMetrics, setOverlayMetrics] = useState<string[]>(
+    isRunning ? ['elevation', 'pace', 'hr'] : ['elevation', 'power', 'hr']
+  );
+
+  const METRIC_METADATA: Record<string, { name: string; color: string; darkColor: string; unit: string }> = {
+    pace: { name: 'Lauf-Pace', color: '#f97316', darkColor: '#ff8a43', unit: ' min/km' },
+    speed: { name: 'Geschwindigkeit', color: '#10b981', darkColor: '#34d399', unit: ' km/h' },
+    elevation: { name: 'Höhenprofil', color: '#6366f1', darkColor: '#818cf8', unit: ' m' },
+    hr: { name: 'Herzfrequenz', color: '#f43f5e', darkColor: '#f87171', unit: ' bpm' },
+    power: { name: 'Leistung', color: '#d97706', darkColor: '#fbbf24', unit: ' W' },
+    slope: { name: 'Steigung', color: '#0ea5e9', darkColor: '#38bdf8', unit: '%' },
+    cadence: { name: isRunning ? 'Schrittfrequenz' : 'Trittfrequenz', color: '#0d9488', darkColor: '#2dd4bf', unit: isRunning ? ' spm' : ' rpm' },
+  };
+
+  const toggleOverlayMetric = (key: string) => {
+    setOverlayMetrics(prev => {
+      if (prev.includes(key)) {
+        if (prev.length <= 1) return prev; // Keep at least one metric
+        return prev.filter(m => m !== key);
+      } else {
+        return [...prev, key];
+      }
+    });
+  };
+
   const computedClimbs = useMemo(() => {
     return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
   }, [track.climbs, track.points]);
@@ -153,7 +180,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
     const firstTime = analysisPoints.find(p => p.time !== undefined)?.time;
     const lastTime = [...analysisPoints].reverse().find(p => p.time !== undefined)?.time;
     if (firstTime && lastTime) {
-      return (lastTime.getTime() - firstTime.getTime()) / 1000;
+      return (new Date(lastTime).getTime() - new Date(firstTime).getTime()) / 1000;
     }
     return 0;
   }, [analysisPoints]);
@@ -180,7 +207,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       if (idx > 0) {
         const dStep = calculateDistance(analysisPoints[idx - 1], p);
         if (analysisPoints[idx - 1].time && p.time) {
-          const dt = (p.time.getTime() - analysisPoints[idx - 1].time.getTime()) / 1000;
+          const dt = (new Date(p.time).getTime() - new Date(analysisPoints[idx - 1].time).getTime()) / 1000;
           if (dt > 0 && dt < 12) {
             speedKmh = dStep / (dt / 3600);
           }
@@ -236,6 +263,40 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
     if (last && !result.includes(last)) result.push(last);
     return result;
   }, [enrichedTimelineData]);
+
+  // Computed dynamic multi-series normalized data for perfect visual alignment in overlay mode
+  const normalizedTimelineData = useMemo(() => {
+    if (timelineChartData.length === 0) return [];
+    
+    const keys = ['elevation', 'hr', 'power', 'speed', 'pace', 'slope', 'cadence'];
+    const minMaxes: Record<string, { min: number; max: number }> = {};
+    
+    keys.forEach(k => {
+      let values = timelineChartData.map(d => d[k as keyof typeof d] as number || 0);
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (min === max) {
+        min = min - 1;
+        max = max + 1;
+      }
+      minMaxes[k] = { min, max };
+    });
+
+    return timelineChartData.map(d => {
+      const normObj: any = { ...d };
+      keys.forEach(k => {
+        const val = d[k as keyof typeof d] as number || 0;
+        const { min, max } = minMaxes[k];
+        if (k === 'pace') {
+          // Reverse pace normalization: we want a smaller pace number (faster) to sit higher up on the chart
+          normObj[`${k}_normalized`] = max === min ? 0 : ((max - val) / (max - min)) * 100;
+        } else {
+          normObj[`${k}_normalized`] = max === min ? 0 : ((val - min) / (max - min)) * 100;
+        }
+      });
+      return normObj;
+    });
+  }, [timelineChartData]);
 
   // Selected timeline metric to display in chart
   const [activeTimelineMetric, setActiveTimelineMetric] = useState<string>(
@@ -377,7 +438,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       const pCurr = analysisPoints[i];
       if (!pPrev.time || !pCurr.time) continue;
 
-      const dt = (pCurr.time.getTime() - pPrev.time.getTime()) / 1000;
+      const dt = (new Date(pCurr.time).getTime() - new Date(pPrev.time).getTime()) / 1000;
       if (dt <= 0 || dt > 120) continue;
 
       const distM = calculateDistance(pPrev, pCurr) * 1000;
@@ -606,7 +667,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       if (p.speed > 1.5) {
         let delta = 1;
         if (idx > 0 && analysisPoints[idx].time && analysisPoints[idx - 1].time) {
-          delta = (analysisPoints[idx].time!.getTime() - analysisPoints[idx - 1].time!.getTime()) / 1000;
+          delta = (new Date(analysisPoints[idx].time!).getTime() - new Date(analysisPoints[idx - 1].time!).getTime()) / 1000;
           if (delta <= 0 || delta > 12) delta = 1;
         }
 
@@ -695,7 +756,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       if (p.hr !== undefined && p.hr > 40) {
         let delta = 1;
         if (idx > 0 && analysisPoints[idx].time && analysisPoints[idx - 1].time) {
-          delta = (analysisPoints[idx].time!.getTime() - analysisPoints[idx - 1].time!.getTime()) / 1000;
+          delta = (new Date(analysisPoints[idx].time!).getTime() - new Date(analysisPoints[idx - 1].time!).getTime()) / 1000;
           if (delta <= 0 || delta > 12) delta = 1;
         }
 
@@ -786,7 +847,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       if (p.power !== undefined) {
         let delta = 1;
         if (i > 0 && p.time && analysisPoints[i - 1].time) {
-          delta = (p.time.getTime() - analysisPoints[i - 1].time.getTime()) / 1000;
+          delta = (new Date(p.time).getTime() - new Date(analysisPoints[i - 1].time).getTime()) / 1000;
           if (delta <= 0 || delta > 12) delta = 1;
         }
         
@@ -866,7 +927,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
     const lastTime = [...segment].reverse().find(p => p.time !== undefined)?.time;
     
     if (firstTime && lastTime) {
-      const hours = (lastTime.getTime() - firstTime.getTime()) / 3600000;
+      const hours = (new Date(lastTime).getTime() - new Date(firstTime).getTime()) / 3600000;
       if (hours > 0.005) {
         return Math.round(ascent / hours);
       }
@@ -1098,39 +1159,107 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
             
             {/* Main Interactive Diagram with Selection */}
             <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b border-slate-100 dark:border-slate-850 pb-4">
                 <div>
                   <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                     <BarChart2 size={20} className="text-indigo-600 dark:text-indigo-400" />
                     Werte-Profile über Distanz
                   </h3>
-                  <p className="text-xs text-slate-400 dark:text-slate-500">Klicke auf die Tabs unten, um die Metrik im Diagramm zu wechseln.</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">
+                    {isOverlayMode 
+                      ? 'Wähle beliebige Werte-Profile aus, um sie synchronisiert zu überlagern.' 
+                      : 'Klicke auf die Tabs unten, um die Metrik im Diagramm zu wechseln.'}
+                  </p>
                 </div>
-                <button 
-                  onClick={() => setFullscreenChart('pd')}
-                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors self-end sm:self-auto"
-                  title="Vollbild"
-                >
-                  <Maximize2 size={18} />
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="bg-slate-100 dark:bg-slate-950 p-1 rounded-xl flex gap-1">
+                    <button
+                      key="single"
+                      onClick={() => setIsOverlayMode(false)}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold shadow-2xs transition-all pointer-events-auto cursor-pointer ${
+                        !isOverlayMode 
+                          ? 'bg-indigo-650 dark:bg-indigo-500 text-white shadow-md' 
+                          : 'bg-transparent text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Einzeln
+                    </button>
+                    <button
+                      key="multi"
+                      onClick={() => setIsOverlayMode(true)}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold shadow-2xs transition-all pointer-events-auto cursor-pointer ${
+                        isOverlayMode 
+                          ? 'bg-indigo-650 dark:bg-indigo-500 text-white shadow-md' 
+                          : 'bg-transparent text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      🧪 Überlagern (Overlay)
+                    </button>
+                  </div>
+                  <button 
+                    onClick={() => setFullscreenChart('pd')}
+                    className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-450 hover:text-slate-650 dark:hover:text-slate-250 transition-colors pointer-events-auto cursor-pointer border border-slate-200 dark:border-slate-850"
+                    title="Vollbild"
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                </div>
               </div>
 
               {/* Responsive Tabs instead of a rigid timeline */}
-              <div className="flex flex-wrap gap-1.5 mb-6 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl">
-                {availableTimelineMetrics.map(m => (
-                  <button
-                    key={m.key}
-                    onClick={() => setActiveTimelineMetric(m.key)}
-                    className={`flex-1 min-w-[80px] text-center px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                      activeTimelineMetric === m.key 
-                        ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm' 
-                        : 'text-slate-500 hover:text-slate-705 dark:hover:text-slate-300'
-                    }`}
-                  >
-                    {m.name}
-                  </button>
-                ))}
-              </div>
+              {!isOverlayMode ? (
+                <div className="flex flex-wrap gap-1.5 mb-6 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl">
+                  {availableTimelineMetrics.map(m => (
+                    <button
+                      key={m.key}
+                      onClick={() => setActiveTimelineMetric(m.key)}
+                      className={`flex-1 min-w-[80px] text-center px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        activeTimelineMetric === m.key 
+                          ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm' 
+                          : 'text-slate-500 hover:text-slate-705 dark:hover:text-slate-300'
+                      }`}
+                    >
+                      {m.name}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2 mb-6 bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-850">
+                  <span className="text-[10px] font-black uppercase text-slate-450 dark:text-slate-500 tracking-wider w-full mb-1">
+                    Anzuzeigende Werteprofile anhaken / toggeln:
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {availableTimelineMetrics.map(m => {
+                      const isChecked = overlayMetrics.includes(m.key);
+                      const meta = METRIC_METADATA[m.key] || { color: '#6366f1' };
+                      return (
+                        <button
+                          key={m.key}
+                          onClick={() => toggleOverlayMetric(m.key)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 border cursor-pointer select-none ${
+                            isChecked 
+                              ? 'bg-white dark:bg-slate-905 border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 shadow-2xs' 
+                              : 'bg-transparent border-transparent text-slate-450 dark:text-slate-550 hover:text-slate-655'
+                          }`}
+                        >
+                          <span 
+                            className="w-2.5 h-2.5 rounded-full inline-block shrink-0 border border-black/5" 
+                            style={{ backgroundColor: meta.color }}
+                          />
+                          <span>{m.name}</span>
+                          <span className={`w-3.5 h-3.5 rounded-md border flex items-center justify-center text-[9px] ${
+                            isChecked 
+                              ? 'border-indigo-500 bg-indigo-500 text-white font-extrabold' 
+                              : 'border-slate-300 dark:border-slate-705'
+                          }`}>
+                            {isChecked ? '✓' : ''}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Chart Plot Area */}
               <div className="h-64 sm:h-72 w-full text-zinc-900">
@@ -1138,95 +1267,172 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                   <div className="h-full flex items-center justify-center text-slate-400">Keine Datenpunkte geladen</div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={timelineChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="colorTimeline" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#4f46e5" stopOpacity={0.0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.12)" />
-                      <XAxis 
-                        dataKey="distance" 
-                        axisLine={false} 
-                        tickLine={false} 
-                        tick={{ fill: '#94a3b8', fontSize: 10 }} 
-                        tickFormatter={(val) => `${val}km`}
-                      />
-                      <YAxis 
-                        axisLine={false} 
-                        tickLine={false} 
-                        tick={{ fill: '#94a3b8', fontSize: 10 }}
-                        unit={activeTimelineDef.unit}
-                        domain={['auto', 'auto']}
-                        reversed={activeTimelineMetric === 'pace'} // reverse pace chart so faster is higher
-                      />
-                      <Tooltip 
-                        content={({ active, payload }) => {
-                          if (active && payload && payload.length) {
-                            const data = payload[0].payload;
-                            return (
-                              <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-xl font-sans min-w-[200px] text-xs pointer-events-none">
-                                <div className="font-extrabold text-slate-505 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 pb-1 mb-2 flex justify-between items-center">
-                                  <span>DISTANZ</span>
-                                  <span className="font-mono text-slate-800 dark:text-slate-200 font-extrabold">{data.distance.toFixed(2)} km</span>
-                                </div>
-                                <div className="space-y-1.5 font-medium text-slate-600 dark:text-slate-400">
-                                  <div className="flex justify-between items-center gap-4">
-                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Höhe:</span>
-                                    <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{data.elevation} m</span>
+                    {!isOverlayMode ? (
+                      <AreaChart data={timelineChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="colorTimeline" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={METRIC_METADATA[activeTimelineMetric]?.color || "#4f46e5"} stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor={METRIC_METADATA[activeTimelineMetric]?.color || "#4f46e5"} stopOpacity={0.0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.12)" />
+                        <XAxis 
+                          dataKey="distance" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10 }} 
+                          tickFormatter={(val) => `${val}km`}
+                        />
+                        <YAxis 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10 }}
+                          unit={activeTimelineDef.unit}
+                          domain={['auto', 'auto']}
+                          reversed={activeTimelineMetric === 'pace'} // reverse pace chart so faster is higher
+                        />
+                        <Tooltip 
+                          content={({ active, payload }) => {
+                            if (active && payload && payload.length) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-xl font-sans min-w-[200px] text-xs pointer-events-none">
+                                  <div className="font-extrabold text-slate-505 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 pb-1 mb-2 flex justify-between items-center">
+                                    <span>DISTANZ</span>
+                                    <span className="font-mono text-slate-805 dark:text-slate-200 font-extrabold">{data.distance.toFixed(2)} km</span>
                                   </div>
-                                  <div className="flex justify-between items-center gap-4">
-                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Steigung:</span>
-                                    <span className={`font-black font-mono ${data.slope >= 3.5 ? 'text-rose-600 dark:text-rose-400' : data.slope <= -1.5 ? 'text-indigo-500' : 'text-slate-800 dark:text-slate-200'}`}>
-                                      {data.slope > 0 ? `+${data.slope}` : data.slope}%
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between items-center gap-4">
-                                    <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Geschwindigkeit:</span>
-                                    <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{data.speed} km/h</span>
-                                  </div>
-                                  {isRunning && data.pace > 0 && (
+                                  <div className="space-y-1.5 font-medium text-slate-600 dark:text-slate-450">
                                     <div className="flex justify-between items-center gap-4">
-                                      <span className="text-slate-400 dark:text-slate-500 font-semibold uppercase text-[9px] tracking-wider">Pace:</span>
-                                      <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">{formatPaceDecimal(data.pace)}/km</span>
+                                      <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Höhe:</span>
+                                      <span className="font-bold text-slate-805 dark:text-slate-200 font-mono">{data.elevation} m</span>
                                     </div>
-                                  )}
-                                  {data.hr > 0 && (
-                                    <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
-                                      <span className="text-rose-500 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">❤️ Puls:</span>
-                                      <span className="font-black text-rose-600 dark:text-rose-450 font-mono">{data.hr} bpm</span>
-                                    </div>
-                                  )}
-                                  {data.power > 0 && (
-                                    <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
-                                      <span className="text-amber-500 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">⚡ Leistung:</span>
-                                      <span className="font-black text-amber-500 font-mono">{data.power} W</span>
-                                    </div>
-                                  )}
-                                  {data.cadence > 0 && (
                                     <div className="flex justify-between items-center gap-4">
-                                      <span className="text-indigo-500 font-bold uppercase text-[9px] tracking-wider">{isRunning ? 'Schrittfreq.' : 'Trittfreq.'}:</span>
-                                      <span className="font-bold text-indigo-500 font-mono">{data.cadence}</span>
+                                      <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Steigung:</span>
+                                      <span className={`font-black font-mono ${data.slope >= 3.5 ? 'text-rose-600 dark:text-rose-450' : data.slope <= -1.5 ? 'text-indigo-500' : 'text-slate-850 dark:text-slate-200'}`}>
+                                        {data.slope > 0 ? `+${data.slope}` : data.slope}%
+                                      </span>
                                     </div>
-                                  )}
+                                    <div className="flex justify-between items-center gap-4">
+                                      <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Geschwindigkeit:</span>
+                                      <span className="font-bold text-slate-805 dark:text-slate-200 font-mono">{data.speed} km/h</span>
+                                    </div>
+                                    {isRunning && data.pace > 0 && (
+                                      <div className="flex justify-between items-center gap-4">
+                                        <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Pace:</span>
+                                        <span className="font-bold text-slate-855 dark:text-slate-200 font-mono">{formatPaceDecimal(data.pace)}/km</span>
+                                      </div>
+                                    )}
+                                    {data.hr > 0 && (
+                                      <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
+                                        <span className="text-rose-500 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">❤️ Puls:</span>
+                                        <span className="font-black text-rose-600 dark:text-rose-450 font-mono">{data.hr} bpm</span>
+                                      </div>
+                                    )}
+                                    {data.power > 0 && (
+                                      <div className="flex justify-between items-center gap-4 border-t border-dashed border-slate-100 dark:border-slate-800 pt-1 mt-1">
+                                        <span className="text-amber-550 font-bold uppercase text-[9px] tracking-wider flex items-center gap-0.5">⚡ Leistung:</span>
+                                        <span className="font-black text-amber-500 font-mono">{data.power} W</span>
+                                      </div>
+                                    )}
+                                    {data.cadence > 0 && (
+                                      <div className="flex justify-between items-center gap-4">
+                                        <span className="text-indigo-550 font-bold uppercase text-[9px] tracking-wider">{isRunning ? 'Schrittfreq.' : 'Trittfreq.'}:</span>
+                                        <span className="font-bold text-indigo-550 font-mono">{data.cadence}</span>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          }
-                          return null;
-                        }}
-                      />
-                      <Area 
-                        type="monotone" 
-                        dataKey={activeTimelineMetric} 
-                        stroke="#4f46e5" 
-                        strokeWidth={3}
-                        fillOpacity={1} 
-                        fill="url(#colorTimeline)" 
-                        animationDuration={600}
-                      />
-                    </AreaChart>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey={activeTimelineMetric} 
+                          stroke={METRIC_METADATA[activeTimelineMetric]?.color || "#4f46e5"} 
+                          strokeWidth={3}
+                          fillOpacity={1} 
+                          fill="url(#colorTimeline)" 
+                          animationDuration={600}
+                        />
+                      </AreaChart>
+                    ) : (
+                      <LineChart data={normalizedTimelineData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.12)" />
+                        <XAxis 
+                          dataKey="distance" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10 }} 
+                          tickFormatter={(val) => `${val}km`}
+                        />
+                        <YAxis 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10 }}
+                          domain={[0, 100]}
+                          tickFormatter={(val) => val === 0 ? 'Min' : val === 100 ? 'Max' : `${val}%`}
+                        />
+                        <Tooltip 
+                          content={({ active, payload }) => {
+                            if (active && payload && payload.length) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-xl font-sans min-w-[210px] text-xs pointer-events-none">
+                                  <div className="font-extrabold text-slate-505 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 pb-1 mb-2 flex justify-between items-center">
+                                    <span className="text-indigo-600 dark:text-indigo-400 font-extrabold">🧪 ÜBERLAGERT</span>
+                                    <span className="font-mono text-slate-805 dark:text-slate-200 font-extrabold">{data.distance.toFixed(2)} km</span>
+                                  </div>
+                                  <div className="space-y-1.5 font-medium text-slate-650 dark:text-slate-350">
+                                    {overlayMetrics.map(key => {
+                                      const meta = METRIC_METADATA[key];
+                                      if (!meta) return null;
+                                      let displayVal = '';
+                                      if (key === 'pace') {
+                                        displayVal = data.pace > 0 ? `${formatPaceDecimal(data.pace)}/km` : '--:--';
+                                      } else {
+                                        const rawVal = data[key];
+                                        displayVal = rawVal !== undefined ? `${rawVal}${meta.unit}` : '--';
+                                      }
+                                      return (
+                                        <div key={key} className="flex justify-between items-center gap-4">
+                                          <span className="font-bold flex items-center gap-1" style={{ color: meta.color }}>
+                                            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: meta.color }} />
+                                            {meta.name}:
+                                          </span>
+                                          <span className="font-extrabold font-mono text-slate-800 dark:text-slate-100">{displayVal}</span>
+                                        </div>
+                                      );
+                                    })}
+                                    <div className="border-t border-slate-100 dark:border-slate-800/80 pt-1.5 mt-1.5 flex justify-between items-center text-[10px] text-slate-400 font-bold italic leading-none">
+                                      <span>* Amplituden normalisiert (0-100%)</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        {overlayMetrics.map(key => {
+                          const meta = METRIC_METADATA[key];
+                          if (!meta) return null;
+                          return (
+                            <Line 
+                              key={key}
+                              type="monotone"
+                              dataKey={`${key}_normalized`}
+                              stroke={meta.color}
+                              strokeWidth={3}
+                              dot={false}
+                              activeDot={{ r: 5 }}
+                              animationDuration={500}
+                            />
+                          );
+                        })}
+                      </LineChart>
+                    )}
                   </ResponsiveContainer>
                 )}
               </div>
@@ -1854,11 +2060,11 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                   const wKgRatio = (avgPower / (userWeight || 75)).toFixed(2);
                   const climbPoints = track.points.slice(climb.startIndex, climb.endIndex + 1);
                   const climbSpeedTotal = climbPoints.length > 1 && climbPoints[0].time && climbPoints[climbPoints.length - 1].time
-                    ? (climb.distance / 1000) / ((climbPoints[climbPoints.length - 1].time!.getTime() - climbPoints[0].time!.getTime()) / 3600000)
+                    ? (climb.distance / 1000) / ((new Date(climbPoints[climbPoints.length - 1].time!).getTime() - new Date(climbPoints[0].time!).getTime()) / 3600000)
                     : null;
 
                   const climbTimeSec = track.points[climb.endIndex].time && track.points[climb.startIndex].time
-                    ? Math.round((track.points[climb.endIndex].time!.getTime() - track.points[climb.startIndex].time!.getTime()) / 1000)
+                    ? Math.round((new Date(track.points[climb.endIndex].time!).getTime() - new Date(track.points[climb.startIndex].time!).getTime()) / 1000)
                     : null;
 
                   const isFocused = selectionBounds && 
@@ -1958,25 +2164,117 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                   exit={{ scale: 0.95, opacity: 0 }}
                   className="flex-1 flex flex-col h-full overflow-hidden"
                 >
-                  <div className="flex items-center justify-between mb-8">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b border-slate-100 dark:border-slate-800 pb-6">
                     <div className="flex items-center gap-4">
-                      <div className={`p-4 rounded-2xl ${fullscreenChart === 'pd' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50' : 'bg-amber-50 text-amber-600 dark:bg-amber-950/50'}`}>
+                      <div className={`p-4 rounded-2xl shrink-0 ${fullscreenChart === 'pd' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50' : 'bg-amber-50 text-amber-600 dark:bg-amber-950/50'}`}>
                         {fullscreenChart === 'pd' ? <BarChart2 size={32} /> : <Zap size={32} />}
                       </div>
                       <div>
-                        <h3 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">
-                          {fullscreenChart === 'pd' ? `Verlaufsprofil: ${activeTimelineDef.name}` : `Detaillierte Zonen: ${activeZoneMetric === 'hr' ? 'Herzrate' : activeZoneMetric === 'pace' ? 'Pace' : 'Watt'}`}
+                        <h3 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
+                          {fullscreenChart === 'pd' 
+                            ? isOverlayMode 
+                              ? "Multi-Overlay Analyse" 
+                              : `Profil: ${activeTimelineDef.name}` 
+                            : `Zonen: ${activeZoneMetric === 'hr' ? 'Herzrate' : activeZoneMetric === 'pace' ? 'Pace' : 'Watt'}`}
                         </h3>
-                        <p className="text-sm font-bold text-slate-450 uppercase tracking-widest">Detail-Analyse im Vollbildmodus</p>
+                        <p className="text-xs sm:text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Detail-Analyse im Vollbildmodus</p>
                       </div>
                     </div>
-                    <button 
-                      onClick={() => setFullscreenChart(null)}
-                      className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl text-slate-600 dark:text-slate-200 hover:bg-slate-200"
-                    >
-                      <X size={28} />
-                    </button>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      {fullscreenChart === 'pd' && (
+                        <div className="bg-slate-100 dark:bg-slate-900 p-1 rounded-xl flex gap-1">
+                          <button
+                            onClick={() => setIsOverlayMode(false)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              !isOverlayMode 
+                                ? 'bg-indigo-600 text-white shadow-md' 
+                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            Einzeln
+                          </button>
+                          <button
+                            onClick={() => setIsOverlayMode(true)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              isOverlayMode 
+                                ? 'bg-indigo-600 text-white shadow-md' 
+                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            🧪 Überlagern (Overlay)
+                          </button>
+                        </div>
+                      )}
+                      
+                      <button 
+                        onClick={() => setFullscreenChart(null)}
+                        className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl text-slate-600 dark:text-slate-200 hover:bg-slate-200 cursor-pointer"
+                        title="Vollbild schließen"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Interactive toggle selection inside fullscreen modal if isOverlayMode and we are looking at timeline profile */}
+                  {fullscreenChart === 'pd' && (
+                    <div className="mb-6">
+                      {!isOverlayMode ? (
+                        <div className="flex flex-wrap gap-1.5 bg-slate-100 dark:bg-slate-900 p-1 rounded-xl">
+                          {availableTimelineMetrics.map(m => (
+                            <button
+                              key={m.key}
+                              onClick={() => setActiveTimelineMetric(m.key)}
+                              className={`flex-1 min-w-[80px] text-center px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                                activeTimelineMetric === m.key 
+                                  ? 'bg-white dark:bg-slate-800 text-indigo-650 dark:text-indigo-400 shadow-sm' 
+                                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                              }`}
+                            >
+                              {m.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2 bg-slate-50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800">
+                          <span className="text-[10px] font-black uppercase text-slate-400 dark:text-slate-505 tracking-wider w-full mb-1">
+                            Einblendbares Werteprofil per Klick aktivieren/deaktivieren:
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {availableTimelineMetrics.map(m => {
+                              const isChecked = overlayMetrics.includes(m.key);
+                              const meta = METRIC_METADATA[m.key] || { color: '#6366f1' };
+                              return (
+                                <button
+                                  key={m.key}
+                                  onClick={() => toggleOverlayMetric(m.key)}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 border cursor-pointer select-none ${
+                                    isChecked 
+                                      ? 'bg-white dark:bg-slate-800 border-slate-350 dark:border-slate-705 text-slate-800 dark:text-slate-100 shadow-2xs' 
+                                      : 'bg-transparent border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-350'
+                                  }`}
+                                >
+                                  <span 
+                                    className="w-2.5 h-2.5 rounded-full inline-block shrink-0 border border-black/5" 
+                                    style={{ backgroundColor: meta.color }}
+                                  />
+                                  <span>{m.name}</span>
+                                  <span className={`w-3.5 h-3.5 rounded-md border flex items-center justify-center text-[9px] ${
+                                    isChecked 
+                                      ? 'border-indigo-500 bg-indigo-500 text-white font-extrabold' 
+                                      : 'border-slate-300 dark:border-slate-705'
+                                  }`}>
+                                    {isChecked ? '✓' : ''}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   
                   <div className="flex-1 w-full bg-slate-900 rounded-[32px] p-6 sm:p-10 shadow-2xl relative overflow-hidden flex flex-col">
                     <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 blur-[120px] rounded-full pointer-events-none" />
@@ -1985,42 +2283,127 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                     <div className="flex-1 w-full min-h-0 text-white">
                       <ResponsiveContainer width="100%" height="100%">
                         {fullscreenChart === 'pd' ? (
-                          <AreaChart data={timelineChartData}>
-                            <defs>
-                              <linearGradient id="pdGradModal" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#818cf8" stopOpacity={0.4}/>
-                                <stop offset="95%" stopColor="#818cf8" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
-                            <XAxis 
-                              dataKey="distance" 
-                              axisLine={false} 
-                              tickLine={false} 
-                              tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
-                              tickFormatter={(val) => `${val} km`}
-                            />
-                            <YAxis 
-                              axisLine={false} 
-                              tickLine={false} 
-                              tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
-                              unit={activeTimelineDef.unit} 
-                              domain={['auto', 'auto']}
-                              reversed={activeTimelineMetric === 'pace'}
-                            />
-                            <Tooltip 
-                              contentStyle={{ backgroundColor: '#1e293b', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }}
-                              cursor={{ stroke: '#818cf8', strokeWidth: 1.5 }}
-                              formatter={(value: any) => {
-                                if (activeTimelineMetric === 'pace') {
-                                  return [formatPaceDecimal(Number(value)), 'Pace'];
-                                }
-                                return [`${value}${activeTimelineDef.unit}`, activeTimelineDef.name];
-                              }}
-                              labelFormatter={(dist) => `Distanz: ${dist} km`}
-                            />
-                            <Area type="monotone" dataKey={activeTimelineMetric} stroke="#818cf8" strokeWidth={4} fillOpacity={1} fill="url(#pdGradModal)" />
-                          </AreaChart>
+                          !isOverlayMode ? (
+                            <AreaChart data={timelineChartData}>
+                              <defs>
+                                <linearGradient id="pdGradModal" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor={METRIC_METADATA[activeTimelineMetric]?.color || "#818cf8"} stopOpacity={0.4}/>
+                                  <stop offset="95%" stopColor={METRIC_METADATA[activeTimelineMetric]?.color || "#818cf8"} stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                              <XAxis 
+                                dataKey="distance" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
+                                tickFormatter={(val) => `${val} km`}
+                              />
+                              <YAxis 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
+                                unit={activeTimelineDef.unit} 
+                                domain={['auto', 'auto']}
+                                reversed={activeTimelineMetric === 'pace'}
+                              />
+                              <Tooltip 
+                                contentStyle={{ backgroundColor: '#1e293b', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }}
+                                cursor={{ stroke: METRIC_METADATA[activeTimelineMetric]?.color || "#818cf8", strokeWidth: 1.5 }}
+                                formatter={(value: any) => {
+                                  if (activeTimelineMetric === 'pace') {
+                                    return [formatPaceDecimal(Number(value)), 'Pace'];
+                                  }
+                                  return [`${value}${activeTimelineDef.unit}`, activeTimelineDef.name];
+                                }}
+                                labelFormatter={(dist) => `Distanz: ${dist} km`}
+                              />
+                              <Area 
+                                type="monotone" 
+                                dataKey={activeTimelineMetric} 
+                                stroke={METRIC_METADATA[activeTimelineMetric]?.color || "#818cf8"} 
+                                strokeWidth={4} 
+                                fillOpacity={1} 
+                                fill="url(#pdGradModal)" 
+                              />
+                            </AreaChart>
+                          ) : (
+                            <LineChart data={normalizedTimelineData}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                              <XAxis 
+                                dataKey="distance" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
+                                tickFormatter={(val) => `${val} km`}
+                              />
+                              <YAxis 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 13}} 
+                                domain={[0, 100]}
+                                tickFormatter={(val) => val === 0 ? 'Min' : val === 100 ? 'Max' : `${val}%`}
+                              />
+                              <Tooltip 
+                                contentStyle={{ backgroundColor: '#1e293b', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }}
+                                content={({ active, payload }) => {
+                                  if (active && payload && payload.length) {
+                                    const data = payload[0].payload;
+                                    return (
+                                      <div className="bg-slate-900 border border-white/10 p-4 rounded-xl min-w-[210px] text-xs pointer-events-none">
+                                        <div className="font-extrabold text-indigo-400 pb-1 mb-2 border-b border-white/15 flex justify-between items-center">
+                                          <span>🧪 ÜBERLAGERT</span>
+                                          <span className="font-mono text-white">{data.distance.toFixed(2)} km</span>
+                                        </div>
+                                        <div className="space-y-1.5 text-slate-300">
+                                          {overlayMetrics.map(key => {
+                                            const meta = METRIC_METADATA[key];
+                                            if (!meta) return null;
+                                            let displayVal = '';
+                                            if (key === 'pace') {
+                                              displayVal = data.pace > 0 ? `${formatPaceDecimal(data.pace)}/km` : '--:--';
+                                            } else {
+                                              const rawVal = data[key];
+                                              displayVal = rawVal !== undefined ? `${rawVal}${meta.unit}` : '--';
+                                            }
+                                            return (
+                                              <div key={key} className="flex justify-between items-center gap-4">
+                                                <span className="font-semibold flex items-center gap-1" style={{ color: meta.color }}>
+                                                  <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: meta.color }} />
+                                                  {meta.name}:
+                                                </span>
+                                                <span className="font-black font-mono text-white">{displayVal}</span>
+                                              </div>
+                                            );
+                                          })}
+                                          <div className="border-t border-white/5 pt-1 mt-1 text-[10px] text-slate-450 italic">
+                                            * Amplituden normalisiert (0-100%)
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+                              {overlayMetrics.map(key => {
+                                const meta = METRIC_METADATA[key];
+                                if (!meta) return null;
+                                return (
+                                  <Line 
+                                    key={key}
+                                    type="monotone"
+                                    dataKey={`${key}_normalized`}
+                                    stroke={meta.color}
+                                    strokeWidth={4}
+                                    dot={false}
+                                    activeDot={{ r: 6 }}
+                                    animationDuration={500}
+                                  />
+                                );
+                              })}
+                            </LineChart>
+                          )
                         ) : (
                           <BarChart data={activeZoneData} layout="vertical" margin={{ left: 80, right: 20 }}>
                             <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(255,255,255,0.05)" />

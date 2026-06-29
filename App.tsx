@@ -5,25 +5,39 @@ import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { Activity, BarChart2, Menu } from 'lucide-react';
-import { GPXTrack, GPXPoint, MapLayer, TextMarker, Segment } from './types';
+import { GPXTrack, GPXPoint, MapLayer, TextMarker } from './types';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
 import AdvancedAnalytics from './components/AdvancedAnalytics';
 import { TrackComparison } from './components/TrackComparison';
+import { RawDataAnalysis } from './components/RawDataAnalysis';
 import { AnimatePresence } from 'motion/react';
 import { VideoExportModal } from './components/VideoExportModal';
 import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
-import { SegmentsAnalysis } from './components/SegmentsAnalysis';
-import { getFamousSegments, extractSegmentsFromTrack, generateProLeaderboard } from './utils/segmentUtils';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
 import { getApiUrl } from './utils/api';
 
 const App: React.FC = () => {
-  const [tracks, setTracks] = useState<GPXTrack[]>([]);
+  const [unhydratedTracks, setTracks] = useState<GPXTrack[]>([]);
+
+  const tracks = React.useMemo(() => {
+    return unhydratedTracks.map(t => {
+      const needsPointsHydration = t.points && t.points.some(p => p.time && typeof p.time === 'string');
+      const needsDateHydration = (t as any).date && typeof (t as any).date === 'string';
+      
+      if (!needsPointsHydration && !needsDateHydration) return t;
+      
+      return {
+        ...t,
+        date: (t as any).date ? new Date((t as any).date) : (t as any).date,
+        points: t.points.map(p => p.time && typeof p.time === 'string' ? { ...p, time: new Date(p.time) } : p)
+      };
+    });
+  }, [unhydratedTracks]);
   const [history, setHistory] = useState<GPXTrack[][]>([]);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>(() => {
     try {
@@ -85,6 +99,7 @@ const App: React.FC = () => {
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
   const [summaryReportOpen, setSummaryReportOpen] = useState(false);
   const [weatherOpen, setWeatherOpen] = useState(false);
+  const [rawDataOpen, setRawDataOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [mapView, setMapView] = useState({
     lat: 51.1657,
@@ -106,132 +121,6 @@ const App: React.FC = () => {
     }
   }, [successMessage]);
 
-  const [segmentsOpen, setSegmentsOpen] = useState(false);
-  const [customSegments, setCustomSegments] = useState<Segment[]>(() => {
-    try {
-      const saved = localStorage.getItem('velo_custom_segments');
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch (e) {}
-    return getFamousSegments();
-  });
-
-  const handleAddNewSegment = useCallback((name: string) => {
-    const activeRoute = tracks.find(t => t.id === markedTrackId);
-    if (!activeRoute || !selectionBounds) {
-      setErrorMessage("Keine aktive Route oder kein Bereich auf der Karte ausgewählt, um ein Segment zu generieren!");
-      return;
-    }
-
-    const { minLat, maxLat, minLng, maxLng } = selectionBounds;
-    
-    // Find points of the route inside bounds
-    const insidePointsIndices: number[] = [];
-    activeRoute.points.forEach((pt, idx) => {
-      if (pt.lat >= minLat && pt.lat <= maxLat && pt.lng >= minLng && pt.lng <= maxLng) {
-        insidePointsIndices.push(idx);
-      }
-    });
-
-    if (insidePointsIndices.length < 2) {
-      setErrorMessage("Bitte markiere einen größeren/genaueren Bereich auf der Route!");
-      return;
-    }
-
-    const firstIdx = insidePointsIndices[0];
-    const lastIdx = insidePointsIndices[insidePointsIndices.length - 1];
-
-    if (firstIdx >= lastIdx) {
-      setErrorMessage("Ungültige Bereichsauswahl.");
-      return;
-    }
-
-    const selectedPoints = activeRoute.points.slice(firstIdx, lastIdx + 1);
-    
-    // Calculate segment stats
-    let totalDistMeter = 0;
-    let totalAscentMeter = 0;
-    for (let i = 1; i < selectedPoints.length; i++) {
-      const p1 = selectedPoints[i - 1];
-      const p2 = selectedPoints[i];
-      totalDistMeter += (p1 && p2) ? calculateDistance(p1, p2) * 1000 : 0;
-      if (p2.ele !== undefined && p1.ele !== undefined) {
-        const diff = p2.ele - p1.ele;
-        if (diff > 0) totalAscentMeter += diff;
-      }
-    }
-
-    if (totalDistMeter <= 10) {
-      setErrorMessage("Das ausgewählte Segment ist zu kurz.");
-      return;
-    }
-
-    const startPt = selectedPoints[0];
-    const endPt = selectedPoints[selectedPoints.length - 1];
-    const avgGradient = parseFloat(((totalAscentMeter / totalDistMeter) * 105).toFixed(1));
-
-    const newSegment: Segment = {
-      id: `custom-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      name,
-      startLat: startPt.lat,
-      startLng: startPt.lng,
-      endLat: endPt.lat,
-      endLng: endPt.lng,
-      distanceMeter: Math.round(totalDistMeter),
-      ascentMeter: Math.round(totalAscentMeter),
-      avgGradient,
-      leaderboard: generateProLeaderboard(totalDistMeter, totalAscentMeter, totalAscentMeter < 15),
-      isCustom: true
-    };
-
-    setCustomSegments(prev => {
-      const updated = [...prev, newSegment];
-      localStorage.setItem('velo_custom_segments', JSON.stringify(updated));
-      return updated;
-    });
-
-    setSelectionBounds(null); // Clear selection
-    setSegmentsOpen(true); // Auto-open dashboard!
-  }, [tracks, markedTrackId, selectionBounds]);
-
-  const handleDeleteSegment = useCallback((id: string) => {
-    setCustomSegments(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('velo_custom_segments', JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-
-  // Auto-extract segments from newly added tracks to enrich local list
-  useEffect(() => {
-    if (tracks.length === 0) return;
-    
-    setCustomSegments(prev => {
-      const existingIds = new Set(prev.map(s => s.id));
-      let newlyAdded = false;
-      const updated = [...prev];
-
-      tracks.forEach(track => {
-        const extracted = extractSegmentsFromTrack(track);
-        extracted.forEach(seg => {
-          // Prevent duplicates
-          const isDup = prev.some(s => s.name === seg.name || (Math.abs(s.startLat - seg.startLat) < 0.001 && Math.abs(s.startLng - seg.startLng) < 0.001));
-          if (!existingIds.has(seg.id) && !isDup) {
-            updated.push(seg);
-            existingIds.add(seg.id);
-            newlyAdded = true;
-          }
-        });
-      });
-
-      if (newlyAdded) {
-        localStorage.setItem('velo_custom_segments', JSON.stringify(updated));
-        return updated;
-      }
-      return prev;
-    });
-  }, [tracks]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
@@ -698,6 +587,124 @@ const App: React.FC = () => {
     }
   }, [flyProgress, isFlying, markedTrack]);
 
+  // Global keyboard shortcuts handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. Guard against typing in active input fields
+      const activeEl = document.activeElement;
+      if (activeEl && (
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.getAttribute('contenteditable') === 'true'
+      )) {
+        return;
+      }
+
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+
+      // Ctrl + Z: Undo
+      if (isCtrlOrMeta && e.key.toLowerCase() === 'z') {
+        if (history.length > 0) {
+          e.preventDefault();
+          handleUndo();
+        }
+        return;
+      }
+
+      // Ctrl + S: Save to library
+      if (isCtrlOrMeta && e.key.toLowerCase() === 's') {
+        if (markedTrackId) {
+          e.preventDefault();
+          handleSaveTrackToLibrary(markedTrackId);
+        }
+        return;
+      }
+
+      // Arrow keys: fine-tuning map or navigating points
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        const markedTrack = tracks.find(t => t.id === markedTrackId);
+
+        // Point navigation: Left/Right when a track is marked and not holding Shift/Alt
+        if (
+          (e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+          markedTrack &&
+          markedTrack.points &&
+          markedTrack.points.length > 0 &&
+          !e.shiftKey &&
+          !e.altKey
+        ) {
+          e.preventDefault();
+          
+          let currentIndex = -1;
+          if (hoveredPoint) {
+            currentIndex = markedTrack.points.findIndex(
+              p => p.lat === hoveredPoint.lat && p.lng === hoveredPoint.lng
+            );
+          }
+
+          let nextIndex = currentIndex;
+          if (e.key === 'ArrowLeft') {
+            if (currentIndex === -1) {
+              nextIndex = markedTrack.points.length - 1;
+            } else {
+              nextIndex = currentIndex - 1;
+              if (nextIndex < 0) nextIndex = markedTrack.points.length - 1;
+            }
+          } else {
+            if (currentIndex === -1) {
+              nextIndex = 0;
+            } else {
+              nextIndex = currentIndex + 1;
+              if (nextIndex >= markedTrack.points.length) nextIndex = 0;
+            }
+          }
+          setHoveredPoint(markedTrack.points[nextIndex]);
+        } else {
+          // Fine-tuning the map view
+          e.preventDefault();
+          
+          const currentZoom = mapView.zoom;
+          // Step gets smaller as zoom increases, allowing fine-tuned, precise panning
+          const step = 0.05 / Math.pow(2, currentZoom - 6);
+          
+          let dLat = 0;
+          let dLng = 0;
+
+          if (e.key === 'ArrowUp') {
+            dLat = step;
+          } else if (e.key === 'ArrowDown') {
+            dLat = -step;
+          } else if (e.key === 'ArrowLeft') {
+            dLng = -step;
+          } else if (e.key === 'ArrowRight') {
+            dLng = step;
+          }
+
+          setMapView(prev => ({
+            ...prev,
+            lat: prev.lat + dLat,
+            lng: prev.lng + dLng
+          }));
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    history,
+    markedTrackId,
+    handleUndo,
+    handleSaveTrackToLibrary,
+    tracks,
+    hoveredPoint,
+    mapView.zoom,
+    setHoveredPoint,
+    setMapView
+  ]);
+
   const [showHint, setShowHint] = useState(false);
 
   return (
@@ -769,8 +776,11 @@ const App: React.FC = () => {
           setClimbsOpen(true);
           setIsMobileMenuOpen(false);
         }}
-        onOpenSegments={() => {
-          setSegmentsOpen(true);
+        onOpenRawData={(id) => {
+          if (id) {
+            setMarkedTrackId(id);
+          }
+          setRawDataOpen(true);
           setIsMobileMenuOpen(false);
         }}
         textMarkers={textMarkers}
@@ -926,17 +936,11 @@ const App: React.FC = () => {
           </AnimatePresence>
 
           <AnimatePresence>
-            {segmentsOpen && (
-              <SegmentsAnalysis 
+            {rawDataOpen && (
+              <RawDataAnalysis 
                 tracks={tracks}
-                activeTrack={markedTrack || undefined}
-                onClose={() => setSegmentsOpen(false)}
-                activeLayer={activeLayer}
-                segments={customSegments}
-                onDeleteSegment={handleDeleteSegment}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                ftp={ftp}
+                selectedTrackId={markedTrackId}
+                onClose={() => setRawDataOpen(false)}
               />
             )}
           </AnimatePresence>

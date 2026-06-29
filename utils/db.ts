@@ -24,6 +24,7 @@ export interface DbTrackRecord {
   max_slope?: number;
   color?: string;
   has_timestamps?: number;
+  raw_file_json?: string;
 }
 
 export function initDb() {
@@ -46,26 +47,24 @@ export function initDb() {
       original_filename TEXT,
       max_slope REAL,
       color TEXT,
-      has_timestamps INTEGER
+      has_timestamps INTEGER,
+      raw_file_json TEXT
     )
   `);
 
   // Run graceful schema migrations on existing database tables
   try {
     db.exec(`ALTER TABLE tracks ADD COLUMN max_slope REAL`);
-  } catch (e) {
-    // Column already exists, ignore
-  }
+  } catch (e) {}
   try {
     db.exec(`ALTER TABLE tracks ADD COLUMN color TEXT`);
-  } catch (e) {
-    // Column already exists, ignore
-  }
+  } catch (e) {}
   try {
     db.exec(`ALTER TABLE tracks ADD COLUMN has_timestamps INTEGER`);
-  } catch (e) {
-    // Column already exists, ignore
-  }
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN raw_file_json TEXT`);
+  } catch (e) {}
 
   console.log('SQLite database initialized successfully at', dbPath);
 }
@@ -89,15 +88,16 @@ export function saveTrack(track: {
   maxSlope?: number;
   color?: string;
   hasTimestamps?: boolean;
+  rawFileDetails?: any;
 }) {
   const statement = db.prepare(`
     INSERT OR REPLACE INTO tracks (
       id, name, distance, ascent, descent, duration, activity_type,
       description, tags, date_created, points_json, power_stats_json,
       surface_stats_json, climbs_json, original_filename, max_slope,
-      color, has_timestamps
+      color, has_timestamps, raw_file_json
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `);
 
@@ -122,7 +122,8 @@ export function saveTrack(track: {
     track.originalFilename || null,
     track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : null,
     track.color || null,
-    track.hasTimestamps ? 1 : 0
+    track.hasTimestamps ? 1 : 0,
+    track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null
   );
 
   return track.id;

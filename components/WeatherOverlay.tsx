@@ -133,7 +133,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
   };
 
   return (
-    <div className="absolute top-4 right-4 z-[990] max-w-sm w-[90vw] md:w-80">
+    <div className="absolute top-16 sm:top-20 right-4 z-[1040] max-w-sm w-[90vw] md:w-80">
       {/* Mini toggle bar when collapsed */}
       {!isOpen && (
         <button

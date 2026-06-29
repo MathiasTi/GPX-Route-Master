@@ -37,6 +37,25 @@ export interface ClimbSegment {
   maxGradient: number; // percent
 }
 
+export interface RawFileDetails {
+  fileType: 'fit' | 'gpx';
+  fileName: string;
+  fileSize?: number;
+  metadata: {
+    creator?: string;
+    version?: string;
+    deviceManufacturer?: string;
+    deviceModel?: string;
+    serialNumber?: string;
+    softwareVersion?: string;
+    sportName?: string;
+    sessionDuration?: number;
+    sessionDistance?: number;
+    lapCount?: number;
+    rawRecords?: { type: string; data: Record<string, any> }[];
+  };
+}
+
 export interface GPXTrack {
   id: string;
   name: string;
@@ -54,6 +73,7 @@ export interface GPXTrack {
   duration?: number; // in seconds
   hasTimestamps?: boolean;
   description?: string;
+  rawFileDetails?: RawFileDetails;
 }
 
 export enum MapLayer {

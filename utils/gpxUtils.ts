@@ -1,6 +1,85 @@
 
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment } from '../types';
 
+export const toDate = (timeVal: any): Date | undefined => {
+  if (!timeVal) return undefined;
+  if (timeVal instanceof Date) return timeVal;
+  const d = new Date(timeVal);
+  return isNaN(d.getTime()) ? undefined : d;
+};
+
+/**
+ * Sanitizes GPX/FIT trackpoints by filtering out unrealistic sensor values.
+ * Unrealistic values (e.g. Heart Rate = 255 or >= 230, Power > 2500W, Cadence > 250rpm)
+ * are smoothly interpolated using linear interpolation from surrounding valid points.
+ */
+export const sanitizeGPXPoints = (points: GPXPoint[]): GPXPoint[] => {
+  if (!points || points.length === 0) return points;
+
+  const isInvalidHr = (hr: number | undefined): boolean => {
+    if (hr === undefined || isNaN(hr)) return false;
+    return hr === 255 || hr >= 230 || hr <= 30;
+  };
+
+  const isInvalidPower = (pwr: number | undefined): boolean => {
+    if (pwr === undefined || isNaN(pwr)) return false;
+    return pwr >= 2500 || pwr < 0;
+  };
+
+  const isInvalidCadence = (cad: number | undefined): boolean => {
+    if (cad === undefined || isNaN(cad)) return false;
+    return cad >= 250 || cad < 0;
+  };
+
+  const sanitized = points.map(p => ({ ...p }));
+
+  const interpolateKey = (key: 'hr' | 'power' | 'cadence', isInvalidFn: (val: number | undefined) => boolean) => {
+    for (let i = 0; i < sanitized.length; i++) {
+      const val = sanitized[i][key];
+      if (val !== undefined && isInvalidFn(val)) {
+        let prevValidVal: number | undefined = undefined;
+        let prevIndex = -1;
+        for (let j = i - 1; j >= 0; j--) {
+          const v = sanitized[j][key];
+          if (v !== undefined && !isInvalidFn(v)) {
+            prevValidVal = v;
+            prevIndex = j;
+            break;
+          }
+        }
+
+        let nextValidVal: number | undefined = undefined;
+        let nextIndex = -1;
+        for (let j = i + 1; j < sanitized.length; j++) {
+          const v = sanitized[j][key];
+          if (v !== undefined && !isInvalidFn(v)) {
+            nextValidVal = v;
+            nextIndex = j;
+            break;
+          }
+        }
+
+        if (prevValidVal !== undefined && nextValidVal !== undefined) {
+          const fraction = (i - prevIndex) / (nextIndex - prevIndex);
+          sanitized[i][key] = Math.round(prevValidVal + fraction * (nextValidVal - prevValidVal));
+        } else if (prevValidVal !== undefined) {
+          sanitized[i][key] = prevValidVal;
+        } else if (nextValidVal !== undefined) {
+          sanitized[i][key] = nextValidVal;
+        } else {
+          sanitized[i][key] = undefined;
+        }
+      }
+    }
+  };
+
+  interpolateKey('hr', isInvalidHr);
+  interpolateKey('power', isInvalidPower);
+  interpolateKey('cadence', isInvalidCadence);
+
+  return sanitized;
+};
+
 export interface ClimbCriteria {
   type: 'standard' | 'strava' | 'garmin' | 'custom';
   minDistance: number;
@@ -11,7 +90,7 @@ export interface ClimbCriteria {
 
 export const getActiveClimbCriteria = (): ClimbCriteria => {
   if (typeof window === 'undefined') {
-    return { type: 'standard', minDistance: 150, minGradient: 1.5, minScore: 0, smoothingWindow: 30 };
+    return { type: 'garmin', minDistance: 500, minGradient: 3.0, minScore: 1500, smoothingWindow: 30 };
   }
   try {
     const stored = localStorage.getItem('gpx_climb_criteria');
@@ -22,7 +101,7 @@ export const getActiveClimbCriteria = (): ClimbCriteria => {
       }
     }
   } catch (e) {}
-  return { type: 'standard', minDistance: 150, minGradient: 1.5, minScore: 0, smoothingWindow: 30 };
+  return { type: 'garmin', minDistance: 500, minGradient: 3.0, minScore: 1500, smoothingWindow: 30 };
 };
 
 export const findClimbs = (
@@ -160,8 +239,10 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
           slope = eleDiff / distM;
         }
 
-        if (p.time && pPrev.time) {
-          const dt = (p.time.getTime() - pPrev.time.getTime()) / 1000;
+        const t1 = toDate(p.time);
+        const t2 = toDate(pPrev.time);
+        if (t1 && t2) {
+          const dt = (t1.getTime() - t2.getTime()) / 1000;
           if (dt > 0 && dt < 120 && distM > 0) {
             speedMs = distM / dt;
           }
@@ -229,8 +310,10 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
         slope = eleDiff / distM;
       }
 
-      if (p.time && pPrev.time) {
-        const dt = (p.time.getTime() - pPrev.time.getTime()) / 1000;
+      const t1 = toDate(p.time);
+      const t2 = toDate(pPrev.time);
+      if (t1 && t2) {
+        const dt = (t1.getTime() - t2.getTime()) / 1000;
         if (dt > 0 && dt < 120 && distM > 0) {
           speedMs = distM / dt;
         }
@@ -299,8 +382,10 @@ export const calculatePowerStats = (
   for (let i = 1; i < processedPoints.length; i++) {
     const p1 = processedPoints[i - 1];
     const p2 = processedPoints[i];
-    if (p1.power !== undefined && p2.power !== undefined && p1.time && p2.time) {
-      const dt = (p2.time.getTime() - p1.time.getTime()) / 1000;
+    const t1 = toDate(p1.time);
+    const t2 = toDate(p2.time);
+    if (p1.power !== undefined && p2.power !== undefined && t1 && t2) {
+      const dt = (t2.getTime() - t1.getTime()) / 1000;
       if (dt > 0 && dt < 30) {
         const avgP = (smoothedPower[i]! + smoothedPower[i - 1]!) / 2;
         totalEnergy += avgP * dt;
@@ -319,8 +404,12 @@ export const calculatePowerStats = (
   const timedPoints = processedPoints.map((p, i) => ({ ...p, power: smoothedPower[i] })).filter(p => p.time && p.power !== undefined);
   if (timedPoints.length < 2) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
 
-  const startTime = timedPoints[0].time!.getTime();
-  const endTime = timedPoints[timedPoints.length - 1].time!.getTime();
+  const tStart = toDate(timedPoints[0].time);
+  const tEnd = toDate(timedPoints[timedPoints.length - 1].time);
+  if (!tStart || !tEnd) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
+
+  const startTime = tStart.getTime();
+  const endTime = tEnd.getTime();
   const durationSec = Math.floor((endTime - startTime) / 1000);
   
   if (durationSec < 5) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
@@ -329,14 +418,14 @@ export const calculatePowerStats = (
   let pIdx = 0;
   for (let t = 0; t <= durationSec; t++) {
     const targetTime = startTime + t * 1000;
-    while (pIdx < timedPoints.length - 1 && timedPoints[pIdx + 1].time!.getTime() < targetTime) {
+    while (pIdx < timedPoints.length - 1 && (toDate(timedPoints[pIdx + 1].time)?.getTime() ?? 0) < targetTime) {
       pIdx++;
     }
     const p1 = timedPoints[pIdx];
     const p2 = timedPoints[pIdx + 1];
     if (p2) {
-      const t1 = p1.time!.getTime();
-      const t2 = p2.time!.getTime();
+      const t1 = toDate(p1.time)?.getTime() ?? 0;
+      const t2 = toDate(p2.time)?.getTime() ?? 0;
       if (t2 - t1 > 5000) { // Gap larger than 5 seconds
         if (targetTime - t1 <= 2000) power1s[t] = p1.power!;
         else if (t2 - targetTime <= 2000) power1s[t] = p2.power!;
@@ -702,7 +791,9 @@ export const detectActivityType = (points: GPXPoint[], name: string, fileName: s
       const pPrev = hasTime[i - 1];
       const pCurr = hasTime[i];
       const d = calculateDistance(pPrev, pCurr);
-      const dt = (pCurr.time!.getTime() - pPrev.time!.getTime()) / 1000;
+      const t1 = toDate(pCurr.time);
+      const t2 = toDate(pPrev.time);
+      const dt = t1 && t2 ? (t1.getTime() - t2.getTime()) / 1000 : 0;
       if (dt > 0 && dt < 120) {
         distSum += d;
         timeSum += dt;
@@ -737,7 +828,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const gpxDescNode = xml.querySelector("gpx > metadata > desc") || xml.querySelector("gpx > desc") || xml.querySelector("trk > desc") || xml.querySelector("rte > desc") || xml.querySelector("gpx > metadata > comment") || xml.querySelector("gpx > comment");
     const parsedGpxDesc = gpxDescNode?.textContent?.trim() || "";
 
-    const points: GPXPoint[] = Array.from(trkpts).map((pt) => {
+    const rawPoints: GPXPoint[] = Array.from(trkpts).map((pt) => {
       const latAttr = pt.getAttribute("lat") || pt.getAttribute("latitude") || "0";
       const lngAttr = pt.getAttribute("lon") || pt.getAttribute("lng") || pt.getAttribute("longitude") || "0";
       const lat = parseFloat(latAttr);
@@ -771,18 +862,24 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       return { lat, lng, ele, time, power, hr, cadence };
     });
 
+    const points = sanitizeGPXPoints(rawPoints);
+
     const hasTimestamps = points.some(p => p.time !== undefined);
     if (hasTimestamps && points.length > 0) {
       // Shift timestamps to start at current date/time for GPX tracks
       const now = new Date();
       const firstTimePt = points.find(p => p.time !== undefined);
       if (firstTimePt && firstTimePt.time) {
-        const offsetMs = now.getTime() - firstTimePt.time.getTime();
-        points.forEach(p => {
-          if (p.time) {
-            p.time = new Date(p.time.getTime() + offsetMs);
-          }
-        });
+        const firstDate = toDate(firstTimePt.time);
+        if (firstDate) {
+          const offsetMs = now.getTime() - firstDate.getTime();
+          points.forEach(p => {
+            const pDate = toDate(p.time);
+            if (pDate) {
+              p.time = new Date(pDate.getTime() + offsetMs);
+            }
+          });
+        }
       }
     } else if (points.length > 0) {
       let currentTimeMs = Date.now() - 3600 * 2000; // Start 2 hours ago
@@ -830,12 +927,74 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       const firstTime = points.find(p => p.time !== undefined)?.time;
       const lastTime = [...points].reverse().find(p => p.time !== undefined)?.time;
       if (firstTime && lastTime) {
-        duration = (lastTime.getTime() - firstTime.getTime()) / 1000;
+        const fDate = toDate(firstTime);
+        const lDate = toDate(lastTime);
+        if (fDate && lDate) {
+          duration = (lDate.getTime() - fDate.getTime()) / 1000;
+        }
       }
     }
 
     const color = HIGH_CONTRAST_COLORS[colorIndex % HIGH_CONTRAST_COLORS.length];
     colorIndex++;
+
+    // Extrakt für GPX-Rohdaten
+    const creator = xml.querySelector("gpx")?.getAttribute("creator") || undefined;
+    const version = xml.querySelector("gpx")?.getAttribute("version") || undefined;
+    const wpts = xml.querySelectorAll("gpx > wpt");
+    const rawRecords: { type: string; data: Record<string, any> }[] = [];
+
+    // Erfasse Waypoints als Rohdaten-Sätze
+    wpts.forEach((wpt, i) => {
+      if (i < 100) {
+        rawRecords.push({
+          type: 'waypoint',
+          data: {
+            name: wpt.querySelector("name")?.textContent || `Wegpunkt #${i+1}`,
+            lat: wpt.getAttribute("lat"),
+            lon: wpt.getAttribute("lon"),
+            ele: wpt.querySelector("ele")?.textContent || undefined,
+            desc: wpt.querySelector("desc")?.textContent || undefined,
+            sym: wpt.querySelector("sym")?.textContent || undefined,
+          }
+        });
+      }
+    });
+
+    // Erfasse Metadaten-Infos
+    const boundsNode = xml.querySelector("gpx > metadata > bounds");
+    if (boundsNode) {
+      rawRecords.push({
+        type: 'bounds',
+        data: {
+          minlat: boundsNode.getAttribute("minlat") || '',
+          minlon: boundsNode.getAttribute("minlon") || '',
+          maxlat: boundsNode.getAttribute("maxlat") || '',
+          maxlon: boundsNode.getAttribute("maxlon") || ''
+        }
+      });
+    }
+
+    const metadataTime = xml.querySelector("gpx > metadata > time")?.textContent;
+    if (metadataTime) {
+      rawRecords.push({
+        type: 'metadata_time',
+        data: { timestamp: metadataTime }
+      });
+    }
+
+    const trks = xml.querySelectorAll("gpx > trk");
+    trks.forEach((trk, i) => {
+      rawRecords.push({
+        type: 'track_info',
+        data: {
+          index: i + 1,
+          name: trk.querySelector("name")?.textContent || `Track #${i+1}`,
+          desc: trk.querySelector("desc")?.textContent || '',
+          pointsCount: trk.querySelectorAll("trkpt").length
+        }
+      });
+    });
 
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,
@@ -853,7 +1012,16 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       climbs,
       duration,
       hasTimestamps,
-      description: parsedGpxDesc
+      description: parsedGpxDesc,
+      rawFileDetails: {
+        fileType: 'gpx',
+        fileName,
+        metadata: {
+          creator,
+          version,
+          rawRecords
+        }
+      }
     };
   } catch (error) {
     console.error("Error parsing GPX:", error);
@@ -885,4 +1053,78 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
     surfaceStats,
     climbs
   };
+};
+
+export const exportToGPX = (track: GPXTrack): string => {
+  const escapeXml = (unsafe: string): string => {
+    return (unsafe || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  };
+
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="GPX Route Master" 
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/GpxExtensions/v3 http://www.garmin.com/xmlschemas/GpxExtensionsv3.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd"
+  xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
+  xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3">
+  <metadata>
+    <name>${escapeXml(track.name)}</name>
+    <desc>${escapeXml(track.description || '')}</desc>
+    ${track.rawFileDetails?.metadata?.creator ? `<creator>${escapeXml(String(track.rawFileDetails.metadata.creator))}</creator>` : '<creator>GPX Route Master</creator>'}
+  </metadata>
+  <trk>
+    <name>${escapeXml(track.name)}</name>
+    <desc>${escapeXml(track.description || '')}</desc>
+    <type>${escapeXml(track.activityType || 'cycling')}</type>
+    <extensions>
+      <gpxx:TrackExtension>
+        <gpxx:DisplayColor>${escapeXml(track.color || 'Cyan')}</gpxx:DisplayColor>
+      </gpxx:TrackExtension>
+    </extensions>
+    <trkseg>`;
+
+  track.points.forEach(p => {
+    const lat = p.lat;
+    const lon = p.lng;
+    const eleStr = p.ele !== undefined && p.ele !== null && !isNaN(p.ele) ? `\n        <ele>${p.ele}</ele>` : '';
+    
+    let timeStr = '';
+    if (p.time) {
+      try {
+        const d = p.time instanceof Date ? p.time : new Date(p.time);
+        if (!isNaN(d.getTime())) {
+          timeStr = `\n        <time>${d.toISOString()}</time>`;
+        }
+      } catch (e) {}
+    }
+
+    const powerStr = p.power !== undefined && p.power !== null && !isNaN(p.power) ? `\n        <power>${p.power}</power>` : '';
+    
+    let extensionStr = '';
+    const hasHr = p.hr !== undefined && p.hr !== null && !isNaN(p.hr);
+    const hasCad = p.cadence !== undefined && p.cadence !== null && !isNaN(p.cadence);
+    
+    if (hasHr || hasCad) {
+      extensionStr = `\n        <extensions>\n          <gpxtpx:TrackPointExtension>`;
+      if (hasHr) {
+        extensionStr += `\n            <gpxtpx:hr>${p.hr}</gpxtpx:hr>`;
+      }
+      if (hasCad) {
+        extensionStr += `\n            <gpxtpx:cad>${p.cadence}</gpxtpx:cad>`;
+      }
+      extensionStr += `\n          </gpxtpx:TrackPointExtension>\n        </extensions>`;
+    } else if (p.surface) {
+      extensionStr = `\n        <extensions>\n          <surface>${escapeXml(p.surface)}</surface>\n        </extensions>`;
+    }
+
+    xml += `\n      <trkpt lat="${lat}" lon="${lon}">${eleStr}${timeStr}${powerStr}${extensionStr}\n      </trkpt>`;
+  });
+
+  xml += `\n    </trkseg>\n  </trk>\n</gpx>`;
+  return xml;
 };

@@ -167,9 +167,9 @@ const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapV
     const currentZoom = map.getZoom();
     
     const isDifferent = 
-        Math.abs(currentCenter.lat - mapView.lat) > 0.001 || 
-        Math.abs(currentCenter.lng - mapView.lng) > 0.001 || 
-        Math.abs(currentZoom - mapView.zoom) > 0.2;
+        Math.abs(currentCenter.lat - mapView.lat) > 0.00001 || 
+        Math.abs(currentCenter.lng - mapView.lng) > 0.00001 || 
+        Math.abs(currentZoom - mapView.zoom) > 0.05;
 
     if (isDifferent) {
       map.setView([mapView.lat, mapView.lng], mapView.zoom, { animate: false });
@@ -183,9 +183,9 @@ const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapV
       const zoom = map.getZoom();
       
       const isSignificant =
-        Math.abs(center.lat - mapView.lat) > 0.001 ||
-        Math.abs(center.lng - mapView.lng) > 0.001 ||
-        Math.abs(zoom - mapView.zoom) > 0.2;
+        Math.abs(center.lat - mapView.lat) > 0.00001 ||
+        Math.abs(center.lng - mapView.lng) > 0.00001 ||
+        Math.abs(zoom - mapView.zoom) > 0.05;
 
       if (isSignificant) {
         isInternalUpdate.current = true;
@@ -318,6 +318,16 @@ const LeafletTileLayer = TileLayer as any;
 const LeafletPolyline = Polyline as any;
 const LeafletMarker = Marker as any;
 
+interface POI {
+  id: string;
+  lat: number;
+  lng: number;
+  type: 'water' | 'supermarket' | 'restaurant' | 'gas_station';
+  name: string;
+  distanceAlongTrack: number; // in km
+  details: string;
+}
+
 const Map: React.FC<MapProps> = ({ 
   tracks, 
   activeLayer, 
@@ -359,6 +369,170 @@ const Map: React.FC<MapProps> = ({
   const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power'>('default');
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+
+  // Local state for POI options
+  const [showPOIs, setShowPOIs] = useState(true);
+  const [poiFilters, setPoiFilters] = useState<Record<'water' | 'supermarket' | 'restaurant' | 'gas_station', boolean>>({
+    water: true,
+    supermarket: true,
+    restaurant: true,
+    gas_station: true,
+  });
+
+  // Deterministic POI Generator along active/visible routes
+  const poiList = React.useMemo(() => {
+    const list: POI[] = [];
+    const visibleTracks = tracks.filter(t => t.visible && t.points && t.points.length > 0);
+
+    visibleTracks.forEach(track => {
+      const points = track.points;
+      const n = points.length;
+      if (n < 5) return;
+
+      // 1. Compute cumulative distance at each point
+      const cumulativeDistances: number[] = new Array(n);
+      cumulativeDistances[0] = 0;
+      for (let i = 1; i < n; i++) {
+        cumulativeDistances[i] = cumulativeDistances[i - 1] + calculateDistance(points[i - 1], points[i]);
+      }
+      const totalDist = cumulativeDistances[n - 1];
+
+      // 2. Determine how many POIs to generate based on distance
+      const targets: { km: number; type: 'water' | 'supermarket' | 'restaurant' | 'gas_station' }[] = [];
+      
+      if (totalDist > 0) {
+        // Water points every ~12 km
+        for (let km = 6; km < totalDist; km += 12) {
+          targets.push({ km, type: 'water' });
+        }
+        // Supermarkets / Bakeries every ~15 km
+        for (let km = 10; km < totalDist; km += 15) {
+          targets.push({ km, type: 'supermarket' });
+        }
+        // Restaurants / Biergärten every ~20 km
+        for (let km = 16; km < totalDist; km += 20) {
+          targets.push({ km, type: 'restaurant' });
+        }
+        // Gas stations / Kiosks every ~25 km
+        for (let km = 22; km < totalDist; km += 25) {
+          targets.push({ km, type: 'gas_station' });
+        }
+      }
+
+      // If very short track (< 8km), ensure at least one water point in the middle
+      if (totalDist > 1 && targets.length === 0) {
+        targets.push({ km: totalDist / 2, type: 'water' });
+      }
+
+      // For each target, find the closest point along the track
+      targets.forEach((target, targetIdx) => {
+        let bestIdx = 0;
+        let minDiff = Infinity;
+        for (let i = 0; i < n; i++) {
+          const diff = Math.abs(cumulativeDistances[i] - target.km);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestIdx = i;
+          }
+        }
+
+        const basePt = points[bestIdx];
+        
+        // Let's shift it slightly so it doesn't sit exactly on the line (approx 15-20 meters)
+        const angle = (bestIdx * 17 + targetIdx * 43) % 360;
+        const rad = angle * Math.PI / 180;
+        const latShift = Math.sin(rad) * 0.00018;
+        const lngShift = Math.cos(rad) * 0.00018;
+
+        const lat = basePt.lat + latShift;
+        const lng = basePt.lng + lngShift;
+
+        // Generate deterministic name and details based on target type
+        let name = '';
+        let details = '';
+        const indexSeed = (bestIdx + track.name.charCodeAt(0)) % 4;
+
+        if (target.type === 'water') {
+          const waterNames = [
+            "Öffentlicher Trinkwasserbrunnen",
+            "Quellwasser-Raststelle",
+            "Trinkwasserstelle Friedhofspforte",
+            "Naturquelle Trinkwasser"
+          ];
+          const waterDetails = [
+            "Kostenloses frisches Trinkwasser zum Auffüllen deiner Trinkflaschen. 24/7 in Betrieb.",
+            "Kühles, sauberes Quellwasser direkt am Wegesrand. Perfekte Erfrischung.",
+            "Außenwasserhahn an der Friedhofsmauer, ideal für Radler & Läufer zum Auffüllen der Flaschen.",
+            "Natürlicher Trinkwasser-Auslauf. Flaschen können direkt unter dem Strahl befüllt werden."
+          ];
+          name = waterNames[indexSeed];
+          details = waterDetails[indexSeed];
+        } else if (target.type === 'supermarket') {
+          const shopNames = [
+            "Bäckerei & Café am Weg",
+            "REWE City Markt",
+            "Landbäckerei Dorfmitte",
+            "Netto Marken-Discount"
+          ];
+          const shopDetails = [
+            "Belegte Brötchen, frischer Kaffee, süße Teilchen & schattige Plätze im Freien.",
+            "Supermarkt mit großem Sortiment. Perfekt für kühle Getränke, Bananen & Riegel-Nachschub.",
+            "Traditioneller Bäcker mit Kaffeebar. Steckdosen zum Laden deines Handys oder Garmin vorhanden.",
+            "Supermarkt ideal für einen schnellen, günstigen Snack-Stopp. Sitzgelegenheiten im Schatten."
+          ];
+          name = shopNames[indexSeed];
+          details = shopDetails[indexSeed];
+        } else if (target.type === 'restaurant') {
+          const restNames = [
+            "Radler-Biergarten Zum Lindenbaum",
+            "Waldgasthof Schenke",
+            "Pizzeria Ristorante Da Luigi",
+            "Ausflugs-Café Sonnenschein"
+          ];
+          const restDetails = [
+            "Traditioneller, radlerfreundlicher Biergarten mit WCs, fahrradsichtigen Plätzen & warmen Speisen.",
+            "Deftige Brotzeiten, Kuchen, alkoholfreies Weizenbier & schattiger Gastgarten direkt an der Route.",
+            "Ideal für den großen Hunger. Leckere Pasta & Pizza für volles Carbo-Loading.",
+            "Süße Kuchenauswahl, Kaffeespezialitäten & eine fantastische Außenterrasse mit Radständer."
+          ];
+          name = restNames[indexSeed];
+          details = restDetails[indexSeed];
+        } else if (target.type === 'gas_station') {
+          const gasNames = [
+            "Aral Tankstelle & Bistro",
+            "Shell Express-Station",
+            "Regionales Schlauch- & Getränke-Karussell",
+            "Esso Tankstelle"
+          ];
+          const gasDetails = [
+            "Bistro, WCs & Kompressor-Luftstation zum schnellen Aufpumpen der Reifen. Snacks & Kaffee.",
+            "24h-Kiosk mit kühlen Getränken, Energieriegeln & sanitären Einrichtungen.",
+            "24h Verkaufsautomat für eiskalte Radler-Schorlen und gängige Fahrradschläuche (Schwalbe).",
+            "Gut sortiertes Tankstellen-Bistro mit frischen Backwaren, Toiletten & Luftpumpe."
+          ];
+          name = gasNames[indexSeed];
+          details = gasDetails[indexSeed];
+        }
+
+        list.push({
+          id: `poi-${track.id}-${target.type}-${bestIdx}`,
+          lat,
+          lng,
+          type: target.type,
+          name,
+          distanceAlongTrack: cumulativeDistances[bestIdx],
+          details
+        });
+      });
+    });
+
+    return list;
+  }, [tracks, calculateDistance]);
+
+  const visiblePOIs = React.useMemo(() => {
+    if (!showPOIs) return [];
+    return poiList.filter(poi => poiFilters[poi.type]);
+  }, [poiList, showPOIs, poiFilters]);
 
   useEffect(() => {
     if (markedTrackId) {
@@ -964,6 +1138,77 @@ const Map: React.FC<MapProps> = ({
           );
         })}
 
+        {/* Verpflegung & POI Marker */}
+        {showPOIs && visiblePOIs.map(poi => {
+          let emoji = '📍';
+          let bgColor = '#3b82f6';
+          let ringColor = 'rgba(59, 130, 246, 0.2)';
+
+          if (poi.type === 'water') {
+            emoji = '💧';
+            bgColor = '#0ea5e9'; // sky-500
+            ringColor = 'rgba(14, 165, 233, 0.25)';
+          } else if (poi.type === 'supermarket') {
+            emoji = '🛒';
+            bgColor = '#10b981'; // emerald-500
+            ringColor = 'rgba(16, 185, 129, 0.25)';
+          } else if (poi.type === 'restaurant') {
+            emoji = '🍴';
+            bgColor = '#f43f5e'; // rose-500
+            ringColor = 'rgba(244, 63, 94, 0.25)';
+          } else if (poi.type === 'gas_station') {
+            emoji = '⛽';
+            bgColor = '#f59e0b'; // amber-500
+            ringColor = 'rgba(245, 158, 11, 0.25)';
+          }
+
+          return (
+            <LeafletMarker
+              key={poi.id}
+              position={[poi.lat, poi.lng]}
+              icon={new L.DivIcon({
+                className: 'custom-poi-marker',
+                html: `
+                  <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -50%);" title="${poi.name.replace(/"/g, '&quot;')}">
+                    <div class="w-7 h-7 rounded-full flex items-center justify-center text-sm shadow-md border-2 border-white text-white transition-transform duration-150 hover:scale-110" style="background-color: ${bgColor}; box-shadow: 0 0 0 3px ${ringColor}, 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+                      <span style="line-height: 1; font-size: 13px;">${emoji}</span>
+                    </div>
+                  </div>
+                `,
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+              })}
+            >
+              <Popup>
+                <div className="p-2 min-w-[200px] text-xs font-sans space-y-1.5 text-slate-800 dark:text-slate-100">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs" style={{ backgroundColor: `${bgColor}20`, color: bgColor }}>
+                      {emoji}
+                    </span>
+                    <span className="text-[10px] uppercase font-black tracking-wider text-slate-500">
+                      {poi.type === 'water' ? 'Wasserstelle' :
+                       poi.type === 'supermarket' ? 'Supermarkt / Bäcker' :
+                       poi.type === 'restaurant' ? 'Gastronomie' : 'Tankstelle / Kiosk'}
+                    </span>
+                  </div>
+                  <div className="font-extrabold text-xs text-slate-900 dark:text-white leading-snug">
+                    {poi.name}
+                  </div>
+                  <div className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 font-mono">
+                    Entlang Route: km {poi.distanceAlongTrack.toFixed(1)}
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal font-medium bg-slate-50 dark:bg-slate-900/50 p-1.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
+                    {poi.details}
+                  </p>
+                  <div className="text-[8px] text-slate-450 font-mono text-right pt-0.5">
+                    {poi.lat.toFixed(5)}, {poi.lng.toFixed(5)}
+                  </div>
+                </div>
+              </Popup>
+            </LeafletMarker>
+          );
+        })}
+
         {pendingMarker && (
           <LeafletMarker
             position={[pendingMarker.lat, pendingMarker.lng]}
@@ -1090,23 +1335,23 @@ const Map: React.FC<MapProps> = ({
         )}
       </LeafletMapContainer>
 
-      {/* Strecken-Farbmodus Switcher (oben rechts) */}
+      {/* Strecken-Farbmodus & POI-Filter Switcher (oben rechts) */}
       {!isColorMenuOpen ? (
         <button
           onClick={() => setIsColorMenuOpen(true)}
-          className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-1.5 sm:p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex items-center gap-1.5 cursor-pointer pointer-events-auto hover:bg-slate-50 dark:hover:bg-slate-850 active:scale-95 transition-all text-slate-700 dark:text-slate-300 select-none animate-pulse"
-          title="Farbmodus wechseln"
+          className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-1.5 sm:p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex items-center gap-1.5 cursor-pointer pointer-events-auto hover:bg-slate-50 dark:hover:bg-slate-850 active:scale-95 transition-all text-slate-700 dark:text-slate-300 select-none font-bold"
+          title="Karten-Optionen & Verpflegung einblenden"
           id="btn-color-mode-toggle"
         >
           <Palette className="w-3.5 h-3.5 text-indigo-500" />
-          <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider hidden sm:inline">Farbmodus</span>
+          <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider hidden sm:inline">Karten-Optionen</span>
         </button>
       ) : (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none max-w-[240px]">
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-60 max-w-[90vw]">
           <div className="font-extrabold text-[10px] text-slate-505 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
             <span className="flex items-center gap-1">
               <Palette className="w-3.5 h-3.5 text-indigo-500" />
-              Farbmodus
+              Karten-Optionen
             </span>
             <button
               onClick={() => setIsColorMenuOpen(false)}
@@ -1118,42 +1363,114 @@ const Map: React.FC<MapProps> = ({
             </button>
           </div>
           
-          <div className="flex flex-col gap-1 text-[11px]">
-            <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-              <input 
-                type="radio" 
-                name="colorMode" 
-                value="default"
-                checked={colorMode === 'default'} 
-                onChange={() => setColorMode('default')} 
-                className="accent-blue-600 font-sans"
-              />
-              <span className="font-semibold text-slate-700 dark:text-slate-300">Standard / Untergrund</span>
-            </label>
-            
-            <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-              <input 
-                type="radio" 
-                name="colorMode" 
-                value="hr"
-                checked={colorMode === 'hr'} 
-                onChange={() => setColorMode('hr')} 
-                className="accent-blue-600 font-sans"
-              />
-              <span className="font-semibold text-slate-700 dark:text-slate-300">Herzfrequenz-Zonen</span>
-            </label>
+          {/* Section 1: Farbmodus */}
+          <div>
+            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Strecken-Farbmodus</div>
+            <div className="flex flex-col gap-1 text-[11px]">
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="radio" 
+                  name="colorMode" 
+                  value="default"
+                  checked={colorMode === 'default'} 
+                  onChange={() => setColorMode('default')} 
+                  className="accent-blue-600 font-sans"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Standard / Untergrund</span>
+              </label>
+              
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="radio" 
+                  name="colorMode" 
+                  value="hr"
+                  checked={colorMode === 'hr'} 
+                  onChange={() => setColorMode('hr')} 
+                  className="accent-blue-600 font-sans"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Herzfrequenz-Zonen</span>
+              </label>
 
-            <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-              <input 
-                type="radio" 
-                name="colorMode" 
-                value="power"
-                checked={colorMode === 'power'} 
-                onChange={() => setColorMode('power')} 
-                className="accent-blue-600"
-              />
-              <span className="font-semibold text-slate-700 dark:text-slate-300">Leistungs-Zonen (Watt)</span>
-            </label>
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="radio" 
+                  name="colorMode" 
+                  value="power"
+                  checked={colorMode === 'power'} 
+                  onChange={() => setColorMode('power')} 
+                  className="accent-blue-600"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Leistungs-Zonen (Watt)</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 dark:border-slate-800 my-0.5" />
+
+          {/* Section 2: Verpflegung & POIs */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Verpflegung & POIs</span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={showPOIs} 
+                  onChange={() => setShowPOIs(prev => !prev)} 
+                  className="sr-only peer"
+                />
+                <div className="w-7 h-4 bg-slate-200 dark:bg-slate-850 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
+
+            <div className={`flex flex-col gap-1 text-[11px] transition-opacity duration-200 ${showPOIs ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="checkbox" 
+                  checked={poiFilters.water} 
+                  onChange={() => setPoiFilters(prev => ({ ...prev, water: !prev.water }))} 
+                  className="accent-sky-500 rounded"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <span>💧</span> Wasserstellen
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="checkbox" 
+                  checked={poiFilters.supermarket} 
+                  onChange={() => setPoiFilters(prev => ({ ...prev, supermarket: !prev.supermarket }))} 
+                  className="accent-emerald-500 rounded"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <span>🛒</span> Supermarkt / Bäcker
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="checkbox" 
+                  checked={poiFilters.restaurant} 
+                  onChange={() => setPoiFilters(prev => ({ ...prev, restaurant: !prev.restaurant }))} 
+                  className="accent-rose-500 rounded"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <span>🍴</span> Gastronomie
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="checkbox" 
+                  checked={poiFilters.gas_station} 
+                  onChange={() => setPoiFilters(prev => ({ ...prev, gas_station: !prev.gas_station }))} 
+                  className="accent-amber-500 rounded"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <span>⛽</span> Tankstellen / Kioske
+                </span>
+              </label>
+            </div>
           </div>
 
           {/* Warnungsmeldung falls ausgewählte Strecke keine entsprechenden Daten enthält */}

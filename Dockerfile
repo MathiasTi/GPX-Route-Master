@@ -13,6 +13,9 @@ RUN npm install
 COPY . .
 RUN npm run build
 
+# Prune devDependencies, um nur produktive Module zu behalten (better-sqlite3 bleibt erhalten und fertig kompiliert)
+RUN npm prune --omit=dev
+
 # Runner-Stage: Kleines, optimiertes Image für die Ausführung
 FROM node:20-slim AS runner
 
@@ -22,11 +25,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Installiere nur die Produktions-Abhängigkeiten (vermeidet unnötige Module)
-COPY package.json ./
-RUN npm install --omit=dev
-
-# Kopiere die gebauten Dateien und den Server aus der Build-Stage
+# Kopiere die produktiven Abhängigkeiten, gebauten Server und Assets aus der Build-Stage
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
 # Port 3000 nach außen freigeben

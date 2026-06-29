@@ -1128,3 +1128,224 @@ export const exportToGPX = (track: GPXTrack): string => {
   xml += `\n    </trkseg>\n  </trk>\n</gpx>`;
   return xml;
 };
+
+export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXTrack | null> => {
+  try {
+    const stream = blob.stream();
+    const reader = stream.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    const points: GPXPoint[] = [];
+    let foundMeta = false;
+    let creator: string | undefined;
+    let version: string | undefined;
+    let gpxName: string | undefined;
+    let gpxDesc: string | undefined;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+      }
+
+      // Extract metadata on the first chunk(s)
+      if (!foundMeta && buffer.length > 0) {
+        const creatorMatch = buffer.match(/<gpx[^>]*creator="([^"]*)"/i);
+        if (creatorMatch) creator = creatorMatch[1];
+        const verMatch = buffer.match(/<gpx[^>]*version="([^"]*)"/i);
+        if (verMatch) version = verMatch[1];
+
+        const nameMatch = buffer.match(/<(?:metadata|trk|rte)>(?:[\s\S]*?)<name>([\s\S]*?)<\/name>/i);
+        if (nameMatch) gpxName = nameMatch[1].trim();
+
+        const descMatch = buffer.match(/<(?:metadata|trk|rte)>(?:[\s\S]*?)<desc>([\s\S]*?)<\/desc>/i);
+        if (descMatch) gpxDesc = descMatch[1].trim();
+
+        if (buffer.includes('<trkseg>') || buffer.includes('<trkpt') || buffer.includes('<rtept') || buffer.includes('<wpt') || buffer.length > 100000) {
+          foundMeta = true;
+        }
+      }
+
+      // Process complete trackpoints / routepoints / waypoints in the buffer
+      while (true) {
+        const trkptStart = buffer.search(/<(?:trkpt|rtept|wpt)/i);
+        if (trkptStart === -1) {
+          if (buffer.length > 200) {
+            buffer = buffer.slice(-100);
+          }
+          break;
+        }
+
+        const tagMatch = buffer.slice(trkptStart).match(/^<(trkpt|rtept|wpt)/i);
+        if (!tagMatch) {
+          // partial tag at the end of buffer, wait for more data
+          break;
+        }
+        const tagName = tagMatch[1];
+        const endTag = `</${tagName}>`;
+        const trkptEnd = buffer.indexOf(endTag, trkptStart);
+
+        if (trkptEnd === -1) {
+          if (buffer.length > 10 * 1024 * 1024) {
+            buffer = ''; // safeguard
+          }
+          break;
+        }
+
+        const trkptXml = buffer.slice(trkptStart, trkptEnd + endTag.length);
+        buffer = buffer.slice(trkptEnd + endTag.length);
+
+        const latMatch = trkptXml.match(/lat="([^"]*)"/i);
+        const lonMatch = trkptXml.match(/(?:lon|longitude)="([^"]*)"/i);
+        if (latMatch && lonMatch) {
+          const lat = parseFloat(latMatch[1]);
+          const lng = parseFloat(lonMatch[1]);
+
+          const eleMatch = trkptXml.match(/<ele>([^<]*)<\/ele>/i);
+          const ele = eleMatch ? parseFloat(eleMatch[1]) : undefined;
+
+          const timeMatch = trkptXml.match(/<time>([^<]*)<\/time>/i);
+          const time = timeMatch ? new Date(timeMatch[1]) : undefined;
+
+          const powerMatch = trkptXml.match(/<power>([^<]*)<\/power>/i);
+          const power = powerMatch ? parseFloat(powerMatch[1]) : undefined;
+
+          const hrMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?hr>([^<]*)<\/(?:[a-zA-Z0-9]+:)?hr>/i);
+          const hr = hrMatch ? parseInt(hrMatch[1], 10) : undefined;
+
+          const cadMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?cad>([^<]*)<\/(?:[a-zA-Z0-9]+:)?cad>/i);
+          const cadence = cadMatch ? parseInt(cadMatch[1], 10) : undefined;
+
+          points.push({ lat, lng, ele, time, power, hr, cadence });
+        }
+      }
+
+      if (done) {
+        break;
+      }
+    }
+
+    const sanitizedPoints = sanitizeGPXPoints(points);
+
+    if (sanitizedPoints.length === 0) {
+      console.error("GPX parsing error: No valid points found");
+      return null;
+    }
+
+    const hasTimestamps = sanitizedPoints.some(p => p.time !== undefined);
+    if (hasTimestamps && sanitizedPoints.length > 0) {
+      const now = new Date();
+      const firstTimePt = sanitizedPoints.find(p => p.time !== undefined);
+      if (firstTimePt && firstTimePt.time) {
+        const firstDate = toDate(firstTimePt.time);
+        if (firstDate) {
+          const offsetMs = now.getTime() - firstDate.getTime();
+          sanitizedPoints.forEach(p => {
+            const pDate = toDate(p.time);
+            if (pDate) {
+              p.time = new Date(pDate.getTime() + offsetMs);
+            }
+          });
+        }
+      }
+    } else if (sanitizedPoints.length > 0) {
+      let currentTimeMs = Date.now() - 3600 * 2000;
+      sanitizedPoints[0].time = new Date(currentTimeMs);
+      for (let i = 1; i < sanitizedPoints.length; i++) {
+        const distKm = calculateDistance(sanitizedPoints[i - 1], sanitizedPoints[i]);
+        const timeDeltaHours = distKm / 20.0;
+        currentTimeMs += timeDeltaHours * 3600 * 1000;
+        sanitizedPoints[i].time = new Date(currentTimeMs);
+      }
+    }
+
+    let activityName = gpxName;
+    if (!activityName) {
+      const firstPoint = sanitizedPoints.find(p => p.time !== undefined) || sanitizedPoints[0];
+      const startDate = firstPoint?.time || new Date();
+      const dateStr = startDate.toLocaleDateString('de-DE', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit' 
+      });
+      const timeStr = startDate.toLocaleTimeString('de-DE', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+      
+      activityName = `${dateStr}, ${timeStr}`;
+      if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
+        const location = await getLocationName(firstPoint.lat, firstPoint.lng);
+        activityName += ` (${location})`;
+      } else {
+        activityName += ` - ${fileName.replace(/\.[^/.]+$/, "") || "Unbenannter Track"}`;
+      }
+    }
+
+    const activityType = detectActivityType(sanitizedPoints, activityName, fileName);
+    const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(sanitizedPoints);
+    const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
+    const surfaceStats = generateMockSurfaceStats(totalDist);
+    const climbs = findClimbs(sanitizedPoints);
+    
+    let duration: number | undefined;
+    if (hasTimestamps && sanitizedPoints.length > 1) {
+      const firstTime = sanitizedPoints.find(p => p.time !== undefined)?.time;
+      const lastTime = [...sanitizedPoints].reverse().find(p => p.time !== undefined)?.time;
+      if (firstTime && lastTime) {
+        const fDate = toDate(firstTime);
+        const lDate = toDate(lastTime);
+        if (fDate && lDate) {
+          duration = (lDate.getTime() - fDate.getTime()) / 1000;
+        }
+      }
+    }
+
+    const color = HIGH_CONTRAST_COLORS[colorIndex % HIGH_CONTRAST_COLORS.length];
+    colorIndex++;
+
+    const rawRecords: { type: string; data: Record<string, any> }[] = [];
+    if (activityName) {
+      rawRecords.push({
+        type: 'track_info',
+        data: {
+          name: activityName,
+          pointsCount: sanitizedPoints.length
+        }
+      });
+    }
+
+    return {
+      id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,
+      name: activityName,
+      points: sanitizedPoints,
+      color,
+      distance: totalDist,
+      ascent,
+      descent,
+      maxSlope,
+      visible: true,
+      activityType,
+      powerStats,
+      surfaceStats,
+      climbs,
+      duration,
+      hasTimestamps,
+      description: gpxDesc || '',
+      rawFileDetails: {
+        fileType: 'gpx',
+        fileName,
+        metadata: {
+          creator,
+          version,
+          rawRecords
+        }
+      }
+    };
+  } catch (error) {
+    console.error("Error parsing GPX stream:", error);
+    return null;
+  }
+};
+

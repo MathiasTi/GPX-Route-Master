@@ -6,7 +6,7 @@ import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { Activity, BarChart2, Menu } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -275,7 +275,14 @@ const App: React.FC = () => {
     const files = e.target.files;
     if (!files) return;
 
-    const processFitBuffer = async (buffer: ArrayBuffer, name: string) => {
+    const processFitBuffer = async (bufferOrBlob: ArrayBuffer | Blob, name: string) => {
+      let buffer: ArrayBuffer;
+      if (bufferOrBlob instanceof Blob) {
+        buffer = await bufferOrBlob.arrayBuffer();
+      } else {
+        buffer = bufferOrBlob;
+      }
+
       const parsed = await parseFIT(buffer, name);
       if (parsed) {
         parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
@@ -296,19 +303,38 @@ const App: React.FC = () => {
       }
     };
 
-    const processGpxText = async (text: string, name: string) => {
-      const validation = validateGPX(text);
-      if (!validation.isValid) {
-        errors.push(`${name}: ${validation.error}`);
-        return;
+    const processGpxFileOrText = async (fileOrText: Blob | string, name: string) => {
+      let parsed: GPXTrack | null = null;
+      if (typeof fileOrText === 'string') {
+        const validation = validateGPX(fileOrText);
+        if (!validation.isValid) {
+          errors.push(`${name}: ${validation.error}`);
+          return;
+        }
+        parsed = await parseGPX(fileOrText, name);
+      } else {
+        // Direct GPX Blob/File streaming
+        // Simple security pre-check: read first 20KB for DOCTYPE / ENTITY
+        try {
+          const preCheckBlob = fileOrText.slice(0, 20000);
+          const preCheckText = await preCheckBlob.text();
+          const lowerPre = preCheckText.toLowerCase();
+          if (lowerPre.includes('<!entity') || lowerPre.includes('<!doctype') || lowerPre.includes('<!system')) {
+            errors.push(`${name}: Sicherheitsfehler: Benutzerdefinierte DOCTYPE- oder ENTITY-Definitionen sind im GPX nicht erlaubt.`);
+            return;
+          }
+        } catch (e) {
+          console.error("GPX safety precheck error", e);
+        }
+
+        parsed = await parseGPXStream(fileOrText, name);
       }
 
-      const parsed = await parseGPX(text, name);
       if (parsed) {
         parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
         newTracks.push(parsed);
       } else {
-        errors.push(`${name}: Fehler beim Verarbeiten der GPX-Datei.`);
+        errors.push(`${name}: Fehler beim Verarbeiten oder keine gültigen Trackpunkte gefunden.`);
       }
     };
  
@@ -364,15 +390,13 @@ const App: React.FC = () => {
             } else if (entryLowerName.endsWith('.gpx')) {
               const textDecoder = new TextDecoder('utf-8');
               const text = textDecoder.decode(fileData);
-              await processGpxText(text, baseName);
+              await processGpxFileOrText(text, baseName);
             }
           }
         } else if (isFit) {
-          const buffer = await file.arrayBuffer();
-          await processFitBuffer(buffer, file.name);
+          await processFitBuffer(file, file.name);
         } else {
-          const text = await file.text();
-          await processGpxText(text, file.name);
+          await processGpxFileOrText(file, file.name);
         }
       } catch (err: any) {
         errors.push(`${file.name}: Unerwarteter Fehler (${err.message || err}).`);

@@ -1,8 +1,13 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 
-// Store the SQLite database file in the workdir root
-const dbPath = path.join(process.cwd(), 'gpx_library.db');
+// Store the SQLite database file in a data directory for clean docker volume persistence
+const dbDir = path.join(process.cwd(), 'data');
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+const dbPath = path.join(dbDir, 'gpx_library.db');
 const db = new Database(dbPath);
 
 export interface DbTrackRecord {
@@ -50,6 +55,50 @@ export function initDb() {
       has_timestamps INTEGER,
       raw_file_json TEXT
     )
+  `);
+
+  // Create tables for Garmin Health Data
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS garmin_sleep (
+      date TEXT PRIMARY KEY,
+      duration REAL,
+      deep REAL,
+      light REAL,
+      rem REAL,
+      awake REAL
+    );
+    CREATE TABLE IF NOT EXISTS garmin_weight (
+      date TEXT PRIMARY KEY,
+      weight REAL,
+      bmi REAL,
+      body_fat REAL
+    );
+    CREATE TABLE IF NOT EXISTS garmin_stress (
+      date TEXT PRIMARY KEY,
+      avg_stress REAL
+    );
+    CREATE TABLE IF NOT EXISTS garmin_rhr (
+      date TEXT PRIMARY KEY,
+      rhr REAL
+    );
+    CREATE TABLE IF NOT EXISTS garmin_steps (
+      date TEXT PRIMARY KEY,
+      steps INTEGER,
+      calories REAL,
+      distance REAL
+    );
+    CREATE TABLE IF NOT EXISTS garmin_activities (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      type TEXT,
+      date TEXT,
+      distance REAL,
+      duration REAL,
+      ascent REAL,
+      descent REAL,
+      calories REAL,
+      avg_hr REAL
+    );
   `);
 
   // Run graceful schema migrations on existing database tables
@@ -205,4 +254,77 @@ export function getTracksInBounds(minLat: number, maxLat: number, minLng: number
       return false;
     }
   });
+}
+
+// Garmin Health Metrics storage operations
+export function saveSleep(date: string, duration: number, deep?: number, light?: number, rem?: number, awake?: number) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_sleep (date, duration, deep, light, rem, awake)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(date, duration, deep || null, light || null, rem || null, awake || null);
+}
+
+export function saveWeight(date: string, weight: number, bmi?: number, bodyFat?: number) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_weight (date, weight, bmi, body_fat)
+    VALUES (?, ?, ?, ?)
+  `);
+  stmt.run(date, weight, bmi || null, bodyFat || null);
+}
+
+export function saveStress(date: string, avgStress: number) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_stress (date, avg_stress)
+    VALUES (?, ?)
+  `);
+  stmt.run(date, avgStress);
+}
+
+export function saveRhr(date: string, rhr: number) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_rhr (date, rhr)
+    VALUES (?, ?)
+  `);
+  stmt.run(date, rhr);
+}
+
+export function saveSteps(date: string, steps: number, calories?: number, distance?: number) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance)
+    VALUES (?, ?, ?, ?)
+  `);
+  stmt.run(date, steps, calories || null, distance || null);
+}
+
+export function saveGarminActivity(
+  id: string, name: string, type: string, date: string,
+  distance: number, duration: number, ascent?: number, descent?: number,
+  calories?: number, avgHr?: number
+) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(id, name, type, date, distance, duration, ascent || null, descent || null, calories || null, avgHr || null);
+}
+
+export function getHealthMetrics() {
+  const sleep = db.prepare('SELECT * FROM garmin_sleep ORDER BY date ASC').all();
+  const weight = db.prepare('SELECT * FROM garmin_weight ORDER BY date ASC').all();
+  const stress = db.prepare('SELECT * FROM garmin_stress ORDER BY date ASC').all();
+  const rhr = db.prepare('SELECT * FROM garmin_rhr ORDER BY date ASC').all();
+  const steps = db.prepare('SELECT * FROM garmin_steps ORDER BY date ASC').all();
+  const activities = db.prepare('SELECT * FROM garmin_activities ORDER BY date DESC').all();
+
+  return { sleep, weight, stress, rhr, steps, activities };
+}
+
+export function clearHealthMetrics() {
+  db.exec('DELETE FROM garmin_sleep');
+  db.exec('DELETE FROM garmin_weight');
+  db.exec('DELETE FROM garmin_stress');
+  db.exec('DELETE FROM garmin_rhr');
+  db.exec('DELETE FROM garmin_steps');
+  db.exec('DELETE FROM garmin_activities');
 }

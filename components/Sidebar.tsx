@@ -485,6 +485,7 @@ interface SidebarProps {
   setUserMaxHr: (maxHr: number) => void;
   suggestedFtp: number | null;
   onOpenComparison: () => void;
+  onOpenGarminHealth?: () => void;
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
@@ -546,6 +547,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   setUserMaxHr,
   suggestedFtp,
   onOpenComparison,
+  onOpenGarminHealth,
   onOpenTrainingZones,
   onOpenSummaryReport,
   onOpenAnalytics,
@@ -749,6 +751,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                   Trainingsbereiche & Puls
                 </button>
               )}
+
+              <button 
+                onClick={onOpenGarminHealth}
+                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-md shadow-amber-100 transition-all cursor-pointer"
+                title="Garmin Connect Fitness- & Gesundheitsdaten anzeigen & SQLite-Import"
+              >
+                <Database className="w-4 h-4" />
+                Garmin Fitness & Gesundheit
+              </button>
             </section>
 
             <section className="space-y-3">

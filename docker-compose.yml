@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  gpx-route-master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gpx-route-master
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Falls du den Gemini API-Key in deinem Docker-Container nutzen möchtest,
+      # kannst du ihn hier eintragen oder eine .env-Datei im selben Verzeichnis erstellen:
+      # - GEMINI_API_KEY=dein_api_key_hier
+    volumes:
+      # Persistiert die SQLite-Datenbank auf deinem Host-Rechner,
+      # damit importierte Routen und Garmin-Gesundheitsdaten beim Neustart nicht verloren gehen.
+      - gpx_data:/app/data
+
+volumes:
+  gpx_data:
+    driver: local

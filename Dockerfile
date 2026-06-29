@@ -1,38 +1,36 @@
-# Build-Stage: Wir nutzen 'slim' (Debian/glibc) statt 'alpine' (musl). 
-# Das behebt den bekannten Rollup-Architektur-Bug bei ARM64 (Apple Silicon).
-FROM node:20-slim AS builder
+# Build-Stage: Verwende ein vollständiges Node-Image zum Bauen (unterstützt native Module wie better-sqlite3)
+FROM node:20 AS builder
 
 WORKDIR /app
 
-# Abhängigkeiten kopieren und installieren
-# WICHTIG: Wir kopieren absichtlich NUR die package.json und NICHT die package-lock.json!
-# Das zwingt npm dazu, die passenden Linux-Abhängigkeiten frisch aufzulösen.
+# Abhängigkeiten kopieren
 COPY package.json ./
-RUN npm cache clean --force && npm install
 
-# Quellcode kopieren und Anwendung bauen
+# Alle Abhängigkeiten installieren (inkl. devDependencies wie esbuild, typescript, vite)
+RUN npm install
+
+# Quellcode kopieren und die Anwendung bauen
 COPY . .
 RUN npm run build
 
-# Production-Stage (Nginx mit Certbot)
-FROM nginx:alpine
+# Runner-Stage: Kleines, optimiertes Image für die Ausführung
+FROM node:20-slim AS runner
 
-# Certbot, Nginx-Plugin für Certbot und bash installieren
-RUN apk add --no-cache certbot certbot-nginx bash
+WORKDIR /app
 
-# Alte Config entfernen und durch unsere austauschen
-RUN rm /etc/nginx/conf.d/default.conf
-COPY nginx.conf /etc/nginx/conf.d/nginx.conf
+# Produktions-Umgebungsvariablen setzen
+ENV NODE_ENV=production
+ENV PORT=3000
 
-# Start-Skript für Let's Encrypt Logik kopieren
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Installiere nur die Produktions-Abhängigkeiten (vermeidet unnötige Module)
+COPY package.json ./
+RUN npm install --omit=dev
 
-# Gebaute Dateien aus der Build-Stage kopieren
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Kopiere die gebauten Dateien und den Server aus der Build-Stage
+COPY --from=builder /app/dist ./dist
 
-# Port 80 (HTTP) und 443 (HTTPS) nach außen freigeben
-EXPOSE 80 443
+# Port 3000 nach außen freigeben
+EXPOSE 3000
 
-# Entrypoint führt Skript aus
-CMD ["/entrypoint.sh"]
+# Startet den integrierten Express & Vite Production-Server
+CMD ["npm", "start"]

@@ -19,6 +19,7 @@ import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
+import { GarminDashboard } from './components/GarminDashboard';
 import { getApiUrl } from './utils/api';
 
 const App: React.FC = () => {
@@ -94,6 +95,7 @@ const App: React.FC = () => {
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [garminHealthOpen, setGarminHealthOpen] = useState(false);
   const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
@@ -754,6 +756,10 @@ const App: React.FC = () => {
           setComparisonOpen(true);
           setIsMobileMenuOpen(false);
          }}
+        onOpenGarminHealth={() => {
+          setGarminHealthOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenTrainingZones={(id) => {
           if (id) {
             setMarkedTrackId(id);
@@ -909,6 +915,14 @@ const App: React.FC = () => {
                 userWeight={userWeight}
                 userAge={userAge}
                 estimatedSpeed={estimatedSpeed}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {garminHealthOpen && (
+              <GarminDashboard 
+                onClose={() => setGarminHealthOpen(false)}
               />
             )}
           </AnimatePresence>

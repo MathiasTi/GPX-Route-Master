@@ -77,6 +77,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities'>('overview');
   const [isDragging, setIsDragging] = useState(false);
+  const [dbUploadProgress, setDbUploadProgress] = useState<{ percentage: number; statusText: string } | null>(null);
 
   // Fetch metrics from backend
   const fetchHealthMetrics = useCallback(async () => {
@@ -102,22 +103,58 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
     fetchHealthMetrics();
   }, [fetchHealthMetrics]);
 
-  // Handle SQLite File Import
+  // Handle SQLite File Import with Upload Progress Tracker
   const handleFileUpload = async (file: File) => {
     setIsLoading(true);
     setError(null);
     setSuccessMsg(null);
+    setDbUploadProgress({ percentage: 0, statusText: 'Bereite Upload vor...' });
+
     try {
-      const response = await fetch(getApiUrl('/api/import-sqlite'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/octet-stream'
-        },
-        body: file // Directly stream the file from disk instead of buffering in RAM
+      const result = await new Promise<{ success: boolean; stats?: any; error?: string }>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', getApiUrl('/api/import-sqlite'), true);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+        // Track upload progress
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percentage = Math.round((e.loaded / e.total) * 100);
+            setDbUploadProgress({
+              percentage,
+              statusText: percentage < 100 
+                ? `Datenbank-Upload läuft: ${percentage}%` 
+                : 'Upload abgeschlossen. Server importiert und analysiert Ihre Garmin-Daten...'
+            });
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              resolve(res);
+            } catch (err) {
+              resolve({ success: false, error: 'Ungültige Antwort vom Server beim Einlesen der Antwort.' });
+            }
+          } else {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              resolve({ success: false, error: res.error || `Server-Fehler: Status ${xhr.status}` });
+            } catch (err) {
+              resolve({ success: false, error: `Der Server hat mit Statuscode ${xhr.status} geantwortet.` });
+            }
+          }
+        };
+
+        xhr.onerror = () => {
+          resolve({ success: false, error: 'Netzwerkfehler: Verbindung zum Server fehlgeschlagen. Bitte prüfen Sie Ihre Verbindung.' });
+        };
+
+        xhr.send(file);
       });
 
-      const result = await response.json();
-      if (result.success) {
+      if (result.success && result.stats) {
         const s = result.stats;
         setSuccessMsg(
           `Erfolgreich importiert: ${s.sleep} Schlafdatensätze, ${s.weight} Gewichtseinträge, ${s.stress} Stresstage, ${s.rhr} Pulsdaten, ${s.steps} Schrittdaten & ${s.activities} Aktivitäten!`
@@ -128,9 +165,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       }
     } catch (err: any) {
       console.error(err);
-      setError('Fehler beim Hochladen der Datei.');
+      setError(err.message || 'Ein unerwarteter Fehler ist beim Hochladen aufgetreten.');
     } finally {
       setIsLoading(false);
+      setDbUploadProgress(null);
     }
   };
 
@@ -211,8 +249,49 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="w-full max-w-6xl h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col"
+        className="relative w-full max-w-6xl h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col"
       >
+        {/* DB Upload Progress Overlay */}
+        <AnimatePresence>
+          {dbUploadProgress && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
+            >
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-150 dark:border-slate-800 space-y-6">
+                <div className="flex justify-center">
+                  <div className="relative flex items-center justify-center">
+                    <RefreshCw className="w-12 h-12 text-orange-500 animate-spin" />
+                    <span className="absolute text-[10px] font-bold text-slate-800 dark:text-slate-100">{dbUploadProgress.percentage}%</span>
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">Synchronisiere Garmin-Daten...</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed min-h-[3rem]">
+                    {dbUploadProgress.statusText}
+                  </p>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-3.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
+                  <motion.div 
+                    className="bg-gradient-to-r from-orange-500 to-amber-500 h-full rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${dbUploadProgress.percentage}%` }}
+                    transition={{ duration: 0.1 }}
+                  />
+                </div>
+
+                <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+                  Bitte lassen Sie dieses Fenster geöffnet, bis der Vorgang abgeschlossen ist.
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         {/* Header */}
         <div className="flex items-center justify-between p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-3">

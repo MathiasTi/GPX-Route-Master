@@ -930,10 +930,33 @@ async function startServer() {
 
       // Open uploaded db
       const DatabaseConstructor = (await import('better-sqlite3')).default;
-      const uploadedDb = new DatabaseConstructor(tempPath, { readonly: true });
+      let uploadedDb;
+      try {
+        uploadedDb = new DatabaseConstructor(tempPath, { readonly: true });
+      } catch (dbErr: any) {
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (e) {}
+        }
+        return res.status(400).json({ 
+          success: false, 
+          error: `Ungültige oder beschädigte SQLite-Datenbankdatei. Bitte stellen Sie sicher, dass Sie eine echte SQLite-Datenbankdatei (.db oder .sqlite) hochladen. Details: ${dbErr.message || dbErr}`
+        });
+      }
 
       // Inspect tables
-      const tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      let tables: { name: string }[] = [];
+      try {
+        tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      } catch (tableErr: any) {
+        uploadedDb.close();
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (e) {}
+        }
+        return res.status(400).json({
+          success: false,
+          error: `Fehler beim Auslesen der Tabellenstruktur aus der SQLite-Datenbank: ${tableErr.message || tableErr}`
+        });
+      }
       const tNames = tables.map(t => t.name.toLowerCase());
       
       let sleepImported = 0;
@@ -1342,6 +1365,23 @@ async function startServer() {
       try {
         fs.unlinkSync(tempPath);
       } catch (e) {}
+
+      const totalImported = sleepImported + weightImported + stressImported + rhrImported + stepsImported + activitiesImported;
+      if (totalImported === 0) {
+        const foundTablesStr = tables.length > 0 ? tables.map(t => `'${t.name}'`).join(", ") : "keine Tabellen";
+        return res.status(400).json({
+          success: false,
+          error: `Keine Garmin-Gesundheitsdaten in der hochgeladenen SQLite-Datenbank gefunden.
+
+Gefundene Tabellen in Ihrer Datei: ${foundTablesStr}
+
+Erwartet werden entweder:
+1. Garmin-Health-Data-Schema: Tabellen wie 'sleep', 'body_composition', 'stress', 'steps', oder 'activity'
+2. Flexibles Backup-Schema: Tabellen, die 'sleep', 'weight', 'stress', 'rhr', 'step' oder 'activit' im Namen tragen.
+
+Bitte stellen Sie sicher, dass Sie die richtige 'garmin.db' aus Ihrem Garmin-Backup hochladen.`
+        });
+      }
 
       res.json({
         success: true,

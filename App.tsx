@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2, Menu } from 'lucide-react';
+import { Activity, BarChart2, Menu, RefreshCw, FileText } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker } from './types';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
@@ -13,7 +13,7 @@ import { arrayMove } from '@dnd-kit/sortable';
 import AdvancedAnalytics from './components/AdvancedAnalytics';
 import { TrackComparison } from './components/TrackComparison';
 import { RawDataAnalysis } from './components/RawDataAnalysis';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { VideoExportModal } from './components/VideoExportModal';
 import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
@@ -113,6 +113,13 @@ const App: React.FC = () => {
   const [hoveredPoint, setHoveredPoint] = useState<GPXPoint | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [trackUploadProgress, setTrackUploadProgress] = useState<{
+    totalFiles: number;
+    processedFiles: number;
+    currentFileName: string;
+    percentage: number;
+    statusText: string;
+  } | null>(null);
 
   useEffect(() => {
     if (successMessage) {
@@ -273,7 +280,15 @@ const App: React.FC = () => {
  
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
+
+    setTrackUploadProgress({
+      totalFiles: files.length,
+      processedFiles: 0,
+      currentFileName: files[0].name,
+      percentage: 0,
+      statusText: 'Analysiere hochgeladene Dateien...'
+    });
 
     const processFitBuffer = async (bufferOrBlob: ArrayBuffer | Blob, name: string) => {
       let buffer: ArrayBuffer;
@@ -352,6 +367,15 @@ const App: React.FC = () => {
       const isFit = lowerName.endsWith('.fit');
       const isZip = lowerName.endsWith('.zip');
 
+      const percentage = Math.round((i / files.length) * 100);
+      setTrackUploadProgress({
+        totalFiles: files.length,
+        processedFiles: i,
+        currentFileName: file.name,
+        percentage,
+        statusText: `Verarbeite Datei ${i + 1} von ${files.length}...`
+      });
+
       try {
         if (isZip) {
           // Zip-Bomb Protection: limit zip file size to 30 MB
@@ -360,6 +384,14 @@ const App: React.FC = () => {
             continue;
           }
 
+          setTrackUploadProgress({
+            totalFiles: files.length,
+            processedFiles: i,
+            currentFileName: file.name,
+            percentage,
+            statusText: `Dekomprimiere ZIP-Archiv: ${file.name}...`
+          });
+
           const arrayBuffer = await file.arrayBuffer();
           const zipUint8 = new Uint8Array(arrayBuffer);
           const unzipped = unzipSync(zipUint8);
@@ -367,7 +399,12 @@ const App: React.FC = () => {
           let totalUncompressedSize = 0;
           const MAX_UNCOMPRESSED_TOTAL = 100 * 1024 * 1024; // 100 MB max uncompressed
 
-          for (const [filepath, fileData] of Object.entries(unzipped)) {
+          const entries = Object.entries(unzipped);
+          const totalEntries = entries.length;
+          let entryIndex = 0;
+
+          for (const [filepath, fileData] of entries) {
+            entryIndex++;
             // Zip-Slip (Directory Traversal) protection
             if (filepath.includes('..') || filepath.split('/').some(part => part === '..')) {
               console.warn(`Sicherheitswarnung: Pfad-Traversierung in ZIP ignoriert: ${filepath}`);
@@ -384,6 +421,16 @@ const App: React.FC = () => {
             if (!baseName) continue; // skip directories
 
             const entryLowerName = baseName.toLowerCase();
+            const innerPercentage = Math.round(((i + (entryIndex / totalEntries)) / files.length) * 100);
+            
+            setTrackUploadProgress({
+              totalFiles: files.length,
+              processedFiles: i,
+              currentFileName: `${file.name} / ${baseName}`,
+              percentage: innerPercentage,
+              statusText: `ZIP-Eintrag ${entryIndex} von ${totalEntries} wird importiert: ${baseName}...`
+            });
+
             if (entryLowerName.endsWith('.fit')) {
               const buffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
               await processFitBuffer(buffer, baseName);
@@ -403,6 +450,14 @@ const App: React.FC = () => {
         console.error(err);
       }
     }
+
+    setTrackUploadProgress({
+      totalFiles: files.length,
+      processedFiles: files.length,
+      currentFileName: 'Fertigstellung',
+      percentage: 100,
+      statusText: 'Validiere Duplikate und integriere in Karte...'
+    });
  
     if (errors.length > 0) {
       setErrorMessage(errors.join("\n"));
@@ -456,6 +511,7 @@ const App: React.FC = () => {
         }
       }
     }
+    setTrackUploadProgress(null);
     e.target.value = '';
   }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
  
@@ -734,7 +790,63 @@ const App: React.FC = () => {
   const [showHint, setShowHint] = useState(false);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-105 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50">
+    <div className="relative flex h-screen w-screen overflow-hidden bg-slate-105 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50">
+      {/* Visual Progress Bar Overlay for GPX/FIT/ZIP Uploads */}
+      <AnimatePresence>
+        {trackUploadProgress && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-4 text-center"
+          >
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-150 dark:border-slate-800 space-y-6">
+              <div className="flex justify-center">
+                <div className="p-4 bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 rounded-2xl">
+                  <RefreshCw className="w-8 h-8 animate-spin" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+                  Verarbeite Aktivitäten...
+                </h3>
+                <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed min-h-[3rem] flex flex-col justify-center items-center gap-1.5">
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">
+                    {trackUploadProgress.statusText}
+                  </span>
+                  {trackUploadProgress.currentFileName && (
+                    <span className="flex items-center gap-1.5 text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2.5 py-1 rounded-lg border border-slate-200/40 dark:border-slate-700/40 max-w-full truncate">
+                      <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                      {trackUploadProgress.currentFileName}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Progress Bar Container */}
+              <div className="space-y-1.5">
+                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-3.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
+                  <motion.div 
+                    className="bg-gradient-to-r from-orange-500 to-amber-500 h-full rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${trackUploadProgress.percentage}%` }}
+                    transition={{ duration: 0.15 }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                  <span>Datei {trackUploadProgress.processedFiles + 1} von {trackUploadProgress.totalFiles}</span>
+                  <span>{trackUploadProgress.percentage}%</span>
+                </div>
+              </div>
+
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+                Bitte lassen Sie dieses Fenster geöffnet, bis die Aktivitätsanalyse abgeschlossen ist.
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <Sidebar 
         tracks={tracks}
         markedTrackId={markedTrackId}

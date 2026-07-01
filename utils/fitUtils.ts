@@ -180,7 +180,8 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           // Parse fields
           let lat: number | undefined;
           let lng: number | undefined;
-          let ele: number | undefined;
+          let altitude: number | undefined;
+          let enhancedAltitude: number | undefined;
           let time: Date | undefined;
           let power: number | undefined;
           let hr: number | undefined;
@@ -210,28 +211,39 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             if (globalMsgNum === 20) {
               // record
               if (field.recordNumber === 0) {
-                if (typeof val === 'number') {
-                  lat = val;
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  lat = numVal;
                 }
               } else if (field.recordNumber === 1) {
-                if (typeof val === 'number') {
-                  lng = val;
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  lng = numVal;
                 }
-              } else if (field.recordNumber === 2 || field.recordNumber === 131) {
-                if (typeof val === 'number') {
-                  ele = val;
+              } else if (field.recordNumber === 2) {
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  altitude = numVal;
+                }
+              } else if (field.recordNumber === 78) {
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  enhancedAltitude = numVal;
                 }
               } else if (field.recordNumber === 7) {
-                if (typeof val === 'number') {
-                  power = val;
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  power = numVal;
                 }
               } else if (field.recordNumber === 3) {
-                if (typeof val === 'number') {
-                  hr = val;
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  hr = numVal;
                 }
               } else if (field.recordNumber === 4) {
-                if (typeof val === 'number') {
-                  cad = val;
+                const numVal = Number(val);
+                if (val !== undefined && val !== null && !isNaN(numVal)) {
+                  cad = numVal;
                 }
               }
             } else if (globalMsgNum === 0) {
@@ -296,15 +308,20 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             if (Math.abs(lng) > 180) lng = lng * (180 / Math.pow(2, 31));
 
             if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001) {
-              if (ele !== undefined && !isNaN(ele)) {
-                if (ele === 65535 || ele === 4294967295) {
-                  ele = undefined;
-                } else {
-                  // Standard FIT altitude scaling: value / 5 - 500
-                  ele = ele / 5 - 500;
-                }
+              let ele: number | undefined;
+              if (enhancedAltitude !== undefined && enhancedAltitude !== null && !isNaN(enhancedAltitude) && enhancedAltitude !== 4294967295) {
+                ele = enhancedAltitude / 5 - 500;
               }
-              points.push({ lat, lng, ele, time, power, hr, cadence: cad });
+              if ((ele === undefined || ele === null || isNaN(ele)) && altitude !== undefined && altitude !== null && !isNaN(altitude) && altitude !== 65535) {
+                ele = altitude / 5 - 500;
+              }
+              
+              let pointTime = time;
+              if (!pointTime && latestTimestamp !== undefined) {
+                pointTime = new Date((latestTimestamp + 631065600) * 1000);
+              }
+              
+              points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad });
             }
           }
 
@@ -356,9 +373,29 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       return null;
     }
 
+    // Validate elevation data existence and provide a meaningful default if missing
+    const hasElevation = sanitizedPoints.some(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
+    if (!hasElevation) {
+      console.warn(`No elevation/altitude data found in FIT file "${fileName}". Generating a flat 0m baseline as default.`);
+      for (const p of sanitizedPoints) {
+        p.ele = 0;
+      }
+    } else {
+      // Smoothly fill/interpolate any scattered missing elevation values
+      let lastValidEle = sanitizedPoints.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
+      for (let i = 0; i < sanitizedPoints.length; i++) {
+        const p = sanitizedPoints[i];
+        if (p.ele === undefined || p.ele === null || isNaN(p.ele)) {
+          p.ele = lastValidEle;
+        } else {
+          lastValidEle = p.ele;
+        }
+      }
+    }
+
     if (fitName) {
       const lower = fitName.toLowerCase();
-      if (lower === 'activity' || lower === 'course' || lower === 'unnamed' || lower === 'workout') {
+      if (lower === 'activity' || lower === 'course' || lower === 'unnamed' || lower === 'workout' || lower === '0') {
         fitName = undefined;
       }
     }

@@ -79,20 +79,33 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setShowSelectedSurfaceStats(true);
   }, [selectionBounds]);
 
+  // Diagnostic log when track data is loaded
+  React.useEffect(() => {
+    if (track && track.points && track.points.length > 0) {
+      console.log('--- ElevationProfile Diagnostics ---');
+      console.log(`Track Name: ${track.name || 'Unnamed'}`);
+      console.log(`Total Points: ${track.points.length}`);
+      console.log('First 10 Points:', track.points.slice(0, 10));
+      console.log('Full Elevation Array:', track.points.map(p => p.ele));
+      console.log('------------------------------------');
+    }
+  }, [track]);
+
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;
 
     let totalDist = 0;
     const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
     
-    const hasElevation = track.points.some(p => p.ele !== undefined);
+    const hasElevation = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)));
     if (!hasElevation) return null;
 
-    let lastValidEle = track.points.find(p => p.ele !== undefined)?.ele || 0;
+    let lastValidEle = Number(track.points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)))?.ele || 0);
 
+    const firstEle = track.points[0].ele;
     rawData.push({ 
       dist: 0, 
-      ele: track.points[0].ele !== undefined ? track.points[0].ele : lastValidEle, 
+      ele: (firstEle !== undefined && firstEle !== null && !isNaN(Number(firstEle))) ? Number(firstEle) : lastValidEle, 
       lat: track.points[0].lat, 
       lng: track.points[0].lng,
       power: track.points[0].power,
@@ -108,8 +121,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       totalDist += distStep;
       
       const currentEle = track.points[i].ele;
-      const ele = currentEle !== undefined ? currentEle : lastValidEle;
-      if (currentEle !== undefined) lastValidEle = currentEle;
+      const ele = (currentEle !== undefined && currentEle !== null && !isNaN(Number(currentEle))) ? Number(currentEle) : lastValidEle;
+      if (currentEle !== undefined && currentEle !== null && !isNaN(Number(currentEle))) lastValidEle = Number(currentEle);
 
       // Calculate instant/interval speed if timestamps are present
       let s = 0;

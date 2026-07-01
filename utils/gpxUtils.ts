@@ -118,10 +118,10 @@ export const findClimbs = (
   // Calculate cumulative distance and filled elevation
   const cumDist = new Float64Array(points.length);
   const filledEle = new Float64Array(points.length);
-  let lastEle = points.find(p => p.ele !== undefined)?.ele || 0;
+  let lastEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
   
   for (let i = 0; i < points.length; i++) {
-    if (points[i].ele !== undefined) lastEle = points[i].ele!;
+    if (points[i].ele !== undefined && points[i].ele !== null && !isNaN(points[i].ele!)) lastEle = points[i].ele!;
     filledEle[i] = lastEle;
     if (i > 0) {
       cumDist[i] = cumDist[i - 1] + calculateDistance(points[i - 1], points[i]) * 1000;
@@ -216,7 +216,7 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
     for (let i = 0; i < points.length; i++) {
       let sum = 0, count = 0;
       for (let j = Math.max(0, i - windowHalf); j <= Math.min(points.length - 1, i + windowHalf); j++) {
-        if (points[j].ele !== undefined) {
+        if (points[j].ele !== undefined && points[j].ele !== null && !isNaN(points[j].ele!)) {
           sum += points[j].ele!;
           count++;
         }
@@ -287,7 +287,7 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
   for (let i = 0; i < points.length; i++) {
     let sum = 0, count = 0;
     for (let j = Math.max(0, i - windowHalf); j <= Math.min(points.length - 1, i + windowHalf); j++) {
-      if (points[j].ele !== undefined) {
+      if (points[j].ele !== undefined && points[j].ele !== null && !isNaN(points[j].ele!)) {
         sum += points[j].ele!;
         count++;
       }
@@ -554,9 +554,9 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
 
   // Pre-fill missing elevation data
   const filledEle = new Float64Array(points.length);
-  let lastValidEle = points.find(p => p.ele !== undefined)?.ele || 0;
+  let lastValidEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
   for (let i = 0; i < points.length; i++) {
-    if (points[i].ele !== undefined) {
+    if (points[i].ele !== undefined && points[i].ele !== null && !isNaN(points[i].ele!)) {
       lastValidEle = points[i].ele!;
     }
     filledEle[i] = lastValidEle;
@@ -864,6 +864,25 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
 
     const points = sanitizeGPXPoints(rawPoints);
 
+    // Validate elevation data existence and provide a meaningful default if missing
+    const hasElevation = points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
+    if (!hasElevation && points.length > 0) {
+      console.warn(`No elevation data found in GPX file "${fileName}". Generating a flat 0m baseline as default.`);
+      for (const p of points) {
+        p.ele = 0;
+      }
+    } else if (points.length > 0) {
+      // Smoothly fill/interpolate any scattered missing elevation values
+      let lastValidEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
+      for (let i = 0; i < points.length; i++) {
+        if (points[i].ele === undefined || points[i].ele === null || isNaN(points[i].ele!)) {
+          points[i].ele = lastValidEle;
+        } else {
+          lastValidEle = points[i].ele!;
+        }
+      }
+    }
+
     const hasTimestamps = points.some(p => p.time !== undefined);
     if (hasTimestamps && points.length > 0) {
       // Shift timestamps to start at current date/time for GPX tracks
@@ -893,7 +912,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     }
 
     let activityName = parsedGpxName;
-    if (!activityName) {
+    if (!activityName || activityName === "0" || activityName.trim() === "") {
       const firstPoint = points.find(p => p.time !== undefined) || points[0];
       const startDate = firstPoint?.time || new Date();
       const dateStr = startDate.toLocaleDateString('de-DE', { 
@@ -1202,19 +1221,19 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
           const lat = parseFloat(latMatch[1]);
           const lng = parseFloat(lonMatch[1]);
 
-          const eleMatch = trkptXml.match(/<ele>([^<]*)<\/ele>/i);
+          const eleMatch = trkptXml.match(/<ele(?:\s[^>]*)?>([^<]*)<\/ele>/i);
           const ele = eleMatch ? parseFloat(eleMatch[1]) : undefined;
 
-          const timeMatch = trkptXml.match(/<time>([^<]*)<\/time>/i);
+          const timeMatch = trkptXml.match(/<time(?:\s[^>]*)?>([^<]*)<\/time>/i);
           const time = timeMatch ? new Date(timeMatch[1]) : undefined;
 
-          const powerMatch = trkptXml.match(/<power>([^<]*)<\/power>/i);
+          const powerMatch = trkptXml.match(/<power(?:\s[^>]*)?>([^<]*)<\/power>/i);
           const power = powerMatch ? parseFloat(powerMatch[1]) : undefined;
 
-          const hrMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?hr>([^<]*)<\/(?:[a-zA-Z0-9]+:)?hr>/i);
+          const hrMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?hr(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?hr>/i);
           const hr = hrMatch ? parseInt(hrMatch[1], 10) : undefined;
 
-          const cadMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?cad>([^<]*)<\/(?:[a-zA-Z0-9]+:)?cad>/i);
+          const cadMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?cad(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?cad>/i);
           const cadence = cadMatch ? parseInt(cadMatch[1], 10) : undefined;
 
           points.push({ lat, lng, ele, time, power, hr, cadence });
@@ -1231,6 +1250,25 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     if (sanitizedPoints.length === 0) {
       console.error("GPX parsing error: No valid points found");
       return null;
+    }
+
+    // Validate elevation data existence and provide a meaningful default if missing
+    const hasElevation = sanitizedPoints.some(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
+    if (!hasElevation && sanitizedPoints.length > 0) {
+      console.warn(`No elevation data found in GPX stream "${fileName}". Generating a flat 0m baseline as default.`);
+      for (const p of sanitizedPoints) {
+        p.ele = 0;
+      }
+    } else if (sanitizedPoints.length > 0) {
+      // Smoothly fill/interpolate any scattered missing elevation values
+      let lastValidEle = sanitizedPoints.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
+      for (let i = 0; i < sanitizedPoints.length; i++) {
+        if (sanitizedPoints[i].ele === undefined || sanitizedPoints[i].ele === null || isNaN(sanitizedPoints[i].ele!)) {
+          sanitizedPoints[i].ele = lastValidEle;
+        } else {
+          lastValidEle = sanitizedPoints[i].ele!;
+        }
+      }
     }
 
     const hasTimestamps = sanitizedPoints.some(p => p.time !== undefined);
@@ -1261,7 +1299,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     }
 
     let activityName = gpxName;
-    if (!activityName) {
+    if (!activityName || activityName === "0" || activityName.trim() === "") {
       const firstPoint = sanitizedPoints.find(p => p.time !== undefined) || sanitizedPoints[0];
       const startDate = firstPoint?.time || new Date();
       const dateStr = startDate.toLocaleDateString('de-DE', { 

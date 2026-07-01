@@ -79,17 +79,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setShowSelectedSurfaceStats(true);
   }, [selectionBounds]);
 
-  // Diagnostic log when track data is loaded
-  React.useEffect(() => {
-    if (track && track.points && track.points.length > 0) {
-      console.log('--- ElevationProfile Diagnostics ---');
-      console.log(`Track Name: ${track.name || 'Unnamed'}`);
-      console.log(`Total Points: ${track.points.length}`);
-      console.log('First 10 Points:', track.points.slice(0, 10));
-      console.log('Full Elevation Array:', track.points.map(p => p.ele));
-      console.log('------------------------------------');
-    }
-  }, [track]);
+
 
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;

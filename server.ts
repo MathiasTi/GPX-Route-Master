@@ -904,23 +904,748 @@ async function startServer() {
     }
   });
 
-  // Dynamic SQLite Import API
+  // Shared Garmin SQLite database processing engine (memory efficient, streams rows via stmt.iterate())
+  function processGarminDatabase(uploadedDb: any): {
+    sleep: number;
+    weight: number;
+    stress: number;
+    rhr: number;
+    steps: number;
+    activities: number;
+    tables: string[];
+  } {
+    let tables: { name: string }[] = [];
+    try {
+      tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    } catch (tableErr: any) {
+      throw new Error(`Fehler beim Auslesen der Tabellenstruktur: ${tableErr.message || tableErr}`);
+    }
+    const tNames = tables.map(t => t.name.toLowerCase());
+    
+    let sleepImported = 0;
+    let weightImported = 0;
+    let stressImported = 0;
+    let rhrImported = 0;
+    let stepsImported = 0;
+    let activitiesImported = 0;
+
+    // Detect diegoscarabelli/garmin-health-data schema specifically:
+    const isGarminHealthData = tNames.includes("sleep") && tNames.includes("body_composition") && tNames.includes("activity");
+
+    if (isGarminHealthData) {
+      console.log("Detected diegoscarabelli/garmin-health-data database schema!");
+
+      // 1. SLEEP
+      if (tNames.includes("sleep")) {
+        try {
+          const cols = uploadedDb.pragma("table_info(sleep)") as any[];
+          const hasRestingHr = cols.some(c => c.name.toLowerCase() === "resting_heart_rate");
+          const hasSleepTimeSec = cols.some(c => c.name.toLowerCase() === "sleep_time_seconds");
+          
+          if (hasSleepTimeSec) {
+            const query = `
+              SELECT 
+                calendar_date, 
+                sleep_time_seconds, 
+                deep_sleep_seconds, 
+                light_sleep_seconds, 
+                rem_sleep_seconds, 
+                awake_sleep_seconds
+                ${hasRestingHr ? ", resting_heart_rate" : ""}
+              FROM sleep 
+              WHERE calendar_date IS NOT NULL
+            `;
+            const stmt = uploadedDb.prepare(query);
+            runInTransaction(() => {
+              for (const row of stmt.iterate() as Iterable<any>) {
+                const dateVal = String(row.calendar_date).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                const durationSec = parseFloat(row.sleep_time_seconds);
+                if (isNaN(durationSec)) continue;
+
+                const durationMin = durationSec / 60;
+                const deepMin = row.deep_sleep_seconds ? parseFloat(row.deep_sleep_seconds) / 60 : 0;
+                const lightMin = row.light_sleep_seconds ? parseFloat(row.light_sleep_seconds) / 60 : 0;
+                const remMin = row.rem_sleep_seconds ? parseFloat(row.rem_sleep_seconds) / 60 : 0;
+                const awakeMin = row.awake_sleep_seconds ? parseFloat(row.awake_sleep_seconds) / 60 : 0;
+
+                saveSleep(dateVal, durationMin, deepMin, lightMin, remMin, awakeMin);
+                sleepImported++;
+
+                if (hasRestingHr && row.resting_heart_rate) {
+                  const rhrVal = parseFloat(row.resting_heart_rate);
+                  if (!isNaN(rhrVal) && rhrVal > 0) {
+                    saveRhr(dateVal, rhrVal);
+                    rhrImported++;
+                  }
+                }
+              }
+            });
+          }
+        } catch (e) {
+          console.error("Error importing sleep from garmin-health-data schema:", e);
+        }
+      }
+
+      // 2. WEIGHT (body_composition)
+      if (tNames.includes("body_composition")) {
+        try {
+          const stmt = uploadedDb.prepare(`
+            SELECT timestamp, weight, bmi, body_fat 
+            FROM body_composition
+          `);
+          runInTransaction(() => {
+            for (const row of stmt.iterate() as Iterable<any>) {
+              const dateVal = String(row.timestamp).split(" ")[0];
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+              let wVal = parseFloat(row.weight);
+              if (isNaN(wVal)) continue;
+              // weight is stored in grams in body_composition, convert to kg
+              wVal = wVal / 1000;
+
+              const bmiVal = row.bmi ? parseFloat(row.bmi) : undefined;
+              const fatVal = row.body_fat ? parseFloat(row.body_fat) : undefined;
+
+              saveWeight(dateVal, wVal, bmiVal, fatVal);
+              weightImported++;
+            }
+          });
+        } catch (e) {
+          console.error("Error importing weight from body_composition:", e);
+        }
+      }
+
+      // 3. STRESS (Aggregation)
+      if (tNames.includes("stress")) {
+        try {
+          const stmt = uploadedDb.prepare(`
+            SELECT 
+              date(timestamp) as dateVal, 
+              AVG(value) as avgStress 
+            FROM stress 
+            WHERE value >= 0 
+            GROUP BY dateVal
+          `);
+          runInTransaction(() => {
+            for (const row of stmt.iterate() as Iterable<any>) {
+              const dateVal = String(row.dateVal);
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+              const stressVal = parseFloat(row.avgStress);
+              if (isNaN(stressVal)) continue;
+
+              saveStress(dateVal, stressVal);
+              stressImported++;
+            }
+          });
+        } catch (e) {
+          console.error("Error aggregating and importing stress:", e);
+        }
+      }
+
+      // 4. STEPS (Aggregation)
+      if (tNames.includes("steps")) {
+        try {
+          const stmt = uploadedDb.prepare(`
+            SELECT 
+              date(timestamp) as dateVal, 
+              SUM(value) as totalSteps 
+            FROM steps 
+            GROUP BY dateVal
+          `);
+          runInTransaction(() => {
+            for (const row of stmt.iterate() as Iterable<any>) {
+              const dateVal = String(row.dateVal);
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+              const stepsVal = parseInt(row.totalSteps, 10);
+              if (isNaN(stepsVal)) continue;
+
+              saveSteps(dateVal, stepsVal);
+              stepsImported++;
+            }
+          });
+        } catch (e) {
+          console.error("Error aggregating and importing steps:", e);
+        }
+      }
+
+      // 5. ACTIVITIES (activity)
+      if (tNames.includes("activity")) {
+        try {
+          const cols = uploadedDb.pragma("table_info(activity)") as any[];
+          const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
+          const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
+
+          const query = `
+            SELECT 
+              activity_id, 
+              activity_name, 
+              activity_type_key, 
+              start_ts, 
+              distance, 
+              duration
+              ${hasCalories ? ", calories" : ""}
+              ${hasAverageHr ? ", average_hr" : ""}
+            FROM activity
+          `;
+          const stmt = uploadedDb.prepare(query);
+          runInTransaction(() => {
+            for (const row of stmt.iterate() as Iterable<any>) {
+              const dateVal = String(row.start_ts).split(" ")[0];
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+              const idVal = String(row.activity_id);
+              const nameVal = row.activity_name ? String(row.activity_name) : "Activity";
+              const typeVal = row.activity_type_key ? String(row.activity_type_key) : "cycling";
+
+              let distVal = parseFloat(row.distance) || 0;
+              // distance in meters in activity, convert to km
+              distVal = distVal / 1000;
+
+              const durVal = parseFloat(row.duration) || 0; // in seconds
+              const calVal = hasCalories && row.calories ? parseFloat(row.calories) : undefined;
+              const hrVal = hasAverageHr && row.average_hr ? parseFloat(row.average_hr) : undefined;
+
+              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal);
+              activitiesImported++;
+            }
+          });
+        } catch (e) {
+          console.error("Error importing activity from garmin-health-data schema:", e);
+        }
+      }
+
+    } else {
+      // FALLBACK: Existing flexible/dynamic column matching importer
+      const findColumn = (columns: any[], options: string[]): string | null => {
+        for (const opt of options) {
+          const found = columns.find((c: any) => c.name.toLowerCase() === opt.toLowerCase());
+          if (found) return found.name;
+        }
+        return null;
+      };
+
+      for (const table of tables) {
+        const tName = table.name.toLowerCase();
+        const columns = uploadedDb.pragma(`table_info(${table.name})`) as any[];
+        
+        // 1. SLEEP
+        if (tName.includes("sleep")) {
+          const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "start_time", "calendarDate", "start_ts", "end_ts"]);
+          const durCol = findColumn(columns, ["duration", "duration_ms", "total_sleep", "sleep_duration", "seconds", "total_sleep_time", "sleep_time_seconds"]);
+          if (dateCol && durCol) {
+            const deepCol = findColumn(columns, ["deep", "deep_sleep", "deep_duration", "deep_sleep_duration", "deep_sleep_seconds"]);
+            const lightCol = findColumn(columns, ["light", "light_sleep", "light_duration", "light_sleep_duration", "light_sleep_seconds"]);
+            const remCol = findColumn(columns, ["rem", "rem_sleep", "rem_duration", "rem_sleep_duration", "rem_sleep_seconds"]);
+            const awakeCol = findColumn(columns, ["awake", "awake_time", "awake_duration", "awake_sleep_seconds"]);
+
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0]; // Get YYYY-MM-DD
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                let durVal = parseFloat(row[durCol]);
+                if (isNaN(durVal)) continue;
+                // Normalize duration to minutes
+                if (durVal > 100000) durVal = durVal / 60000; // ms to min
+                else if (durVal > 2000) durVal = durVal / 60; // seconds to min
+                else if (durVal < 24) durVal = durVal * 60; // hours to min
+
+                const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
+                const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
+                const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
+                const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
+
+                const normMin = (v: number) => {
+                  if (v > 100000) return v / 60000;
+                  if (v > 2000) return v / 60;
+                  if (v < 24) return v * 60;
+                  return v;
+                };
+
+                saveSleep(
+                  dateVal,
+                  durVal,
+                  deepVal ? normMin(deepVal) : undefined,
+                  lightVal ? normMin(lightVal) : undefined,
+                  remVal ? normMin(remVal) : undefined,
+                  awakeVal ? normMin(awakeVal) : undefined
+                );
+                sleepImported++;
+              }
+            });
+          }
+        }
+
+        // 2. WEIGHT
+        else if (tName.includes("weight") || tName === "body_composition") {
+          const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
+          const weightCol = findColumn(columns, ["weight", "weight_kg", "value", "weight_g", "weightKg"]);
+          if (dateCol && weightCol) {
+            const bmiCol = findColumn(columns, ["bmi", "body_mass_index"]);
+            const fatCol = findColumn(columns, ["body_fat", "fat", "fat_percent", "body_fat_percent", "bodyFat"]);
+
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                let wVal = parseFloat(row[weightCol]);
+                if (isNaN(wVal)) continue;
+                if (wVal > 1000) wVal = wVal / 1000; // g to kg
+
+                const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
+                const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
+
+                saveWeight(dateVal, wVal, bmiVal, fatVal);
+                weightImported++;
+              }
+            });
+          }
+        }
+
+        // 3. STRESS
+        else if (tName.includes("stress")) {
+          const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
+          const stressCol = findColumn(columns, ["avg_stress", "average_stress", "stress_level", "score", "averageStress", "stressLevel", "value"]);
+          if (dateCol && stressCol) {
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                const stressVal = parseFloat(row[stressCol]);
+                if (isNaN(stressVal)) continue;
+
+                saveStress(dateVal, stressVal);
+                stressImported++;
+              }
+            });
+          }
+        }
+
+        // 4. RHR
+        else if (tName.includes("rhr") || tName === "resting_heart_rate") {
+          const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
+          const rhrCol = findColumn(columns, ["rhr", "resting_heart_rate", "resting_hr", "resting", "restingHeartRate"]);
+          if (dateCol && rhrCol) {
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                const rhrVal = parseFloat(row[rhrCol]);
+                if (isNaN(rhrVal)) continue;
+
+                saveRhr(dateVal, rhrVal);
+                rhrImported++;
+              }
+            });
+          }
+        }
+
+        // 5. STEPS
+        else if (tName.includes("step") || tName === "days" || tName === "day_summary" || tName === "steps") {
+          const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
+          const stepsCol = findColumn(columns, ["steps", "step_count", "count", "stepCount", "value"]);
+          if (dateCol && stepsCol) {
+            const calCol = findColumn(columns, ["calories", "active_calories", "total_calories", "activeCalories", "totalCalories"]);
+            const distCol = findColumn(columns, ["distance", "meters", "meters_traveled", "distanceMeters"]);
+
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                const stepsVal = parseInt(row[stepsCol], 10);
+                if (isNaN(stepsVal)) continue;
+
+                const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
+                let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
+                if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
+
+                saveSteps(dateVal, stepsVal, calVal, distVal);
+                stepsImported++;
+              }
+            });
+          }
+        }
+
+        // 6. ACTIVITIES
+        else if (tName.includes("activities") || tName === "activity" || tName === "tracks") {
+          const dateCol = findColumn(columns, ["date", "day", "start_time", "start_time_local", "startTimeLocal", "timestamp", "calendar_date", "calendarDate", "start_ts"]);
+          const idCol = findColumn(columns, ["id", "activityId", "activity_id", "rowid"]);
+          const nameCol = findColumn(columns, ["name", "activityName", "title", "activity_name"]);
+          if (dateCol && idCol && nameCol) {
+            const typeCol = findColumn(columns, ["type", "activityType", "activity_type", "sport", "activity_type_key"]);
+            const distCol = findColumn(columns, ["distance"]);
+            const durCol = findColumn(columns, ["duration", "elapsed_time", "moving_time", "elapsedTime"]);
+            const ascentCol = findColumn(columns, ["ascent", "elevation_gain", "elevationGain"]);
+            const descentCol = findColumn(columns, ["descent", "elevation_loss", "elevationLoss"]);
+            const calCol = findColumn(columns, ["calories"]);
+            const hrCol = findColumn(columns, ["avg_hr", "average_heart_rate", "averageHeartRate", "avg_heart_rate", "average_hr"]);
+
+            runInTransaction(() => {
+              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+              for (const row of stmt.iterate() as Iterable<any>) {
+                let dateVal = String(row[dateCol]).split(" ")[0];
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+
+                const idVal = String(row[idCol]);
+                const nameVal = String(row[nameCol]);
+                const typeVal = typeCol && row[typeCol] ? String(row[typeCol]) : "cycling";
+                
+                let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : 0;
+                if (distVal > 1000) distVal = distVal / 1000; // m to km
+
+                const durVal = durCol && row[durCol] ? parseFloat(row[durCol]) : 0;
+                const ascentVal = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
+                const descentVal = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
+                const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
+                const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
+
+                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal);
+                activitiesImported++;
+              }
+            });
+          }
+        }
+      }
+    }
+
+    return {
+      sleep: sleepImported,
+      weight: weightImported,
+      stress: stressImported,
+      rhr: rhrImported,
+      steps: stepsImported,
+      activities: activitiesImported,
+      tables: tNames
+    };
+  }
+
+  // Scan local directories for SQLite DBs (bypasses browser upload limits for large databases)
+  function scanLocalDbs(): { filename: string; path: string; size: number; mtime: string }[] {
+    const list: { filename: string; path: string; size: number; mtime: string }[] = [];
+    const searchDirs = [process.cwd(), path.join(process.cwd(), 'data')];
+    
+    for (const dir of searchDirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const files = fs.readdirSync(dir);
+        for (const file of files) {
+          if (file.endsWith('.db') || file.endsWith('.sqlite')) {
+            if (file === 'gpx_library.db') continue; // skip app database
+            const fullPath = path.join(dir, file);
+            const stats = fs.statSync(fullPath);
+            if (stats.isFile()) {
+              if (!list.some(item => item.path === fullPath)) {
+                list.push({
+                  filename: file,
+                  path: fullPath,
+                  size: stats.size,
+                  mtime: stats.mtime.toISOString()
+                });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`Error scanning dir ${dir}:`, e);
+      }
+    }
+    return list;
+  }
+
+  // Deep Analytical calculation engine
+  function calculateHealthAnalytics() {
+    const data = getHealthMetrics() as any;
+    
+    // 1. Pearson Correlation helper
+    const pearsonCorrelation = (x: number[], y: number[]): number => {
+      const n = x.length;
+      if (n < 2) return 0;
+      const meanX = x.reduce((a, b) => a + b, 0) / n;
+      const meanY = y.reduce((a, b) => a + b, 0) / n;
+      
+      let num = 0;
+      let denX = 0;
+      let denY = 0;
+      for (let i = 0; i < n; i++) {
+        const diffX = x[i] - meanX;
+        const diffY = y[i] - meanY;
+        num += diffX * diffY;
+        denX += diffX * diffX;
+        denY += diffY * diffY;
+      }
+      if (denX === 0 || denY === 0) return 0;
+      return num / Math.sqrt(denX * denY);
+    };
+
+    // 2. Sleep vs Stress Correlation
+    const sleepMap = new Map<string, any>();
+    for (const s of data.sleep) {
+      sleepMap.set(s.date, s);
+    }
+    
+    const sleepStressPoints: { date: string; sleepDuration: number; deepSleep: number; stress: number }[] = [];
+    const sleepDurations: number[] = [];
+    const deepSleepDurations: number[] = [];
+    const stressLevels: number[] = [];
+    
+    for (const str of data.stress) {
+      if (sleepMap.has(str.date)) {
+        const sl = sleepMap.get(str.date);
+        sleepStressPoints.push({
+          date: str.date,
+          sleepDuration: parseFloat((sl.duration / 60).toFixed(2)), // in hours
+          deepSleep: parseFloat(((sl.deep || 0) / 60).toFixed(2)), // in hours
+          stress: str.avg_stress
+        });
+        sleepDurations.push(sl.duration);
+        deepSleepDurations.push(sl.deep || 0);
+        stressLevels.push(str.avg_stress);
+      }
+    }
+    
+    const sleepStressCorr = pearsonCorrelation(sleepDurations, stressLevels);
+    const deepSleepStressCorr = pearsonCorrelation(deepSleepDurations, stressLevels);
+
+    // 3. Weight vs Body Fat Correlation
+    const weights: number[] = [];
+    const bodyFats: number[] = [];
+    const weightFatPoints: { date: string; weight: number; bodyFat: number }[] = [];
+    for (const w of data.weight) {
+      if (w.weight && w.body_fat) {
+        weights.push(w.weight);
+        bodyFats.push(w.body_fat);
+        weightFatPoints.push({
+          date: w.date,
+          weight: w.weight,
+          bodyFat: w.body_fat
+        });
+      }
+    }
+    const weightFatCorr = pearsonCorrelation(weights, bodyFats);
+
+    // 4. Weekly Training Volume vs Resting Heart Rate Trend
+    const getWeekKey = (dateStr: string) => {
+      const d = new Date(dateStr);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday adjustment
+      const monday = new Date(d.setDate(diff));
+      return monday.toISOString().split('T')[0];
+    };
+
+    const weeklyActivities = new Map<string, { distance: number; duration: number; calories: number; count: number }>();
+    for (const act of data.activities) {
+      const wKey = getWeekKey(act.date);
+      const existing = weeklyActivities.get(wKey) || { distance: 0, duration: 0, calories: 0, count: 0 };
+      existing.distance += act.distance || 0;
+      existing.duration += act.duration || 0; // in seconds
+      existing.calories += act.calories || 0;
+      existing.count += 1;
+      weeklyActivities.set(wKey, existing);
+    }
+
+    const weeklyRhr = new Map<string, { sum: number; count: number }>();
+    for (const r of data.rhr) {
+      const wKey = getWeekKey(r.date);
+      const existing = weeklyRhr.get(wKey) || { sum: 0, count: 0 };
+      existing.sum += r.rhr;
+      existing.count += 1;
+      weeklyRhr.set(wKey, existing);
+    }
+
+    const volumeVsRhrPoints: { week: string; trainingDistanceKm: number; trainingHours: number; avgRhr: number }[] = [];
+    const weeklyDistances: number[] = [];
+    const weeklyAverageRhrs: number[] = [];
+
+    for (const [wKey, actStats] of weeklyActivities.entries()) {
+      if (weeklyRhr.has(wKey)) {
+        const rStats = weeklyRhr.get(wKey)!;
+        const avgRhrVal = rStats.sum / rStats.count;
+        volumeVsRhrPoints.push({
+          week: wKey,
+          trainingDistanceKm: parseFloat(actStats.distance.toFixed(1)),
+          trainingHours: parseFloat((actStats.duration / 3600).toFixed(1)),
+          avgRhr: parseFloat(avgRhrVal.toFixed(1))
+        });
+        weeklyDistances.push(actStats.distance);
+        weeklyAverageRhrs.push(avgRhrVal);
+      }
+    }
+    
+    volumeVsRhrPoints.sort((a, b) => a.week.localeCompare(b.week));
+    const trainingVolumeRhrCorr = pearsonCorrelation(weeklyDistances, weeklyAverageRhrs);
+
+    // 5. Sport Efficiency
+    const sportStats = new Map<string, { totalDuration: number; totalDistance: number; totalCalories: number; count: number; countWithHr: number; sumAvgHr: number }>();
+    for (const act of data.activities) {
+      const sType = act.type || 'other';
+      const existing = sportStats.get(sType) || { totalDuration: 0, totalDistance: 0, totalCalories: 0, count: 0, countWithHr: 0, sumAvgHr: 0 };
+      existing.totalDuration += act.duration || 0;
+      existing.totalDistance += act.distance || 0;
+      existing.totalCalories += act.calories || 0;
+      existing.count += 1;
+      if (act.avg_hr) {
+        existing.countWithHr += 1;
+        existing.sumAvgHr += act.avg_hr;
+      }
+      sportStats.set(sType, existing);
+    }
+
+    const sportEfficiency: { type: string; count: number; totalDistance: number; totalHours: number; totalCalories: number; calPerHour: number; avgHeartRate?: number }[] = [];
+    for (const [sType, stats] of sportStats.entries()) {
+      const hours = stats.totalDuration / 3600;
+      sportEfficiency.push({
+        type: sType,
+        count: stats.count,
+        totalDistance: parseFloat(stats.totalDistance.toFixed(1)),
+        totalHours: parseFloat(hours.toFixed(1)),
+        totalCalories: stats.totalCalories,
+        calPerHour: hours > 0 ? Math.round(stats.totalCalories / hours) : 0,
+        avgHeartRate: stats.countWithHr > 0 ? Math.round(stats.sumAvgHr / stats.countWithHr) : undefined
+      });
+    }
+
+    // 6. Weekday Trends (Average steps, stress, sleep)
+    const weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+    const weekdayData = weekdays.map((name, index) => ({
+      dayIndex: index,
+      name,
+      stepsCount: 0,
+      stepsSum: 0,
+      stressCount: 0,
+      stressSum: 0,
+      sleepCount: 0,
+      sleepSum: 0
+    }));
+
+    for (const s of data.steps) {
+      const d = new Date(s.date);
+      const day = d.getDay();
+      weekdayData[day].stepsSum += s.steps;
+      weekdayData[day].stepsCount += 1;
+    }
+    for (const str of data.stress) {
+      const d = new Date(str.date);
+      const day = d.getDay();
+      weekdayData[day].stressSum += str.avg_stress;
+      weekdayData[day].stressCount += 1;
+    }
+    for (const sl of data.sleep) {
+      const d = new Date(sl.date);
+      const day = d.getDay();
+      weekdayData[day].sleepSum += sl.duration; // in minutes
+      weekdayData[day].sleepCount += 1;
+    }
+
+    const weekdayAverages = weekdayData.map(d => ({
+      name: d.name,
+      avgSteps: d.stepsCount > 0 ? Math.round(d.stepsSum / d.stepsCount) : 0,
+      avgStress: d.stressCount > 0 ? Math.round(d.stressSum / d.stressCount) : 0,
+      avgSleep: d.sleepCount > 0 ? Math.round(d.sleepSum / d.sleepCount) : 0 // in minutes
+    }));
+
+    // Reorder Mon to Sun
+    const mondayToSundayAverages = [...weekdayAverages.slice(1), weekdayAverages[0]];
+
+    // 7. Monthly Sleep Analysis
+    const monthlySleep = new Map<string, { sumDuration: number; sumDeep: number; sumRem: number; count: number }>();
+    for (const s of data.sleep) {
+      const mKey = s.date.substring(0, 7); // YYYY-MM
+      const existing = monthlySleep.get(mKey) || { sumDuration: 0, sumDeep: 0, sumRem: 0, count: 0 };
+      existing.sumDuration += s.duration;
+      existing.sumDeep += s.deep || 0;
+      existing.sumRem += s.rem || 0;
+      existing.count += 1;
+      monthlySleep.set(mKey, existing);
+    }
+
+    const monthlySleepAverages = Array.from(monthlySleep.entries()).map(([month, stats]) => ({
+      month,
+      avgSleep: Math.round(stats.sumDuration / stats.count),
+      avgDeep: Math.round(stats.sumDeep / stats.count),
+      avgRem: Math.round(stats.sumRem / stats.count),
+      deepRatio: stats.sumDuration > 0 ? parseFloat(((stats.sumDeep / stats.sumDuration) * 100).toFixed(1)) : 0
+    })).sort((a, b) => a.month.localeCompare(b.month));
+
+    return {
+      sleepStressCorrelation: {
+        coefficient: parseFloat(sleepStressCorr.toFixed(3)),
+        deepSleepStressCoefficient: parseFloat(deepSleepStressCorr.toFixed(3)),
+        pointsCount: sleepStressPoints.length,
+        recentPoints: sleepStressPoints.slice(-30),
+        summaryText: sleepStressCorr < -0.3 
+          ? "Starke negative Korrelation: Erhöhter Tagesstress führt bei dir nachweislich zu kürzerem und weniger erholsamem Schlaf." 
+          : sleepStressCorr < -0.1
+          ? "Milde negative Korrelation: Es gibt einen leichten Trend, dass stressigere Tage deine Schlafdauer verkürzen."
+          : "Keine signifikante Korrelation: Dein Schlaf scheint weitgehend unbeeinflusst vom gemessenen Tagesstress zu sein."
+      },
+      weightFatCorrelation: {
+        coefficient: parseFloat(weightFatCorr.toFixed(3)),
+        pointsCount: weightFatPoints.length,
+        recentPoints: weightFatPoints.slice(-15),
+        summaryText: weightFatCorr > 0.6 
+          ? "Starke positive Korrelation: Gewichtsveränderungen gehen bei dir direkt mit einer Veränderung des Körperfettanteils einher (gesunder Trend bei Gewichtsabnahme)."
+          : "Mäßige Korrelation: Dein Körpergewicht und Körperfett korrelieren moderat."
+      },
+      trainingVolumeVsRhr: {
+        coefficient: parseFloat(trainingVolumeRhrCorr.toFixed(3)),
+        points: volumeVsRhrPoints.slice(-12),
+        summaryText: trainingVolumeRhrCorr < -0.2
+          ? "Positive Fitness-Adaption! Wochen mit höherem Trainingsvolumen (mehr km) korrelieren mit einem signifikant niedrigeren Ruhepuls (RHR). Dein Herz arbeitet effizienter."
+          : "Noch kein klarer Trend sichtbar. Ein längerer Trainingszeitraum wird benötigt, um die aerobe Anpassung deines Ruhepulses statistisch nachzuweisen."
+      },
+      sportEfficiency,
+      weekdayAverages: mondayToSundayAverages,
+      monthlySleepAverages: monthlySleepAverages.slice(-6)
+    };
+  }
+
+  // Web-based SQLite upload endpoint with a larger 300MB limit for moderate databases
   app.post("/api/import-sqlite", async (req, res) => {
-    req.setTimeout(0); // Disable socket timeout for very large database files
+    req.setTimeout(0); 
     let tempPath = "";
     try {
       tempPath = path.join(os.tmpdir(), `upload_${Date.now()}_garmin.db`);
       const writeStream = fs.createWriteStream(tempPath);
       
-      // Stream the body directly to disk
+      const MAX_UPLOAD_SIZE = 300 * 1024 * 1024; // 300 MB for web-based upload
+      let totalBytesUploaded = 0;
+      let uploadTooLarge = false;
+
       await new Promise<void>((resolve, reject) => {
+        req.on("data", (chunk) => {
+          totalBytesUploaded += chunk.length;
+          if (totalBytesUploaded > MAX_UPLOAD_SIZE) {
+            uploadTooLarge = true;
+            req.destroy();
+            reject(new Error("Dateigröße überschreitet das Limit von 300 MB. Für größere Datenbanken (bis zu 10 GB), platziere die Datei bitte direkt im Workspace und verwende den lokalen Import."));
+          }
+        });
+
         req.pipe(writeStream);
         req.on("error", (err) => reject(err));
         writeStream.on("error", (err) => reject(err));
-        writeStream.on("finish", () => resolve());
+        writeStream.on("finish", () => {
+          if (uploadTooLarge) {
+            reject(new Error("Dateigröße überschreitet das Limit von 300 MB."));
+          } else {
+            resolve();
+          }
+        });
       });
 
-      // Verify file is not empty
       if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) {
         if (fs.existsSync(tempPath)) {
           try { fs.unlinkSync(tempPath); } catch (e) {}
@@ -928,7 +1653,6 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "Empty database file uploaded." });
       }
 
-      // Open uploaded db
       const DatabaseConstructor = (await import('better-sqlite3')).default;
       let uploadedDb;
       try {
@@ -939,468 +1663,101 @@ async function startServer() {
         }
         return res.status(400).json({ 
           success: false, 
-          error: `Ungültige oder beschädigte SQLite-Datenbankdatei. Bitte stellen Sie sicher, dass Sie eine echte SQLite-Datenbankdatei (.db oder .sqlite) hochladen. Details: ${dbErr.message || dbErr}`
+          error: `Ungültige SQLite-Datenbankdatei: ${dbErr.message || dbErr}`
         });
       }
 
-      // Inspect tables
-      let tables: { name: string }[] = [];
-      try {
-        tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
-      } catch (tableErr: any) {
-        uploadedDb.close();
-        if (fs.existsSync(tempPath)) {
-          try { fs.unlinkSync(tempPath); } catch (e) {}
-        }
-        return res.status(400).json({
-          success: false,
-          error: `Fehler beim Auslesen der Tabellenstruktur aus der SQLite-Datenbank: ${tableErr.message || tableErr}`
-        });
-      }
-      const tNames = tables.map(t => t.name.toLowerCase());
-      
-      let sleepImported = 0;
-      let weightImported = 0;
-      let stressImported = 0;
-      let rhrImported = 0;
-      let stepsImported = 0;
-      let activitiesImported = 0;
-
-      // Detect diegoscarabelli/garmin-health-data schema specifically:
-      // These databases typically have tables like 'sleep', 'body_composition', 'stress', 'steps', 'activity'
-      const isGarminHealthData = tNames.includes("sleep") && tNames.includes("body_composition") && tNames.includes("activity");
-
-      if (isGarminHealthData) {
-        console.log("Detected diegoscarabelli/garmin-health-data database schema!");
-
-        // 1. SLEEP
-        if (tNames.includes("sleep")) {
-          try {
-            const cols = uploadedDb.pragma("table_info(sleep)") as any[];
-            const hasRestingHr = cols.some(c => c.name.toLowerCase() === "resting_heart_rate");
-            const hasSleepTimeSec = cols.some(c => c.name.toLowerCase() === "sleep_time_seconds");
-            
-            if (hasSleepTimeSec) {
-              const query = `
-                SELECT 
-                  calendar_date, 
-                  sleep_time_seconds, 
-                  deep_sleep_seconds, 
-                  light_sleep_seconds, 
-                  rem_sleep_seconds, 
-                  awake_sleep_seconds
-                  ${hasRestingHr ? ", resting_heart_rate" : ""}
-                FROM sleep 
-                WHERE calendar_date IS NOT NULL
-              `;
-              const stmt = uploadedDb.prepare(query);
-              runInTransaction(() => {
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  const dateVal = String(row.calendar_date).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  const durationSec = parseFloat(row.sleep_time_seconds);
-                  if (isNaN(durationSec)) continue;
-
-                  const durationMin = durationSec / 60;
-                  const deepMin = row.deep_sleep_seconds ? parseFloat(row.deep_sleep_seconds) / 60 : 0;
-                  const lightMin = row.light_sleep_seconds ? parseFloat(row.light_sleep_seconds) / 60 : 0;
-                  const remMin = row.rem_sleep_seconds ? parseFloat(row.rem_sleep_seconds) / 60 : 0;
-                  const awakeMin = row.awake_sleep_seconds ? parseFloat(row.awake_sleep_seconds) / 60 : 0;
-
-                  saveSleep(dateVal, durationMin, deepMin, lightMin, remMin, awakeMin);
-                  sleepImported++;
-
-                  if (hasRestingHr && row.resting_heart_rate) {
-                    const rhrVal = parseFloat(row.resting_heart_rate);
-                    if (!isNaN(rhrVal) && rhrVal > 0) {
-                      saveRhr(dateVal, rhrVal);
-                      rhrImported++;
-                    }
-                  }
-                }
-              });
-            }
-          } catch (e) {
-            console.error("Error importing sleep from garmin-health-data schema:", e);
-          }
-        }
-
-        // 2. WEIGHT (body_composition)
-        if (tNames.includes("body_composition")) {
-          try {
-            const stmt = uploadedDb.prepare(`
-              SELECT timestamp, weight, bmi, body_fat 
-              FROM body_composition
-            `);
-            runInTransaction(() => {
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = String(row.timestamp).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                let wVal = parseFloat(row.weight);
-                if (isNaN(wVal)) continue;
-                // weight is stored in grams in body_composition, convert to kg
-                wVal = wVal / 1000;
-
-                const bmiVal = row.bmi ? parseFloat(row.bmi) : undefined;
-                const fatVal = row.body_fat ? parseFloat(row.body_fat) : undefined;
-
-                saveWeight(dateVal, wVal, bmiVal, fatVal);
-                weightImported++;
-              }
-            });
-          } catch (e) {
-            console.error("Error importing weight from body_composition:", e);
-          }
-        }
-
-        // 3. STRESS (Aggregation)
-        if (tNames.includes("stress")) {
-          try {
-            const stmt = uploadedDb.prepare(`
-              SELECT 
-                date(timestamp) as dateVal, 
-                AVG(value) as avgStress 
-              FROM stress 
-              WHERE value >= 0 
-              GROUP BY dateVal
-            `);
-            runInTransaction(() => {
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = String(row.dateVal);
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                const stressVal = parseFloat(row.avgStress);
-                if (isNaN(stressVal)) continue;
-
-                saveStress(dateVal, stressVal);
-                stressImported++;
-              }
-            });
-          } catch (e) {
-            console.error("Error aggregating and importing stress:", e);
-          }
-        }
-
-        // 4. STEPS (Aggregation)
-        if (tNames.includes("steps")) {
-          try {
-            const stmt = uploadedDb.prepare(`
-              SELECT 
-                date(timestamp) as dateVal, 
-                SUM(value) as totalSteps 
-              FROM steps 
-              GROUP BY dateVal
-            `);
-            runInTransaction(() => {
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = String(row.dateVal);
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                const stepsVal = parseInt(row.totalSteps, 10);
-                if (isNaN(stepsVal)) continue;
-
-                saveSteps(dateVal, stepsVal);
-                stepsImported++;
-              }
-            });
-          } catch (e) {
-            console.error("Error aggregating and importing steps:", e);
-          }
-        }
-
-        // 5. ACTIVITIES (activity)
-        if (tNames.includes("activity")) {
-          try {
-            const cols = uploadedDb.pragma("table_info(activity)") as any[];
-            const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
-            const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
-
-            const query = `
-              SELECT 
-                activity_id, 
-                activity_name, 
-                activity_type_key, 
-                start_ts, 
-                distance, 
-                duration
-                ${hasCalories ? ", calories" : ""}
-                ${hasAverageHr ? ", average_hr" : ""}
-              FROM activity
-            `;
-            const stmt = uploadedDb.prepare(query);
-            runInTransaction(() => {
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = String(row.start_ts).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                const idVal = String(row.activity_id);
-                const nameVal = row.activity_name ? String(row.activity_name) : "Activity";
-                const typeVal = row.activity_type_key ? String(row.activity_type_key) : "cycling";
-
-                let distVal = parseFloat(row.distance) || 0;
-                // distance in meters in activity, convert to km
-                distVal = distVal / 1000;
-
-                const durVal = parseFloat(row.duration) || 0; // in seconds
-                const calVal = hasCalories && row.calories ? parseFloat(row.calories) : undefined;
-                const hrVal = hasAverageHr && row.average_hr ? parseFloat(row.average_hr) : undefined;
-
-                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal);
-                activitiesImported++;
-              }
-            });
-          } catch (e) {
-            console.error("Error importing activity from garmin-health-data schema:", e);
-          }
-        }
-
-      } else {
-        // FALLBACK: Existing flexible/dynamic column matching importer
-        const findColumn = (columns: any[], options: string[]): string | null => {
-          for (const opt of options) {
-            const found = columns.find((c: any) => c.name.toLowerCase() === opt.toLowerCase());
-            if (found) return found.name;
-          }
-          return null;
-        };
-
-        for (const table of tables) {
-          const tName = table.name.toLowerCase();
-          const columns = uploadedDb.pragma(`table_info(${table.name})`) as any[];
-          
-          // 1. SLEEP
-          if (tName.includes("sleep")) {
-            const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "start_time", "calendarDate", "start_ts", "end_ts"]);
-            const durCol = findColumn(columns, ["duration", "duration_ms", "total_sleep", "sleep_duration", "seconds", "total_sleep_time", "sleep_time_seconds"]);
-            if (dateCol && durCol) {
-              const deepCol = findColumn(columns, ["deep", "deep_sleep", "deep_duration", "deep_sleep_duration", "deep_sleep_seconds"]);
-              const lightCol = findColumn(columns, ["light", "light_sleep", "light_duration", "light_sleep_duration", "light_sleep_seconds"]);
-              const remCol = findColumn(columns, ["rem", "rem_sleep", "rem_duration", "rem_sleep_duration", "rem_sleep_seconds"]);
-              const awakeCol = findColumn(columns, ["awake", "awake_time", "awake_duration", "awake_sleep_seconds"]);
-
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0]; // Get YYYY-MM-DD
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  let durVal = parseFloat(row[durCol]);
-                  if (isNaN(durVal)) continue;
-                  // Normalize duration to minutes
-                  if (durVal > 100000) durVal = durVal / 60000; // ms to min
-                  else if (durVal > 2000) durVal = durVal / 60; // seconds to min
-                  else if (durVal < 24) durVal = durVal * 60; // hours to min
-
-                  const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
-                  const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
-                  const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
-                  const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
-
-                  const normMin = (v: number) => {
-                    if (v > 100000) return v / 60000;
-                    if (v > 2000) return v / 60;
-                    if (v < 24) return v * 60;
-                    return v;
-                  };
-
-                  saveSleep(
-                    dateVal,
-                    durVal,
-                    deepVal ? normMin(deepVal) : undefined,
-                    lightVal ? normMin(lightVal) : undefined,
-                    remVal ? normMin(remVal) : undefined,
-                    awakeVal ? normMin(awakeVal) : undefined
-                  );
-                  sleepImported++;
-                }
-              });
-            }
-          }
-
-          // 2. WEIGHT
-          else if (tName.includes("weight") || tName === "body_composition") {
-            const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
-            const weightCol = findColumn(columns, ["weight", "weight_kg", "value", "weight_g", "weightKg"]);
-            if (dateCol && weightCol) {
-              const bmiCol = findColumn(columns, ["bmi", "body_mass_index"]);
-              const fatCol = findColumn(columns, ["body_fat", "fat", "fat_percent", "body_fat_percent", "bodyFat"]);
-
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  let wVal = parseFloat(row[weightCol]);
-                  if (isNaN(wVal)) continue;
-                  if (wVal > 1000) wVal = wVal / 1000; // g to kg
-
-                  const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
-                  const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
-
-                  saveWeight(dateVal, wVal, bmiVal, fatVal);
-                  weightImported++;
-                }
-              });
-            }
-          }
-
-          // 3. STRESS
-          else if (tName.includes("stress")) {
-            const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
-            const stressCol = findColumn(columns, ["avg_stress", "average_stress", "stress_level", "score", "averageStress", "stressLevel", "value"]);
-            if (dateCol && stressCol) {
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  const stressVal = parseFloat(row[stressCol]);
-                  if (isNaN(stressVal)) continue;
-
-                  saveStress(dateVal, stressVal);
-                  stressImported++;
-                }
-              });
-            }
-          }
-
-          // 4. RHR
-          else if (tName.includes("rhr") || tName === "resting_heart_rate") {
-            const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
-            const rhrCol = findColumn(columns, ["rhr", "resting_heart_rate", "resting_hr", "resting", "restingHeartRate"]);
-            if (dateCol && rhrCol) {
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  const rhrVal = parseFloat(row[rhrCol]);
-                  if (isNaN(rhrVal)) continue;
-
-                  saveRhr(dateVal, rhrVal);
-                  rhrImported++;
-                }
-              });
-            }
-          }
-
-          // 5. STEPS
-          else if (tName.includes("step") || tName === "days" || tName === "day_summary" || tName === "steps") {
-            const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
-            const stepsCol = findColumn(columns, ["steps", "step_count", "count", "stepCount", "value"]);
-            if (dateCol && stepsCol) {
-              const calCol = findColumn(columns, ["calories", "active_calories", "total_calories", "activeCalories", "totalCalories"]);
-              const distCol = findColumn(columns, ["distance", "meters", "meters_traveled", "distanceMeters"]);
-
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  const stepsVal = parseInt(row[stepsCol], 10);
-                  if (isNaN(stepsVal)) continue;
-
-                  const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
-                  let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
-                  if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
-
-                  saveSteps(dateVal, stepsVal, calVal, distVal);
-                  stepsImported++;
-                }
-              });
-            }
-          }
-
-          // 6. ACTIVITIES
-          else if (tName.includes("activities") || tName === "activity" || tName === "tracks") {
-            const dateCol = findColumn(columns, ["date", "day", "start_time", "start_time_local", "startTimeLocal", "timestamp", "calendar_date", "calendarDate", "start_ts"]);
-            const idCol = findColumn(columns, ["id", "activityId", "activity_id", "rowid"]);
-            const nameCol = findColumn(columns, ["name", "activityName", "title", "activity_name"]);
-            if (dateCol && idCol && nameCol) {
-              const typeCol = findColumn(columns, ["type", "activityType", "activity_type", "sport", "activity_type_key"]);
-              const distCol = findColumn(columns, ["distance"]);
-              const durCol = findColumn(columns, ["duration", "elapsed_time", "moving_time", "elapsedTime"]);
-              const ascentCol = findColumn(columns, ["ascent", "elevation_gain", "elevationGain"]);
-              const descentCol = findColumn(columns, ["descent", "elevation_loss", "elevationLoss"]);
-              const calCol = findColumn(columns, ["calories"]);
-              const hrCol = findColumn(columns, ["avg_hr", "average_heart_rate", "averageHeartRate", "avg_heart_rate", "average_hr"]);
-
-              runInTransaction(() => {
-                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
-                  let dateVal = String(row[dateCol]).split(" ")[0];
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-                  const idVal = String(row[idCol]);
-                  const nameVal = String(row[nameCol]);
-                  const typeVal = typeCol && row[typeCol] ? String(row[typeCol]) : "cycling";
-                  
-                  let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : 0;
-                  if (distVal > 1000) distVal = distVal / 1000; // m to km
-
-                  const durVal = durCol && row[durCol] ? parseFloat(row[durCol]) : 0;
-                  const ascentVal = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
-                  const descentVal = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
-                  const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
-                  const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
-
-                  saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal);
-                  activitiesImported++;
-                }
-              });
-            }
-          }
-        }
-      }
-
+      const importResult = processGarminDatabase(uploadedDb);
       uploadedDb.close();
 
-      // Delete temp file safely
       try {
         fs.unlinkSync(tempPath);
       } catch (e) {}
 
-      const totalImported = sleepImported + weightImported + stressImported + rhrImported + stepsImported + activitiesImported;
+      const totalImported = importResult.sleep + importResult.weight + importResult.stress + importResult.rhr + importResult.steps + importResult.activities;
       if (totalImported === 0) {
-        const foundTablesStr = tables.length > 0 ? tables.map(t => `'${t.name}'`).join(", ") : "keine Tabellen";
         return res.status(400).json({
           success: false,
-          error: `Keine Garmin-Gesundheitsdaten in der hochgeladenen SQLite-Datenbank gefunden.
-
-Gefundene Tabellen in Ihrer Datei: ${foundTablesStr}
-
-Erwartet werden entweder:
-1. Garmin-Health-Data-Schema: Tabellen wie 'sleep', 'body_composition', 'stress', 'steps', oder 'activity'
-2. Flexibles Backup-Schema: Tabellen, die 'sleep', 'weight', 'stress', 'rhr', 'step' oder 'activit' im Namen tragen.
-
-Bitte stellen Sie sicher, dass Sie die richtige 'garmin.db' aus Ihrem Garmin-Backup hochladen.`
+          error: `Keine Garmin-Gesundheitsdaten in der hochgeladenen SQLite-Datenbank gefunden. Tabellen: ${importResult.tables.join(", ")}`
         });
       }
 
       res.json({
         success: true,
-        stats: {
-          sleep: sleepImported,
-          weight: weightImported,
-          stress: stressImported,
-          rhr: rhrImported,
-          steps: stepsImported,
-          activities: activitiesImported
-        }
+        stats: importResult
       });
 
     } catch (err: any) {
-      console.error("SQLite import error:", err);
+      console.error("SQLite web import error:", err);
       if (tempPath) {
         try { fs.unlinkSync(tempPath); } catch (e) {}
       }
       res.status(500).json({ success: false, error: err.message || "Failed to parse and import SQLite database" });
+    }
+  });
+
+  // GET /api/list-local-dbs: Scans workspace for DB files to support 10 GB database imports
+  app.get("/api/list-local-dbs", (req, res) => {
+    try {
+      const list = scanLocalDbs();
+      res.json({ success: true, files: list });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST /api/import-local-db: Reads a massive SQLite file directly on-disk, bypassing any web-upload limits
+  app.post("/api/import-local-db", async (req, res) => {
+    try {
+      const { filepath } = req.body;
+      if (!filepath) {
+        return res.status(400).json({ success: false, error: "filepath is required" });
+      }
+
+      // Security check: Only allow files from process.cwd() or process.cwd() + '/data'
+      const absolutePath = path.resolve(filepath);
+      const workspaceRoot = path.resolve(process.cwd());
+      if (!absolutePath.startsWith(workspaceRoot)) {
+        return res.status(403).json({ success: false, error: "Access denied. Only workspace files can be accessed." });
+      }
+
+      if (!fs.existsSync(absolutePath)) {
+        return res.status(404).json({ success: false, error: "Datei wurde auf dem Server nicht gefunden." });
+      }
+
+      const DatabaseConstructor = (await import('better-sqlite3')).default;
+      let localDb;
+      try {
+        localDb = new DatabaseConstructor(absolutePath, { readonly: true });
+      } catch (dbErr: any) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Fehler beim Öffnen der lokalen SQLite-Datei: ${dbErr.message || dbErr}`
+        });
+      }
+
+      const importResult = processGarminDatabase(localDb);
+      localDb.close();
+
+      res.json({
+        success: true,
+        stats: importResult
+      });
+
+    } catch (err: any) {
+      console.error("Local SQLite import error:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to import local SQLite database" });
+    }
+  });
+
+  // GET /api/health-analytics: Returns complex, calculated correlations and statistics
+  app.get("/api/health-analytics", (req, res) => {
+    try {
+      const analytics = calculateHealthAnalytics();
+      res.json({ success: true, analytics });
+    } catch (err: any) {
+      console.error("Analytics calculations failed:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to calculate health analytics" });
     }
   });
 

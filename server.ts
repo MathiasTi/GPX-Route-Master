@@ -1053,7 +1053,7 @@ async function startServer() {
             const lng = normalizeCoordinate(parseFloat((item as any)[lngKey]));
             if (isNaN(lat) || isNaN(lng)) return null;
             
-            const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m"].includes(k.toLowerCase()));
+            const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
             const timeKey = Object.keys(item).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
             const hrKey = Object.keys(item).find(k => ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr"].includes(k.toLowerCase()));
             const cadKey = Object.keys(item).find(k => ["cadence", "cad", "average_cadence", "avg_cadence"].includes(k.toLowerCase()));
@@ -1240,7 +1240,7 @@ async function startServer() {
 
           // Detect points or polyline columns directly in the activity table
           const polylineCol = cols.find(c => ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(c.name.toLowerCase()))?.name;
-          const pointsJsonCol = cols.find(c => ["points_json", "points", "track_json", "pointsjson"].includes(c.name.toLowerCase()))?.name;
+          const pointsJsonCol = cols.find(c => ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"].includes(c.name.toLowerCase()))?.name;
 
           // Scan for a separate points/coordinates table
           let pointsTable: string | null = null;
@@ -1260,7 +1260,7 @@ async function startServer() {
             const latCol = tblCols.find(c => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
             const lngCol = tblCols.find(c => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
             const actIdCol = tblCols.find(c => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
-            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates"].includes(c.name.toLowerCase()))?.name;
+            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates", "activity_path", "activitypath", "activity_path_json"].includes(c.name.toLowerCase()))?.name;
 
             if (jsonCol && actIdCol) {
               pointsTable = tbl.name;
@@ -1585,9 +1585,8 @@ async function startServer() {
             const hrCol = findColumn(columns, ["avg_hr", "average_heart_rate", "averageHeartRate", "avg_heart_rate", "average_hr"]);
             const descCol = findColumn(columns, ["description", "notes", "comment", "activity_description", "activityDescription"]);
             const locCol = findColumn(columns, ["location", "place", "city", "town", "start_location", "start_location_name", "location_name", "locationName", "startLocationName"]);
-
             const polylineCol = findColumn(columns, ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"]);
-            const pointsJsonCol = findColumn(columns, ["points_json", "points", "track_json", "pointsjson"]);
+            const pointsJsonCol = findColumn(columns, ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"]);
 
             // Scan for a separate points table if not direct columns
             let pointsTable: string | null = null;
@@ -1605,7 +1604,7 @@ async function startServer() {
                 const latCol = tblCols.find((c: any) => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
                 const lngCol = tblCols.find((c: any) => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
                 const actIdCol = tblCols.find((c: any) => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
-                const jsonCol = tblCols.find((c: any) => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates"].includes(c.name.toLowerCase()))?.name;
+                const jsonCol = tblCols.find((c: any) => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates", "activity_path", "activitypath", "activity_path_json"].includes(c.name.toLowerCase()))?.name;
 
                 if (jsonCol && actIdCol) {
                   pointsTable = tbl.name;

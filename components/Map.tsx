@@ -82,7 +82,7 @@ const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | 
   useEffect(() => {
     if (markedTrackId && markedTrackId !== prevMarkedId.current) {
       const track = tracks.find(t => t.id === markedTrackId);
-      if (track && track.points && track.points.length > 0) {
+      if (track && !track.isVirtual && track.points && track.points.length > 0) {
         const bounds = L.latLngBounds(track.points.map(p => [p.lat, p.lng]));
         map.fitBounds(bounds, { padding: [50, 50] });
       }
@@ -97,7 +97,7 @@ const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXT
   const map = useMap();
 
   useEffect(() => {
-    if (activeTrack && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
+    if (activeTrack && !activeTrack.isVirtual && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
       const bounds = L.latLngBounds(activeTrack.points.map(p => [p.lat, p.lng]));
       map.fitBounds(bounds, { padding: [50, 50] });
     }
@@ -382,7 +382,7 @@ const Map: React.FC<MapProps> = ({
   // Deterministic POI Generator along active/visible routes
   const poiList = React.useMemo(() => {
     const list: POI[] = [];
-    const visibleTracks = tracks.filter(t => t.visible && t.points && t.points.length > 0);
+    const visibleTracks = tracks.filter(t => t.visible && !t.isVirtual && t.points && t.points.length > 0);
 
     visibleTracks.forEach(track => {
       const points = track.points;
@@ -668,7 +668,7 @@ const Map: React.FC<MapProps> = ({
           />
         )}
         
-        {tracks.filter(t => t.visible).map(track => {
+        {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
           const isMarked = track.id === markedTrackId;
           const positions = track.points.map(p => [p.lat, p.lng] as [number, number]);
           
@@ -1473,10 +1473,22 @@ const Map: React.FC<MapProps> = ({
             </div>
           </div>
 
-          {/* Warnungsmeldung falls ausgewählte Strecke keine entsprechenden Daten enthält */}
+          {/* Warnungsmeldung falls ausgewählte Strecke keine entsprechenden Daten enthält oder virtuell ist */}
           {(() => {
             const markedTrack = tracks.find(t => t.id === markedTrackId);
             if (!markedTrack) return null;
+
+            if (markedTrack.isVirtual) {
+              return (
+                <div className="text-[10px] text-orange-650 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-955/20 border border-orange-200/50 dark:border-orange-900/40 p-2 rounded-lg leading-snug font-sans shadow-2xs">
+                  <div className="font-extrabold flex items-center gap-1 mb-0.5 text-xs">
+                    <span>⚠️</span> Keine GPS-Koordinatendaten
+                  </div>
+                  Diese Aktivität enthält keine GPS-Spur. Visualisierungen auf der Karte wurden deaktiviert, um eine fehlerhafte Kreisdarstellung zu vermeiden. Alle anderen Statistiken sind voll nutzbar.
+                </div>
+              );
+            }
+
             const hasHr = markedTrack.points.some(p => p.hr !== undefined);
             const hasPower = markedTrack.points.some(p => p.power !== undefined);
             

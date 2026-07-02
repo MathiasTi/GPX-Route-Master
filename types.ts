@@ -74,6 +74,7 @@ export interface GPXTrack {
   hasTimestamps?: boolean;
   description?: string;
   rawFileDetails?: RawFileDetails;
+  isVirtual?: boolean;
 }
 
 export enum MapLayer {

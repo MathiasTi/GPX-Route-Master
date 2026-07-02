@@ -117,11 +117,16 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
         <div className="flex-1 min-w-0">
           {/* Header row: color dot, title, activity toggle buttons */}
           <div className="flex items-center justify-between gap-2 border-b border-slate-100/60 dark:border-slate-800/60 pb-2 mb-2">
-            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
               <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: track.color || '#3b82f6' }}></div>
               <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
                 {track.name}
               </span>
+              {track.isVirtual && (
+                <span className="shrink-0 text-[8px] bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-extrabold px-1.5 py-0.5 rounded border border-orange-200/40 dark:border-orange-900/30 cursor-help" title="Diese Aktivität enthält keine echten GPS-Koordinaten (nur Leistungs-/Gesundheitsdaten)">
+                  ⚠️ Keine GPS-Spur
+                </span>
+              )}
             </div>
             
             <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>

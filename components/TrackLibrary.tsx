@@ -203,6 +203,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       const avgHr = act.avg_hr || undefined;
       const activityType = act.type === 'running' ? 'running' : 'cycling';
       
+      let isVirtual = false;
       let points: any[] = [];
       if (act.points_json) {
         try {
@@ -224,6 +225,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       }
 
       if (points.length === 0) {
+        isVirtual = true;
         points = generateVirtualRoute(
           startCoords.lat,
           startCoords.lng,
@@ -249,7 +251,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         activityType,
         duration: durationSec,
         hasTimestamps: true,
-        description: act.description || `Garmin Aktivität in ${act.location || 'Unbekannt'}`
+        description: act.description || `Garmin Aktivität in ${act.location || 'Unbekannt'}`,
+        isVirtual
       };
       
       onLoadTrack(track);
@@ -700,6 +703,11 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                     >
                       {act.name || 'Unbekannte Aktivität'}
                     </span>
+                    {!act.points_json && (
+                      <span className="text-[8px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-extrabold px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
+                        NUR STATS
+                      </span>
+                    )}
                     <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 font-bold shrink-0">
                       {act.date}
                     </span>

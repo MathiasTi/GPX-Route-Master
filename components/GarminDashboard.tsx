@@ -249,6 +249,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       const avgHr = act.avg_hr || undefined;
       const activityType = act.type === 'running' ? 'running' : 'cycling';
       
+      let isVirtual = false;
       let points: any[] = [];
       if (act.points_json) {
         try {
@@ -270,6 +271,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       }
 
       if (points.length === 0) {
+        isVirtual = true;
         points = generateVirtualRoute(
           startCoords.lat,
           startCoords.lng,
@@ -295,7 +297,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
         activityType,
         duration: durationSec,
         hasTimestamps: true,
-        description: (act as any).description || `Garmin Aktivität in ${(act as any).location || 'Unbekannt'}`
+        description: (act as any).description || `Garmin Aktivität in ${(act as any).location || 'Unbekannt'}`,
+        isVirtual
       };
       
       onLoadTrack(track);
@@ -1070,9 +1073,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                               {filteredActivities.map((act) => (
                                 <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/40">
                                   <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <span>{act.type === 'running' ? '🏃' : '🚴'}</span>
                                       <span>{act.name}</span>
+                                      {!act.points_json && (
+                                        <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
+                                          NUR STATS
+                                        </span>
+                                      )}
                                     </div>
                                   </td>
                                   <td className="p-3 text-slate-500">{act.date}</td>

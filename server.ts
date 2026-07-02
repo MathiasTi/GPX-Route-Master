@@ -966,18 +966,76 @@ async function startServer() {
       return coordinates;
     }
     
+    // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
+    function normalizeCoordinate(val: number): number {
+      if (isNaN(val)) return val;
+      if (Math.abs(val) > 180) {
+        // Semicircles (2^31/180) -> degrees
+        const semi = val * 180 / 2147483648;
+        if (Math.abs(semi) <= 90) return semi;
+        
+        // E7 notation (e.g., 481234567 -> 48.1234567)
+        const e7 = val / 10000000;
+        if (Math.abs(e7) <= 180) return e7;
+        
+        // E6 microdegrees (e.g., 48123456 -> 48.123456)
+        const e6 = val / 1000000;
+        if (Math.abs(e6) <= 180) return e6;
+
+        // E5 notation
+        const e5 = val / 100000;
+        if (Math.abs(e5) <= 180) return e5;
+      }
+      return val;
+    }
+
+    // Helper to calculate cumulative elevation profile stats (ascent/descent) from raw coordinate arrays
+    function calculateElevationStats(points: { ele?: number }[]): { ascent: number, descent: number } {
+      let ascent = 0;
+      let descent = 0;
+      let lastEle: number | null = null;
+      
+      for (const p of points) {
+        if (p.ele !== undefined && p.ele !== null && !isNaN(p.ele)) {
+          if (lastEle !== null) {
+            const diff = p.ele - lastEle;
+            if (diff > 0) {
+              ascent += diff;
+            } else {
+              descent += Math.abs(diff);
+            }
+          }
+          lastEle = p.ele;
+        }
+      }
+      return { ascent, descent };
+    }
+    
     // Helper to parse complex and flexible coordinate JSON formats (e.g., path_json from activity_path)
-    function parsePathJson(jsonStr: string): { lat: number, lng: number, ele?: number, time?: Date, hr?: number, cadence?: number, power?: number }[] | null {
+    function parsePathJson(jsonStr: any): { lat: number, lng: number, ele?: number, time?: Date, hr?: number, cadence?: number, power?: number }[] | null {
       try {
-        const parsed = JSON.parse(jsonStr);
+        let parsed = jsonStr;
+        if (typeof jsonStr === 'string') {
+          parsed = JSON.parse(jsonStr);
+        }
+        if (!parsed) return null;
+
+        // Auto-unwrap nested coordinate object lists (e.g. { coordinates: [...] } or { points: [...] })
+        if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
+          if (arrayKey) {
+            parsed = (parsed as any)[arrayKey];
+          }
+        }
+
         if (!Array.isArray(parsed)) return null;
         
         return parsed.map(item => {
           if (!item) return null;
           if (Array.isArray(item)) {
             // Format: [lat, lng] or [lat, lng, ele] or [lat, lng, ele, time]
-            const lat = parseFloat(item[0]);
-            const lng = parseFloat(item[1]);
+            const lat = normalizeCoordinate(parseFloat(item[0]));
+            const lng = normalizeCoordinate(parseFloat(item[1]));
             if (isNaN(lat) || isNaN(lng)) return null;
             return {
               lat,
@@ -987,12 +1045,12 @@ async function startServer() {
             };
           } else if (typeof item === 'object') {
             // Format: { lat: 48, lng: 11 } or { latitude: 48, longitude: 11 } or with any matching casing
-            const latKey = Object.keys(item).find(k => ["lat", "latitude", "y"].includes(k.toLowerCase()));
-            const lngKey = Object.keys(item).find(k => ["lng", "longitude", "lon", "lng_deg", "lon_deg", "x"].includes(k.toLowerCase()));
+            const latKey = Object.keys(item).find(k => ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"].includes(k.toLowerCase()));
+            const lngKey = Object.keys(item).find(k => ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"].includes(k.toLowerCase()));
             if (!latKey || !lngKey) return null;
             
-            const lat = parseFloat(item[latKey]);
-            const lng = parseFloat(item[lngKey]);
+            const lat = normalizeCoordinate(parseFloat((item as any)[latKey]));
+            const lng = normalizeCoordinate(parseFloat((item as any)[lngKey]));
             if (isNaN(lat) || isNaN(lng)) return null;
             
             const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m"].includes(k.toLowerCase()));
@@ -1004,11 +1062,11 @@ async function startServer() {
             return {
               lat,
               lng,
-              ele: eleKey !== undefined && item[eleKey] !== null ? parseFloat(item[eleKey]) : undefined,
-              time: timeKey && item[timeKey] ? new Date(item[timeKey]) : undefined,
-              hr: hrKey !== undefined && item[hrKey] !== null ? parseFloat(item[hrKey]) : undefined,
-              cadence: cadKey !== undefined && item[cadKey] !== null ? parseFloat(item[cadKey]) : undefined,
-              power: powKey !== undefined && item[powKey] !== null ? parseFloat(item[powKey]) : undefined
+              ele: eleKey !== undefined && (item as any)[eleKey] !== null ? parseFloat((item as any)[eleKey]) : undefined,
+              time: timeKey && (item as any)[timeKey] ? new Date((item as any)[timeKey]) : undefined,
+              hr: hrKey !== undefined && (item as any)[hrKey] !== null ? parseFloat((item as any)[hrKey]) : undefined,
+              cadence: cadKey !== undefined && (item as any)[cadKey] !== null ? parseFloat((item as any)[cadKey]) : undefined,
+              power: powKey !== undefined && (item as any)[powKey] !== null ? parseFloat((item as any)[powKey]) : undefined
             };
           }
           return null;
@@ -1177,6 +1235,8 @@ async function startServer() {
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
           const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
           const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
+          const ascentCol = cols.find(c => ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m"].includes(c.name.toLowerCase()))?.name;
+          const descentCol = cols.find(c => ["descent", "total_descent", "elevation_loss", "loss", "descent_m"].includes(c.name.toLowerCase()))?.name;
 
           // Detect points or polyline columns directly in the activity table
           const polylineCol = cols.find(c => ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(c.name.toLowerCase()))?.name;
@@ -1200,7 +1260,7 @@ async function startServer() {
             const latCol = tblCols.find(c => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
             const lngCol = tblCols.find(c => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
             const actIdCol = tblCols.find(c => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
-            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson"].includes(c.name.toLowerCase()))?.name;
+            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates"].includes(c.name.toLowerCase()))?.name;
 
             if (jsonCol && actIdCol) {
               pointsTable = tbl.name;
@@ -1232,6 +1292,8 @@ async function startServer() {
               ${locCol ? `, ${locCol}` : ""}
               ${polylineCol ? `, ${polylineCol}` : ""}
               ${pointsJsonCol ? `, ${pointsJsonCol}` : ""}
+              ${ascentCol ? `, ${ascentCol}` : ""}
+              ${descentCol ? `, ${descentCol}` : ""}
             FROM activity
           `;
           const stmt = uploadedDb.prepare(query);
@@ -1253,10 +1315,12 @@ async function startServer() {
               const hrVal = hasAverageHr && row.average_hr ? parseFloat(row.average_hr) : undefined;
               const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
               const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
+              let finalAscent = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
+              let finalDescent = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
 
               let pointsJsonVal: string | undefined = undefined;
               if (pointsJsonCol && row[pointsJsonCol]) {
-                const parsedPoints = parsePathJson(String(row[pointsJsonCol]));
+                const parsedPoints = parsePathJson(row[pointsJsonCol]);
                 if (parsedPoints && parsedPoints.length > 0) {
                   pointsJsonVal = JSON.stringify(parsedPoints);
                 }
@@ -1276,9 +1340,15 @@ async function startServer() {
                     LIMIT 1
                   `;
                   const ptsStmt = uploadedDb.prepare(ptsQuery);
-                  const dbRow = ptsStmt.get(idVal) as any;
+                  let dbRow = ptsStmt.get(row.activity_id) as any;
+                  if (!dbRow) {
+                    const num = Number(row.activity_id);
+                    if (!isNaN(num)) {
+                      dbRow = ptsStmt.get(num) as any;
+                    }
+                  }
                   if (dbRow && dbRow.path_json) {
-                    const parsedPoints = parsePathJson(String(dbRow.path_json));
+                    const parsedPoints = parsePathJson(dbRow.path_json);
                     if (parsedPoints && parsedPoints.length > 0) {
                       pointsJsonVal = JSON.stringify(parsedPoints);
                     }
@@ -1297,11 +1367,17 @@ async function startServer() {
                     ORDER BY ${ptTimeCol || "rowid"} ASC
                   `;
                   const ptsStmt = uploadedDb.prepare(ptsQuery);
-                  const dbPoints = ptsStmt.all(idVal) as any[];
+                  let dbPoints = ptsStmt.all(row.activity_id) as any[];
+                  if (dbPoints.length === 0) {
+                    const num = Number(row.activity_id);
+                    if (!isNaN(num)) {
+                      dbPoints = ptsStmt.all(num) as any[];
+                    }
+                  }
                   if (dbPoints.length > 0) {
                     const mappedPoints = dbPoints.map(p => ({
-                      lat: parseFloat(p.lat),
-                      lng: parseFloat(p.lng),
+                      lat: normalizeCoordinate(parseFloat(p.lat)),
+                      lng: normalizeCoordinate(parseFloat(p.lng)),
                       ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
                       time: p.time ? new Date(p.time) : undefined
                     }));
@@ -1312,7 +1388,19 @@ async function startServer() {
                 }
               }
 
-              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal, descVal, locVal, pointsJsonVal);
+              // Automatically calculate ascent/descent if missing but points are loaded
+              if (pointsJsonVal && (!finalAscent || !finalDescent)) {
+                try {
+                  const pts = JSON.parse(pointsJsonVal);
+                  if (Array.isArray(pts) && pts.length > 0) {
+                    const stats = calculateElevationStats(pts);
+                    if (!finalAscent && stats.ascent > 0) finalAscent = stats.ascent;
+                    if (!finalDescent && stats.descent > 0) finalDescent = stats.descent;
+                  }
+                } catch (pe) {}
+              }
+
+              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal);
               activitiesImported++;
             }
           });
@@ -1517,7 +1605,7 @@ async function startServer() {
                 const latCol = tblCols.find((c: any) => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
                 const lngCol = tblCols.find((c: any) => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
                 const actIdCol = tblCols.find((c: any) => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
-                const jsonCol = tblCols.find((c: any) => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson"].includes(c.name.toLowerCase()))?.name;
+                const jsonCol = tblCols.find((c: any) => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates"].includes(c.name.toLowerCase()))?.name;
 
                 if (jsonCol && actIdCol) {
                   pointsTable = tbl.name;
@@ -1559,7 +1647,7 @@ async function startServer() {
 
                 let pointsJsonVal: string | undefined = undefined;
                 if (pointsJsonCol && row[pointsJsonCol]) {
-                  const parsedPoints = parsePathJson(String(row[pointsJsonCol]));
+                  const parsedPoints = parsePathJson(row[pointsJsonCol]);
                   if (parsedPoints && parsedPoints.length > 0) {
                     pointsJsonVal = JSON.stringify(parsedPoints);
                   }
@@ -1579,9 +1667,15 @@ async function startServer() {
                       LIMIT 1
                     `;
                     const ptsStmt = uploadedDb.prepare(ptsQuery);
-                    const dbRow = ptsStmt.get(idVal) as any;
+                    let dbRow = ptsStmt.get(row[idCol]) as any;
+                    if (!dbRow) {
+                      const num = Number(row[idCol]);
+                      if (!isNaN(num)) {
+                        dbRow = ptsStmt.get(num) as any;
+                      }
+                    }
                     if (dbRow && dbRow.path_json) {
-                      const parsedPoints = parsePathJson(String(dbRow.path_json));
+                      const parsedPoints = parsePathJson(dbRow.path_json);
                       if (parsedPoints && parsedPoints.length > 0) {
                         pointsJsonVal = JSON.stringify(parsedPoints);
                       }
@@ -1600,11 +1694,17 @@ async function startServer() {
                       ORDER BY ${ptTimeCol || "rowid"} ASC
                     `;
                     const ptsStmt = uploadedDb.prepare(ptsQuery);
-                    const dbPoints = ptsStmt.all(idVal) as any[];
+                    let dbPoints = ptsStmt.all(row[idCol]) as any[];
+                    if (dbPoints.length === 0) {
+                      const num = Number(row[idCol]);
+                      if (!isNaN(num)) {
+                        dbPoints = ptsStmt.all(num) as any[];
+                      }
+                    }
                     if (dbPoints.length > 0) {
                       const mappedPoints = dbPoints.map(p => ({
-                        lat: parseFloat(p.lat),
-                        lng: parseFloat(p.lng),
+                        lat: normalizeCoordinate(parseFloat(p.lat)),
+                        lng: normalizeCoordinate(parseFloat(p.lng)),
                         ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
                         time: p.time ? new Date(p.time) : undefined
                       }));
@@ -1615,7 +1715,21 @@ async function startServer() {
                   }
                 }
 
-                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal, descVal, locVal, pointsJsonVal);
+                // Automatically calculate ascent/descent if missing but points are loaded
+                let finalAscent = ascentVal;
+                let finalDescent = descentVal;
+                if (pointsJsonVal && (!finalAscent || !finalDescent)) {
+                  try {
+                    const pts = JSON.parse(pointsJsonVal);
+                    if (Array.isArray(pts) && pts.length > 0) {
+                      const stats = calculateElevationStats(pts);
+                      if (!finalAscent && stats.ascent > 0) finalAscent = stats.ascent;
+                      if (!finalDescent && stats.descent > 0) finalDescent = stats.descent;
+                    }
+                  } catch (pe) {}
+                }
+
+                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal);
                 activitiesImported++;
               }
             });

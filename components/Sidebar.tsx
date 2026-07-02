@@ -2,6 +2,8 @@
 import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
+import { AboutModal } from './AboutModal';
+import { getApiUrl } from '../utils/api';
 import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
 import { TrackLibrary } from './TrackLibrary';
@@ -579,6 +581,24 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
+  const [isAboutOpen, setIsAboutOpen] = React.useState(false);
+  const [latestVersion, setLatestVersion] = React.useState('1.3.0');
+
+  // Load latest version on startup
+  React.useEffect(() => {
+    const fetchLatestVersion = async () => {
+      try {
+        const res = await fetch(getApiUrl('/api/versions'));
+        const data = await res.json();
+        if (data.success && data.versions.length > 0) {
+          setLatestVersion(data.versions[0].version);
+        }
+      } catch (e) {
+        console.error('Failed to load latest version in sidebar:', e);
+      }
+    };
+    fetchLatestVersion();
+  }, []);
 
   // Auto-switch to Library tab when user draws a selection bound
   React.useEffect(() => {
@@ -1020,10 +1040,25 @@ const Sidebar: React.FC<SidebarProps> = ({
 
           <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex justify-between items-center font-medium rounded-b-xl">
             <span>Reihenfolge bestimmt Verbindungssequenz</span>
-            <span className="font-mono text-slate-400">v0.0.0</span>
+            <button
+              onClick={() => setIsAboutOpen(true)}
+              className="font-mono text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold"
+              title="Über dieses System / Versionsverlauf anzeigen"
+            >
+              v{latestVersion}
+            </button>
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isAboutOpen && (
+          <AboutModal 
+            onClose={() => setIsAboutOpen(false)} 
+            onVersionUpdated={(newVer) => setLatestVersion(newVer)}
+          />
+        )}
+      </AnimatePresence>
     </>
   );
 };

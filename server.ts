@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -966,6 +966,59 @@ async function startServer() {
       return coordinates;
     }
     
+    // Helper to parse complex and flexible coordinate JSON formats (e.g., path_json from activity_path)
+    function parsePathJson(jsonStr: string): { lat: number, lng: number, ele?: number, time?: Date, hr?: number, cadence?: number, power?: number }[] | null {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (!Array.isArray(parsed)) return null;
+        
+        return parsed.map(item => {
+          if (!item) return null;
+          if (Array.isArray(item)) {
+            // Format: [lat, lng] or [lat, lng, ele] or [lat, lng, ele, time]
+            const lat = parseFloat(item[0]);
+            const lng = parseFloat(item[1]);
+            if (isNaN(lat) || isNaN(lng)) return null;
+            return {
+              lat,
+              lng,
+              ele: item[2] !== undefined ? parseFloat(item[2]) : undefined,
+              time: item[3] ? new Date(item[3]) : undefined
+            };
+          } else if (typeof item === 'object') {
+            // Format: { lat: 48, lng: 11 } or { latitude: 48, longitude: 11 } or with any matching casing
+            const latKey = Object.keys(item).find(k => ["lat", "latitude", "y"].includes(k.toLowerCase()));
+            const lngKey = Object.keys(item).find(k => ["lng", "longitude", "lon", "lng_deg", "lon_deg", "x"].includes(k.toLowerCase()));
+            if (!latKey || !lngKey) return null;
+            
+            const lat = parseFloat(item[latKey]);
+            const lng = parseFloat(item[lngKey]);
+            if (isNaN(lat) || isNaN(lng)) return null;
+            
+            const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m"].includes(k.toLowerCase()));
+            const timeKey = Object.keys(item).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
+            const hrKey = Object.keys(item).find(k => ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr"].includes(k.toLowerCase()));
+            const cadKey = Object.keys(item).find(k => ["cadence", "cad", "average_cadence", "avg_cadence"].includes(k.toLowerCase()));
+            const powKey = Object.keys(item).find(k => ["power", "watts", "average_power", "avg_power"].includes(k.toLowerCase()));
+            
+            return {
+              lat,
+              lng,
+              ele: eleKey !== undefined && item[eleKey] !== null ? parseFloat(item[eleKey]) : undefined,
+              time: timeKey && item[timeKey] ? new Date(item[timeKey]) : undefined,
+              hr: hrKey !== undefined && item[hrKey] !== null ? parseFloat(item[hrKey]) : undefined,
+              cadence: cadKey !== undefined && item[cadKey] !== null ? parseFloat(item[cadKey]) : undefined,
+              power: powKey !== undefined && item[powKey] !== null ? parseFloat(item[powKey]) : undefined
+            };
+          }
+          return null;
+        }).filter(p => p !== null) as any[];
+      } catch (e) {
+        console.error("Failed to parse path_json:", e);
+        return null;
+      }
+    }
+    
     let sleepImported = 0;
     let weightImported = 0;
     let stressImported = 0;
@@ -1136,6 +1189,7 @@ async function startServer() {
           let ptEleCol: string | null = null;
           let ptTimeCol: string | null = null;
           let ptActIdCol: string | null = null;
+          let ptJsonCol: string | null = null;
 
           for (const tbl of tables) {
             const tblName = tbl.name.toLowerCase();
@@ -1146,8 +1200,14 @@ async function startServer() {
             const latCol = tblCols.find(c => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
             const lngCol = tblCols.find(c => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
             const actIdCol = tblCols.find(c => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
+            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson"].includes(c.name.toLowerCase()))?.name;
 
-            if (latCol && lngCol && actIdCol) {
+            if (jsonCol && actIdCol) {
+              pointsTable = tbl.name;
+              ptActIdCol = actIdCol;
+              ptJsonCol = jsonCol;
+              break;
+            } else if (latCol && lngCol && actIdCol) {
               pointsTable = tbl.name;
               ptLatCol = latCol;
               ptLngCol = lngCol;
@@ -1196,13 +1256,35 @@ async function startServer() {
 
               let pointsJsonVal: string | undefined = undefined;
               if (pointsJsonCol && row[pointsJsonCol]) {
-                pointsJsonVal = String(row[pointsJsonCol]);
+                const parsedPoints = parsePathJson(String(row[pointsJsonCol]));
+                if (parsedPoints && parsedPoints.length > 0) {
+                  pointsJsonVal = JSON.stringify(parsedPoints);
+                }
               } else if (polylineCol && row[polylineCol]) {
                 try {
                   const decoded = decodePolyline(String(row[polylineCol]));
                   pointsJsonVal = JSON.stringify(decoded);
                 } catch (pe) {
                   console.error("Failed to decode polyline:", pe);
+                }
+              } else if (pointsTable && ptJsonCol && ptActIdCol) {
+                try {
+                  const ptsQuery = `
+                    SELECT ${ptJsonCol} as path_json 
+                    FROM ${pointsTable}
+                    WHERE ${ptActIdCol} = ?
+                    LIMIT 1
+                  `;
+                  const ptsStmt = uploadedDb.prepare(ptsQuery);
+                  const dbRow = ptsStmt.get(idVal) as any;
+                  if (dbRow && dbRow.path_json) {
+                    const parsedPoints = parsePathJson(String(dbRow.path_json));
+                    if (parsedPoints && parsedPoints.length > 0) {
+                      pointsJsonVal = JSON.stringify(parsedPoints);
+                    }
+                  }
+                } catch (ptsErr) {
+                  console.error("Error reading points from path JSON table:", ptsErr);
                 }
               } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
                 try {
@@ -1426,6 +1508,7 @@ async function startServer() {
             let ptEleCol: string | null = null;
             let ptTimeCol: string | null = null;
             let ptActIdCol: string | null = null;
+            let ptJsonCol: string | null = null;
 
             if (!polylineCol && !pointsJsonCol) {
               for (const tbl of tables) {
@@ -1434,8 +1517,14 @@ async function startServer() {
                 const latCol = tblCols.find((c: any) => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
                 const lngCol = tblCols.find((c: any) => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
                 const actIdCol = tblCols.find((c: any) => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
+                const jsonCol = tblCols.find((c: any) => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson"].includes(c.name.toLowerCase()))?.name;
 
-                if (latCol && lngCol && actIdCol) {
+                if (jsonCol && actIdCol) {
+                  pointsTable = tbl.name;
+                  ptActIdCol = actIdCol;
+                  ptJsonCol = jsonCol;
+                  break;
+                } else if (latCol && lngCol && actIdCol) {
                   pointsTable = tbl.name;
                   ptLatCol = latCol;
                   ptLngCol = lngCol;
@@ -1470,13 +1559,35 @@ async function startServer() {
 
                 let pointsJsonVal: string | undefined = undefined;
                 if (pointsJsonCol && row[pointsJsonCol]) {
-                  pointsJsonVal = String(row[pointsJsonCol]);
+                  const parsedPoints = parsePathJson(String(row[pointsJsonCol]));
+                  if (parsedPoints && parsedPoints.length > 0) {
+                    pointsJsonVal = JSON.stringify(parsedPoints);
+                  }
                 } else if (polylineCol && row[polylineCol]) {
                   try {
                     const decoded = decodePolyline(String(row[polylineCol]));
                     pointsJsonVal = JSON.stringify(decoded);
                   } catch (pe) {
                     console.error("Failed to decode polyline:", pe);
+                  }
+                } else if (pointsTable && ptJsonCol && ptActIdCol) {
+                  try {
+                    const ptsQuery = `
+                      SELECT ${ptJsonCol} as path_json 
+                      FROM ${pointsTable}
+                      WHERE ${ptActIdCol} = ?
+                      LIMIT 1
+                    `;
+                    const ptsStmt = uploadedDb.prepare(ptsQuery);
+                    const dbRow = ptsStmt.get(idVal) as any;
+                    if (dbRow && dbRow.path_json) {
+                      const parsedPoints = parsePathJson(String(dbRow.path_json));
+                      if (parsedPoints && parsedPoints.length > 0) {
+                        pointsJsonVal = JSON.stringify(parsedPoints);
+                      }
+                    }
+                  } catch (ptsErr) {
+                    console.error("Error reading points in fallback from path JSON table:", ptsErr);
                   }
                 } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
                   try {
@@ -2039,6 +2150,36 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || "Failed to clear health metrics" });
+    }
+  });
+
+  // GET /api/versions: Retrieve the version release history from SQLite
+  app.get("/api/versions", (req, res) => {
+    try {
+      const versions = getAppVersions();
+      res.json({ success: true, versions });
+    } catch (err: any) {
+      console.error("Failed to load app versions:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to retrieve app versions" });
+    }
+  });
+
+  // POST /api/versions: Persist a new version and update release history/changelog in SQLite
+  app.post("/api/versions", (req, res) => {
+    try {
+      const { version, changelog } = req.body;
+      if (!version || !changelog) {
+        return res.status(400).json({ success: false, error: "Missing required parameters: version and changelog." });
+      }
+      const success = addAppVersion(String(version), String(changelog));
+      if (success) {
+        res.json({ success: true, message: "Version persisted successfully." });
+      } else {
+        res.status(500).json({ success: false, error: "Database operation failed." });
+      }
+    } catch (err: any) {
+      console.error("Failed to add app version:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to persist app version" });
     }
   });
 

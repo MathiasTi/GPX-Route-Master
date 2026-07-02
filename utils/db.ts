@@ -102,7 +102,28 @@ export function initDb() {
       location TEXT,
       points_json TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS app_version (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT NOT NULL UNIQUE,
+      updated_at TEXT NOT NULL,
+      changelog TEXT
+    );
   `);
+
+  // Seed with initial versions if empty
+  try {
+    const row = db.prepare('SELECT COUNT(*) as count FROM app_version').get() as { count: number };
+    if (row.count === 0) {
+      const stmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      stmt.run('1.0.0', '2026-05-15T10:00:00.000Z', 'Initial release of GPX Route Master featuring GPX parsing, route metrics visualization, elevation profiling, and Leaflet interactive maps.');
+      stmt.run('1.1.0', '2026-06-10T14:30:00.000Z', 'Added Garmin SQLite health database imports, including sleep, weight, stress levels, resting heart rate, and step tracking metrics.');
+      stmt.run('1.2.0', '2026-06-28T09:15:00.000Z', 'Integrated smart fallback engine to auto-generate virtual routes for activities lacking native GPS coordinates, maintaining beautiful layout continuity.');
+      stmt.run('1.3.0', '2026-07-02T12:00:00.000Z', 'Added SQLite path query extraction for activity_path tables containing JSON path_json fields, preventing circular rendering and standardizing coordinates.');
+    }
+  } catch (e) {
+    console.error('Failed to seed app versions:', e);
+  }
 
   // Run graceful schema migrations on existing database tables
   try {
@@ -413,5 +434,32 @@ export function clearHealthMetrics() {
 export function runInTransaction(fn: () => void) {
   const trx = db.transaction(fn);
   trx();
+}
+
+export interface AppVersionRecord {
+  id: number;
+  version: string;
+  updated_at: string;
+  changelog: string;
+}
+
+export function getAppVersions(): AppVersionRecord[] {
+  try {
+    return db.prepare('SELECT * FROM app_version ORDER BY id DESC').all() as AppVersionRecord[];
+  } catch (e) {
+    console.error('Failed to get app versions from DB:', e);
+    return [];
+  }
+}
+
+export function addAppVersion(version: string, changelog: string): boolean {
+  try {
+    const stmt = db.prepare('INSERT OR REPLACE INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+    stmt.run(version, new Date().toISOString(), changelog);
+    return true;
+  } catch (e) {
+    console.error('Failed to add/update app version in DB:', e);
+    return false;
+  }
 }
 

@@ -1059,6 +1059,7 @@ const App: React.FC = () => {
             {garminHealthOpen && (
               <GarminDashboard 
                 onClose={() => setGarminHealthOpen(false)}
+                onLoadTrack={handleLoadLibraryTrack}
               />
             )}
           </AnimatePresence>

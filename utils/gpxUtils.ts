@@ -1387,3 +1387,128 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
   }
 };
 
+/**
+ * Parses a location string and returns lat/lng coordinates if a match is found.
+ */
+export const parseLocationCoords = (locationStr?: string): { lat: number; lng: number } | null => {
+  if (!locationStr) return null;
+  
+  // Try to match coordinates like "48.1351, 11.5820" or "48.1351;11.5820"
+  const coordRegex = /(-?\d+\.\d+)\s*[,;]\s*(-?\d+\.\d+)/;
+  const match = locationStr.match(coordRegex);
+  if (match) {
+    const lat = parseFloat(match[1]);
+    const lng = parseFloat(match[2]);
+    if (!isNaN(lat) && !isNaN(lng)) {
+      return { lat, lng };
+    }
+  }
+  
+  // City mapping
+  const city = locationStr.toLowerCase();
+  const cities: Record<string, { lat: number; lng: number }> = {
+    'münchen': { lat: 48.1351, lng: 11.5820 },
+    'munich': { lat: 48.1351, lng: 11.5820 },
+    'berlin': { lat: 52.5200, lng: 13.4050 },
+    'frankfurt': { lat: 50.1109, lng: 8.6821 },
+    'hamburg': { lat: 53.5511, lng: 9.9937 },
+    'stuttgart': { lat: 48.7758, lng: 9.1829 },
+    'köln': { lat: 50.9375, lng: 6.9603 },
+    'cologne': { lat: 50.9375, lng: 6.9603 },
+    'düsseldorf': { lat: 51.2271, lng: 6.7735 },
+    'dresden': { lat: 51.0504, lng: 13.7373 },
+    'leipzig': { lat: 51.3397, lng: 12.3731 },
+    'nürnberg': { lat: 49.4521, lng: 11.0767 },
+    'wien': { lat: 48.2082, lng: 16.3738 },
+    'vienna': { lat: 48.2082, lng: 16.3738 },
+    'zürich': { lat: 47.3769, lng: 8.5417 },
+    'zurich': { lat: 47.3769, lng: 8.5417 },
+    'mainz': { lat: 49.9929, lng: 8.2473 },
+    'freiburg': { lat: 47.9990, lng: 7.8421 },
+    'london': { lat: 51.5074, lng: -0.1278 },
+    'paris': { lat: 48.8566, lng: 2.3522 },
+  };
+  
+  for (const [name, coords] of Object.entries(cities)) {
+    if (city.includes(name)) {
+      return coords;
+    }
+  }
+  
+  return null;
+};
+
+/**
+ * Generates a virtual track route in the form of a loop starting at the specified coordinates.
+ */
+export const generateVirtualRoute = (
+  startLat: number, 
+  startLng: number, 
+  distanceKm: number, 
+  durationSec: number, 
+  ascentM: number, 
+  descentM: number, 
+  avgHr?: number,
+  activityType?: string
+): GPXPoint[] => {
+  const pointsCount = 100;
+  const points: GPXPoint[] = [];
+  
+  // Calculate radius for a circular path. Circumference = distanceKm
+  const circumference = distanceKm || 1; // avoid 0
+  const radiusKm = circumference / (2 * Math.PI);
+  
+  // Convert radius in Km to degrees latitude and longitude approx
+  const rLat = radiusKm / 111;
+  const rLng = radiusKm / (111 * Math.cos(startLat * Math.PI / 180));
+  
+  const startTime = new Date();
+  
+  for (let i = 0; i < pointsCount; i++) {
+    const angle = (i / (pointsCount - 1)) * 2 * Math.PI;
+    
+    // Create a beautiful loop shape (tear-drop / bean shape)
+    const lat = startLat + rLat * Math.sin(angle);
+    const lng = startLng + rLng * (1 - Math.cos(angle)) * 0.5;
+    
+    // Elevation: distribute ascent and descent smoothly in a sinusoidal pattern
+    let ele = 100;
+    const elevationPhase = Math.sin((i / (pointsCount - 1)) * Math.PI);
+    ele += elevationPhase * (ascentM || 0);
+    
+    // Heart Rate: average heart rate with some small realistic noise
+    let hr = avgHr;
+    if (hr) {
+      const hrNoise = Math.sin(angle * 3) * 5 + (Math.random() - 0.5) * 3;
+      hr = Math.round(hr + hrNoise);
+    }
+    
+    // Cadence
+    let cadence = activityType === 'running' ? 165 : 85;
+    cadence += Math.round((Math.random() - 0.5) * 6);
+    
+    // Power (if cycling or running power)
+    let power: number | undefined = undefined;
+    if (activityType !== 'running') {
+      power = 180 + Math.round(Math.sin(angle * 2) * 40 + (Math.random() - 0.5) * 15);
+      if (power < 0) power = 0;
+    }
+    
+    // Time
+    const timeOffsetSec = (i / (pointsCount - 1)) * durationSec;
+    const time = new Date(startTime.getTime() + timeOffsetSec * 1000);
+    
+    points.push({
+      lat,
+      lng,
+      ele: parseFloat(ele.toFixed(1)),
+      time,
+      hr,
+      cadence,
+      power
+    });
+  }
+  
+  return points;
+};
+

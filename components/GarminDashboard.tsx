@@ -9,6 +9,7 @@ import {
   Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
 import { getApiUrl } from '../utils/api';
+import { parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
 
 interface GarminDashboardProps {
   onClose: () => void;
@@ -228,6 +229,62 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       setIsAnalyticsLoading(false);
     }
   }, []);
+
+  // Load Garmin Activity into current workspace (generates virtual route)
+  const handleLoadActivity = useCallback((act: GarminActivity) => {
+    if (!onLoadTrack) return;
+    try {
+      // Find starting coordinates
+      let startCoords = parseLocationCoords((act as any).location);
+      if (!startCoords) {
+        // Fallback: Munich, Germany
+        startCoords = { lat: 48.1351, lng: 11.5820 };
+      }
+      
+      const durationSec = act.duration || 3600;
+      const distanceKm = act.distance || 10;
+      const ascent = act.ascent || 0;
+      const descent = act.descent || 0;
+      const avgHr = act.avg_hr || undefined;
+      const activityType = act.type === 'running' ? 'running' : 'cycling';
+      
+      const points = generateVirtualRoute(
+        startCoords.lat,
+        startCoords.lng,
+        distanceKm,
+        durationSec,
+        ascent,
+        descent,
+        avgHr,
+        activityType
+      );
+      
+      const track = {
+        id: `garmin-act-${act.id || Date.now()}`,
+        name: act.name || 'Garmin Aktivität',
+        points,
+        color: '#f97316', // Orange Garmin-branding
+        distance: distanceKm,
+        ascent,
+        descent,
+        maxSlope: 0,
+        visible: true,
+        activityType,
+        duration: durationSec,
+        hasTimestamps: true,
+        description: (act as any).description || `Garmin Aktivität in ${(act as any).location || 'Unbekannt'}`
+      };
+      
+      onLoadTrack(track);
+      setSuccessMsg('Aktivität erfolgreich in den Workspace geladen!');
+      // Clear success after 3 seconds
+      setTimeout(() => setSuccessMsg(null), 3500);
+    } catch (err) {
+      console.error('Failed to load Garmin activity:', err);
+      setError('Konnte Garmin-Aktivität nicht in Workspace laden.');
+      setTimeout(() => setError(null), 4000);
+    }
+  }, [onLoadTrack]);
 
   useEffect(() => {
     fetchHealthMetrics();
@@ -983,6 +1040,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                 <th className="p-3">Dauer</th>
                                 <th className="p-3">Höhenmeter</th>
                                 <th className="p-3">Kalorien</th>
+                                <th className="p-3 text-right">Aktion</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -1002,6 +1060,21 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                   </td>
                                   <td className="p-3">
                                     {act.calories !== undefined && act.calories !== null ? `${Math.round(act.calories)} kcal` : '-'}
+                                  </td>
+                                  <td className="p-3 text-right">
+                                    {onLoadTrack && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleLoadActivity(act);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md text-[10px] cursor-pointer shadow-3xs transition-colors"
+                                        title="In Workspace laden"
+                                      >
+                                        In Workspace laden
+                                      </button>
+                                    )}
                                   </td>
                                 </tr>
                               ))}

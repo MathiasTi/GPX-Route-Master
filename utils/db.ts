@@ -97,7 +97,9 @@ export function initDb() {
       ascent REAL,
       descent REAL,
       calories REAL,
-      avg_hr REAL
+      avg_hr REAL,
+      description TEXT,
+      location TEXT
     );
   `);
 
@@ -114,6 +116,24 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE tracks ADD COLUMN raw_file_json TEXT`);
   } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN description TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN location TEXT`);
+  } catch (e) {}
+
+  // Create performance indexes to speed up name, description, and location searches
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_name ON garmin_activities(name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_description ON garmin_activities(description)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_location ON garmin_activities(location)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_date ON garmin_activities(date)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_description ON tracks(description)`);
+  } catch (e) {
+    console.error('Failed to create database indexes:', e);
+  }
 
   console.log('SQLite database initialized successfully at', dbPath);
 }
@@ -300,13 +320,67 @@ export function saveSteps(date: string, steps: number, calories?: number, distan
 export function saveGarminActivity(
   id: string, name: string, type: string, date: string,
   distance: number, duration: number, ascent?: number, descent?: number,
-  calories?: number, avgHr?: number
+  calories?: number, avgHr?: number, description?: string, location?: string
 ) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(id, name, type, date, distance, duration, ascent || null, descent || null, calories || null, avgHr || null);
+  stmt.run(
+    id, name, type, date, distance, duration, 
+    ascent !== undefined ? ascent : null, 
+    descent !== undefined ? descent : null, 
+    calories !== undefined ? calories : null, 
+    avgHr !== undefined ? avgHr : null, 
+    description || null, 
+    location || null
+  );
+}
+
+export interface DbGarminActivityRecord {
+  id: string;
+  name: string;
+  type: string;
+  date: string;
+  distance: number;
+  duration: number;
+  ascent?: number;
+  descent?: number;
+  calories?: number;
+  avg_hr?: number;
+  description?: string;
+  location?: string;
+}
+
+export function searchGarminActivities(queryText: string = '', activityType?: string): DbGarminActivityRecord[] {
+  let sql = `SELECT * FROM garmin_activities`;
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (activityType && activityType !== 'all') {
+    if (activityType === 'cycling') {
+      conditions.push(`(type LIKE '%cycle%' OR type LIKE '%bike%' OR type = 'cycling')`);
+    } else if (activityType === 'running') {
+      conditions.push(`(type LIKE '%run%' OR type = 'running')`);
+    } else {
+      conditions.push(`type = ?`);
+      params.push(activityType);
+    }
+  }
+
+  if (queryText.trim()) {
+    const term = `%${queryText.trim()}%`;
+    conditions.push(`(name LIKE ? OR description LIKE ? OR location LIKE ?)`);
+    params.push(term, term, term);
+  }
+
+  if (conditions.length > 0) {
+    sql += ` WHERE ` + conditions.join(' AND ');
+  }
+
+  sql += ` ORDER BY date DESC`;
+
+  return db.prepare(sql).all(...params) as DbGarminActivityRecord[];
 }
 
 export function getHealthMetrics() {

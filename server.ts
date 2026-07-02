@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -904,6 +904,20 @@ async function startServer() {
     }
   });
 
+  // Garmin Activities API: Search and list imported Garmin activities with name, description or location
+  app.get("/api/garmin-activities", (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      const activityType = typeof req.query.activityType === "string" ? req.query.activityType : "all";
+      const records = searchGarminActivities(q, activityType);
+      
+      res.json({ success: true, activities: records });
+    } catch (err: any) {
+      console.error("Error searching Garmin activities:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to search Garmin activities" });
+    }
+  });
+
   // Shared Garmin SQLite database processing engine (memory efficient, streams rows via stmt.iterate())
   function processGarminDatabase(uploadedDb: any): {
     sleep: number;
@@ -1078,6 +1092,8 @@ async function startServer() {
           const cols = uploadedDb.pragma("table_info(activity)") as any[];
           const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
+          const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
+          const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
 
           const query = `
             SELECT 
@@ -1089,6 +1105,8 @@ async function startServer() {
               duration
               ${hasCalories ? ", calories" : ""}
               ${hasAverageHr ? ", average_hr" : ""}
+              ${descCol ? `, ${descCol}` : ""}
+              ${locCol ? `, ${locCol}` : ""}
             FROM activity
           `;
           const stmt = uploadedDb.prepare(query);
@@ -1108,8 +1126,10 @@ async function startServer() {
               const durVal = parseFloat(row.duration) || 0; // in seconds
               const calVal = hasCalories && row.calories ? parseFloat(row.calories) : undefined;
               const hrVal = hasAverageHr && row.average_hr ? parseFloat(row.average_hr) : undefined;
+              const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
+              const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
 
-              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal);
+              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal, descVal, locVal);
               activitiesImported++;
             }
           });
@@ -1292,6 +1312,8 @@ async function startServer() {
             const descentCol = findColumn(columns, ["descent", "elevation_loss", "elevationLoss"]);
             const calCol = findColumn(columns, ["calories"]);
             const hrCol = findColumn(columns, ["avg_hr", "average_heart_rate", "averageHeartRate", "avg_heart_rate", "average_hr"]);
+            const descCol = findColumn(columns, ["description", "notes", "comment", "activity_description", "activityDescription"]);
+            const locCol = findColumn(columns, ["location", "place", "city", "town", "start_location", "start_location_name", "location_name", "locationName", "startLocationName"]);
 
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
@@ -1311,8 +1333,10 @@ async function startServer() {
                 const descentVal = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
                 const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
                 const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
+                const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
+                const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
 
-                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal);
+                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal, descVal, locVal);
                 activitiesImported++;
               }
             });

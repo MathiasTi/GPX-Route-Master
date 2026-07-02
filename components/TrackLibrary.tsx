@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, RefreshCw, Compass, ArrowLeftRight, Navigation, MapPin } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl } from '../utils/api';
-import { calculateElevationStats } from '../utils/gpxUtils';
+import { calculateElevationStats, parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
 
 interface TrackLibraryProps {
   onLoadTrack: (track: GPXTrack) => void;
@@ -35,6 +35,11 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
   const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [activeSubTab, setActiveSubTab] = useState<'gpx' | 'garmin'>('gpx');
+  const [garminActivities, setGarminActivities] = useState<any[]>([]);
+  const [isGarminLoading, setIsGarminLoading] = useState(false);
+  const [expandedGarminId, setExpandedGarminId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectionBounds) {
@@ -111,14 +116,42 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
     }
   }, [searchQuery, activityFilter]);
 
+  // Fetch Garmin Activities
+  const fetchGarmin = useCallback(async () => {
+    setIsGarminLoading(true);
+    setError(null);
+    try {
+      const queryParams = new URLSearchParams();
+      if (searchQuery.trim()) queryParams.append('q', searchQuery);
+      if (activityFilter !== 'all') queryParams.append('activityType', activityFilter);
+
+      const response = await fetch(getApiUrl(`/api/garmin-activities?${queryParams.toString()}`));
+      const data = await response.json();
+      if (data.success) {
+        setGarminActivities(data.activities);
+      } else {
+        setError(data.error || 'Fehler beim Laden der Garmin-Aktivitäten.');
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch Garmin activities:', err);
+      setError('Verbindung zum Server fehlgeschlagen.');
+    } finally {
+      setIsGarminLoading(false);
+    }
+  }, [searchQuery, activityFilter]);
+
   // Initial and reactive fetch
   useEffect(() => {
     // Basic debounce for search input
     const timer = setTimeout(() => {
-      fetchLibrary();
+      if (activeSubTab === 'gpx') {
+        fetchLibrary();
+      } else {
+        fetchGarmin();
+      }
     }, 250);
     return () => clearTimeout(timer);
-  }, [searchQuery, activityFilter, fetchLibrary]);
+  }, [searchQuery, activityFilter, activeSubTab, fetchLibrary, fetchGarmin]);
 
   // Load track into current workspace
   const handleLoadTrack = async (id: string) => {
@@ -150,6 +183,58 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
     } catch (err) {
       console.error('Failed to load track details:', err);
       showToast('Konnte vollständige Route nicht laden.', 'error');
+    }
+  };
+
+  // Load Garmin Activity into current workspace (generates virtual route)
+  const handleLoadGarminActivity = (act: any) => {
+    try {
+      // Find starting coordinates
+      let startCoords = parseLocationCoords(act.location);
+      if (!startCoords) {
+        // Fallback: Munich, Germany
+        startCoords = { lat: 48.1351, lng: 11.5820 };
+      }
+      
+      const durationSec = act.duration || 3600;
+      const distanceKm = act.distance || 10;
+      const ascent = act.ascent || 0;
+      const descent = act.descent || 0;
+      const avgHr = act.avg_hr || undefined;
+      const activityType = act.type === 'running' ? 'running' : 'cycling';
+      
+      const points = generateVirtualRoute(
+        startCoords.lat,
+        startCoords.lng,
+        distanceKm,
+        durationSec,
+        ascent,
+        descent,
+        avgHr,
+        activityType
+      );
+      
+      const track: GPXTrack = {
+        id: `garmin-act-${act.id || Date.now()}`,
+        name: act.name || 'Garmin Aktivität',
+        points,
+        color: '#f97316', // Orange Garmin-branding
+        distance: distanceKm,
+        ascent,
+        descent,
+        maxSlope: 0,
+        visible: true,
+        activityType,
+        duration: durationSec,
+        hasTimestamps: true,
+        description: act.description || `Garmin Aktivität in ${act.location || 'Unbekannt'}`
+      };
+      
+      onLoadTrack(track);
+      showToast('Aktivität erfolgreich in den Workspace geladen!');
+    } catch (err) {
+      console.error('Failed to load Garmin activity:', err);
+      showToast('Konnte Garmin-Aktivität nicht in Workspace laden.', 'error');
     }
   };
 
@@ -301,12 +386,42 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
           )}
         </div>
       )}
+      {/* Tabs Switcher: GPX vs Garmin */}
+      <div className="flex border-b border-slate-100 dark:border-slate-800/80 shrink-0 mb-2">
+        <button
+          type="button"
+          onClick={() => { setActiveSubTab('gpx'); setError(null); }}
+          className={`flex-1 pb-2 text-xs font-black transition-all border-b-2 text-center cursor-pointer ${
+            activeSubTab === 'gpx'
+              ? 'border-blue-600 text-slate-900 dark:text-slate-150 dark:border-blue-400'
+              : 'border-transparent text-slate-450 hover:text-slate-650 dark:hover:text-slate-300'
+          }`}
+        >
+          📁 GPX-Routen
+        </button>
+        <button
+          type="button"
+          onClick={() => { setActiveSubTab('garmin'); setError(null); }}
+          className={`flex-1 pb-2 text-xs font-black transition-all border-b-2 text-center cursor-pointer ${
+            activeSubTab === 'garmin'
+              ? 'border-orange-600 text-slate-900 dark:text-slate-150 dark:border-orange-400'
+              : 'border-transparent text-slate-450 hover:text-slate-650 dark:hover:text-slate-300'
+          }`}
+        >
+          ⌚ Garmin-Aktivitäten
+        </button>
+      </div>
+
       {/* Search and Filters */}
       <div className="space-y-2.5 shrink-0">
         <div className="relative">
           <input
             type="text"
-            placeholder="Suchen nach Name, Beschreibung, Tags..."
+            placeholder={
+              activeSubTab === 'gpx'
+                ? "Suchen nach Name, Beschreibung, Tags..."
+                : "Suchen nach Name, Beschreibung, Ort..."
+            }
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl pl-9 pr-8 py-2 text-xs font-semibold text-slate-850 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-sans"
@@ -362,143 +477,309 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
 
       {/* Library Tracks Listing Container */}
       <div className="flex-1 overflow-y-auto pr-0.5 space-y-2.5 min-h-0 relative">
-        {isLoading && tracks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-14 space-y-2">
-            <RefreshCw className="w-6 h-6 text-blue-500 animate-spin" />
-            <p className="text-[11px] text-slate-500 font-medium">Lade Bibliothek...</p>
-          </div>
-        ) : error ? (
-          <div className="text-center py-10 px-4 bg-red-50/50 border border-red-100 rounded-xl space-y-1">
-            <p className="text-xs text-red-650 font-bold">Fehler</p>
-            <p className="text-[10px] text-slate-500">{error}</p>
-          </div>
-        ) : tracks.length === 0 ? (
-          <div className="text-center py-16 px-4 bg-slate-50/50 dark:bg-slate-950/35 border border-dashed border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5">
-            <Compass className="w-6 h-6 text-slate-300 mx-auto" />
-            <p className="text-xs font-semibold text-slate-505 dark:text-slate-400">Keine Routen gefunden</p>
-            <p className="text-[10px] text-slate-400 max-w-xs mx-auto">
-              Lade eine Route hoch und speichere sie, um Deine persönliche Bibliothek anzulegen.
-            </p>
-          </div>
-        ) : (
-          tracks.map((track) => {
-            const isActive = onActiveTrackId === track.id;
-            return (
-              <div
-                key={track.id}
-                onClick={() => handleLoadTrack(track.id)}
-                className={`group relative flex flex-col gap-2 rounded-xl p-3 bg-white dark:bg-slate-900 border transition-all cursor-pointer ${
-                  isActive
-                    ? 'border-blue-550 dark:border-blue-400 ring-2 ring-blue-500/10 shadow-sm bg-blue-50/10 dark:bg-blue-950/20'
-                    : 'border-slate-100 dark:border-slate-800/60 hover:border-slate-250 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/20 shadow-2xs'
-                }`}
-              >
-                {/* Title Line: Icon Badge + Name */}
-                <div className="flex items-center gap-2">
-                  <span className="flex items-center justify-center text-xs w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-800 font-bold shrink-0 shadow-3xs leading-none">
-                    {track.activityType === 'running' ? '🏃' : '🚴'}
-                  </span>
-                  <span 
-                    className="font-bold text-xs text-slate-800 dark:text-slate-150 truncate flex-1 leading-tight" 
-                    title={track.name}
-                  >
-                    {track.name}
-                  </span>
-                  
-                  {/* Active Badge indicator */}
-                  {isActive && (
-                    <span className="text-[9px] font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-100 dark:border-blue-900/40 shrink-0">
-                      Aktiv
+        {activeSubTab === 'gpx' ? (
+          isLoading && tracks.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 space-y-2">
+              <RefreshCw className="w-6 h-6 text-blue-500 animate-spin" />
+              <p className="text-[11px] text-slate-500 font-medium">Lade Bibliothek...</p>
+            </div>
+          ) : error ? (
+            <div className="text-center py-10 px-4 bg-red-50/50 border border-red-100 rounded-xl space-y-1">
+              <p className="text-xs text-red-650 font-bold">Fehler</p>
+              <p className="text-[10px] text-slate-500">{error}</p>
+            </div>
+          ) : tracks.length === 0 ? (
+            <div className="text-center py-16 px-4 bg-slate-50/50 dark:bg-slate-950/35 border border-dashed border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5">
+              <Compass className="w-6 h-6 text-slate-300 mx-auto" />
+              <p className="text-xs font-semibold text-slate-505 dark:text-slate-400">Keine Routen gefunden</p>
+              <p className="text-[10px] text-slate-400 max-w-xs mx-auto">
+                Lade eine Route hoch und speichere sie, um Deine persönliche Bibliothek anzulegen.
+              </p>
+            </div>
+          ) : (
+            tracks.map((track) => {
+              const isActive = onActiveTrackId === track.id;
+              return (
+                <div
+                  key={track.id}
+                  onClick={() => handleLoadTrack(track.id)}
+                  className={`group relative flex flex-col gap-2 rounded-xl p-3 bg-white dark:bg-slate-900 border transition-all cursor-pointer ${
+                    isActive
+                      ? 'border-blue-550 dark:border-blue-400 ring-2 ring-blue-500/10 shadow-sm bg-blue-50/10 dark:bg-blue-950/20'
+                      : 'border-slate-100 dark:border-slate-800/60 hover:border-slate-250 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/20 shadow-2xs'
+                  }`}
+                >
+                  {/* Title Line: Icon Badge + Name */}
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center justify-center text-xs w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-800 font-bold shrink-0 shadow-3xs leading-none">
+                      {track.activityType === 'running' ? '🏃' : '🚴'}
                     </span>
-                  )}
-                </div>
-
-                {/* Subinfo Line: Date Created & Description Excerpt */}
-                <div className="flex flex-col gap-1">
-                  {track.dateCreated && (
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500 flex items-center gap-1 font-mono font-medium">
-                      <Calendar size={9} className="text-slate-400 shrink-0" /> 
-                      {track.dateCreated}
-                    </p>
-                  )}
-                  {track.description && (
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal line-clamp-1 bg-slate-50/50 dark:bg-slate-950/20 px-1.5 py-0.5 rounded text-left">
-                      {track.description}
-                    </p>
-                  )}
-                </div>
-
-                {/* Compact Stats Row: Distance, elevation, slope */}
-                <div className="grid grid-cols-3 gap-1.5 pt-0.5 text-[10px] font-mono">
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Länge</span>
-                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                      {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                    <span 
+                      className="font-bold text-xs text-slate-800 dark:text-slate-150 truncate flex-1 leading-tight" 
+                      title={track.name}
+                    >
+                      {track.name}
                     </span>
-                  </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Höhe</span>
-                    <span className="font-extrabold text-slate-700 dark:text-slate-300 flex items-center">
-                      +{Math.round(track.ascent)}m
-                    </span>
-                  </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
-                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                      {Math.round(track.maxSlope ?? 0)}%
-                    </span>
-                  </div>
-                </div>
-
-                {/* Footer Line: Tags list & Compact Action Tools */}
-                <div className="flex items-center justify-between gap-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-1.5 mt-0.5">
-                  {/* Tags on Left */}
-                  <div className="flex flex-wrap gap-1 min-w-0 max-w-[50%] overflow-hidden">
-                    {track.tags && track.tags.length > 0 ? (
-                      track.tags.slice(0, 2).map((tg, idx) => (
-                        <span
-                          key={idx}
-                          className="text-[9px] font-bold font-sans bg-slate-50 dark:bg-slate-800/50 border border-slate-200/50 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 px-1.5 py-0.5 rounded-lg flex items-center gap-0.5 truncate"
-                          title={tg}
-                        >
-                          <Tag size={8} className="text-slate-400 shrink-0" />
-                          <span className="truncate">{tg}</span>
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-[9px] text-slate-400 italic">Keine Tags</span>
+                    
+                    {/* Active Badge indicator */}
+                    {isActive && (
+                      <span className="text-[9px] font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-100 dark:border-blue-900/40 shrink-0">
+                        Aktiv
+                      </span>
                     )}
                   </div>
 
-                  {/* Actions on Right */}
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleLoadTrack(track.id); }}
-                      className="p-1 px-1.5 bg-blue-550 hover:bg-blue-600 text-white rounded-lg transition-all text-[9.5px] font-bold flex items-center gap-1 cursor-pointer"
-                      title="In Workspace laden / Aktivieren"
-                    >
-                      <FolderOpen className="w-3 h-3 text-white" />
-                      <span>Laden</span>
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openEditMask(track); }}
-                      className="p-1 bg-slate-50 hover:bg-slate-100 active:bg-slate-150 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all cursor-pointer border border-slate-205"
-                      title="Metadaten bearbeiten"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setConfirmDelete({ id: track.id, name: track.name }); }}
-                      className="p-1 bg-red-50 hover:bg-red-100 dark:bg-rose-955/20 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-lg transition-all cursor-pointer border border-red-100 dark:border-rose-950/20"
-                      title="Aus der Bibliothek löschen"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                  {/* Subinfo Line: Date Created & Description Excerpt */}
+                  <div className="flex flex-col gap-1">
+                    {track.dateCreated && (
+                      <p className="text-[9px] text-slate-400 dark:text-slate-500 flex items-center gap-1 font-mono font-medium">
+                        <Calendar size={9} className="text-slate-400 shrink-0" /> 
+                        {track.dateCreated}
+                      </p>
+                    )}
+                    {track.description && (
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal line-clamp-1 bg-slate-50/50 dark:bg-slate-950/20 px-1.5 py-0.5 rounded text-left">
+                        {track.description}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Compact Stats Row: Distance, elevation, slope */}
+                  <div className="grid grid-cols-3 gap-1.5 pt-0.5 text-[10px] font-mono">
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Länge</span>
+                      <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                        {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Höhe</span>
+                      <span className="font-extrabold text-slate-700 dark:text-slate-300 flex items-center">
+                        +{Math.round(track.ascent)}m
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-0.5 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
+                      <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                        {Math.round(track.maxSlope ?? 0)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Footer Line: Tags list & Compact Action Tools */}
+                  <div className="flex items-center justify-between gap-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-1.5 mt-0.5">
+                    {/* Tags on Left */}
+                    <div className="flex flex-wrap gap-1 min-w-0 max-w-[50%] overflow-hidden">
+                      {track.tags && track.tags.length > 0 ? (
+                        track.tags.slice(0, 2).map((tg, idx) => (
+                          <span
+                            key={idx}
+                            className="text-[9px] font-bold font-sans bg-slate-50 dark:bg-slate-800/50 border border-slate-205/50 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 px-1.5 py-0.5 rounded-lg flex items-center gap-0.5 truncate"
+                            title={tg}
+                          >
+                            <Tag size={8} className="text-slate-400 shrink-0" />
+                            <span className="truncate">{tg}</span>
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-[9px] text-slate-400 italic">Keine Tags</span>
+                      )}
+                    </div>
+
+                    {/* Actions on Right */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleLoadTrack(track.id); }}
+                        className="p-1 px-1.5 bg-blue-550 hover:bg-blue-600 text-white rounded-lg transition-all text-[9.5px] font-bold flex items-center gap-1 cursor-pointer"
+                        title="In Workspace laden / Aktivieren"
+                      >
+                        <FolderOpen className="w-3 h-3 text-white" />
+                        <span>Laden</span>
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEditMask(track); }}
+                        className="p-1 bg-slate-50 hover:bg-slate-100 active:bg-slate-150 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all cursor-pointer border border-slate-205"
+                        title="Metadaten bearbeiten"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelete({ id: track.id, name: track.name }); }}
+                        className="p-1 bg-red-50 hover:bg-red-100 dark:bg-rose-955/20 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-lg transition-all cursor-pointer border border-red-100 dark:border-rose-950/20"
+                        title="Aus der Bibliothek löschen"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })
+              );
+            })
+          )
+        ) : (
+          isGarminLoading && garminActivities.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 space-y-2">
+              <RefreshCw className="w-6 h-6 text-orange-550 animate-spin" />
+              <p className="text-[11px] text-slate-500 font-medium">Lade Garmin-Aktivitäten...</p>
+            </div>
+          ) : error ? (
+            <div className="text-center py-10 px-4 bg-red-50/50 border border-red-100 rounded-xl space-y-1">
+              <p className="text-xs text-red-650 font-bold">Fehler</p>
+              <p className="text-[10px] text-slate-500">{error}</p>
+            </div>
+          ) : garminActivities.length === 0 ? (
+            <div className="text-center py-16 px-4 bg-slate-50/50 dark:bg-slate-950/35 border border-dashed border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5">
+              <Compass className="w-6 h-6 text-slate-300 mx-auto" />
+              <p className="text-xs font-semibold text-slate-505 dark:text-slate-400">Keine Garmin-Aktivitäten gefunden</p>
+              <p className="text-[10px] text-slate-400 max-w-xs mx-auto">
+                Importiere deine Garmin-SQLite-Datenbank unter dem Reiter "Garmin-Importe", um hier nach Aktivitäten zu suchen.
+              </p>
+            </div>
+          ) : (
+            garminActivities.map((act) => {
+              const isExpanded = expandedGarminId === act.id;
+              const formattedDuration = (() => {
+                const durSec = act.duration || 0;
+                if (durSec === 0) return '-';
+                const h = Math.floor(durSec / 3600);
+                const m = Math.floor((durSec % 3600) / 60);
+                const s = Math.round(durSec % 60);
+                if (h > 0) return `${h}h ${m}m`;
+                return `${m}m ${s}s`;
+              })();
+
+              const sportEmoji = (() => {
+                const t = (act.type || '').toLowerCase();
+                if (t.includes('run') || t === 'running') return '🏃';
+                if (t.includes('cycle') || t.includes('bike') || t === 'cycling') return '🚴';
+                if (t.includes('swim') || t === 'swimming') return '🏊';
+                if (t.includes('walk') || t.includes('hike')) return '🥾';
+                return '🏅';
+              })();
+
+              return (
+                <div
+                  key={act.id}
+                  onClick={() => setExpandedGarminId(isExpanded ? null : act.id)}
+                  className={`group relative flex flex-col gap-2 rounded-xl p-3 bg-white dark:bg-slate-900 border transition-all cursor-pointer text-left ${
+                    isExpanded
+                      ? 'border-orange-550 dark:border-orange-400 ring-2 ring-orange-500/10 shadow-sm bg-orange-50/5 dark:bg-slate-950/20'
+                      : 'border-slate-100 dark:border-slate-800/60 hover:border-slate-250 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/20 shadow-2xs'
+                  }`}
+                >
+                  {/* Title line */}
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center justify-center text-xs w-6 h-6 rounded-lg bg-orange-50 dark:bg-orange-950/45 font-bold shrink-0 shadow-3xs leading-none">
+                      {sportEmoji}
+                    </span>
+                    <span 
+                      className="font-bold text-xs text-slate-800 dark:text-slate-150 truncate flex-1 leading-tight" 
+                      title={act.name}
+                    >
+                      {act.name || 'Unbekannte Aktivität'}
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 font-bold shrink-0">
+                      {act.date}
+                    </span>
+                  </div>
+
+                  {/* Quick metrics grid */}
+                  <div className="grid grid-cols-4 gap-1 pt-0.5 text-[9px] font-mono">
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg p-1 flex flex-col items-center justify-center">
+                      <span className="text-[7px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Distanz</span>
+                      <span className="font-extrabold text-slate-750 dark:text-slate-300">
+                        {act.distance ? `${act.distance.toFixed(1)} km` : '-'}
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg p-1 flex flex-col items-center justify-center">
+                      <span className="text-[7px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Zeit</span>
+                      <span className="font-extrabold text-slate-750 dark:text-slate-300">
+                        {formattedDuration}
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg p-1 flex flex-col items-center justify-center">
+                      <span className="text-[7px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Höhe</span>
+                      <span className="font-extrabold text-slate-750 dark:text-slate-300">
+                        {act.ascent ? `+${Math.round(act.ascent)}m` : '-'}
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg p-1 flex flex-col items-center justify-center">
+                      <span className="text-[7px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Ø Puls</span>
+                      <span className="font-extrabold text-slate-750 dark:text-slate-300">
+                        {act.avg_hr ? `${Math.round(act.avg_hr)} bpm` : '-'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expanded Details Panel */}
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden border-t border-slate-100 dark:border-slate-800/60 pt-2.5 mt-1 text-[11px] space-y-2 text-left font-sans text-slate-600 dark:text-slate-400"
+                      >
+                        {act.location && (
+                          <div className="flex items-start gap-1">
+                            <span className="font-bold text-slate-700 dark:text-slate-300 shrink-0">📍 Ort:</span>
+                            <span className="bg-slate-50 dark:bg-slate-950/30 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 font-bold text-slate-750 dark:text-slate-200">
+                              {act.location}
+                            </span>
+                          </div>
+                        )}
+                        {act.description && (
+                          <div className="space-y-0.5">
+                            <p className="font-bold text-slate-700 dark:text-slate-300">📝 Beschreibung:</p>
+                            <p className="bg-slate-50 dark:bg-slate-950/30 p-2 rounded border border-slate-100 dark:border-slate-800 leading-normal italic text-slate-550 dark:text-slate-350">
+                              {act.description}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {/* Secondary metrics */}
+                        <div className="grid grid-cols-2 gap-2 text-[10px] font-mono bg-orange-50/10 dark:bg-orange-950/10 border border-orange-100/30 dark:border-orange-900/10 p-2 rounded-lg">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Kalorien:</span>
+                            <span className="font-bold text-orange-600 dark:text-orange-400">{act.calories ? `${Math.round(act.calories)} kcal` : '-'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Abstieg:</span>
+                            <span className="font-bold text-slate-600 dark:text-slate-300">{act.descent ? `-${Math.round(act.descent)}m` : '-'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Typ:</span>
+                            <span className="font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider text-[8px]">{act.type}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">ID:</span>
+                            <span className="font-bold text-slate-400 truncate max-w-[60px]" title={act.id}>{act.id}</span>
+                          </div>
+                        </div>
+
+                        {/* Load to Workspace action button */}
+                        <div className="flex justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleLoadGarminActivity(act);
+                            }}
+                            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-orange-600 hover:bg-orange-700 active:bg-orange-800 dark:bg-orange-650 dark:hover:bg-orange-600 dark:active:bg-orange-750 text-white font-extrabold rounded-lg shadow-xs transition-all text-xs cursor-pointer select-none border border-transparent"
+                            title="Konvertiert diese Garmin-Aktivität in eine interaktive Workspace-Route"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                            Aktivität in Workspace laden
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })
+          )
         )}
       </div>
 

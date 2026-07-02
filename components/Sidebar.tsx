@@ -1013,8 +1013,9 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
           </div>
 
-          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 text-center font-medium rounded-b-xl">
-            Reihenfolge bestimmt Verbindungssequenz
+          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex justify-between items-center font-medium rounded-b-xl">
+            <span>Reihenfolge bestimmt Verbindungssequenz</span>
+            <span className="font-mono text-slate-400">v0.0.0</span>
           </div>
         </div>
       </div>

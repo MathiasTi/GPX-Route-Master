@@ -27,6 +27,79 @@ interface LibraryTrackThin {
   originalFilename?: string;
 }
 
+// Robust helper function to extract elevation (ele) data from coordinate object or array
+function extractElevation(p: any): number | undefined {
+  if (!p) return undefined;
+  if (Array.isArray(p)) {
+    return p[2] !== undefined ? parseFloat(p[2]) : undefined;
+  }
+  const eleKeys = ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"];
+  for (const key of eleKeys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  // Case insensitive check
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (eleKeys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract latitude (lat)
+function extractLat(p: any): number | undefined {
+  if (!p) return undefined;
+  if (Array.isArray(p)) {
+    return parseFloat(p[0]);
+  }
+  const latKeys = ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"];
+  for (const key of latKeys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (latKeys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract longitude (lng)
+function extractLng(p: any): number | undefined {
+  if (!p) return undefined;
+  if (Array.isArray(p)) {
+    return parseFloat(p[1]);
+  }
+  const lngKeys = ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"];
+  for (const key of lngKeys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (lngKeys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
 export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiveTrackId, selectionBounds, onClearSelection }) => {
   const [tracks, setTracks] = useState<LibraryTrackThin[]>([]);
   const [boundsTracks, setBoundsTracks] = useState<LibraryTrackThin[]>([]);
@@ -209,19 +282,33 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         try {
           const parsed = JSON.parse(act.points_json);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            points = parsed.map((p: any) => ({
-              lat: parseFloat(p.lat),
-              lng: parseFloat(p.lng),
-              ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
-              time: p.time ? new Date(p.time) : undefined,
-              hr: p.hr !== undefined ? parseFloat(p.hr) : undefined,
-              cadence: p.cadence !== undefined ? parseFloat(p.cadence) : undefined,
-              power: p.power !== undefined ? parseFloat(p.power) : undefined,
-            }));
+            points = parsed.map((p: any) => {
+              const latVal = extractLat(p);
+              const lngVal = extractLng(p);
+              if (latVal === undefined || lngVal === undefined) return null;
+              return {
+                lat: latVal,
+                lng: lngVal,
+                ele: extractElevation(p),
+                time: p.time ? new Date(p.time) : undefined,
+                hr: p.hr !== undefined ? parseFloat(p.hr) : undefined,
+                cadence: p.cadence !== undefined ? parseFloat(p.cadence) : undefined,
+                power: p.power !== undefined ? parseFloat(p.power) : undefined,
+              };
+            }).filter((p: any) => p !== null);
           }
         } catch (pe) {
           console.error('Failed to parse points_json from database:', pe);
         }
+      }
+
+      let finalAscent = ascent;
+      let finalDescent = descent;
+
+      if (points.length > 0 && (finalAscent === 0 || finalDescent === 0)) {
+        const stats = calculateElevationStats(points);
+        if (finalAscent === 0) finalAscent = stats.ascent;
+        if (finalDescent === 0) finalDescent = stats.descent;
       }
 
       if (points.length === 0) {
@@ -231,8 +318,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
           startCoords.lng,
           distanceKm,
           durationSec,
-          ascent,
-          descent,
+          finalAscent,
+          finalDescent,
           avgHr,
           activityType
         );
@@ -244,8 +331,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         points,
         color: '#f97316', // Orange Garmin-branding
         distance: distanceKm,
-        ascent,
-        descent,
+        ascent: finalAscent,
+        descent: finalDescent,
         maxSlope: 0,
         visible: true,
         activityType,

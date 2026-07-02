@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
-  Tooltip, CartesianGrid, AreaChart, Area 
+  Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
 import { getApiUrl } from '../utils/api';
 
@@ -82,6 +82,91 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [localFiles, setLocalFiles] = useState<{ filename: string; path: string; size: number; mtime: string }[]>([]);
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
+  const [selectedCorrelation, setSelectedCorrelation] = useState<'hr_speed' | 'speed_ascent' | 'hr_ascent'>('hr_speed');
+
+  const activityPoints = useMemo(() => {
+    return analyticsData?.activityCorrelations?.points || [];
+  }, [analyticsData]);
+
+  const correlationDetails = useMemo(() => {
+    const corr = analyticsData?.activityCorrelations || {};
+    switch (selectedCorrelation) {
+      case 'hr_speed':
+        return {
+          r: corr.hrSpeed ?? 0,
+          xKey: 'speedKmh',
+          yKey: 'avgHr',
+          xLabel: 'Geschwindigkeit (km/h)',
+          yLabel: 'Durchschnittspuls (bpm)',
+          title: 'Herzfrequenz vs. Geschwindigkeit',
+          desc: 'Diese Analyse zeigt, wie deine Herzfrequenz auf unterschiedliche Geschwindigkeiten reagiert. Bei gutem Trainingszustand (aerobe Kapazität) bleibt die Herzfrequenz bei tempo- und ausdauerintensiven Läufen niedriger.'
+        };
+      case 'speed_ascent':
+        return {
+          r: corr.speedAscent ?? 0,
+          xKey: 'ascent',
+          yKey: 'speedKmh',
+          xLabel: 'Höhenmeter (m)',
+          yLabel: 'Geschwindigkeit (km/h)',
+          title: 'Geschwindigkeit vs. Höhenmeter',
+          desc: 'Zeigt den Einfluss von Steigungen auf deine Durchschnittsgeschwindigkeit. Mehr Höhenmeter bedeuten typischerweise ein geringeres Gesamttempo durch die zusätzliche Hubarbeit.'
+        };
+      case 'hr_ascent':
+        return {
+          r: corr.hrAscent ?? 0,
+          xKey: 'ascent',
+          yKey: 'avgHr',
+          xLabel: 'Höhenmeter (m)',
+          yLabel: 'Durchschnittspuls (bpm)',
+          title: 'Herzfrequenz vs. Höhenmeter',
+          desc: 'Untersucht, ob anspruchsvolle Anstiege mit einem höheren durchschnittlichen Puls einhergehen. Hügelige Strecken fordern Herz und Kreislauf intensiver.'
+        };
+    }
+  }, [selectedCorrelation, analyticsData]);
+
+  const chartData = useMemo(() => {
+    const pts = activityPoints;
+    if (selectedCorrelation === 'hr_speed' || selectedCorrelation === 'hr_ascent') {
+      return pts.filter((p: any) => p.avgHr !== undefined);
+    }
+    return pts;
+  }, [activityPoints, selectedCorrelation]);
+
+  const chartGroupedData = useMemo(() => {
+    const pts = chartData;
+    const running = pts.filter((pt: any) => {
+      const t = pt.type ? pt.type.toLowerCase() : 'other';
+      return t.includes('run') || t === 'running';
+    });
+    const cycling = pts.filter((pt: any) => {
+      const t = pt.type ? pt.type.toLowerCase() : 'other';
+      return t.includes('cycle') || t.includes('bike') || t === 'cycling';
+    });
+    const other = pts.filter((pt: any) => {
+      const t = pt.type ? pt.type.toLowerCase() : 'other';
+      return !t.includes('run') && t !== 'running' && !t.includes('cycle') && !t.includes('bike') && t !== 'cycling';
+    });
+    return { running, cycling, other };
+  }, [chartData]);
+
+  const getCorrBadgeColor = (r: number) => {
+    const absR = Math.abs(r);
+    if (absR > 0.5) return 'bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/30';
+    if (absR > 0.2) return 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-400 border border-orange-200 dark:border-orange-900/30';
+    return 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700';
+  };
+
+  const getCorrStrengthText = (r: number) => {
+    const absR = Math.abs(r);
+    let strength = 'Keine';
+    if (absR > 0.7) strength = 'Sehr starke';
+    else if (absR > 0.5) strength = 'Starke';
+    else if (absR > 0.3) strength = 'Moderate';
+    else if (absR > 0.1) strength = 'Schwache';
+    
+    const direction = r > 0 ? 'positive' : r < 0 ? 'negative' : '';
+    return `${strength} ${direction} Korrelation`;
+  };
 
   const filteredActivities = useMemo(() => {
     if (!data || !data.activities) return [];
@@ -1178,6 +1263,170 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                 Keine Sportaktivitäten in der Garmin-Datenbank für eine Effizienzanalyse gefunden.
                               </div>
                             )}
+                          </div>
+
+                          {/* Row 5: Multi-variable Performance Correlations Scatter plot */}
+                          <div className="bg-white dark:bg-slate-850 p-6 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-6">
+                            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-orange-500" />
+                                  Multi-Variable Leistungs-Korrelationen
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                  Visualisiert die Wechselwirkungen zwischen Puls, Geschwindigkeit und bewältigten Höhenmetern in all deinen importierten Garmin-Aktivitäten.
+                                </p>
+                              </div>
+
+                              {/* Selected Correlation Selector */}
+                              <div className="flex flex-wrap gap-1 bg-slate-50 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-100 dark:border-slate-800">
+                                <button
+                                  onClick={() => setSelectedCorrelation('hr_speed')}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                    selectedCorrelation === 'hr_speed'
+                                      ? 'bg-orange-600 text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                  }`}
+                                >
+                                  Puls vs. Tempo
+                                </button>
+                                <button
+                                  onClick={() => setSelectedCorrelation('speed_ascent')}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                    selectedCorrelation === 'speed_ascent'
+                                      ? 'bg-orange-600 text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                  }`}
+                                >
+                                  Tempo vs. Höhenmeter
+                                </button>
+                                <button
+                                  onClick={() => setSelectedCorrelation('hr_ascent')}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                    selectedCorrelation === 'hr_ascent'
+                                      ? 'bg-orange-600 text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                  }`}
+                                >
+                                  Puls vs. Höhenmeter
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Correlation Strength Indicator & Summary */}
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                              {/* Scatter Chart Column */}
+                              <div className="lg:col-span-8 flex flex-col space-y-2">
+                                {chartData.length === 0 ? (
+                                  <div className="h-64 bg-slate-50 dark:bg-slate-900/30 rounded-xl flex flex-col items-center justify-center text-center p-4 border border-slate-150 dark:border-slate-800">
+                                    <AlertCircle className="w-7 h-7 text-slate-400 mb-2" />
+                                    <p className="text-xs text-slate-500 font-bold">Keine ausreichenden Aktivitätsdaten vorhanden</p>
+                                    <p className="text-[10px] text-slate-400 mt-1 max-w-xs">
+                                      Für diese Auswertung müssen Aktivitäten mit Pulsdaten (Ø Puls) und Höhendifferenzen in der Garmin-Datenbank hinterlegt sein.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <div className="h-72 w-full bg-slate-50/40 dark:bg-slate-900/10 rounded-xl p-2 border border-slate-100 dark:border-slate-800/80">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                        <XAxis 
+                                          type="number" 
+                                          dataKey={correlationDetails.xKey} 
+                                          name={correlationDetails.xLabel} 
+                                          unit={selectedCorrelation === 'hr_speed' ? ' km/h' : ' m'}
+                                          fontSize={9}
+                                          stroke="#94a3b8"
+                                        />
+                                        <YAxis 
+                                          type="number" 
+                                          dataKey={correlationDetails.yKey} 
+                                          name={correlationDetails.yLabel} 
+                                          unit={selectedCorrelation === 'speed_ascent' ? ' km/h' : ' bpm'}
+                                          fontSize={9}
+                                          stroke="#94a3b8"
+                                          domain={['auto', 'auto']}
+                                        />
+                                        <ZAxis type="number" range={[40, 40]} />
+                                        <Tooltip content={(props) => {
+                                          if (props.active && props.payload && props.payload.length) {
+                                            const pt = props.payload[0].payload;
+                                            return (
+                                              <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-800 shadow-xl text-[11px] space-y-1 max-w-[240px]">
+                                                <p className="font-bold text-slate-100 truncate">{pt.name}</p>
+                                                <p className="text-[10px] text-slate-400">{pt.date} | {pt.type === 'running' ? '🏃 Laufen' : pt.type === 'cycling' ? '🚴 Radfahren' : pt.type}</p>
+                                                <div className="border-t border-slate-800 my-1 pt-1 space-y-0.5">
+                                                  <div className="flex justify-between">
+                                                    <span className="text-slate-400">Distanz:</span>
+                                                    <span className="font-semibold text-slate-200">{pt.distance} km</span>
+                                                  </div>
+                                                  <div className="flex justify-between">
+                                                    <span className="text-slate-400">Dauer:</span>
+                                                    <span className="font-semibold text-slate-200">{pt.durationMinutes} min</span>
+                                                  </div>
+                                                  <div className="flex justify-between">
+                                                    <span className="text-slate-400">Tempo:</span>
+                                                    <span className="font-bold text-teal-400">{pt.speedKmh} km/h</span>
+                                                  </div>
+                                                  {pt.avgHr && (
+                                                    <div className="flex justify-between">
+                                                      <span className="text-slate-400">Ø Puls:</span>
+                                                      <span className="font-bold text-rose-400">{pt.avgHr} bpm</span>
+                                                    </div>
+                                                  )}
+                                                  <div className="flex justify-between">
+                                                    <span className="text-slate-400">Höhenmeter:</span>
+                                                    <span className="font-bold text-amber-400">+{pt.ascent} m</span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          }
+                                          return null;
+                                        }} />
+                                        <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: '10px' }} />
+                                        <Scatter name="🏃 Laufen" data={chartGroupedData.running} fill="#f97316" />
+                                        <Scatter name="🚴 Radfahren" data={chartGroupedData.cycling} fill="#3b82f6" />
+                                        <Scatter name="🏅 Andere" data={chartGroupedData.other} fill="#a855f7" />
+                                      </ScatterChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Interactive Diagnostic / Physiology panel */}
+                              <div className="lg:col-span-4 flex flex-col justify-between p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800 space-y-4">
+                                <div className="space-y-3">
+                                  <h6 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase">
+                                    {correlationDetails.title}
+                                  </h6>
+
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-xs font-extrabold px-2.5 py-1 rounded-lg ${getCorrBadgeColor(correlationDetails.r)}`}>
+                                      r = {correlationDetails.r.toFixed(2)}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
+                                      {getCorrStrengthText(correlationDetails.r)}
+                                    </span>
+                                  </div>
+
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                                    {correlationDetails.desc}
+                                  </p>
+                                </div>
+
+                                <div className="text-[10px] text-orange-600 dark:text-orange-400 leading-relaxed bg-orange-50/20 dark:bg-orange-950/10 p-3 rounded-lg border border-orange-100/50 dark:border-orange-900/20">
+                                  <p className="font-bold mb-1">💡 Trainingstipp:</p>
+                                  {selectedCorrelation === 'hr_speed' ? (
+                                    "Ein flacherer Kurvenverlauf (höheres Tempo bei gleichem oder geringerem Puls) im historischen Vergleich zeigt eine signifikante Ökonomisierung deines Herzkreislaufsystems."
+                                  ) : selectedCorrelation === 'speed_ascent' ? (
+                                    "Versuche bei stark hügeligen Strecken, deine mechanische Leistung am Berg gezielt zu drosseln, um anaerobe Belastungsspitzen und schnellen Ermüdungsaufbau zu vermeiden."
+                                  ) : (
+                                    "Achte auf deine Herzfrequenz-Zonen bei langen Anstiegen. Kontrolliertes Klettern in Zone 2 bis 3 schützt vor vorzeitigem Erschöpfen deiner Glykogenspeicher."
+                                  )}
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}

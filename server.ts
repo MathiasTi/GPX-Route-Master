@@ -1579,7 +1579,76 @@ async function startServer() {
       deepRatio: stats.sumDuration > 0 ? parseFloat(((stats.sumDeep / stats.sumDuration) * 100).toFixed(1)) : 0
     })).sort((a, b) => a.month.localeCompare(b.month));
 
+    // 8. Activity performance correlations (Heart Rate, Speed, Elevation)
+    const activityPerformancePoints: {
+      id: string;
+      name: string;
+      type: string;
+      date: string;
+      distance: number;
+      durationMinutes: number;
+      speedKmh: number;
+      ascent: number;
+      elevationRate: number; // m/km
+      avgHr?: number;
+    }[] = [];
+
+    const hrValues: number[] = [];
+    const speedValuesForHr: number[] = [];
+
+    const speedValuesForAscent: number[] = [];
+    const ascentValues: number[] = [];
+
+    const hrValuesForAscent: number[] = [];
+    const ascentValuesForHr: number[] = [];
+
+    for (const act of data.activities) {
+      if (act.distance > 0.1 && act.duration > 60) {
+        const speedKmh = act.distance / (act.duration / 3600);
+        // exclude unrealistic outliers (e.g. GPS errors or car drives, or pausing issues)
+        if (speedKmh > 1.5 && speedKmh < 100) {
+          const ascent = act.ascent || 0;
+          const elevationRate = act.distance > 0 ? (ascent / act.distance) : 0;
+          const avgHr = act.avg_hr;
+
+          activityPerformancePoints.push({
+            id: act.id,
+            name: act.name || "Activity",
+            type: act.type || "other",
+            date: act.date,
+            distance: parseFloat(act.distance.toFixed(2)),
+            durationMinutes: parseFloat((act.duration / 60).toFixed(1)),
+            speedKmh: parseFloat(speedKmh.toFixed(1)),
+            ascent: Math.round(ascent),
+            elevationRate: parseFloat(elevationRate.toFixed(1)),
+            avgHr: avgHr ? Math.round(avgHr) : undefined
+          });
+
+          if (avgHr) {
+            hrValues.push(avgHr);
+            speedValuesForHr.push(speedKmh);
+
+            hrValuesForAscent.push(avgHr);
+            ascentValuesForHr.push(ascent);
+          }
+
+          speedValuesForAscent.push(speedKmh);
+          ascentValues.push(ascent);
+        }
+      }
+    }
+
+    const hrSpeedCorr = pearsonCorrelation(speedValuesForHr, hrValues);
+    const speedAscentCorr = pearsonCorrelation(ascentValues, speedValuesForAscent);
+    const hrAscentCorr = pearsonCorrelation(ascentValuesForHr, hrValuesForAscent);
+
     return {
+      activityCorrelations: {
+        hrSpeed: parseFloat(hrSpeedCorr.toFixed(3)),
+        speedAscent: parseFloat(speedAscentCorr.toFixed(3)),
+        hrAscent: parseFloat(hrAscentCorr.toFixed(3)),
+        points: activityPerformancePoints.slice(-400) // Keep payload lightweight but informative
+      },
       sleepStressCorrelation: {
         coefficient: parseFloat(sleepStressCorr.toFixed(3)),
         deepSleepStressCoefficient: parseFloat(deepSleepStressCorr.toFixed(3)),

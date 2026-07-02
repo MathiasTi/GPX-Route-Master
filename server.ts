@@ -936,6 +936,36 @@ async function startServer() {
     }
     const tNames = tables.map(t => t.name.toLowerCase());
     
+    // Helper to decode google polyline
+    function decodePolyline(str: string): { lat: number, lng: number }[] {
+      let index = 0, lat = 0, lng = 0, coordinates = [];
+      const len = str.length;
+      while (index < len) {
+        let b, shift = 0, result = 0;
+        do {
+          b = str.charCodeAt(index++) - 63;
+          result |= (b & 0x1f) << shift;
+          shift += 5;
+        } while (b >= 0x20);
+        const dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lat += dlat;
+        shift = 0;
+        result = 0;
+        do {
+          b = str.charCodeAt(index++) - 63;
+          result |= (b & 0x1f) << shift;
+          shift += 5;
+        } while (b >= 0x20);
+        const dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lng += dlng;
+        coordinates.push({
+          lat: lat / 100000,
+          lng: lng / 100000
+        });
+      }
+      return coordinates;
+    }
+    
     let sleepImported = 0;
     let weightImported = 0;
     let stressImported = 0;
@@ -1095,6 +1125,39 @@ async function startServer() {
           const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
           const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
 
+          // Detect points or polyline columns directly in the activity table
+          const polylineCol = cols.find(c => ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(c.name.toLowerCase()))?.name;
+          const pointsJsonCol = cols.find(c => ["points_json", "points", "track_json", "pointsjson"].includes(c.name.toLowerCase()))?.name;
+
+          // Scan for a separate points/coordinates table
+          let pointsTable: string | null = null;
+          let ptLatCol: string | null = null;
+          let ptLngCol: string | null = null;
+          let ptEleCol: string | null = null;
+          let ptTimeCol: string | null = null;
+          let ptActIdCol: string | null = null;
+
+          for (const tbl of tables) {
+            const tblName = tbl.name.toLowerCase();
+            if (["activity", "sleep", "body_composition", "stress", "steps", "rhr"].includes(tblName)) {
+              continue;
+            }
+            const tblCols = uploadedDb.pragma(`table_info(${tbl.name})`) as any[];
+            const latCol = tblCols.find(c => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
+            const lngCol = tblCols.find(c => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
+            const actIdCol = tblCols.find(c => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
+
+            if (latCol && lngCol && actIdCol) {
+              pointsTable = tbl.name;
+              ptLatCol = latCol;
+              ptLngCol = lngCol;
+              ptActIdCol = actIdCol;
+              ptEleCol = tblCols.find(c => ["elevation", "ele", "alt", "altitude", "altitude_m"].includes(c.name.toLowerCase()))?.name || null;
+              ptTimeCol = tblCols.find(c => ["time", "timestamp", "date", "ts", "time_val"].includes(c.name.toLowerCase()))?.name || null;
+              break;
+            }
+          }
+
           const query = `
             SELECT 
               activity_id, 
@@ -1107,6 +1170,8 @@ async function startServer() {
               ${hasAverageHr ? ", average_hr" : ""}
               ${descCol ? `, ${descCol}` : ""}
               ${locCol ? `, ${locCol}` : ""}
+              ${polylineCol ? `, ${polylineCol}` : ""}
+              ${pointsJsonCol ? `, ${pointsJsonCol}` : ""}
             FROM activity
           `;
           const stmt = uploadedDb.prepare(query);
@@ -1129,7 +1194,43 @@ async function startServer() {
               const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
               const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
 
-              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal, descVal, locVal);
+              let pointsJsonVal: string | undefined = undefined;
+              if (pointsJsonCol && row[pointsJsonCol]) {
+                pointsJsonVal = String(row[pointsJsonCol]);
+              } else if (polylineCol && row[polylineCol]) {
+                try {
+                  const decoded = decodePolyline(String(row[polylineCol]));
+                  pointsJsonVal = JSON.stringify(decoded);
+                } catch (pe) {
+                  console.error("Failed to decode polyline:", pe);
+                }
+              } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
+                try {
+                  const ptsQuery = `
+                    SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
+                           ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
+                           ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
+                    FROM ${pointsTable}
+                    WHERE ${ptActIdCol} = ?
+                    ORDER BY ${ptTimeCol || "rowid"} ASC
+                  `;
+                  const ptsStmt = uploadedDb.prepare(ptsQuery);
+                  const dbPoints = ptsStmt.all(idVal) as any[];
+                  if (dbPoints.length > 0) {
+                    const mappedPoints = dbPoints.map(p => ({
+                      lat: parseFloat(p.lat),
+                      lng: parseFloat(p.lng),
+                      ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
+                      time: p.time ? new Date(p.time) : undefined
+                    }));
+                    pointsJsonVal = JSON.stringify(mappedPoints);
+                  }
+                } catch (ptsErr) {
+                  console.error("Error reading points from separate table:", ptsErr);
+                }
+              }
+
+              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, undefined, undefined, calVal, hrVal, descVal, locVal, pointsJsonVal);
               activitiesImported++;
             }
           });
@@ -1315,6 +1416,37 @@ async function startServer() {
             const descCol = findColumn(columns, ["description", "notes", "comment", "activity_description", "activityDescription"]);
             const locCol = findColumn(columns, ["location", "place", "city", "town", "start_location", "start_location_name", "location_name", "locationName", "startLocationName"]);
 
+            const polylineCol = findColumn(columns, ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"]);
+            const pointsJsonCol = findColumn(columns, ["points_json", "points", "track_json", "pointsjson"]);
+
+            // Scan for a separate points table if not direct columns
+            let pointsTable: string | null = null;
+            let ptLatCol: string | null = null;
+            let ptLngCol: string | null = null;
+            let ptEleCol: string | null = null;
+            let ptTimeCol: string | null = null;
+            let ptActIdCol: string | null = null;
+
+            if (!polylineCol && !pointsJsonCol) {
+              for (const tbl of tables) {
+                if (tbl.name.toLowerCase() === tName) continue;
+                const tblCols = uploadedDb.pragma(`table_info(${tbl.name})`) as any[];
+                const latCol = tblCols.find((c: any) => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
+                const lngCol = tblCols.find((c: any) => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
+                const actIdCol = tblCols.find((c: any) => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
+
+                if (latCol && lngCol && actIdCol) {
+                  pointsTable = tbl.name;
+                  ptLatCol = latCol;
+                  ptLngCol = lngCol;
+                  ptActIdCol = actIdCol;
+                  ptEleCol = tblCols.find((c: any) => ["elevation", "ele", "alt", "altitude", "altitude_m"].includes(c.name.toLowerCase()))?.name || null;
+                  ptTimeCol = tblCols.find((c: any) => ["time", "timestamp", "date", "ts", "time_val"].includes(c.name.toLowerCase()))?.name || null;
+                  break;
+                }
+              }
+            }
+
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
@@ -1336,7 +1468,43 @@ async function startServer() {
                 const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
                 const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
 
-                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal, descVal, locVal);
+                let pointsJsonVal: string | undefined = undefined;
+                if (pointsJsonCol && row[pointsJsonCol]) {
+                  pointsJsonVal = String(row[pointsJsonCol]);
+                } else if (polylineCol && row[polylineCol]) {
+                  try {
+                    const decoded = decodePolyline(String(row[polylineCol]));
+                    pointsJsonVal = JSON.stringify(decoded);
+                  } catch (pe) {
+                    console.error("Failed to decode polyline:", pe);
+                  }
+                } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
+                  try {
+                    const ptsQuery = `
+                      SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
+                             ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
+                             ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
+                      FROM ${pointsTable}
+                      WHERE ${ptActIdCol} = ?
+                      ORDER BY ${ptTimeCol || "rowid"} ASC
+                    `;
+                    const ptsStmt = uploadedDb.prepare(ptsQuery);
+                    const dbPoints = ptsStmt.all(idVal) as any[];
+                    if (dbPoints.length > 0) {
+                      const mappedPoints = dbPoints.map(p => ({
+                        lat: parseFloat(p.lat),
+                        lng: parseFloat(p.lng),
+                        ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
+                        time: p.time ? new Date(p.time) : undefined
+                      }));
+                      pointsJsonVal = JSON.stringify(mappedPoints);
+                    }
+                  } catch (ptsErr) {
+                    console.error("Error reading points in fallback:", ptsErr);
+                  }
+                }
+
+                saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, ascentVal, descentVal, calVal, hrVal, descVal, locVal, pointsJsonVal);
                 activitiesImported++;
               }
             });

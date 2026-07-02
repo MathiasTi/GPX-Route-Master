@@ -60,6 +60,7 @@ interface GarminActivity {
   descent?: number;
   calories?: number;
   avg_hr?: number;
+  points_json?: string;
 }
 
 interface HealthData {
@@ -248,16 +249,38 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       const avgHr = act.avg_hr || undefined;
       const activityType = act.type === 'running' ? 'running' : 'cycling';
       
-      const points = generateVirtualRoute(
-        startCoords.lat,
-        startCoords.lng,
-        distanceKm,
-        durationSec,
-        ascent,
-        descent,
-        avgHr,
-        activityType
-      );
+      let points: any[] = [];
+      if (act.points_json) {
+        try {
+          const parsed = JSON.parse(act.points_json);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            points = parsed.map((p: any) => ({
+              lat: parseFloat(p.lat),
+              lng: parseFloat(p.lng),
+              ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
+              time: p.time ? new Date(p.time) : undefined,
+              hr: p.hr !== undefined ? parseFloat(p.hr) : undefined,
+              cadence: p.cadence !== undefined ? parseFloat(p.cadence) : undefined,
+              power: p.power !== undefined ? parseFloat(p.power) : undefined,
+            }));
+          }
+        } catch (pe) {
+          console.error('Failed to parse points_json from database:', pe);
+        }
+      }
+
+      if (points.length === 0) {
+        points = generateVirtualRoute(
+          startCoords.lat,
+          startCoords.lng,
+          distanceKm,
+          durationSec,
+          ascent,
+          descent,
+          avgHr,
+          activityType
+        );
+      }
       
       const track = {
         id: `garmin-act-${act.id || Date.now()}`,

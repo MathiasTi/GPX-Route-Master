@@ -99,7 +99,8 @@ export function initDb() {
       calories REAL,
       avg_hr REAL,
       description TEXT,
-      location TEXT
+      location TEXT,
+      points_json TEXT
     );
   `);
 
@@ -121,6 +122,9 @@ export function initDb() {
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE garmin_activities ADD COLUMN location TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN points_json TEXT`);
   } catch (e) {}
 
   // Create performance indexes to speed up name, description, and location searches
@@ -320,11 +324,12 @@ export function saveSteps(date: string, steps: number, calories?: number, distan
 export function saveGarminActivity(
   id: string, name: string, type: string, date: string,
   distance: number, duration: number, ascent?: number, descent?: number,
-  calories?: number, avgHr?: number, description?: string, location?: string
+  calories?: number, avgHr?: number, description?: string, location?: string,
+  pointsJson?: string
 ) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, points_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     id, name, type, date, distance, duration, 
@@ -333,7 +338,8 @@ export function saveGarminActivity(
     calories !== undefined ? calories : null, 
     avgHr !== undefined ? avgHr : null, 
     description || null, 
-    location || null
+    location || null,
+    pointsJson || null
   );
 }
 
@@ -350,6 +356,7 @@ export interface DbGarminActivityRecord {
   avg_hr?: number;
   description?: string;
   location?: string;
+  points_json?: string;
 }
 
 export function searchGarminActivities(queryText: string = '', activityType?: string): DbGarminActivityRecord[] {

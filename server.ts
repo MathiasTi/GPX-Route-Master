@@ -1408,74 +1408,9 @@ async function startServer() {
               let finalDescent = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
 
               let pointsJsonVal: string | undefined = undefined;
-              if (pointsJsonCol && row[pointsJsonCol]) {
-                const parsedPoints = parsePathJson(row[pointsJsonCol]);
-                if (parsedPoints && parsedPoints.length > 0) {
-                  pointsJsonVal = JSON.stringify(parsedPoints);
-                }
-              } else if (polylineCol && row[polylineCol]) {
-                try {
-                  const decoded = decodePolyline(String(row[polylineCol]));
-                  pointsJsonVal = JSON.stringify(decoded);
-                } catch (pe) {
-                  console.error("Failed to decode polyline:", pe);
-                }
-              } else if (pointsTable && ptJsonCol && ptActIdCol) {
-                try {
-                  const ptsQuery = `
-                    SELECT ${ptJsonCol} as path_json 
-                    FROM ${pointsTable}
-                    WHERE ${ptActIdCol} = ?
-                    LIMIT 1
-                  `;
-                  const ptsStmt = uploadedDb.prepare(ptsQuery);
-                  let dbRow = ptsStmt.get(row.activity_id) as any;
-                  if (!dbRow) {
-                    const num = Number(row.activity_id);
-                    if (!isNaN(num)) {
-                      dbRow = ptsStmt.get(num) as any;
-                    }
-                  }
-                  if (dbRow && dbRow.path_json) {
-                    const parsedPoints = parsePathJson(dbRow.path_json);
-                    if (parsedPoints && parsedPoints.length > 0) {
-                      pointsJsonVal = JSON.stringify(parsedPoints);
-                    }
-                  }
-                } catch (ptsErr) {
-                  console.error("Error reading points from path JSON table:", ptsErr);
-                }
-              } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
-                try {
-                  const ptsQuery = `
-                    SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
-                           ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
-                           ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
-                    FROM ${pointsTable}
-                    WHERE ${ptActIdCol} = ?
-                    ORDER BY ${ptTimeCol || "rowid"} ASC
-                  `;
-                  const ptsStmt = uploadedDb.prepare(ptsQuery);
-                  let dbPoints = ptsStmt.all(row.activity_id) as any[];
-                  if (dbPoints.length === 0) {
-                    const num = Number(row.activity_id);
-                    if (!isNaN(num)) {
-                      dbPoints = ptsStmt.all(num) as any[];
-                    }
-                  }
-                  if (dbPoints.length > 0) {
-                    const mappedPoints = dbPoints.map(p => ({
-                      lat: normalizeCoordinate(parseFloat(p.lat), false),
-                      lng: normalizeCoordinate(parseFloat(p.lng), true),
-                      ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
-                      time: p.time ? new Date(p.time) : undefined
-                    }));
-                    pointsJsonVal = JSON.stringify(mappedPoints);
-                  }
-                } catch (ptsErr) {
-                  console.error("Error reading points from separate table:", ptsErr);
-                }
-              } else if (tNames.includes("activity_ts_metric")) {
+
+              // 1. Try activity_ts_metric FIRST if it exists, since it contains the highest resolution points (and includes elevation/metrics)
+              if (tNames.includes("activity_ts_metric")) {
                 try {
                   const metricCols = uploadedDb.pragma("table_info(activity_ts_metric)") as any[];
                   const hasActId = metricCols.some(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()));
@@ -1489,10 +1424,19 @@ async function startServer() {
                     const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
                     const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
 
+                    // Optimized pivot query to fetch lat, lng, ele, hr, cadence, power in a single pass grouped by timestamp
                     const ptsQuery = `
-                      SELECT ${tsCol} as timestamp, ${nameCol} as name, ${valCol} as value
+                      SELECT 
+                        ${tsCol} AS timestamp,
+                        MAX(CASE WHEN LOWER(${nameCol}) = 'position_lat' THEN ${valCol} END) AS lat,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng') THEN ${valCol} END) AS lng,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude') THEN ${valCol} END) AS ele,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr') THEN ${valCol} END) AS hr,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
                       FROM activity_ts_metric
-                      WHERE ${actIdCol} = ? AND ${nameCol} IN ('position_lat', 'position_long', 'enhanced_altitude', 'altitude')
+                      WHERE ${actIdCol} = ?
+                      GROUP BY ${tsCol}
                       ORDER BY ${tsCol} ASC
                     `;
                     const ptsStmt = uploadedDb.prepare(ptsQuery);
@@ -1505,57 +1449,130 @@ async function startServer() {
                     }
 
                     if (dbPoints.length > 0) {
-                      const pointsMap = new Map<string, { lat?: number, lng?: number, ele?: number, time?: Date }>();
+                      const pointsArray: any[] = [];
                       for (const p of dbPoints) {
-                        const tsStr = String(p.timestamp);
-                        let pt = pointsMap.get(tsStr);
-                        if (!pt) {
-                          let timeVal: Date | undefined = undefined;
-                          if (p.timestamp) {
-                            const numTs = Number(p.timestamp);
-                            if (!isNaN(numTs)) {
-                              if (numTs > 100000000000) {
-                                timeVal = new Date(numTs);
-                              } else if (numTs > 631065600 && numTs < 2000000000) {
-                                timeVal = new Date(numTs * 1000);
-                              } else if (numTs > 0 && numTs < 1000000000) {
-                                timeVal = new Date((numTs + 631065600) * 1000);
-                              } else {
-                                timeVal = new Date(p.timestamp);
-                              }
+                        const latVal = parseFloat(p.lat);
+                        const lngVal = parseFloat(p.lng);
+                        if (isNaN(latVal) || isNaN(lngVal)) continue;
+
+                        let timeVal: Date | undefined = undefined;
+                        if (p.timestamp) {
+                          const numTs = Number(p.timestamp);
+                          if (!isNaN(numTs)) {
+                            if (numTs > 100000000000) {
+                              timeVal = new Date(numTs);
+                            } else if (numTs > 631065600 && numTs < 2000000000) {
+                              timeVal = new Date(numTs * 1000);
+                            } else if (numTs > 0 && numTs < 1000000000) {
+                              timeVal = new Date((numTs + 631065600) * 1000);
                             } else {
                               timeVal = new Date(p.timestamp);
                             }
-                          }
-                          pt = { time: timeVal };
-                          pointsMap.set(tsStr, pt);
-                        }
-                        const valNum = parseFloat(p.value);
-                        if (!isNaN(valNum)) {
-                          if (p.name === 'position_lat') {
-                            pt.lat = normalizeCoordinate(valNum, false);
-                          } else if (p.name === 'position_long') {
-                            pt.lng = normalizeCoordinate(valNum, true);
-                          } else if (p.name === 'enhanced_altitude' || p.name === 'altitude') {
-                            pt.ele = valNum;
+                          } else {
+                            timeVal = new Date(p.timestamp);
                           }
                         }
+
+                        const pt: any = {
+                          lat: normalizeCoordinate(latVal, false),
+                          lng: normalizeCoordinate(lngVal, true),
+                          time: timeVal
+                        };
+
+                        const eleVal = parseFloat(p.ele);
+                        if (!isNaN(eleVal)) pt.ele = eleVal;
+
+                        const hrVal = parseFloat(p.hr);
+                        if (!isNaN(hrVal)) pt.hr = hrVal;
+
+                        const cadVal = parseFloat(p.cadence);
+                        if (!isNaN(cadVal)) pt.cadence = cadVal;
+
+                        const pwrVal = parseFloat(p.power);
+                        if (!isNaN(pwrVal)) pt.power = pwrVal;
+
+                        pointsArray.push(pt);
                       }
 
-                      const sortedPoints = Array.from(pointsMap.values())
-                        .filter(p => p.lat !== undefined && p.lng !== undefined)
-                        .sort((a, b) => {
-                          if (a.time && b.time) return a.time.getTime() - b.time.getTime();
-                          return 0;
-                        });
-
-                      if (sortedPoints.length > 0) {
-                        pointsJsonVal = JSON.stringify(sortedPoints);
+                      if (pointsArray.length > 0) {
+                        pointsJsonVal = JSON.stringify(pointsArray);
                       }
                     }
                   }
                 } catch (ptsErr) {
                   console.error("Error reading points from activity_ts_metric:", ptsErr);
+                }
+              }
+
+              // 2. If activity_ts_metric was not present or returned 0 points, fall back to other sources
+              if (!pointsJsonVal) {
+                if (pointsJsonCol && row[pointsJsonCol]) {
+                  const parsedPoints = parsePathJson(row[pointsJsonCol]);
+                  if (parsedPoints && parsedPoints.length > 0) {
+                    pointsJsonVal = JSON.stringify(parsedPoints);
+                  }
+                } else if (polylineCol && row[polylineCol]) {
+                  try {
+                    const decoded = decodePolyline(String(row[polylineCol]));
+                    pointsJsonVal = JSON.stringify(decoded);
+                  } catch (pe) {
+                    console.error("Failed to decode polyline:", pe);
+                  }
+                } else if (pointsTable && ptJsonCol && ptActIdCol) {
+                  try {
+                    const ptsQuery = `
+                      SELECT ${ptJsonCol} as path_json 
+                      FROM ${pointsTable}
+                      WHERE ${ptActIdCol} = ?
+                      LIMIT 1
+                    `;
+                    const ptsStmt = uploadedDb.prepare(ptsQuery);
+                    let dbRow = ptsStmt.get(row.activity_id) as any;
+                    if (!dbRow) {
+                      const num = Number(row.activity_id);
+                      if (!isNaN(num)) {
+                        dbRow = ptsStmt.get(num) as any;
+                      }
+                    }
+                    if (dbRow && dbRow.path_json) {
+                      const parsedPoints = parsePathJson(dbRow.path_json);
+                      if (parsedPoints && parsedPoints.length > 0) {
+                        pointsJsonVal = JSON.stringify(parsedPoints);
+                      }
+                    }
+                  } catch (ptsErr) {
+                    console.error("Error reading points from path JSON table:", ptsErr);
+                  }
+                } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
+                  try {
+                    const ptsQuery = `
+                      SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
+                             ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
+                             ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
+                      FROM ${pointsTable}
+                      WHERE ${ptActIdCol} = ?
+                      ORDER BY ${ptTimeCol || "rowid"} ASC
+                    `;
+                    const ptsStmt = uploadedDb.prepare(ptsQuery);
+                    let dbPoints = ptsStmt.all(row.activity_id) as any[];
+                    if (dbPoints.length === 0) {
+                      const num = Number(row.activity_id);
+                      if (!isNaN(num)) {
+                        dbPoints = ptsStmt.all(num) as any[];
+                      }
+                    }
+                    if (dbPoints.length > 0) {
+                      const mappedPoints = dbPoints.map(p => ({
+                        lat: normalizeCoordinate(parseFloat(p.lat), false),
+                        lng: normalizeCoordinate(parseFloat(p.lng), true),
+                        ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
+                        time: p.time ? new Date(p.time) : undefined
+                      }));
+                      pointsJsonVal = JSON.stringify(mappedPoints);
+                    }
+                  } catch (ptsErr) {
+                    console.error("Error reading points from separate table:", ptsErr);
+                  }
                 }
               }
 
@@ -1816,74 +1833,9 @@ async function startServer() {
                 const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
 
                 let pointsJsonVal: string | undefined = undefined;
-                if (pointsJsonCol && row[pointsJsonCol]) {
-                  const parsedPoints = parsePathJson(row[pointsJsonCol]);
-                  if (parsedPoints && parsedPoints.length > 0) {
-                    pointsJsonVal = JSON.stringify(parsedPoints);
-                  }
-                } else if (polylineCol && row[polylineCol]) {
-                  try {
-                    const decoded = decodePolyline(String(row[polylineCol]));
-                    pointsJsonVal = JSON.stringify(decoded);
-                  } catch (pe) {
-                    console.error("Failed to decode polyline:", pe);
-                  }
-                } else if (pointsTable && ptJsonCol && ptActIdCol) {
-                  try {
-                    const ptsQuery = `
-                      SELECT ${ptJsonCol} as path_json 
-                      FROM ${pointsTable}
-                      WHERE ${ptActIdCol} = ?
-                      LIMIT 1
-                    `;
-                    const ptsStmt = uploadedDb.prepare(ptsQuery);
-                    let dbRow = ptsStmt.get(row[idCol]) as any;
-                    if (!dbRow) {
-                      const num = Number(row[idCol]);
-                      if (!isNaN(num)) {
-                        dbRow = ptsStmt.get(num) as any;
-                      }
-                    }
-                    if (dbRow && dbRow.path_json) {
-                      const parsedPoints = parsePathJson(dbRow.path_json);
-                      if (parsedPoints && parsedPoints.length > 0) {
-                        pointsJsonVal = JSON.stringify(parsedPoints);
-                      }
-                    }
-                  } catch (ptsErr) {
-                    console.error("Error reading points in fallback from path JSON table:", ptsErr);
-                  }
-                } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
-                  try {
-                    const ptsQuery = `
-                      SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
-                             ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
-                             ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
-                      FROM ${pointsTable}
-                      WHERE ${ptActIdCol} = ?
-                      ORDER BY ${ptTimeCol || "rowid"} ASC
-                    `;
-                    const ptsStmt = uploadedDb.prepare(ptsQuery);
-                    let dbPoints = ptsStmt.all(row[idCol]) as any[];
-                    if (dbPoints.length === 0) {
-                      const num = Number(row[idCol]);
-                      if (!isNaN(num)) {
-                        dbPoints = ptsStmt.all(num) as any[];
-                      }
-                    }
-                    if (dbPoints.length > 0) {
-                      const mappedPoints = dbPoints.map(p => ({
-                        lat: normalizeCoordinate(parseFloat(p.lat), false),
-                        lng: normalizeCoordinate(parseFloat(p.lng), true),
-                        ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
-                        time: p.time ? new Date(p.time) : undefined
-                      }));
-                      pointsJsonVal = JSON.stringify(mappedPoints);
-                    }
-                  } catch (ptsErr) {
-                    console.error("Error reading points in fallback:", ptsErr);
-                  }
-                } else if (tNames.includes("activity_ts_metric")) {
+
+                // 1. Try activity_ts_metric FIRST if it exists, since it contains the highest resolution points (and includes elevation/metrics)
+                if (tNames.includes("activity_ts_metric")) {
                   try {
                     const metricCols = uploadedDb.pragma("table_info(activity_ts_metric)") as any[];
                     const hasActId = metricCols.some(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()));
@@ -1897,10 +1849,19 @@ async function startServer() {
                       const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
                       const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
 
+                      // Optimized pivot query to fetch lat, lng, ele, hr, cadence, power in a single pass grouped by timestamp
                       const ptsQuery = `
-                        SELECT ${tsCol} as timestamp, ${nameCol} as name, ${valCol} as value
+                        SELECT 
+                          ${tsCol} AS timestamp,
+                          MAX(CASE WHEN LOWER(${nameCol}) = 'position_lat' THEN ${valCol} END) AS lat,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng') THEN ${valCol} END) AS lng,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude') THEN ${valCol} END) AS ele,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr') THEN ${valCol} END) AS hr,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
                         FROM activity_ts_metric
-                        WHERE ${actIdCol} = ? AND ${nameCol} IN ('position_lat', 'position_long', 'enhanced_altitude', 'altitude')
+                        WHERE ${actIdCol} = ?
+                        GROUP BY ${tsCol}
                         ORDER BY ${tsCol} ASC
                       `;
                       const ptsStmt = uploadedDb.prepare(ptsQuery);
@@ -1913,57 +1874,130 @@ async function startServer() {
                       }
 
                       if (dbPoints.length > 0) {
-                        const pointsMap = new Map<string, { lat?: number, lng?: number, ele?: number, time?: Date }>();
+                        const pointsArray: any[] = [];
                         for (const p of dbPoints) {
-                          const tsStr = String(p.timestamp);
-                          let pt = pointsMap.get(tsStr);
-                          if (!pt) {
-                            let timeVal: Date | undefined = undefined;
-                            if (p.timestamp) {
-                              const numTs = Number(p.timestamp);
-                              if (!isNaN(numTs)) {
-                                if (numTs > 100000000000) {
-                                  timeVal = new Date(numTs);
-                                } else if (numTs > 631065600 && numTs < 2000000000) {
-                                  timeVal = new Date(numTs * 1000);
-                                } else if (numTs > 0 && numTs < 1000000000) {
-                                  timeVal = new Date((numTs + 631065600) * 1000);
-                                } else {
-                                  timeVal = new Date(p.timestamp);
-                                }
+                          const latVal = parseFloat(p.lat);
+                          const lngVal = parseFloat(p.lng);
+                          if (isNaN(latVal) || isNaN(lngVal)) continue;
+
+                          let timeVal: Date | undefined = undefined;
+                          if (p.timestamp) {
+                            const numTs = Number(p.timestamp);
+                            if (!isNaN(numTs)) {
+                              if (numTs > 100000000000) {
+                                timeVal = new Date(numTs);
+                              } else if (numTs > 631065600 && numTs < 2000000000) {
+                                timeVal = new Date(numTs * 1000);
+                              } else if (numTs > 0 && numTs < 1000000000) {
+                                timeVal = new Date((numTs + 631065600) * 1000);
                               } else {
                                 timeVal = new Date(p.timestamp);
                               }
-                            }
-                            pt = { time: timeVal };
-                            pointsMap.set(tsStr, pt);
-                          }
-                          const valNum = parseFloat(p.value);
-                          if (!isNaN(valNum)) {
-                            if (p.name === 'position_lat') {
-                              pt.lat = normalizeCoordinate(valNum, false);
-                            } else if (p.name === 'position_long') {
-                              pt.lng = normalizeCoordinate(valNum, true);
-                            } else if (p.name === 'enhanced_altitude' || p.name === 'altitude') {
-                              pt.ele = valNum;
+                            } else {
+                              timeVal = new Date(p.timestamp);
                             }
                           }
+
+                          const pt: any = {
+                            lat: normalizeCoordinate(latVal, false),
+                            lng: normalizeCoordinate(lngVal, true),
+                            time: timeVal
+                          };
+
+                          const eleVal = parseFloat(p.ele);
+                          if (!isNaN(eleVal)) pt.ele = eleVal;
+
+                          const hrVal = parseFloat(p.hr);
+                          if (!isNaN(hrVal)) pt.hr = hrVal;
+
+                          const cadVal = parseFloat(p.cadence);
+                          if (!isNaN(cadVal)) pt.cadence = cadVal;
+
+                          const pwrVal = parseFloat(p.power);
+                          if (!isNaN(pwrVal)) pt.power = pwrVal;
+
+                          pointsArray.push(pt);
                         }
 
-                        const sortedPoints = Array.from(pointsMap.values())
-                          .filter(p => p.lat !== undefined && p.lng !== undefined)
-                          .sort((a, b) => {
-                            if (a.time && b.time) return a.time.getTime() - b.time.getTime();
-                            return 0;
-                          });
-
-                        if (sortedPoints.length > 0) {
-                          pointsJsonVal = JSON.stringify(sortedPoints);
+                        if (pointsArray.length > 0) {
+                          pointsJsonVal = JSON.stringify(pointsArray);
                         }
                       }
                     }
                   } catch (ptsErr) {
-                    console.error("Error reading points in fallback from activity_ts_metric:", ptsErr);
+                    console.error("Error reading points from activity_ts_metric in fallback:", ptsErr);
+                  }
+                }
+
+                // 2. If activity_ts_metric was not present or returned 0 points, fall back to other sources
+                if (!pointsJsonVal) {
+                  if (pointsJsonCol && row[pointsJsonCol]) {
+                    const parsedPoints = parsePathJson(row[pointsJsonCol]);
+                    if (parsedPoints && parsedPoints.length > 0) {
+                      pointsJsonVal = JSON.stringify(parsedPoints);
+                    }
+                  } else if (polylineCol && row[polylineCol]) {
+                    try {
+                      const decoded = decodePolyline(String(row[polylineCol]));
+                      pointsJsonVal = JSON.stringify(decoded);
+                    } catch (pe) {
+                      console.error("Failed to decode polyline:", pe);
+                    }
+                  } else if (pointsTable && ptJsonCol && ptActIdCol) {
+                    try {
+                      const ptsQuery = `
+                        SELECT ${ptJsonCol} as path_json 
+                        FROM ${pointsTable}
+                        WHERE ${ptActIdCol} = ?
+                        LIMIT 1
+                      `;
+                      const ptsStmt = uploadedDb.prepare(ptsQuery);
+                      let dbRow = ptsStmt.get(row[idCol]) as any;
+                      if (!dbRow) {
+                        const num = Number(row[idCol]);
+                        if (!isNaN(num)) {
+                          dbRow = ptsStmt.get(num) as any;
+                        }
+                      }
+                      if (dbRow && dbRow.path_json) {
+                        const parsedPoints = parsePathJson(dbRow.path_json);
+                        if (parsedPoints && parsedPoints.length > 0) {
+                          pointsJsonVal = JSON.stringify(parsedPoints);
+                        }
+                      }
+                    } catch (ptsErr) {
+                      console.error("Error reading points in fallback from path JSON table:", ptsErr);
+                    }
+                  } else if (pointsTable && ptLatCol && ptLngCol && ptActIdCol) {
+                    try {
+                      const ptsQuery = `
+                        SELECT ${ptLatCol} as lat, ${ptLngCol} as lng 
+                               ${ptEleCol ? `, ${ptEleCol} as ele` : ""} 
+                               ${ptTimeCol ? `, ${ptTimeCol} as time` : ""}
+                        FROM ${pointsTable}
+                        WHERE ${ptActIdCol} = ?
+                        ORDER BY ${ptTimeCol || "rowid"} ASC
+                      `;
+                      const ptsStmt = uploadedDb.prepare(ptsQuery);
+                      let dbPoints = ptsStmt.all(row[idCol]) as any[];
+                      if (dbPoints.length === 0) {
+                        const num = Number(row[idCol]);
+                        if (!isNaN(num)) {
+                          dbPoints = ptsStmt.all(num) as any[];
+                        }
+                      }
+                      if (dbPoints.length > 0) {
+                        const mappedPoints = dbPoints.map(p => ({
+                          lat: normalizeCoordinate(parseFloat(p.lat), false),
+                          lng: normalizeCoordinate(parseFloat(p.lng), true),
+                          ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
+                          time: p.time ? new Date(p.time) : undefined
+                        }));
+                        pointsJsonVal = JSON.stringify(mappedPoints);
+                      }
+                    } catch (ptsErr) {
+                      console.error("Error reading points in fallback:", ptsErr);
+                    }
                   }
                 }
 

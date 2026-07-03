@@ -967,24 +967,27 @@ async function startServer() {
     }
     
     // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
-    function normalizeCoordinate(val: number): number {
+    // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
+    // Supports distinguishing between latitude and longitude range limits
+    function normalizeCoordinate(val: number, isLng: boolean = false): number {
       if (isNaN(val)) return val;
       if (Math.abs(val) > 180) {
         // Semicircles (2^31/180) -> degrees
         const semi = val * 180 / 2147483648;
-        if (Math.abs(semi) <= 90) return semi;
+        const maxLimit = isLng ? 180 : 90;
+        if (Math.abs(semi) <= maxLimit) return semi;
         
         // E7 notation (e.g., 481234567 -> 48.1234567)
         const e7 = val / 10000000;
-        if (Math.abs(e7) <= 180) return e7;
+        if (Math.abs(e7) <= maxLimit) return e7;
         
         // E6 microdegrees (e.g., 48123456 -> 48.123456)
         const e6 = val / 1000000;
-        if (Math.abs(e6) <= 180) return e6;
+        if (Math.abs(e6) <= maxLimit) return e6;
 
         // E5 notation
         const e5 = val / 100000;
-        if (Math.abs(e5) <= 180) return e5;
+        if (Math.abs(e5) <= maxLimit) return e5;
       }
       return val;
     }
@@ -1029,13 +1032,87 @@ async function startServer() {
         }
 
         if (!Array.isArray(parsed)) return null;
+
+        // Smart dynamic detection of coordinate order [lng, lat] vs [lat, lng] for array coordinates
+        let latIndex = 0;
+        let lngIndex = 1;
+
+        const arrayItems = parsed.filter(item => Array.isArray(item)) as [any, any][];
+        if (arrayItems.length > 0) {
+          let has0OutsideLat = false;
+          let has1OutsideLat = false;
+
+          for (const pt of arrayItems) {
+            const val0 = parseFloat(pt[0]);
+            const val1 = parseFloat(pt[1]);
+            if (!isNaN(val0)) {
+              const d0 = normalizeCoordinate(val0, false);
+              if (Math.abs(d0) > 90) has0OutsideLat = true;
+            }
+            if (!isNaN(val1)) {
+              const d1 = normalizeCoordinate(val1, false);
+              if (Math.abs(d1) > 90) has1OutsideLat = true;
+            }
+          }
+
+          if (has0OutsideLat && !has1OutsideLat) {
+            // First column is strictly outside [-90, 90], so it's Longitude. Second column is Latitude.
+            latIndex = 1;
+            lngIndex = 0;
+          } else if (has1OutsideLat && !has0OutsideLat) {
+            // Second column is strictly outside [-90, 90], so it's Longitude. First column is Latitude.
+            latIndex = 0;
+            lngIndex = 1;
+          } else {
+            // Both are mathematically within [-90, 90]. Let's compute average coordinates to apply region heuristics.
+            let sum0 = 0;
+            let sum1 = 0;
+            let count = 0;
+            for (const pt of arrayItems.slice(0, 50)) {
+              const val0 = parseFloat(pt[0]);
+              const val1 = parseFloat(pt[1]);
+              if (!isNaN(val0) && !isNaN(val1)) {
+                sum0 += normalizeCoordinate(val0, false);
+                sum1 += normalizeCoordinate(val1, false);
+                count++;
+              }
+            }
+
+            if (count > 0) {
+              const avg0 = sum0 / count;
+              const avg1 = sum1 / count;
+
+              // Check if Option A (avg0 is Lat, avg1 is Lng) lies in the uninhabited Indian Ocean east of Africa
+              // (lat between -15 and 15, lng between 35 and 65)
+              const optionA_inOcean = (avg0 >= -15 && avg0 <= 15) && (avg1 >= 35 && avg1 <= 65);
+              const optionB_inOcean = (avg1 >= -15 && avg1 <= 15) && (avg0 >= 35 && avg0 <= 65);
+
+              if (optionA_inOcean && !optionB_inOcean) {
+                // Option A is in the ocean, Option B is likely on land. Use Option B.
+                latIndex = 1;
+                lngIndex = 0;
+              } else if (optionB_inOcean && !optionA_inOcean) {
+                // Option B is in the ocean, Option A is likely on land. Use Option A.
+                latIndex = 0;
+                lngIndex = 1;
+              } else {
+                // Heuristic for Germany/Europe: Latitude (45-60) is larger than Longitude (-10 to 30)
+                const is1Lat0Lng = (avg1 >= 35 && avg1 <= 65) && (avg0 >= -15 && avg0 <= 30);
+                const is0Lat1Lng = (avg0 >= 35 && avg0 <= 65) && (avg1 >= -15 && avg1 <= 30);
+                if (is1Lat0Lng && !is0Lat1Lng) {
+                  latIndex = 1;
+                  lngIndex = 0;
+                }
+              }
+            }
+          }
+        }
         
         return parsed.map(item => {
           if (!item) return null;
           if (Array.isArray(item)) {
-            // Format: [lat, lng] or [lat, lng, ele] or [lat, lng, ele, time]
-            const lat = normalizeCoordinate(parseFloat(item[0]));
-            const lng = normalizeCoordinate(parseFloat(item[1]));
+            const lat = normalizeCoordinate(parseFloat(item[latIndex]), false);
+            const lng = normalizeCoordinate(parseFloat(item[lngIndex]), true);
             if (isNaN(lat) || isNaN(lng)) return null;
             return {
               lat,
@@ -1049,8 +1126,8 @@ async function startServer() {
             const lngKey = Object.keys(item).find(k => ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"].includes(k.toLowerCase()));
             if (!latKey || !lngKey) return null;
             
-            const lat = normalizeCoordinate(parseFloat((item as any)[latKey]));
-            const lng = normalizeCoordinate(parseFloat((item as any)[lngKey]));
+            const lat = normalizeCoordinate(parseFloat((item as any)[latKey]), false);
+            const lng = normalizeCoordinate(parseFloat((item as any)[lngKey]), true);
             if (isNaN(lat) || isNaN(lng)) return null;
             
             const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
@@ -1376,8 +1453,8 @@ async function startServer() {
                   }
                   if (dbPoints.length > 0) {
                     const mappedPoints = dbPoints.map(p => ({
-                      lat: normalizeCoordinate(parseFloat(p.lat)),
-                      lng: normalizeCoordinate(parseFloat(p.lng)),
+                      lat: normalizeCoordinate(parseFloat(p.lat), false),
+                      lng: normalizeCoordinate(parseFloat(p.lng), true),
                       ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
                       time: p.time ? new Date(p.time) : undefined
                     }));
@@ -1702,8 +1779,8 @@ async function startServer() {
                     }
                     if (dbPoints.length > 0) {
                       const mappedPoints = dbPoints.map(p => ({
-                        lat: normalizeCoordinate(parseFloat(p.lat)),
-                        lng: normalizeCoordinate(parseFloat(p.lng)),
+                        lat: normalizeCoordinate(parseFloat(p.lat), false),
+                        lng: normalizeCoordinate(parseFloat(p.lng), true),
                         ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
                         time: p.time ? new Date(p.time) : undefined
                       }));

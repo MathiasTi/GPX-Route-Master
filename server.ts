@@ -1312,8 +1312,8 @@ async function startServer() {
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
           const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
           const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
-          const ascentCol = cols.find(c => ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m"].includes(c.name.toLowerCase()))?.name;
-          const descentCol = cols.find(c => ["descent", "total_descent", "elevation_loss", "loss", "descent_m"].includes(c.name.toLowerCase()))?.name;
+          const ascentCol = cols.find(c => ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m", "total_elevation_gain", "elevationgain", "totalascent", "totalascentm", "total_ascent_m", "totalelevationgain", "elevation_gain_m", "elevationgainm", "elevation_gain_meters", "elevationgainmeters", "climb", "total_climb"].includes(c.name.toLowerCase()))?.name;
+          const descentCol = cols.find(c => ["descent", "total_descent", "elevation_loss", "loss", "descent_m", "total_elevation_loss", "elevationloss", "totaldescent", "totaldescentm", "total_descent_m", "totalelevationloss", "elevation_loss_m", "elevationlossm", "elevation_loss_meters", "elevationlossmeters", "drop", "total_drop"].includes(c.name.toLowerCase()))?.name;
 
           // Detect points or polyline columns directly in the activity table
           const polylineCol = cols.find(c => ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(c.name.toLowerCase()))?.name;
@@ -1349,7 +1349,7 @@ async function startServer() {
               ptLatCol = latCol;
               ptLngCol = lngCol;
               ptActIdCol = actIdCol;
-              ptEleCol = tblCols.find(c => ["elevation", "ele", "alt", "altitude", "altitude_m"].includes(c.name.toLowerCase()))?.name || null;
+              ptEleCol = tblCols.find(c => ["elevation", "ele", "alt", "altitude", "altitude_m", "enhanced_altitude", "enhanced_altitude_m", "height", "ele_m", "avg_altitude", "max_altitude"].includes(c.name.toLowerCase()))?.name || null;
               ptTimeCol = tblCols.find(c => ["time", "timestamp", "date", "ts", "time_val"].includes(c.name.toLowerCase()))?.name || null;
               break;
             }
@@ -1455,7 +1455,7 @@ async function startServer() {
                     const mappedPoints = dbPoints.map(p => ({
                       lat: normalizeCoordinate(parseFloat(p.lat), false),
                       lng: normalizeCoordinate(parseFloat(p.lng), true),
-                      ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
+                      ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
                       time: p.time ? new Date(p.time) : undefined
                     }));
                     pointsJsonVal = JSON.stringify(mappedPoints);
@@ -1693,7 +1693,7 @@ async function startServer() {
                   ptLatCol = latCol;
                   ptLngCol = lngCol;
                   ptActIdCol = actIdCol;
-                  ptEleCol = tblCols.find((c: any) => ["elevation", "ele", "alt", "altitude", "altitude_m"].includes(c.name.toLowerCase()))?.name || null;
+                  ptEleCol = tblCols.find((c: any) => ["elevation", "ele", "alt", "altitude", "altitude_m", "enhanced_altitude", "enhanced_altitude_m", "height", "ele_m", "avg_altitude", "max_altitude"].includes(c.name.toLowerCase()))?.name || null;
                   ptTimeCol = tblCols.find((c: any) => ["time", "timestamp", "date", "ts", "time_val"].includes(c.name.toLowerCase()))?.name || null;
                   break;
                 }
@@ -1781,7 +1781,7 @@ async function startServer() {
                       const mappedPoints = dbPoints.map(p => ({
                         lat: normalizeCoordinate(parseFloat(p.lat), false),
                         lng: normalizeCoordinate(parseFloat(p.lng), true),
-                        ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
+                        ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
                         time: p.time ? new Date(p.time) : undefined
                       }));
                       pointsJsonVal = JSON.stringify(mappedPoints);

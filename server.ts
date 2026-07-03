@@ -918,6 +918,16 @@ async function startServer() {
     }
   });
 
+  const importDebugLogs: string[] = [];
+  function addImportDebugLog(message: string) {
+    const logStr = `[${new Date().toISOString()}] ${message}`;
+    console.log(logStr);
+    importDebugLogs.push(logStr);
+    if (importDebugLogs.length > 2000) {
+      importDebugLogs.shift();
+    }
+  }
+
   // Shared Garmin SQLite database processing engine (memory efficient, streams rows via stmt.iterate())
   function processGarminDatabase(uploadedDb: any): {
     sleep: number;
@@ -928,13 +938,16 @@ async function startServer() {
     activities: number;
     tables: string[];
   } {
+    addImportDebugLog("==== STARTE GARMIN DATENBANK IMPORT ====");
     let tables: { name: string }[] = [];
     try {
       tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
     } catch (tableErr: any) {
+      addImportDebugLog(`[FEHLER] Fehler beim Auslesen der Tabellenstruktur: ${tableErr.message || tableErr}`);
       throw new Error(`Fehler beim Auslesen der Tabellenstruktur: ${tableErr.message || tableErr}`);
     }
     const tNames = tables.map(t => t.name.toLowerCase());
+    addImportDebugLog(`Datenbank geöffnet. Gefundene Tabellen (${tNames.length}): ${tNames.join(", ")}`);
     
     // Ensure optimal index exists on activity_ts_metric for faster timeseries queries
     if (tNames.includes("activity_ts_metric")) {
@@ -1424,14 +1437,17 @@ async function startServer() {
                     const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
                     const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
 
+                    addImportDebugLog(`[Pivot-Setup] Analysiere activity_ts_metric für ID ${row.activity_id}. Spalten: actIdCol=${actIdCol}, nameCol=${nameCol}, tsCol=${tsCol}, valCol=${valCol}`);
+
                     // Optimized pivot query to fetch lat, lng, ele, hr, cadence, power in a single pass grouped by timestamp
+                    // Using highly robust case-insensitive metric names (IN matching) to cover different Garmin database styles
                     const ptsQuery = `
                       SELECT 
                         ${tsCol} AS timestamp,
-                        MAX(CASE WHEN LOWER(${nameCol}) = 'position_lat' THEN ${valCol} END) AS lat,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng') THEN ${valCol} END) AS lng,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude') THEN ${valCol} END) AS ele,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr') THEN ${valCol} END) AS hr,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt') THEN ${valCol} END) AS ele,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm') THEN ${valCol} END) AS hr,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
                       FROM activity_ts_metric
@@ -1448,7 +1464,27 @@ async function startServer() {
                       }
                     }
 
-                    if (dbPoints.length > 0) {
+                    if (dbPoints.length === 0) {
+                      addImportDebugLog(`[Pivot-Warnung] Keine Datenpunkte in activity_ts_metric für Activity-ID ${row.activity_id} gefunden.`);
+                      try {
+                        const countRow = uploadedDb.prepare(`SELECT count(*) as cnt FROM activity_ts_metric WHERE ${actIdCol} = ?`).get(row.activity_id) as any;
+                        const distinctNames = uploadedDb.prepare(`SELECT DISTINCT ${nameCol} as name FROM activity_ts_metric WHERE ${actIdCol} = ? LIMIT 15`).all(row.activity_id) as any[];
+                        addImportDebugLog(`[Pivot-Diagnose] Für ID ${row.activity_id} existieren ${countRow?.cnt || 0} Zeilen. Gefundene Metriken-Namen (max 15): ${distinctNames.map(d => `'${d.name}'`).join(", ")}`);
+                        
+                        // Let's also check some sample rows to see if we can find any coordinate data
+                        const sampleRows = uploadedDb.prepare(`SELECT * FROM activity_ts_metric WHERE ${actIdCol} = ? LIMIT 5`).all(row.activity_id) as any[];
+                        addImportDebugLog(`[Pivot-Diagnose] Erste 5 Zeilen-Rohdaten für ID ${row.activity_id}: ${JSON.stringify(sampleRows)}`);
+                      } catch (diagErr: any) {
+                        addImportDebugLog(`[Pivot-Diagnose-Fehler] Fehler bei Diagnose: ${diagErr.message}`);
+                      }
+                    } else {
+                      addImportDebugLog(`[Pivot-Erfolg] ${dbPoints.length} Zeilen aus activity_ts_metric für ID ${row.activity_id} geladen.`);
+                      // Log first 2 points
+                      for (let i = 0; i < Math.min(2, dbPoints.length); i++) {
+                        const pt = dbPoints[i];
+                        addImportDebugLog(`[Pivot-Punkt-Roh ${i}] timestamp=${pt.timestamp}, lat=${pt.lat} (Type: ${typeof pt.lat}), lng=${pt.lng}, ele=${pt.ele}, hr=${pt.hr}`);
+                      }
+
                       const pointsArray: any[] = [];
                       for (const p of dbPoints) {
                         const latVal = parseFloat(p.lat);
@@ -1494,8 +1530,18 @@ async function startServer() {
                         pointsArray.push(pt);
                       }
 
-                      if (pointsArray.length > 0) {
+                      if (pointsArray.length === 0) {
+                        addImportDebugLog(`[Pivot-Warnung] Nach Filterung blieben 0 von ${dbPoints.length} Punkten übrig (Koordinaten waren NaN).`);
+                        if (dbPoints.length > 0) {
+                          addImportDebugLog(`[Pivot-Punkt-Check] lat_raw="${dbPoints[0].lat}", lng_raw="${dbPoints[0].lng}"`);
+                        }
+                      } else {
                         pointsJsonVal = JSON.stringify(pointsArray);
+                        addImportDebugLog(`[Pivot-Erfolg] ${pointsArray.length} GPS-Punkte erfolgreich extrahiert und normalisiert.`);
+                        if (pointsArray.length > 0) {
+                          const firstPt = pointsArray[0];
+                          addImportDebugLog(`[Pivot-Normalisiert-Punkt 0] lat=${firstPt.lat}, lng=${firstPt.lng}, ele=${firstPt.ele || '-'}, hr=${firstPt.hr || '-'}`);
+                        }
                       }
                     }
                   }
@@ -2519,6 +2565,26 @@ async function startServer() {
     } catch (err: any) {
       console.error("Local SQLite import error:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to import local SQLite database" });
+    }
+  });
+
+  // GET /api/import-debug-logs: Retrieve server-side SQLite import and normalization logs
+  app.get("/api/import-debug-logs", (req, res) => {
+    try {
+      res.json({ success: true, logs: importDebugLogs });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST /api/import-debug-logs/clear: Clear the server-side SQLite import logs
+  app.post("/api/import-debug-logs/clear", (req, res) => {
+    try {
+      importDebugLogs.length = 0;
+      addImportDebugLog("==== PROTOKOLL GELEERT ====");
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 

@@ -85,6 +85,46 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
   const [selectedCorrelation, setSelectedCorrelation] = useState<'hr_speed' | 'speed_ascent' | 'hr_ascent'>('hr_speed');
+  
+  // Server-side SQLite Import Debug Logs State
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showLogs, setShowLogs] = useState<boolean>(false);
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState<boolean>(false);
+
+  const fetchDebugLogs = async () => {
+    setIsRefreshingLogs(true);
+    try {
+      const res = await fetch(getApiUrl('/api/import-debug-logs'));
+      const json = await res.json();
+      if (json.success) {
+        setDebugLogs(json.logs || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch debug logs', err);
+    } finally {
+      setIsRefreshingLogs(false);
+    }
+  };
+
+  const clearDebugLogs = async () => {
+    if (!window.confirm('Möchtest du das Server-Protokoll wirklich leeren?')) return;
+    try {
+      const res = await fetch(getApiUrl('/api/import-debug-logs/clear'), { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setDebugLogs([]);
+      }
+    } catch (err) {
+      console.error('Failed to clear debug logs', err);
+    }
+  };
+
+  // Auto-fetch logs when showLogs is toggled
+  useEffect(() => {
+    if (showLogs) {
+      fetchDebugLogs();
+    }
+  }, [showLogs]);
 
   const activityPoints = useMemo(() => {
     return analyticsData?.activityCorrelations?.points || [];
@@ -420,8 +460,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
           `Erfolgreich importiert: ${s.sleep} Schlafdatensätze, ${s.weight} Gewichtseinträge, ${s.stress} Stresstage, ${s.rhr} Pulsdaten, ${s.steps} Schrittdaten & ${s.activities} Aktivitäten!`
         );
         fetchHealthMetrics();
+        fetchDebugLogs();
+        setShowLogs(true);
       } else {
         setError(result.error || 'Fehler beim Analysieren der SQLite-Datenbank.');
+        fetchDebugLogs();
+        setShowLogs(true);
       }
     } catch (err: any) {
       console.error(err);
@@ -457,8 +501,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
           `Erfolgreich aus lokaler Datei importiert: ${s.sleep} Schlafdatensätze, ${s.weight} Gewichtseinträge, ${s.stress} Stresstage, ${s.rhr} Pulsdaten, ${s.steps} Schrittdaten & ${s.activities} Aktivitäten!`
         );
         fetchHealthMetrics();
+        fetchDebugLogs();
+        setShowLogs(true);
       } else {
         setError(json.error || 'Fehler beim Importieren der lokalen Datenbank.');
+        fetchDebugLogs();
+        setShowLogs(true);
       }
     } catch (err: any) {
       console.error(err);
@@ -538,6 +586,89 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const avgSleep = data?.sleep && data.sleep.length > 0
     ? Math.round(data.sleep.reduce((acc, s) => acc + s.duration, 0) / data.sleep.length)
     : null;
+
+  const renderDebugTerminal = () => {
+    return (
+      <div className="border border-slate-200 dark:border-slate-800 rounded-3xl bg-white dark:bg-slate-900 overflow-hidden shadow-xs mt-6 text-left">
+        <button
+          type="button"
+          onClick={() => setShowLogs(!showLogs)}
+          className="w-full flex items-center justify-between p-5 text-left font-bold text-sm text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-850/35 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex h-2 w-2 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
+            </span>
+            <span>Server-Import-Protokoll & Diagnose</span>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
+            <span>{showLogs ? 'Ausblenden' : 'Einblenden'}</span>
+            <span className="text-slate-300 dark:text-slate-700">|</span>
+            <span>{debugLogs.length} Einträge</span>
+          </div>
+        </button>
+
+        {showLogs && (
+          <div className="border-t border-slate-150 dark:border-slate-800/80 p-5 space-y-4 bg-slate-950 text-slate-200">
+            <div className="flex items-center justify-between text-xs pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-1.5 font-mono text-slate-400">
+                <span className="text-orange-500 font-extrabold">$</span>
+                <span>tail -f /var/log/garmin_import.log</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchDebugLogs}
+                  disabled={isRefreshingLogs}
+                  className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded text-[10px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRefreshingLogs ? 'animate-spin' : ''}`} />
+                  Aktualisieren
+                </button>
+                <button
+                  type="button"
+                  onClick={clearDebugLogs}
+                  className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-red-950 rounded text-[10px] font-bold text-red-450 flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Leeren
+                </button>
+              </div>
+            </div>
+
+            <div className="font-mono text-[10px] leading-relaxed max-h-80 overflow-y-auto space-y-1 pr-2 scrollbar-thin select-text">
+              {debugLogs.length === 0 ? (
+                <p className="text-slate-500 italic py-2">Keine Protokolleinträge vorhanden. Starte einen Import, um Logdaten zu generieren.</p>
+              ) : (
+                debugLogs.map((log, idx) => {
+                  let colorClass = "text-slate-300";
+                  if (log.includes("[FEHLER]") || log.includes("[Error]")) {
+                    colorClass = "text-red-400 font-bold";
+                  } else if (log.includes("[Warnung]") || log.includes("[Pivot-Warnung]")) {
+                    colorClass = "text-amber-400 font-semibold";
+                  } else if (log.includes("[Pivot-Erfolg]") || log.includes("[Pivot-Normalisiert-Punkt")) {
+                    colorClass = "text-emerald-400";
+                  } else if (log.includes("==== STARTE")) {
+                    colorClass = "text-orange-400 font-extrabold border-b border-orange-950 pb-1 mt-3 block";
+                  } else if (log.includes("[Pivot-Setup]")) {
+                    colorClass = "text-blue-400";
+                  } else if (log.includes("[Pivot-Diagnose]")) {
+                    colorClass = "text-cyan-400 font-medium";
+                  }
+                  return (
+                    <div key={idx} className={`${colorClass} whitespace-pre-wrap break-all`}>
+                      {log}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
@@ -1607,6 +1738,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
               </div>
             </div>
           )}
+          
+          {/* Real-time Server Import & Diagnostic Terminal */}
+          {renderDebugTerminal()}
         </div>
       </motion.div>
     </div>

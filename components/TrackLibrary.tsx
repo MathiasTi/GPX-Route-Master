@@ -748,7 +748,12 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
               </p>
             </div>
           ) : (
-            garminActivities.map((act) => {
+            <div className="space-y-2">
+              <div className="px-1 text-[9px] text-slate-400 dark:text-slate-500 flex items-center justify-between font-semibold">
+                <span>{garminActivities.length} Aktivitäten</span>
+                <span className="text-orange-600 dark:text-orange-400">💡 Tipp: Doppelklick lädt direkt</span>
+              </div>
+              {garminActivities.map((act) => {
               const isExpanded = expandedGarminId === act.id;
               const formattedDuration = (() => {
                 const durSec = act.duration || 0;
@@ -773,11 +778,16 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                 <div
                   key={act.id}
                   onClick={() => setExpandedGarminId(isExpanded ? null : act.id)}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    handleLoadGarminActivity(act);
+                  }}
                   className={`group relative flex flex-col gap-2 rounded-xl p-3 bg-white dark:bg-slate-900 border transition-all cursor-pointer text-left ${
                     isExpanded
                       ? 'border-orange-550 dark:border-orange-400 ring-2 ring-orange-500/10 shadow-sm bg-orange-50/5 dark:bg-slate-950/20'
                       : 'border-slate-100 dark:border-slate-800/60 hover:border-slate-250 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/20 shadow-2xs'
                   }`}
+                  title="Doppelklick zum direkten Laden in den Workspace"
                 >
                   {/* Title line */}
                   <div className="flex items-center gap-2">
@@ -790,6 +800,17 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                     >
                       {act.name || 'Unbekannte Aktivität'}
                     </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleLoadGarminActivity(act);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-all duration-200 px-1.5 py-0.5 rounded bg-orange-600 text-white hover:bg-orange-700 text-[8px] font-bold flex items-center gap-1 shadow-xs shrink-0 cursor-pointer"
+                      title="Aktivität direkt in den Workspace laden"
+                    >
+                      <FolderOpen className="w-2.5 h-2.5" />
+                      Laden
+                    </button>
                     {!act.points_json && (
                       <span className="text-[8px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-extrabold px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
                         NUR STATS
@@ -895,7 +916,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                   </AnimatePresence>
                 </div>
               );
-            })
+            })}
+          </div>
           )
         )}
       </div>

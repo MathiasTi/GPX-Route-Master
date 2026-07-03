@@ -936,6 +936,18 @@ async function startServer() {
     }
     const tNames = tables.map(t => t.name.toLowerCase());
     
+    // Ensure optimal index exists on activity_ts_metric for faster timeseries queries
+    if (tNames.includes("activity_ts_metric")) {
+      try {
+        uploadedDb.exec(`
+          CREATE INDEX IF NOT EXISTS idx_activity_ts_metric_act_name_ts 
+          ON activity_ts_metric (activity_id, name, timestamp)
+        `);
+      } catch (indexErr) {
+        console.warn("Could not create index on activity_ts_metric:", indexErr);
+      }
+    }
+    
     // Helper to decode google polyline
     function decodePolyline(str: string): { lat: number, lng: number }[] {
       let index = 0, lat = 0, lng = 0, coordinates = [];
@@ -1463,6 +1475,88 @@ async function startServer() {
                 } catch (ptsErr) {
                   console.error("Error reading points from separate table:", ptsErr);
                 }
+              } else if (tNames.includes("activity_ts_metric")) {
+                try {
+                  const metricCols = uploadedDb.pragma("table_info(activity_ts_metric)") as any[];
+                  const hasActId = metricCols.some(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()));
+                  const hasName = metricCols.some(c => c.name.toLowerCase() === "name");
+                  const hasTimestamp = metricCols.some(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()));
+                  const hasValue = metricCols.some(c => ["value", "val"].includes(c.name.toLowerCase()));
+                  
+                  if (hasActId && hasName && hasTimestamp && hasValue) {
+                    const actIdCol = metricCols.find(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()))?.name;
+                    const nameCol = "name";
+                    const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
+                    const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
+
+                    const ptsQuery = `
+                      SELECT ${tsCol} as timestamp, ${nameCol} as name, ${valCol} as value
+                      FROM activity_ts_metric
+                      WHERE ${actIdCol} = ? AND ${nameCol} IN ('position_lat', 'position_long', 'enhanced_altitude', 'altitude')
+                      ORDER BY ${tsCol} ASC
+                    `;
+                    const ptsStmt = uploadedDb.prepare(ptsQuery);
+                    let dbPoints = ptsStmt.all(row.activity_id) as any[];
+                    if (dbPoints.length === 0) {
+                      const num = Number(row.activity_id);
+                      if (!isNaN(num)) {
+                        dbPoints = ptsStmt.all(num) as any[];
+                      }
+                    }
+
+                    if (dbPoints.length > 0) {
+                      const pointsMap = new Map<string, { lat?: number, lng?: number, ele?: number, time?: Date }>();
+                      for (const p of dbPoints) {
+                        const tsStr = String(p.timestamp);
+                        let pt = pointsMap.get(tsStr);
+                        if (!pt) {
+                          let timeVal: Date | undefined = undefined;
+                          if (p.timestamp) {
+                            const numTs = Number(p.timestamp);
+                            if (!isNaN(numTs)) {
+                              if (numTs > 100000000000) {
+                                timeVal = new Date(numTs);
+                              } else if (numTs > 631065600 && numTs < 2000000000) {
+                                timeVal = new Date(numTs * 1000);
+                              } else if (numTs > 0 && numTs < 1000000000) {
+                                timeVal = new Date((numTs + 631065600) * 1000);
+                              } else {
+                                timeVal = new Date(p.timestamp);
+                              }
+                            } else {
+                              timeVal = new Date(p.timestamp);
+                            }
+                          }
+                          pt = { time: timeVal };
+                          pointsMap.set(tsStr, pt);
+                        }
+                        const valNum = parseFloat(p.value);
+                        if (!isNaN(valNum)) {
+                          if (p.name === 'position_lat') {
+                            pt.lat = normalizeCoordinate(valNum, false);
+                          } else if (p.name === 'position_long') {
+                            pt.lng = normalizeCoordinate(valNum, true);
+                          } else if (p.name === 'enhanced_altitude' || p.name === 'altitude') {
+                            pt.ele = valNum;
+                          }
+                        }
+                      }
+
+                      const sortedPoints = Array.from(pointsMap.values())
+                        .filter(p => p.lat !== undefined && p.lng !== undefined)
+                        .sort((a, b) => {
+                          if (a.time && b.time) return a.time.getTime() - b.time.getTime();
+                          return 0;
+                        });
+
+                      if (sortedPoints.length > 0) {
+                        pointsJsonVal = JSON.stringify(sortedPoints);
+                      }
+                    }
+                  }
+                } catch (ptsErr) {
+                  console.error("Error reading points from activity_ts_metric:", ptsErr);
+                }
               }
 
               // Automatically calculate ascent/descent if missing but points are loaded
@@ -1788,6 +1882,88 @@ async function startServer() {
                     }
                   } catch (ptsErr) {
                     console.error("Error reading points in fallback:", ptsErr);
+                  }
+                } else if (tNames.includes("activity_ts_metric")) {
+                  try {
+                    const metricCols = uploadedDb.pragma("table_info(activity_ts_metric)") as any[];
+                    const hasActId = metricCols.some(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()));
+                    const hasName = metricCols.some(c => c.name.toLowerCase() === "name");
+                    const hasTimestamp = metricCols.some(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()));
+                    const hasValue = metricCols.some(c => ["value", "val"].includes(c.name.toLowerCase()));
+                    
+                    if (hasActId && hasName && hasTimestamp && hasValue) {
+                      const actIdCol = metricCols.find(c => ["activity_id", "activityid"].includes(c.name.toLowerCase()))?.name;
+                      const nameCol = "name";
+                      const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
+                      const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
+
+                      const ptsQuery = `
+                        SELECT ${tsCol} as timestamp, ${nameCol} as name, ${valCol} as value
+                        FROM activity_ts_metric
+                        WHERE ${actIdCol} = ? AND ${nameCol} IN ('position_lat', 'position_long', 'enhanced_altitude', 'altitude')
+                        ORDER BY ${tsCol} ASC
+                      `;
+                      const ptsStmt = uploadedDb.prepare(ptsQuery);
+                      let dbPoints = ptsStmt.all(row[idCol]) as any[];
+                      if (dbPoints.length === 0) {
+                        const num = Number(row[idCol]);
+                        if (!isNaN(num)) {
+                          dbPoints = ptsStmt.all(num) as any[];
+                        }
+                      }
+
+                      if (dbPoints.length > 0) {
+                        const pointsMap = new Map<string, { lat?: number, lng?: number, ele?: number, time?: Date }>();
+                        for (const p of dbPoints) {
+                          const tsStr = String(p.timestamp);
+                          let pt = pointsMap.get(tsStr);
+                          if (!pt) {
+                            let timeVal: Date | undefined = undefined;
+                            if (p.timestamp) {
+                              const numTs = Number(p.timestamp);
+                              if (!isNaN(numTs)) {
+                                if (numTs > 100000000000) {
+                                  timeVal = new Date(numTs);
+                                } else if (numTs > 631065600 && numTs < 2000000000) {
+                                  timeVal = new Date(numTs * 1000);
+                                } else if (numTs > 0 && numTs < 1000000000) {
+                                  timeVal = new Date((numTs + 631065600) * 1000);
+                                } else {
+                                  timeVal = new Date(p.timestamp);
+                                }
+                              } else {
+                                timeVal = new Date(p.timestamp);
+                              }
+                            }
+                            pt = { time: timeVal };
+                            pointsMap.set(tsStr, pt);
+                          }
+                          const valNum = parseFloat(p.value);
+                          if (!isNaN(valNum)) {
+                            if (p.name === 'position_lat') {
+                              pt.lat = normalizeCoordinate(valNum, false);
+                            } else if (p.name === 'position_long') {
+                              pt.lng = normalizeCoordinate(valNum, true);
+                            } else if (p.name === 'enhanced_altitude' || p.name === 'altitude') {
+                              pt.ele = valNum;
+                            }
+                          }
+                        }
+
+                        const sortedPoints = Array.from(pointsMap.values())
+                          .filter(p => p.lat !== undefined && p.lng !== undefined)
+                          .sort((a, b) => {
+                            if (a.time && b.time) return a.time.getTime() - b.time.getTime();
+                            return 0;
+                          });
+
+                        if (sortedPoints.length > 0) {
+                          pointsJsonVal = JSON.stringify(sortedPoints);
+                        }
+                      }
+                    }
+                  } catch (ptsErr) {
+                    console.error("Error reading points in fallback from activity_ts_metric:", ptsErr);
                   }
                 }
 
@@ -2218,7 +2394,7 @@ async function startServer() {
       const DatabaseConstructor = (await import('better-sqlite3')).default;
       let uploadedDb;
       try {
-        uploadedDb = new DatabaseConstructor(tempPath, { readonly: true });
+        uploadedDb = new DatabaseConstructor(tempPath);
       } catch (dbErr: any) {
         if (fs.existsSync(tempPath)) {
           try { fs.unlinkSync(tempPath); } catch (e) {}
@@ -2290,7 +2466,7 @@ async function startServer() {
       const DatabaseConstructor = (await import('better-sqlite3')).default;
       let localDb;
       try {
-        localDb = new DatabaseConstructor(absolutePath, { readonly: true });
+        localDb = new DatabaseConstructor(absolutePath);
       } catch (dbErr: any) {
         return res.status(400).json({ 
           success: false, 

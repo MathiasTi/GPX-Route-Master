@@ -75,7 +75,7 @@ interface HealthData {
 export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoadTrack }) => {
   const [data, setData] = useState<HealthData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics'>('overview');
   const [isDragging, setIsDragging] = useState(false);
@@ -325,9 +325,49 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
 
   // Handle SQLite File Import with Upload Progress Tracker
   const handleFileUpload = async (file: File) => {
-    setIsLoading(true);
     setError(null);
     setSuccessMsg(null);
+
+    // Prevent direct HTTP upload of very large files to avoid network failure
+    const MAX_DIRECT_UPLOAD_SIZE = 150 * 1024 * 1024; // 150 MB
+    if (file.size > MAX_DIRECT_UPLOAD_SIZE) {
+      setDbUploadProgress(null);
+      setIsLoading(false);
+      setError(
+        <div className="space-y-3 p-2">
+          <div className="flex items-center gap-2 text-red-800 dark:text-red-400 font-bold text-base">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>Datenbank-Datei ist zu groß für den Web-Upload ({formatFileSize(file.size)})</span>
+          </div>
+          <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+            Dateien über 150 MB (wie deine 10 GB Garmin-Backup-Datei) können aufgrund von Browser- und Netzwerk-Timeouts der Cloud-Plattform nicht direkt über ein Web-Formular hochgeladen werden (dies bricht meist mit einem Netzwerkfehler ab).
+          </p>
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-red-200 dark:border-red-900/50 text-slate-700 dark:text-slate-300 text-xs space-y-2.5">
+            <p className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+              <Database className="w-4 h-4 text-orange-500" />
+              Einfache & stabile Lösung direkt im Workspace:
+            </p>
+            <ol className="list-decimal list-inside space-y-2 text-[11px]">
+              <li>
+                Ziehe deine Datei <code className="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono font-bold text-orange-600 dark:text-orange-400">{file.name}</code> links in den **Dateiexplorer von AI Studio** (oder nutze dort das Upload-Symbol).
+              </li>
+              <li>
+                Sobald der Upload im AI Studio-Dateiexplorer abgeschlossen ist (geht dank direkter Synchronisation absolut stabil), lade dieses Fenster einmal neu.
+              </li>
+              <li>
+                Die Datei wird automatisch erkannt und erscheint rechts in der Liste unter **'Lokale Dateien im Workspace'**.
+              </li>
+              <li>
+                Klicke dort einfach auf **'Importieren'** – der Server liest die 10 GB SQLite-Datei direkt von der Festplatte ein (Dauer: wenige Sekunden, 0% RAM-Belastung!).
+              </li>
+            </ol>
+          </div>
+        </div>
+      );
+      return;
+    }
+
+    setIsLoading(true);
     setDbUploadProgress({ percentage: 0, statusText: 'Bereite Upload vor...' });
 
     try {
@@ -814,6 +854,33 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                           </div>
                         </div>
                       </div>
+
+                      {/* Local Files in Workspace when data is loaded */}
+                      {localFiles.length > 0 && (
+                        <div className="p-4 bg-slate-100/40 dark:bg-slate-900/40 rounded-2xl border border-slate-200/50 dark:border-slate-800/80">
+                          <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 mb-2">
+                            <Database className="w-3.5 h-3.5 text-orange-500" />
+                            Lokale Dateien im Workspace (für große DBs bis zu 10 GB)
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {localFiles.map((f) => (
+                              <div key={f.path} className="flex items-center justify-between p-2.5 bg-white dark:bg-slate-850 rounded-xl border border-slate-150 dark:border-slate-800 text-xs">
+                                <div className="truncate pr-2">
+                                  <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>{f.filename}</p>
+                                  <p className="text-[10px] text-slate-400">{formatFileSize(f.size)}</p>
+                                </div>
+                                <button
+                                  onClick={() => handleLocalDbImport(f.path)}
+                                  disabled={isLoading}
+                                  className="shrink-0 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
+                                >
+                                  Importieren
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Dropzone again to let them update existing db */}
                       <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">

@@ -30,6 +30,9 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
+# Definiere das Datenverzeichnis als permanentes Volume für SQLite-Datenbanken und Garmin-Backups
+VOLUME ["/app/data"]
+
 # Port 3000 nach außen freigeben
 EXPOSE 3000
 

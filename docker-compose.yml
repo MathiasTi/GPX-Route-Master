@@ -16,10 +16,16 @@ services:
       # kannst du ihn hier eintragen oder eine .env-Datei im selben Verzeichnis erstellen:
       # - GEMINI_API_KEY=dein_api_key_hier
     volumes:
-      # Persistiert die SQLite-Datenbank auf deinem Host-Rechner,
-      # damit importierte Routen und Garmin-Gesundheitsdaten beim Neustart nicht verloren gehen.
-      - gpx_data:/app/data
+      # OPTION 1 (Standard): Bind-Mount eines lokalen Ordners auf deinem Rechner.
+      # Dadurch kannst du deine 10 GB Garmin-Backup-Datenbank einfach in den Ordner "data" 
+      # auf deinem Rechner legen und der Container erkennt sie sofort (keine Upload-Wartezeiten!).
+      - ./data:/app/data
+      
+      # OPTION 2 (Alternativ): Verwende ein benanntes Docker-Volume. 
+      # (Entferne bei Bedarf das '#' vor der nächsten Zeile und kommentiere OPTION 1 aus)
+      # - gpx_data:/app/data
 
-volumes:
-  gpx_data:
-    driver: local
+# Wird nur benötigt, wenn du OPTION 2 (benanntes Volume) verwendest:
+# volumes:
+#   gpx_data:
+#     driver: local

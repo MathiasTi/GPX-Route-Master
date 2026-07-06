@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -709,8 +709,9 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "Ungültige Grenzwerte (Bounds params missing or NaN)." });
       }
 
+      // Fetch GPX-Tracks in bounds
       const records = getTracksInBounds(minLat, maxLat, minLng, maxLng);
-      const mapped = records.map(r => ({
+      const mappedTracks = records.map(r => ({
         id: r.id,
         name: r.name,
         distance: r.distance,
@@ -724,10 +725,37 @@ async function startServer() {
         originalFilename: r.original_filename,
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
-        hasTimestamps: r.has_timestamps === 1
+        hasTimestamps: r.has_timestamps === 1,
+        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined,
+        isGarminActivity: false
       }));
 
-      res.json({ success: true, tracks: mapped });
+      // Fetch Garmin activities in bounds
+      const garminRecords = getGarminActivitiesInBounds(minLat, maxLat, minLng, maxLng);
+      const mappedGarmin = garminRecords.map(act => ({
+        id: `garmin-act-${act.id}`,
+        name: act.name || 'Garmin Aktivität',
+        distance: act.distance || 0,
+        ascent: act.ascent || 0,
+        descent: act.descent || 0,
+        duration: act.duration,
+        activityType: act.type === 'running' ? 'running' : 'cycling',
+        description: act.description || act.location || "",
+        tags: ['Garmin'],
+        dateCreated: act.date,
+        originalFilename: undefined,
+        maxSlope: act.max_slope || 0,
+        color: '#f97316',
+        hasTimestamps: true,
+        isGarminActivity: true,
+        rawRecord: act
+      }));
+
+      // Merge results with Garmin activities FIRST as requested:
+      // "Bei der Aktivität nimm zuerst die Garmin-Aktivitäten und nicht die GPX-Routen."
+      const combined = [...mappedGarmin, ...mappedTracks];
+
+      res.json({ success: true, tracks: combined });
     } catch (err: any) {
       console.error("Error searching library by bounds:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to search library by bounds" });
@@ -756,7 +784,8 @@ async function startServer() {
         originalFilename: r.original_filename,
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
-        hasTimestamps: r.has_timestamps === 1
+        hasTimestamps: r.has_timestamps === 1,
+        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined
       }));
       
       res.json({ success: true, tracks: mapped });
@@ -1446,7 +1475,7 @@ async function startServer() {
                         ${tsCol} AS timestamp,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt') THEN ${valCol} END) AS ele,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm') THEN ${valCol} END) AS hr,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
@@ -1895,14 +1924,17 @@ async function startServer() {
                       const tsCol = metricCols.find(c => ["timestamp", "time", "ts"].includes(c.name.toLowerCase()))?.name;
                       const valCol = metricCols.find(c => ["value", "val"].includes(c.name.toLowerCase()))?.name;
 
+                      addImportDebugLog(`[Fallback-Pivot-Setup] Analysiere activity_ts_metric für ID ${row[idCol]}. Spalten: actIdCol=${actIdCol}, nameCol=${nameCol}, tsCol=${tsCol}, valCol=${valCol}`);
+
                       // Optimized pivot query to fetch lat, lng, ele, hr, cadence, power in a single pass grouped by timestamp
+                      // Using highly robust case-insensitive metric names (IN matching) to cover different Garmin database styles
                       const ptsQuery = `
                         SELECT 
                           ${tsCol} AS timestamp,
-                          MAX(CASE WHEN LOWER(${nameCol}) = 'position_lat' THEN ${valCol} END) AS lat,
-                          MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng') THEN ${valCol} END) AS lng,
-                          MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude') THEN ${valCol} END) AS ele,
-                          MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr') THEN ${valCol} END) AS hr,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm') THEN ${valCol} END) AS hr,
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
                         FROM activity_ts_metric
@@ -1916,6 +1948,17 @@ async function startServer() {
                         const num = Number(row[idCol]);
                         if (!isNaN(num)) {
                           dbPoints = ptsStmt.all(num) as any[];
+                        }
+                      }
+
+                      if (dbPoints.length === 0) {
+                        addImportDebugLog(`[Fallback-Pivot-Warnung] Keine Datenpunkte in activity_ts_metric für Activity-ID ${row[idCol]} gefunden.`);
+                      } else {
+                        addImportDebugLog(`[Fallback-Pivot-Erfolg] ${dbPoints.length} Zeilen aus activity_ts_metric für ID ${row[idCol]} geladen.`);
+                        // Log first 2 points
+                        for (let i = 0; i < Math.min(2, dbPoints.length); i++) {
+                          const pt = dbPoints[i];
+                          addImportDebugLog(`[Fallback-Pivot-Punkt-Roh ${i}] timestamp=${pt.timestamp}, lat=${pt.lat}, lng=${pt.lng}, ele=${pt.ele}, hr=${pt.hr}`);
                         }
                       }
 

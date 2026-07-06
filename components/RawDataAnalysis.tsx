@@ -1560,6 +1560,36 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                           )}
                         </div>
 
+                        {/* Temperature display */}
+                        {selectedPointMetric.current.temp !== undefined && (
+                          <div className="space-y-1 pt-2 border-t border-slate-100 dark:border-slate-850/60">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-[10px] text-slate-500 font-bold">Umgebungstemperatur</span>
+                              <span className="font-mono text-[11px] text-slate-800 dark:text-slate-200 font-black">
+                                {selectedPointMetric.current.temp.toFixed(1)} °C
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
+                              Vom internen Barometer/Sensor aufgezeichnet: {(selectedPointMetric.current.temp * 1.8 + 32).toFixed(1)} °F
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Speed display (from device) */}
+                        {selectedPointMetric.current.speed !== undefined && (
+                          <div className="space-y-1 pt-2 border-t border-slate-100 dark:border-slate-850/60">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-[10px] text-slate-500 font-bold">Geräte-Geschwindigkeit</span>
+                              <span className="font-mono text-[11px] text-slate-800 dark:text-slate-200 font-black">
+                                {(selectedPointMetric.current.speed * 3.6).toFixed(1)} km/h
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
+                              Vom Tacho/GPS-Empfänger direkt codierter Wert: {selectedPointMetric.current.speed.toFixed(2)} m/s ({(selectedPointMetric.current.speed * 2.23694).toFixed(1)} mph)
+                            </p>
+                          </div>
+                        )}
+
                       </div>
                     </div>
                   ) : (

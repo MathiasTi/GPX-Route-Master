@@ -8,6 +8,8 @@ export interface GPXPoint {
   hr?: number;
   cadence?: number;
   surface?: string;
+  temp?: number;
+  speed?: number;
 }
 
 export interface PowerStats {

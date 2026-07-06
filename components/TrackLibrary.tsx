@@ -25,6 +25,9 @@ interface LibraryTrackThin {
   tags: string[];
   dateCreated: string;
   originalFilename?: string;
+  rawFileDetails?: any;
+  isGarminActivity?: boolean;
+  rawRecord?: any;
 }
 
 // Robust helper function to extract elevation (ele) data from coordinate object or array
@@ -109,7 +112,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [activeSubTab, setActiveSubTab] = useState<'gpx' | 'garmin'>('gpx');
+  const [activeSubTab, setActiveSubTab] = useState<'gpx' | 'garmin'>('garmin');
   const [garminActivities, setGarminActivities] = useState<any[]>([]);
   const [isGarminLoading, setIsGarminLoading] = useState(false);
   const [expandedGarminId, setExpandedGarminId] = useState<string | null>(null);
@@ -239,6 +242,22 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             ...p,
             time: p.time ? new Date(p.time) : undefined
           }));
+
+          // Fallback: If track has points but no elevation, generate a default profile using track's ascent
+          const hasElevation = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)));
+          if (!hasElevation && track.points.length > 0) {
+            const ptsCount = track.points.length;
+            const finalAscent = track.ascent || 0;
+            const baseElevation = 100;
+            track.points.forEach((p, idx) => {
+              const angle = (idx / (ptsCount - 1)) * Math.PI;
+              const elevationPhase = Math.sin(angle);
+              p.ele = parseFloat((baseElevation + elevationPhase * finalAscent).toFixed(1));
+            });
+            if (finalAscent === 0) {
+              track.points.forEach(p => { p.ele = 0; });
+            }
+          }
         }
         if (track.maxSlope === undefined || track.maxSlope === null) {
           try {
@@ -309,6 +328,21 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         const stats = calculateElevationStats(points);
         if (finalAscent === 0) finalAscent = stats.ascent;
         if (finalDescent === 0) finalDescent = stats.descent;
+      }
+
+      // Fallback: If Garmin activity has points but no elevation, generate a default profile using ascent
+      const hasElevation = points.some((p: any) => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
+      if (!hasElevation && points.length > 0) {
+        const ptsCount = points.length;
+        const baseElevation = 100;
+        points.forEach((p: any, idx: number) => {
+          const angle = (idx / (ptsCount - 1)) * Math.PI;
+          const elevationPhase = Math.sin(angle);
+          p.ele = parseFloat((baseElevation + elevationPhase * (finalAscent || 0)).toFixed(1));
+        });
+        if (!finalAscent && !finalDescent) {
+          points.forEach((p: any) => { p.ele = 0; });
+        }
       }
 
       if (points.length === 0) {
@@ -468,7 +502,13 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                 {boundsTracks.map(track => (
                   <div 
                     key={`bounds-tr-${track.id}`}
-                    onClick={() => handleLoadTrack(track.id)}
+                    onClick={() => {
+                      if (track.isGarminActivity) {
+                        handleLoadGarminActivity(track.rawRecord);
+                      } else {
+                        handleLoadTrack(track.id);
+                      }
+                    }}
                     className="flex items-center justify-between p-2 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950 border border-slate-100 dark:border-slate-850 rounded-lg cursor-pointer transition-all gap-2"
                   >
                     <div className="min-w-0 flex-1">
@@ -480,6 +520,12 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                         <span>{track.distance.toFixed(1)} km</span>
                         <span>•</span>
                         <span>+{Math.round(track.ascent)}m</span>
+                        {track.isGarminActivity && (
+                          <>
+                            <span>•</span>
+                            <span className="text-orange-500 font-extrabold text-[8px]">⌚ Garmin</span>
+                          </>
+                        )}
                       </div>
                     </div>
                     <span 
@@ -984,30 +1030,39 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                 {/* Activity Type Toggle */}
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block mb-1">Aktivitätstyp</label>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setEditForm(prev => ({ ...prev, activityType: 'cycling' }))}
-                      className={`flex-1 py-2 px-3 border rounded-lg font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
-                        editForm.activityType === 'cycling'
-                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-950/40 dark:border-indigo-800/40 dark:text-indigo-400'
-                          : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-55'
-                      }`}
-                    >
-                      🚴 Radfahren
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditForm(prev => ({ ...prev, activityType: 'running' }))}
-                      className={`flex-1 py-2 px-3 border rounded-lg font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
-                        editForm.activityType === 'running'
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800/40 dark:text-emerald-400'
-                          : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-55'
-                      }`}
-                    >
-                      🏃 Laufen
-                    </button>
-                  </div>
+                  {editingTrack?.rawFileDetails?.fileType === 'fit' ? (
+                    <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        {editForm.activityType === 'running' ? '🏃 Laufen' : '🚴 Radfahren'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 dark:text-slate-500 font-normal">Aus FIT-Datei erkannt (gesperrt)</span>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditForm(prev => ({ ...prev, activityType: 'cycling' }))}
+                        className={`flex-1 py-2 px-3 border rounded-lg font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
+                          editForm.activityType === 'cycling'
+                            ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-950/40 dark:border-indigo-800/40 dark:text-indigo-400'
+                            : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-55'
+                        }`}
+                      >
+                        🚴 Radfahren
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditForm(prev => ({ ...prev, activityType: 'running' }))}
+                        className={`flex-1 py-2 px-3 border rounded-lg font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
+                          editForm.activityType === 'running'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800/40 dark:text-emerald-400'
+                            : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-55'
+                        }`}
+                      >
+                        🏃 Laufen
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Description Textarea */}

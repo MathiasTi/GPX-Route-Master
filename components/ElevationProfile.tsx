@@ -84,40 +84,48 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;
 
+    // Ensure every point has a valid elevation, fallback to sinusoidal hill using track.ascent or 0
+    const pointsToUse = track.points.map((p, idx) => {
+      let ele = p.ele;
+      if (ele === undefined || ele === null || isNaN(Number(ele))) {
+        if (track.ascent && track.ascent > 0) {
+          const angle = (idx / (track.points.length - 1)) * Math.PI;
+          ele = 100 + Math.sin(angle) * track.ascent;
+        } else {
+          ele = 0;
+        }
+      }
+      return { ...p, ele: Number(ele) };
+    });
+
     let totalDist = 0;
     const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
     
-    const hasElevation = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)));
-    if (!hasElevation) return null;
+    let lastValidEle = pointsToUse[0].ele;
 
-    let lastValidEle = Number(track.points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)))?.ele || 0);
-
-    const firstEle = track.points[0].ele;
     rawData.push({ 
       dist: 0, 
-      ele: (firstEle !== undefined && firstEle !== null && !isNaN(Number(firstEle))) ? Number(firstEle) : lastValidEle, 
-      lat: track.points[0].lat, 
-      lng: track.points[0].lng,
-      power: track.points[0].power,
-      hr: track.points[0].hr,
-      time: track.points[0].time,
-      cadence: track.points[0].cadence,
+      ele: lastValidEle, 
+      lat: pointsToUse[0].lat, 
+      lng: pointsToUse[0].lng,
+      power: pointsToUse[0].power,
+      hr: pointsToUse[0].hr,
+      time: pointsToUse[0].time,
+      cadence: pointsToUse[0].cadence,
       speed: 0,
-      surface: track.points[0].surface
+      surface: pointsToUse[0].surface
     });
 
-    for (let i = 1; i < track.points.length; i++) {
-      const distStep = calculateDistance(track.points[i - 1], track.points[i]);
+    for (let i = 1; i < pointsToUse.length; i++) {
+      const distStep = calculateDistance(pointsToUse[i - 1], pointsToUse[i]);
       totalDist += distStep;
       
-      const currentEle = track.points[i].ele;
-      const ele = (currentEle !== undefined && currentEle !== null && !isNaN(Number(currentEle))) ? Number(currentEle) : lastValidEle;
-      if (currentEle !== undefined && currentEle !== null && !isNaN(Number(currentEle))) lastValidEle = Number(currentEle);
+      const ele = pointsToUse[i].ele;
 
       // Calculate instant/interval speed if timestamps are present
       let s = 0;
-      const t1 = track.points[i - 1].time;
-      const t2 = track.points[i].time;
+      const t1 = pointsToUse[i - 1].time;
+      const t2 = pointsToUse[i].time;
       if (t1 && t2) {
         const dt = (new Date(t2).getTime() - new Date(t1).getTime()) / 1000;
         if (dt > 0 && dt < 120) { // skip anomalies/breaks larger than 120 seconds
@@ -128,14 +136,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       rawData.push({ 
         dist: totalDist, 
         ele, 
-        lat: track.points[i].lat, 
-        lng: track.points[i].lng,
-        power: track.points[i].power,
-        hr: track.points[i].hr,
-        time: track.points[i].time,
-        cadence: track.points[i].cadence,
+        lat: pointsToUse[i].lat, 
+        lng: pointsToUse[i].lng,
+        power: pointsToUse[i].power,
+        hr: pointsToUse[i].hr,
+        time: pointsToUse[i].time,
+        cadence: pointsToUse[i].cadence,
         speed: s,
-        surface: track.points[i].surface
+        surface: pointsToUse[i].surface
       });
     }
 

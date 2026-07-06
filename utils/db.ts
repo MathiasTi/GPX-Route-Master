@@ -224,7 +224,7 @@ export function saveTrack(track: {
 }
 
 export function searchTracks(queryText: string = '', activityType?: string): DbTrackRecord[] {
-  let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps FROM tracks`;
+  let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, raw_file_json FROM tracks`;
   const conditions: string[] = [];
   const params: any[] = [];
 
@@ -284,7 +284,7 @@ export function deleteTrack(id: string) {
 
 export function getTracksInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbTrackRecord[] {
   // Select columns including points_json to filter by coordinates
-  const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json FROM tracks');
+  const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json, raw_file_json FROM tracks');
   const allTracks = statement.all() as DbTrackRecord[];
   
   return allTracks.filter(track => {
@@ -295,6 +295,34 @@ export function getTracksInBounds(minLat: number, maxLat: number, minLng: number
         pt.lat >= minLat && pt.lat <= maxLat && 
         pt.lng >= minLng && pt.lng <= maxLng
       );
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbGarminActivityRecord[] {
+  const statement = db.prepare('SELECT * FROM garmin_activities');
+  const allActivities = statement.all() as DbGarminActivityRecord[];
+  
+  return allActivities.filter(act => {
+    try {
+      if (!act.points_json) return false;
+      const points = JSON.parse(act.points_json);
+      if (!Array.isArray(points)) return false;
+      return points.some(pt => {
+        let lat: number | undefined;
+        let lng: number | undefined;
+        if (Array.isArray(pt)) {
+          lat = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
+          lng = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
+        } else if (pt && typeof pt === 'object') {
+          lat = pt.lat !== undefined ? parseFloat(pt.lat) : (pt.latitude !== undefined ? parseFloat(pt.latitude) : undefined);
+          lng = pt.lng !== undefined ? parseFloat(pt.lng) : (pt.longitude !== undefined ? parseFloat(pt.longitude) : undefined);
+        }
+        if (lat === undefined || lng === undefined || isNaN(lat) || isNaN(lng)) return false;
+        return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng;
+      });
     } catch (e) {
       return false;
     }
@@ -375,8 +403,11 @@ export interface DbGarminActivityRecord {
   descent?: number;
   calories?: number;
   avg_hr?: number;
+  max_hr?: number;
+  avg_temp?: number;
   description?: string;
   location?: string;
+  max_slope?: number;
   points_json?: string;
 }
 

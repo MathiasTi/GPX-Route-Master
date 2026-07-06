@@ -2129,7 +2129,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001) {
               let ele: number | undefined;
               if (enhancedAltitude !== undefined && enhancedAltitude !== null && !isNaN(enhancedAltitude) && enhancedAltitude !== 4294967295) {
-                ele = enhancedAltitude / 5 - 500;
+                ele = enhancedAltitude / 3000 - 500;
               }
               if ((ele === undefined || ele === null || isNaN(ele)) && altitude !== undefined && altitude !== null && !isNaN(altitude) && altitude !== 65535) {
                 ele = altitude / 5 - 500;
@@ -2141,14 +2141,10 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               }
               
               let pointSpeed: number | undefined = undefined;
-              const rawSpeed = (enhancedSpeed !== undefined && enhancedSpeed !== null && !isNaN(enhancedSpeed) && enhancedSpeed !== 4294967295)
-                ? enhancedSpeed
-                : (speed !== undefined && speed !== null && !isNaN(speed) && speed !== 65535)
-                  ? speed
-                  : undefined;
-              if (rawSpeed !== undefined) {
-                // If speed is extremely high (e.g., > 150), it is scaled by 1000
-                pointSpeed = rawSpeed > 150 ? rawSpeed / 1000 : rawSpeed;
+              if (enhancedSpeed !== undefined && enhancedSpeed !== null && !isNaN(enhancedSpeed) && enhancedSpeed !== 4294967295) {
+                pointSpeed = enhancedSpeed / 3000;
+              } else if (speed !== undefined && speed !== null && !isNaN(speed) && speed !== 65535) {
+                pointSpeed = speed / 1000;
               }
 
               points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed });

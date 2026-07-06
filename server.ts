@@ -968,6 +968,60 @@ async function startServer() {
     tables: string[];
   } {
     addImportDebugLog("==== STARTE GARMIN DATENBANK IMPORT ====");
+
+    // Robust function to format any timestamp or date value to YYYY-MM-DD
+    function formatToLocalDateString(val: any): string | null {
+      if (val === undefined || val === null) return null;
+      const str = String(val).trim();
+      if (!str) return null;
+
+      // If it's already YYYY-MM-DD...
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+        return str;
+      }
+      // If it starts with YYYY-MM-DD (e.g., YYYY-MM-DD HH:MM:SS)
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        return str.split(" ")[0];
+      }
+
+      // Check if it's a number (timestamp)
+      const num = Number(str);
+      if (!isNaN(num)) {
+        let date: Date;
+        if (num > 100000000000) {
+          // Unix ms
+          date = new Date(num);
+        } else if (num > 631065600 && num < 2000000000) {
+          // Unix seconds
+          date = new Date(num * 1000);
+        } else if (num > 0 && num < 1000000000) {
+          // Garmin seconds (offset 631065600)
+          date = new Date((num + 631065600) * 1000);
+        } else {
+          // Fallback
+          date = new Date(num);
+        }
+        
+        if (!isNaN(date.getTime())) {
+          const y = date.getFullYear();
+          const m = String(date.getMonth() + 1).padStart(2, "0");
+          const d = String(date.getDate()).padStart(2, "0");
+          return `${y}-${m}-${d}`;
+        }
+      }
+
+      // Try parsing as generic date string
+      const date = new Date(str);
+      if (!isNaN(date.getTime())) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const d = String(date.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      return null;
+    }
+
     let tables: { name: string }[] = [];
     try {
       tables = uploadedDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -1244,8 +1298,8 @@ async function startServer() {
             const stmt = uploadedDb.prepare(query);
             runInTransaction(() => {
               for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = String(row.calendar_date).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row.calendar_date);
+                if (!dateVal) continue;
 
                 const durationSec = parseFloat(row.sleep_time_seconds);
                 if (isNaN(durationSec)) continue;
@@ -1283,8 +1337,8 @@ async function startServer() {
           `);
           runInTransaction(() => {
             for (const row of stmt.iterate() as Iterable<any>) {
-              const dateVal = String(row.timestamp).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+              const dateVal = formatToLocalDateString(row.timestamp);
+              if (!dateVal) continue;
 
               let wVal = parseFloat(row.weight);
               if (isNaN(wVal)) continue;
@@ -1306,23 +1360,31 @@ async function startServer() {
       // 3. STRESS (Aggregation)
       if (tNames.includes("stress")) {
         try {
+          // Robust in-memory aggregation to avoid native sqlite date() function on numeric/Garmin epoch timestamps
           const stmt = uploadedDb.prepare(`
-            SELECT 
-              date(timestamp) as dateVal, 
-              AVG(value) as avgStress 
+            SELECT timestamp, value 
             FROM stress 
-            WHERE value >= 0 
-            GROUP BY dateVal
+            WHERE value >= 0
           `);
+          const stressByDate = new Map<string, { sum: number, count: number }>();
+          for (const row of stmt.iterate() as Iterable<any>) {
+            const dateVal = formatToLocalDateString(row.timestamp);
+            if (!dateVal) continue;
+            const val = parseFloat(row.value);
+            if (isNaN(val)) continue;
+
+            const existing = stressByDate.get(dateVal);
+            if (existing) {
+              existing.sum += val;
+              existing.count += 1;
+            } else {
+              stressByDate.set(dateVal, { sum: val, count: 1 });
+            }
+          }
+
           runInTransaction(() => {
-            for (const row of stmt.iterate() as Iterable<any>) {
-              const dateVal = String(row.dateVal);
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-              const stressVal = parseFloat(row.avgStress);
-              if (isNaN(stressVal)) continue;
-
-              saveStress(dateVal, stressVal);
+            for (const [dateVal, d] of stressByDate.entries()) {
+              saveStress(dateVal, d.sum / d.count);
               stressImported++;
             }
           });
@@ -1334,21 +1396,23 @@ async function startServer() {
       // 4. STEPS (Aggregation)
       if (tNames.includes("steps")) {
         try {
+          // Robust in-memory aggregation to avoid native sqlite date() function on numeric/Garmin epoch timestamps
           const stmt = uploadedDb.prepare(`
-            SELECT 
-              date(timestamp) as dateVal, 
-              SUM(value) as totalSteps 
-            FROM steps 
-            GROUP BY dateVal
+            SELECT timestamp, value 
+            FROM steps
           `);
+          const stepsByDate = new Map<string, number>();
+          for (const row of stmt.iterate() as Iterable<any>) {
+            const dateVal = formatToLocalDateString(row.timestamp);
+            if (!dateVal) continue;
+            const val = parseInt(row.value, 10);
+            if (isNaN(val)) continue;
+
+            stepsByDate.set(dateVal, (stepsByDate.get(dateVal) || 0) + val);
+          }
+
           runInTransaction(() => {
-            for (const row of stmt.iterate() as Iterable<any>) {
-              const dateVal = String(row.dateVal);
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
-
-              const stepsVal = parseInt(row.totalSteps, 10);
-              if (isNaN(stepsVal)) continue;
-
+            for (const [dateVal, stepsVal] of stepsByDate.entries()) {
               saveSteps(dateVal, stepsVal);
               stepsImported++;
             }
@@ -1430,8 +1494,8 @@ async function startServer() {
           const stmt = uploadedDb.prepare(query);
           runInTransaction(() => {
             for (const row of stmt.iterate() as Iterable<any>) {
-              const dateVal = String(row.start_ts).split(" ")[0];
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+              const dateVal = formatToLocalDateString(row.start_ts);
+              if (!dateVal) continue;
 
               const idVal = String(row.activity_id);
               const nameVal = row.activity_name ? String(row.activity_name) : "Activity";
@@ -1699,8 +1763,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0]; // Get YYYY-MM-DD
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 let durVal = parseFloat(row[durCol]);
                 if (isNaN(durVal)) continue;
@@ -1746,8 +1810,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 let wVal = parseFloat(row[weightCol]);
                 if (isNaN(wVal)) continue;
@@ -1771,8 +1835,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 const stressVal = parseFloat(row[stressCol]);
                 if (isNaN(stressVal)) continue;
@@ -1792,8 +1856,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 const rhrVal = parseFloat(row[rhrCol]);
                 if (isNaN(rhrVal)) continue;
@@ -1816,8 +1880,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 const stepsVal = parseInt(row[stepsCol], 10);
                 if (isNaN(stepsVal)) continue;
@@ -1889,8 +1953,8 @@ async function startServer() {
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
-                let dateVal = String(row[dateCol]).split(" ")[0];
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) continue;
+                const dateVal = formatToLocalDateString(row[dateCol]);
+                if (!dateVal) continue;
 
                 const idVal = String(row[idCol]);
                 const nameVal = String(row[nameCol]);

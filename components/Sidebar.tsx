@@ -132,30 +132,21 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             </div>
             
             <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                onClick={() => onChangeActivityType?.(track.id, 'cycling')}
-                className={`p-1 px-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                  track.activityType !== 'running'
-                    ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-xs font-black'
-                    : 'bg-slate-55 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-755'
-                }`}
-                title="Als Fahrrad-Aktivität festlegen"
-              >
-                🚴 Rad
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeActivityType?.(track.id, 'running')}
-                className={`p-1 px-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                  track.activityType === 'running'
-                    ? 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-xs font-black'
-                    : 'bg-slate-55 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-755'
-                }`}
-                title="Als Lauf-Aktivität festlegen"
-              >
-                🏃 Lauf
-              </button>
+              {track.activityType === 'running' ? (
+                <span 
+                  className="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-emerald-200/40 dark:border-emerald-900/30"
+                  title="Automatisch erkannt: Laufen"
+                >
+                  🏃 Lauf
+                </span>
+              ) : (
+                <span 
+                  className="inline-flex items-center gap-1 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-blue-200/40 dark:border-blue-900/30"
+                  title="Automatisch erkannt: Radsport"
+                >
+                  🚴 Rad
+                </span>
+              )}
             </div>
           </div>
                       {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}

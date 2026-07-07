@@ -26,6 +26,7 @@ interface WeatherOverlayProps {
   setSelectedTime: (time: string) => void;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  hide?: boolean;
 }
 
 export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({ 
@@ -35,7 +36,8 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
   selectedTime,
   setSelectedTime,
   isOpen,
-  onOpenChange
+  onOpenChange,
+  hide
 }) => {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -106,7 +108,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
     }
   };
 
-  if (!track) return null;
+  if (!track || hide) return null;
 
   // Map condition strings to appropriate Lucide Icons
   const getWeatherIcon = (cond: string) => {

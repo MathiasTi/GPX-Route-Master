@@ -1,5 +1,6 @@
 import React, { useMemo, useEffect, useRef, useState } from 'react';
 import Map, { Source, Layer, MapRef, NavigationControl, Marker, Popup } from 'react-map-gl/maplibre';
+import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint } from '../types';
 import { calculateBearing } from '../utils/gpxUtils';
@@ -51,10 +52,10 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         },
         'terrain': {
           type: 'raster-dem' as const,
-          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-          encoding: 'terrarium' as const,
+          tiles: ['https://demotiles.maplibre.org/terrain-tiles/{z}/{x}/{y}.png'],
+          encoding: 'mapbox' as const,
           tileSize: 256,
-          maxzoom: 14
+          maxzoom: 12
         }
       },
       layers: [
@@ -86,16 +87,21 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   const fitToTracks = () => {
     if (visibleTracks.length > 0 && mapRef.current) {
       const map = mapRef.current.getMap();
+      if (!map) return;
       
       // Calculate bounds
       let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
       visibleTracks.forEach(t => {
-        t.points.forEach(p => {
-          if (p.lng < minLng) minLng = p.lng;
-          if (p.lng > maxLng) maxLng = p.lng;
-          if (p.lat < minLat) minLat = p.lat;
-          if (p.lat > maxLat) maxLat = p.lat;
-        });
+        if (t && t.points) {
+          t.points.forEach(p => {
+            if (p && p.lng !== undefined && p.lat !== undefined) {
+              if (p.lng < minLng) minLng = p.lng;
+              if (p.lng > maxLng) maxLng = p.lng;
+              if (p.lat < minLat) minLat = p.lat;
+              if (p.lat > maxLat) maxLat = p.lat;
+            }
+          });
+        }
       });
 
       if (minLng <= maxLng && minLat <= maxLat) {
@@ -126,13 +132,16 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
       if (track && track.points && track.points.length > 0) {
         let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
         track.points.forEach(p => {
-          if (p.lng < minLng) minLng = p.lng;
-          if (p.lng > maxLng) maxLng = p.lng;
-          if (p.lat < minLat) minLat = p.lat;
-          if (p.lat > maxLat) maxLat = p.lat;
+          if (p && p.lng !== undefined && p.lat !== undefined) {
+            if (p.lng < minLng) minLng = p.lng;
+            if (p.lng > maxLng) maxLng = p.lng;
+            if (p.lat < minLat) minLat = p.lat;
+            if (p.lat > maxLat) maxLat = p.lat;
+          }
         });
         if (minLng <= maxLng && minLat <= maxLat) {
-          const map = mapRef.current.getMap();
+          const map = mapRef.current?.getMap();
+          if (!map) return;
           try {
             map.fitBounds(
               [[minLng, minLat], [maxLng, maxLat]],
@@ -150,6 +159,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   useEffect(() => {
     if (selectionBounds && mapRef.current) {
       const map = mapRef.current.getMap();
+      if (!map) return;
       try {
         map.fitBounds(
           [[selectionBounds.minLng, selectionBounds.minLat], [selectionBounds.maxLng, selectionBounds.maxLat]],
@@ -164,6 +174,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   useEffect(() => {
     if (isFlying && hoveredPoint && mapRef.current && markedTrackId) {
       const map = mapRef.current.getMap();
+      if (!map) return;
       const track = tracks.find(t => t.id === markedTrackId);
       if (track) {
         // Find current index to look ahead for bearing
@@ -218,7 +229,10 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
     // Wait for CSS transitions (like the elevation profile opening) to finish
     const timeout = setTimeout(() => {
       if (mapRef.current) {
-        mapRef.current.getMap().resize();
+        const map = mapRef.current.getMap();
+        if (map && typeof map.resize === 'function') {
+          map.resize();
+        }
       }
     }, 300);
     return () => clearTimeout(timeout);
@@ -234,7 +248,9 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             properties: { id: track.id, name: track.name },
             geometry: {
               type: 'LineString' as const,
-              coordinates: track.points.map(p => [p.lng, p.lat])
+              coordinates: track.points
+                .filter(p => p && p.lng !== undefined && p.lat !== undefined)
+                .map(p => [p.lng, p.lat])
             }
           }
         ]
@@ -244,6 +260,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
       if (track.id === markedTrackId && selectionBounds) {
         let currentLine: number[][] = [];
         track.points.forEach(p => {
+          if (!p || p.lat === undefined || p.lng === undefined) return;
           const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
                            p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
           if (inBounds) {
@@ -287,6 +304,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
     <div className="w-full h-full relative bg-slate-200">
       <Map
         ref={mapRef}
+        mapLib={maplibregl}
         style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
         initialViewState={{
           longitude: mapView.lng,
@@ -329,7 +347,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             onMapViewChange(newView);
           }
         }}
-        interactiveLayerIds={visibleTracks.map(t => `track-${t.id}-click`)}
+        interactiveLayerIds={visibleTracks.length > 0 ? visibleTracks.map(t => `track-${t.id}-click`) : undefined}
         onClick={(e) => {
           if (e.features && e.features.length > 0) {
             const feature = e.features[0];
@@ -348,7 +366,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           for (let i = 1; i < track.points.length; i++) {
             const p = track.points[i];
             const prevP = track.points[i - 1];
-            if (p.time && prevP.time) {
+            if (p && prevP && p.time && prevP.time && p.lat !== undefined && p.lng !== undefined && prevP.lat !== undefined && prevP.lng !== undefined) {
               const diffMs = p.time.getTime() - prevP.time.getTime();
               if (diffMs > 5 * 60 * 1000) {
                 pauses.push({
@@ -558,7 +576,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             onChange={(e) => {
               const p = Number(e.target.value);
               setPitch(p);
-              mapRef.current?.getMap().setPitch(p);
+              mapRef.current?.getMap()?.setPitch(p);
             }}
             className="w-full accent-blue-600 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer"
           />
@@ -572,7 +590,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
               <button 
                 onClick={() => {
                   setBearing(0);
-                  mapRef.current?.getMap().easeTo({ bearing: 0, duration: 500 });
+                  mapRef.current?.getMap()?.easeTo({ bearing: 0, duration: 500 });
                 }}
                 className="text-[9px] bg-slate-200 hover:bg-slate-300 text-slate-700 px-1.5 py-0.5 rounded font-bold transition-colors"
                 title="Nach Norden ausrichten"
@@ -590,7 +608,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             onChange={(e) => {
               const b = Number(e.target.value);
               setBearing(b);
-              mapRef.current?.getMap().setBearing(b);
+              mapRef.current?.getMap()?.setBearing(b);
             }}
             className="w-full accent-blue-600 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer"
           />

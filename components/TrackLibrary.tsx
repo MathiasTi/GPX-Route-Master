@@ -103,6 +103,83 @@ function extractLng(p: any): number | undefined {
   return undefined;
 }
 
+// Robust helper to extract heart rate
+function extractHeartRate(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val) && val > 0) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract cadence
+function extractCadence(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["cadence", "cad", "average_cadence", "avg_cadence", "bike_cadence", "run_cadence", "trittfrequenz", "cadence_rpm"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract power
+function extractPower(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["power", "watts", "average_power", "avg_power", "pwr", "leistung", "power_watts"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to normalize activity type
+function isRunningType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike');
+}
+
+function isCyclingType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking');
+}
+
+
 export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiveTrackId, selectionBounds, onClearSelection }) => {
   const [tracks, setTracks] = useState<LibraryTrackThin[]>([]);
   const [boundsTracks, setBoundsTracks] = useState<LibraryTrackThin[]>([]);
@@ -299,7 +376,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       const ascent = act.ascent || 0;
       const descent = act.descent || 0;
       const avgHr = act.avg_hr || undefined;
-      const activityType = act.type === 'running' ? 'running' : 'cycling';
+      const activityType = isRunningType(act.type) ? 'running' : 'cycling';
       
       let isVirtual = false;
       let points: any[] = [];
@@ -316,9 +393,9 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                 lng: lngVal,
                 ele: extractElevation(p),
                 time: p.time ? new Date(p.time) : undefined,
-                hr: p.hr !== undefined ? parseFloat(p.hr) : undefined,
-                cadence: p.cadence !== undefined ? parseFloat(p.cadence) : undefined,
-                power: p.power !== undefined ? parseFloat(p.power) : undefined,
+                hr: extractHeartRate(p),
+                cadence: extractCadence(p),
+                power: extractPower(p),
               };
             }).filter((p: any) => p !== null);
           }

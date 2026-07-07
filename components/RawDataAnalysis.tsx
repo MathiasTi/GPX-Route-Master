@@ -194,6 +194,78 @@ const FIT_FIELD_EXPLANATIONS: Record<string, { label: string; desc: string }> = 
   name: {
     label: "Bezeichnung",
     desc: "Der Name oder Beschreibungstitel, der in die Kursdatei bzw. den Wegpunkt hineingeschrieben wurde."
+  },
+  session_name: {
+    label: "Sitzungs-Name",
+    desc: "Der vom Benutzer oder System vergebene Name dieser Aktivitäts-Sitzung."
+  },
+  activity_name: {
+    label: "Aktivitäts-Name",
+    desc: "Der Titel der Sportaktivität (oft in Garmin Connect sichtbar)."
+  },
+  comment: {
+    label: "Notiz / Kommentar",
+    desc: "Zusätzliche Freitexteingabe, Notizen oder Beschreibungen, die der Aktivität hinzugefügt wurden."
+  },
+  notes: {
+    label: "Notiz / Kommentar",
+    desc: "Zusätzliche Notizen, Kommentare oder Beschreibungen aus Garmin Connect."
+  },
+  position_lat: {
+    label: "Breitengrad (Lat)",
+    desc: "Nord-Süd-Koordinate auf der Erdkugel, aufgezeichnet in jedem Trackpunkt."
+  },
+  position_long: {
+    label: "Längengrad (Lon)",
+    desc: "Ost-West-Koordinate auf der Erdkugel, aufgezeichnet in jedem Trackpunkt."
+  },
+  altitude: {
+    label: "Meereshöhe",
+    desc: "Höhe über dem Meeresspiegel in Metern für diesen einzelnen Messpunkt."
+  },
+  heart_rate: {
+    label: "Puls (HF)",
+    desc: "Die Herzfrequenz des Sportlers in Schlägen pro Minute (bpm) an dieser Stelle."
+  },
+  cadence: {
+    label: "Trittfrequenz",
+    desc: "Die Pedalumdrehungen pro Minute (rpm) an dieser Stelle."
+  },
+  distance: {
+    label: "Distanz-Kilometer",
+    desc: "Die kumulierte Gesamtstrecke an dieser Stelle."
+  },
+  speed: {
+    label: "Aktuelle Geschwindigkeit",
+    desc: "Die Fahrtgeschwindigkeit an dieser Stelle."
+  },
+  power: {
+    label: "Aktuelle Leistung (Watt)",
+    desc: "Die erbrachte mechanische Leistung des Radfahrers in Watt an dieser Stelle."
+  },
+  temperature: {
+    label: "Temperatur (°C)",
+    desc: "Die vom internen Temperatursensor des Garmin-Geräts aufgezeichnete Umgebungstemperatur."
+  },
+  sync_source: {
+    label: "Synchronisierungsquelle",
+    desc: "Die Herkunftsplattform, von der die Daten synchronisiert wurden (z.B. Garmin Connect)."
+  },
+  sync_time: {
+    label: "Übertragungszeitpunkt",
+    desc: "Der Zeitstempel, an dem die Aktivität hochgeladen oder synchronisiert wurde."
+  },
+  sync_platform: {
+    label: "Synchronisierungs-Plattform",
+    desc: "Das genutzte Betriebssystem oder die App-Schnittstelle während der Datenübertragung."
+  },
+  app_version: {
+    label: "App-Version",
+    desc: "Die Software-Version der synchronisierenden Connect-App."
+  },
+  device_os: {
+    label: "Geräte-Betriebssystem",
+    desc: "Das Betriebssystem des angebundenen Smartphones (z.B. Android, iOS)."
   }
 };
 
@@ -1621,8 +1693,8 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                     <span className="text-teal-400 font-extrabold uppercase">Full-Dump JSON Schema</span>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto min-h-0 font-mono text-xs text-emerald-450 dark:text-emerald-400 bg-black/30 p-4 rounded-2xl border border-slate-900">
-                    <pre className="whitespace-pre-wrap leading-relaxed">
+                  <div className="flex-1 overflow-y-auto min-h-0 font-mono text-xs text-emerald-400 bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                    <pre className="whitespace-pre-wrap leading-relaxed text-emerald-400">
                       {JSON.stringify({
                         id: currentTrack.id,
                         name: currentTrack.name,

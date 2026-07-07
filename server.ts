@@ -1101,24 +1101,53 @@ async function startServer() {
     }
 
     // Helper to calculate cumulative elevation profile stats (ascent/descent) from raw coordinate arrays
-    function calculateElevationStats(points: { ele?: number }[]): { ascent: number, descent: number } {
+    function calculateElevationStats(points: { lat?: number; lng?: number; ele?: number }[]): { ascent: number, descent: number } {
       let ascent = 0;
       let descent = 0;
-      let lastEle: number | null = null;
-      
-      for (const p of points) {
-        if (p.ele !== undefined && p.ele !== null && !isNaN(p.ele)) {
-          if (lastEle !== null) {
-            const diff = p.ele - lastEle;
-            if (diff > 0) {
-              ascent += diff;
-            } else {
-              descent += Math.abs(diff);
-            }
+      if (points.length < 2) return { ascent, descent };
+
+      // Pre-fill missing elevation data
+      const filledEle = new Float64Array(points.length);
+      let lastValidEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
+      for (let i = 0; i < points.length; i++) {
+        if (points[i].ele !== undefined && points[i].ele !== null && !isNaN(points[i].ele!)) {
+          lastValidEle = points[i].ele!;
+        }
+        filledEle[i] = lastValidEle;
+      }
+
+      // Smooth elevation data using a rolling window of 15 points (equivalent to 15s to 30s of movement)
+      const smoothedEle = new Float64Array(points.length);
+      const halfWindow = 7;
+      for (let i = 0; i < points.length; i++) {
+        let sum = 0;
+        let count = 0;
+        const start = Math.max(0, i - halfWindow);
+        const end = Math.min(points.length - 1, i + halfWindow);
+        for (let j = start; j <= end; j++) {
+          sum += filledEle[j];
+          count++;
+        }
+        smoothedEle[i] = count > 0 ? sum / count : filledEle[i];
+      }
+
+      // Calculate ascent/descent using a cumulative deadband filter (1.5 meters threshold)
+      let lastAcceptedEle = smoothedEle[0];
+      const ELE_THRESHOLD = 1.5;
+      for (let i = 1; i < points.length; i++) {
+        const e = smoothedEle[i];
+        if (!isNaN(e)) {
+          const diff = e - lastAcceptedEle;
+          if (diff >= ELE_THRESHOLD) {
+            ascent += diff;
+            lastAcceptedEle = e;
+          } else if (diff <= -ELE_THRESHOLD) {
+            descent += Math.abs(diff);
+            lastAcceptedEle = e;
           }
-          lastEle = p.ele;
         }
       }
+
       return { ascent, descent };
     }
     

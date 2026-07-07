@@ -1014,6 +1014,7 @@ const App: React.FC = () => {
             setSelectedTime={setSelectedTime}
             isOpen={weatherOpen}
             onOpenChange={setWeatherOpen}
+            hide={analyticsOpen || garminHealthOpen || climbsOpen || comparisonOpen || trainingZonesOpen || summaryReportOpen || rawDataOpen || isExportModalOpen}
           />
 
           <AnimatePresence>

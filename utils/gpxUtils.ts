@@ -562,9 +562,9 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
     filledEle[i] = lastValidEle;
   }
 
-  // 1. Smooth elevation data (distance-based, 20m window)
+  // 1. Smooth elevation data (distance-based, 60m window to robustly filter GPS micro-jitter)
   const smoothedEle = new Float64Array(points.length);
-  const SMOOTH_WINDOW_KM = 0.020; 
+  const SMOOTH_WINDOW_KM = 0.060; 
   
   for (let i = 0; i < points.length; i++) {
     let sum = 0;
@@ -587,14 +587,20 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
     smoothedEle[i] = count > 0 ? sum / count : filledEle[i];
   }
 
-  // 2. Calculate ascent/descent
+  // 2. Calculate ascent/descent using a cumulative deadband filter to prevent noise while keeping gentle slopes
+  let lastAcceptedEle = smoothedEle[0];
+  const ELE_THRESHOLD = 1.5; // 1.5 meters threshold for robust noise filtering matching Garmin/Strava
   for (let i = 1; i < points.length; i++) {
-    const e1 = smoothedEle[i - 1];
-    const e2 = smoothedEle[i];
-    if (!isNaN(e1) && !isNaN(e2)) {
-      const diff = e2 - e1;
-      if (diff > 0.05) ascent += diff;
-      else if (diff < -0.05) descent += Math.abs(diff);
+    const e = smoothedEle[i];
+    if (!isNaN(e)) {
+      const diff = e - lastAcceptedEle;
+      if (diff >= ELE_THRESHOLD) {
+        ascent += diff;
+        lastAcceptedEle = e;
+      } else if (diff <= -ELE_THRESHOLD) {
+        descent += Math.abs(diff);
+        lastAcceptedEle = e;
+      }
     }
   }
 
@@ -721,12 +727,22 @@ export const getChildNode = (parent: Element, tagName: string): Element | null =
     let node = parent.querySelector(tagName);
     if (node) return node;
 
+    // Direct match with colon support or querySelector with namespaces
+    const escapedTag = tagName.replace(/:/g, '\\:');
+    try {
+      node = parent.querySelector(escapedTag);
+      if (node) return node;
+    } catch (e) {
+      // ignore
+    }
+
     const allChildren = parent.getElementsByTagName("*");
     const targetLower = tagName.toLowerCase();
     for (let i = 0; i < allChildren.length; i++) {
       const child = allChildren[i];
-      const localName = (child.localName || child.nodeName).toLowerCase();
-      if (localName === targetLower) {
+      const localName = (child.localName || "").toLowerCase();
+      const nodeName = child.nodeName.toLowerCase();
+      if (localName === targetLower || nodeName === targetLower || nodeName.endsWith(":" + targetLower)) {
         return child;
       }
     }
@@ -1155,7 +1171,9 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
-    const points: GPXPoint[] = [];
+    const trkpts: GPXPoint[] = [];
+    const rtepts: GPXPoint[] = [];
+    const wpts: GPXPoint[] = [];
     let foundMeta = false;
     let creator: string | undefined;
     let version: string | undefined;
@@ -1236,7 +1254,15 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
           const cadMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?cad(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?cad>/i);
           const cadence = cadMatch ? parseInt(cadMatch[1], 10) : undefined;
 
-          points.push({ lat, lng, ele, time, power, hr, cadence });
+          const ptObj = { lat, lng, ele, time, power, hr, cadence };
+          const tagNameLower = tagName.toLowerCase();
+          if (tagNameLower === 'trkpt') {
+            trkpts.push(ptObj);
+          } else if (tagNameLower === 'rtept') {
+            rtepts.push(ptObj);
+          } else {
+            wpts.push(ptObj);
+          }
         }
       }
 
@@ -1245,7 +1271,8 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
       }
     }
 
-    const sanitizedPoints = sanitizeGPXPoints(points);
+    const selectedPoints = trkpts.length > 0 ? trkpts : (rtepts.length > 0 ? rtepts : wpts);
+    const sanitizedPoints = sanitizeGPXPoints(selectedPoints);
 
     if (sanitizedPoints.length === 0) {
       console.error("GPX parsing error: No valid points found");
@@ -1353,6 +1380,21 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
         }
       });
     }
+
+    // Add waypoints to rawRecords for completeness
+    wpts.forEach((wpt, i) => {
+      if (i < 100) {
+        rawRecords.push({
+          type: 'waypoint',
+          data: {
+            name: `Wegpunkt #${i+1}`,
+            lat: wpt.lat.toString(),
+            lon: wpt.lng.toString(),
+            ele: wpt.ele !== undefined ? wpt.ele.toString() : undefined,
+          }
+        });
+      }
+    });
 
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,

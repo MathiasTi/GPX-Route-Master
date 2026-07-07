@@ -72,6 +72,83 @@ interface HealthData {
   activities: GarminActivity[];
 }
 
+// Robust helper to extract heart rate
+function extractHeartRate(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val) && val > 0) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract cadence
+function extractCadence(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["cadence", "cad", "average_cadence", "avg_cadence", "bike_cadence", "run_cadence", "trittfrequenz", "cadence_rpm"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to extract power
+function extractPower(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["power", "watts", "average_power", "avg_power", "pwr", "leistung", "power_watts"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Robust helper to normalize activity type
+function isRunningType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike');
+}
+
+function isCyclingType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking');
+}
+
+
 export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoadTrack }) => {
   const [data, setData] = useState<HealthData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -287,7 +364,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       const ascent = act.ascent || 0;
       const descent = act.descent || 0;
       const avgHr = act.avg_hr || undefined;
-      const activityType = act.type === 'running' ? 'running' : 'cycling';
+      const activityType = isRunningType(act.type) ? 'running' : 'cycling';
       
       let isVirtual = false;
       let points: any[] = [];
@@ -300,9 +377,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
               lng: parseFloat(p.lng),
               ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
               time: p.time ? new Date(p.time) : undefined,
-              hr: p.hr !== undefined ? parseFloat(p.hr) : undefined,
-              cadence: p.cadence !== undefined ? parseFloat(p.cadence) : undefined,
-              power: p.power !== undefined ? parseFloat(p.power) : undefined,
+              hr: extractHeartRate(p),
+              cadence: extractCadence(p),
+              power: extractPower(p),
             }));
           }
         } catch (pe) {
@@ -1272,7 +1349,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                 <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/40">
                                   <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span>{act.type === 'running' ? '🏃' : '🚴'}</span>
+                                      <span>{isRunningType(act.type) ? '🏃' : isCyclingType(act.type) ? '🚴' : '🏅'}</span>
                                       <span>{act.name}</span>
                                       {!act.points_json && (
                                         <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">

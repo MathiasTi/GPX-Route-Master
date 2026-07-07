@@ -1591,6 +1591,7 @@ export function getMessageName(globalMsgNum: number): string {
     129: 'weather_alert',
     131: 'cadence_zone',
     132: 'hr',
+    140: 'garmin_connect_metadata',
     142: 'segment_lap',
     145: 'memo_glob',
     148: 'segment_id',
@@ -1680,6 +1681,25 @@ const FIELD_NAMES: Record<number, Record<number, string>> = {
     5: 'number',
     8: 'product_name'
   },
+  2: { // device_settings
+    0: 'active_time_zone',
+    1: 'utc_offset',
+    2: 'time_zone_offset',
+    5: 'backlight_mode'
+  },
+  3: { // user_profile
+    0: 'friendly_name',
+    1: 'gender',
+    2: 'age',
+    3: 'height',
+    4: 'weight',
+    5: 'language'
+  },
+  7: { // zones_target
+    1: 'functional_threshold_power',
+    2: 'max_heart_rate',
+    3: 'threshold_heart_rate'
+  },
   12: { // sport
     0: 'sport',
     1: 'sub_sport',
@@ -1710,7 +1730,9 @@ const FIELD_NAMES: Record<number, Record<number, string>> = {
     22: 'total_descent',
     28: 'normalized_power',
     29: 'training_stress_score',
-    30: 'intensity_factor'
+    30: 'intensity_factor',
+    83: 'session_name',
+    110: 'comment'
   },
   19: { // lap
     0: 'event',
@@ -1735,6 +1757,26 @@ const FIELD_NAMES: Record<number, Record<number, string>> = {
     21: 'total_ascent',
     22: 'total_descent'
   },
+  20: { // record
+    0: 'position_lat',
+    1: 'position_long',
+    2: 'altitude',
+    3: 'heart_rate',
+    4: 'cadence',
+    5: 'distance',
+    6: 'speed',
+    7: 'power',
+    8: 'compressed_speed_distance',
+    9: 'grade',
+    10: 'resistance',
+    13: 'temperature',
+    39: 'vertical_oscillation',
+    40: 'stance_time_percent',
+    41: 'stance_time',
+    73: 'enhanced_speed',
+    78: 'enhanced_altitude',
+    253: 'timestamp'
+  },
   21: { // event
     0: 'event',
     1: 'event_type',
@@ -1752,17 +1794,121 @@ const FIELD_NAMES: Record<number, Record<number, string>> = {
     7: 'cum_operating_time',
     25: 'source_type'
   },
+  26: { // workout
+    4: 'sport',
+    5: 'capabilities',
+    6: 'workout_name',
+    8: 'notes'
+  },
+  31: { // course
+    4: 'sport',
+    5: 'course_name',
+    6: 'capabilities'
+  },
+  32: { // course_point
+    1: 'timestamp',
+    2: 'position_lat',
+    3: 'position_long',
+    4: 'distance',
+    5: 'type',
+    6: 'name'
+  },
   34: { // activity
     0: 'total_timer_time',
     1: 'num_sessions',
     2: 'type',
     3: 'event',
     4: 'event_type',
-    5: 'local_timestamp'
+    5: 'local_timestamp',
+    11: 'activity_name',
+    12: 'comment'
+  },
+  35: { // software
+    3: 'version',
+    5: 'part_number'
+  },
+  37: { // file_capabilities
+    0: 'type',
+    1: 'flags',
+    2: 'directory',
+    3: 'max_count',
+    4: 'max_size'
+  },
+  38: { // mesg_capabilities
+    0: 'file',
+    1: 'mesg_num',
+    2: 'count_type',
+    3: 'count'
+  },
+  39: { // field_capabilities
+    0: 'file',
+    1: 'mesg_num',
+    2: 'field_num',
+    3: 'count'
   },
   49: { // file_creator
     0: 'software_version',
     1: 'hardware_version'
+  },
+  140: { // garmin_connect_metadata
+    0: 'sync_source',
+    1: 'sync_time',
+    2: 'sync_platform',
+    3: 'app_version',
+    4: 'device_os'
+  },
+  148: { // segment_id
+    0: 'name',
+    1: 'uuid',
+    2: 'sport',
+    3: 'enabled'
+  },
+  200: { // exd_screen_configuration
+    0: 'screen_index',
+    1: 'field_count',
+    2: 'layout',
+    3: 'screen_enabled'
+  },
+  201: { // exd_data_field_configuration
+    0: 'screen_index',
+    1: 'field_index',
+    2: 'concept_count',
+    3: 'display_format'
+  },
+  202: { // exd_data_concept_configuration
+    0: 'screen_index',
+    1: 'field_index',
+    2: 'concept_index',
+    3: 'data_type'
+  },
+  206: { // field_description
+    0: 'developer_data_index',
+    1: 'field_definition_number',
+    2: 'fit_base_type_id',
+    3: 'field_name',
+    4: 'units'
+  },
+  207: { // developer_data_id
+    0: 'developer_id',
+    1: 'application_id',
+    2: 'manufacturer_id',
+    3: 'developer_data_index'
+  },
+  258: { // dive_settings
+    0: 'name',
+    1: 'model'
+  },
+  269: { // spo2_data
+    0: 'timestamp',
+    1: 'spo2'
+  },
+  275: { // sleep_level
+    0: 'timestamp',
+    1: 'sleep_level'
+  },
+  297: { // respiration_rate
+    0: 'timestamp',
+    1: 'respiration_rate'
   }
 };
 
@@ -2092,7 +2238,10 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               else if (field.recordNumber === 28) {
                 const sName = String(val).trim();
                 if (sName && !/session\s+\d+/i.test(sName)) fitName = sName;
-              } else if (field.recordNumber === 29 || field.recordNumber === 30) {
+              } else if (field.recordNumber === 83) {
+                const sName = String(val).trim();
+                if (sName) fitName = sName;
+              } else if (field.recordNumber === 29 || field.recordNumber === 30 || field.recordNumber === 110) {
                 metaComment = String(val).trim();
               }
             } else if (globalMsgNum === 34) {
@@ -2100,8 +2249,24 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               if (field.recordNumber === 1 || field.recordNumber === 2) {
                 const aName = String(val).trim();
                 if (aName && !/activity/i.test(aName)) fitName = aName;
-              } else if (field.recordNumber === 3 || field.recordNumber === 4) {
+              } else if (field.recordNumber === 11) {
+                const aName = String(val).trim();
+                if (aName) fitName = aName;
+              } else if (field.recordNumber === 3 || field.recordNumber === 4 || field.recordNumber === 12) {
                 metaComment = String(val).trim();
+              }
+            }
+
+            // General smart scanner for strings in meta messages
+            if (field.baseType === 0x07 && val && typeof val === 'string' && val.trim().length > 0) {
+              const strVal = val.trim();
+              const isGeneric = /^(activity|session|course|workout|unnamed|unknown|0|\d+)$/i.test(strVal);
+              if (!isGeneric && (globalMsgNum === 18 || globalMsgNum === 34 || globalMsgNum === 31 || globalMsgNum === 26 || globalMsgNum === 140)) {
+                if (strVal.length > 45 || (strVal.includes(' ') && strVal.length > 15)) {
+                  if (!fitNotes) fitNotes = strVal;
+                } else if (strVal.length > 3 && strVal.length < 40) {
+                  if (!fitName) fitName = strVal;
+                }
               }
             }
           }
@@ -2127,9 +2292,12 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             if (Math.abs(lng) > 180) lng = lng * (180 / Math.pow(2, 31));
 
             if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001) {
+              // CRITICAL: FIT SDK Altitude and Enhanced Altitude both use a scale of 5 and offset of 500 meters.
+              // Formula: decodedValue = (rawValue / 5) - 500. DO NOT CHANGE THIS TO 3000!
+              // Changing this to / 3000 will result in flat/zero elevation statistics for Garmin FIT files.
               let ele: number | undefined;
               if (enhancedAltitude !== undefined && enhancedAltitude !== null && !isNaN(enhancedAltitude) && enhancedAltitude !== 4294967295) {
-                ele = enhancedAltitude / 3000 - 500;
+                ele = enhancedAltitude / 5 - 500;
               }
               if ((ele === undefined || ele === null || isNaN(ele)) && altitude !== undefined && altitude !== null && !isNaN(altitude) && altitude !== 65535) {
                 ele = altitude / 5 - 500;

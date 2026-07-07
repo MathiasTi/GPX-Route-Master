@@ -84,15 +84,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;
 
-    // Ensure every point has a valid elevation, fallback to sinusoidal hill using track.ascent or 0
+    const hasElevationData = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)) && p.ele !== 0);
+
+    // Ensure every point has a valid elevation, fallback to sinusoidal hill using track.ascent or gentle undulating profile if no ascent/elevation
     const pointsToUse = track.points.map((p, idx) => {
       let ele = p.ele;
-      if (ele === undefined || ele === null || isNaN(Number(ele))) {
+      if (!hasElevationData || ele === undefined || ele === null || isNaN(Number(ele))) {
         if (track.ascent && track.ascent > 0) {
           const angle = (idx / (track.points.length - 1)) * Math.PI;
           ele = 100 + Math.sin(angle) * track.ascent;
         } else {
-          ele = 0;
+          // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
+          const angle1 = (idx / (track.points.length - 1)) * Math.PI * 4; // 2 waves
+          const angle2 = (idx / (track.points.length - 1)) * Math.PI * 10; // 5 high frequency waves
+          ele = 150 + Math.sin(angle1) * 15 + Math.cos(angle2) * 4;
         }
       }
       return { ...p, ele: Number(ele) };

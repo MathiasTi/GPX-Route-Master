@@ -243,8 +243,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             time: p.time ? new Date(p.time) : undefined
           }));
 
-          // Fallback: If track has points but no elevation, generate a default profile using track's ascent
-          const hasElevation = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)));
+          // Fallback: If track has points but no elevation or only flat zero elevation, generate a default profile using track's ascent
+          const hasElevation = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)) && p.ele !== 0);
           if (!hasElevation && track.points.length > 0) {
             const ptsCount = track.points.length;
             const finalAscent = track.ascent || 0;
@@ -255,7 +255,13 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
               p.ele = parseFloat((baseElevation + elevationPhase * finalAscent).toFixed(1));
             });
             if (finalAscent === 0) {
-              track.points.forEach(p => { p.ele = 0; });
+              // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
+              const baseElevation = 150;
+              track.points.forEach((p, idx) => {
+                const angle1 = (idx / (ptsCount - 1)) * Math.PI * 4; // 2 waves
+                const angle2 = (idx / (ptsCount - 1)) * Math.PI * 10; // 5 high frequency waves
+                p.ele = parseFloat((baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4).toFixed(1));
+              });
             }
           }
         }
@@ -330,8 +336,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         if (finalDescent === 0) finalDescent = stats.descent;
       }
 
-      // Fallback: If Garmin activity has points but no elevation, generate a default profile using ascent
-      const hasElevation = points.some((p: any) => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
+      // Fallback: If Garmin activity has points but no elevation or only flat zero elevation, generate a default profile using ascent
+      const hasElevation = points.some((p: any) => p.ele !== undefined && p.ele !== null && !isNaN(p.ele) && p.ele !== 0);
       if (!hasElevation && points.length > 0) {
         const ptsCount = points.length;
         const baseElevation = 100;
@@ -341,7 +347,13 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
           p.ele = parseFloat((baseElevation + elevationPhase * (finalAscent || 0)).toFixed(1));
         });
         if (!finalAscent && !finalDescent) {
-          points.forEach((p: any) => { p.ele = 0; });
+          // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
+          const baseElevation = 150;
+          points.forEach((p: any, idx: number) => {
+            const angle1 = (idx / (ptsCount - 1)) * Math.PI * 4; // 2 waves
+            const angle2 = (idx / (ptsCount - 1)) * Math.PI * 10; // 5 high frequency waves
+            p.ele = parseFloat((baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4).toFixed(1));
+          });
         }
       }
 

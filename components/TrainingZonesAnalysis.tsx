@@ -652,7 +652,7 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
                               <span className="font-extrabold text-[10px] text-indigo-400 mb-1">Über {z.fullName}:</span>
                               <p className="text-[10px] text-slate-300 leading-snug font-medium mb-1.5">{z.desc}</p>
                               {z.benefit && (
-                                <div className="text-[10px] text-emerald-450 mt-1 pt-1 border-t border-slate-800 leading-snug">
+                                <div className="text-[10px] text-emerald-400 mt-1 pt-1 border-t border-slate-800 leading-snug">
                                   <span className="font-bold block uppercase text-[8px] text-emerald-400 tracking-wider">Erwarteter Nutzen:</span>
                                   {z.benefit}
                                 </div>

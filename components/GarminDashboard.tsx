@@ -61,6 +61,8 @@ interface GarminActivity {
   calories?: number;
   avg_hr?: number;
   points_json?: string;
+  description?: string;
+  location?: string;
 }
 
 interface HealthData {
@@ -1348,13 +1350,25 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                               {filteredActivities.map((act) => (
                                 <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/40">
                                   <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span>{isRunningType(act.type) ? '🏃' : isCyclingType(act.type) ? '🚴' : '🏅'}</span>
-                                      <span>{act.name}</span>
-                                      {!act.points_json && (
-                                        <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
-                                          NUR STATS
-                                        </span>
+                                    <div className="flex flex-col gap-0.5">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span>{isRunningType(act.type) ? '🏃' : isCyclingType(act.type) ? '🚴' : '🏅'}</span>
+                                        <span>{act.name}</span>
+                                        {!act.points_json && (
+                                          <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
+                                            NUR STATS
+                                          </span>
+                                        )}
+                                        {act.location && (
+                                          <span className="text-[9px] bg-indigo-55/70 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.5 rounded border border-indigo-100/30 dark:border-indigo-900/30 shrink-0" title="Standort">
+                                            📍 {act.location}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {act.description && (
+                                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium max-w-md italic tracking-wide mt-0.5">
+                                          {act.description}
+                                        </p>
                                       )}
                                     </div>
                                   </td>

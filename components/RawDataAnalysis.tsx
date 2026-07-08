@@ -1130,7 +1130,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                           <span>INTERNER STRUCT SCHEMA CODESNIPPET</span>
                           <span>JSON</span>
                         </div>
-                        <pre className="font-mono text-[11px] text-emerald-450 dark:text-emerald-400 leading-relaxed overflow-x-auto whitespace-pre-wrap">
+                        <pre className="font-mono text-[11px] text-emerald-400 dark:text-emerald-400 leading-relaxed overflow-x-auto whitespace-pre-wrap">
                           {JSON.stringify(activeRecord, null, 2)}
                         </pre>
                       </div>
@@ -1511,7 +1511,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                             <div className="grid grid-cols-2 gap-3.5 text-xs pt-2 border-t border-indigo-50/40 dark:border-indigo-900/10">
                               <div>
                                 <span className="text-[9px] text-slate-450 uppercase block font-black leading-none">Geschwindigkeit (Pace)</span>
-                                <span className="font-mono text-sm font-black text-emerald-600 dark:text-emerald-450">
+                                <span className="font-mono text-sm font-black text-emerald-600 dark:text-emerald-400">
                                   {selectedPointMetric.speedKmh.toFixed(1)} km/h
                                 </span>
                                 <span className="text-[9px] text-slate-400 block font-semibold leading-none pt-0.5">

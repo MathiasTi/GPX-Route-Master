@@ -306,6 +306,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         ref={mapRef}
         mapLib={maplibregl}
         style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+        minZoom={3}
         initialViewState={{
           longitude: mapView.lng,
           latitude: mapView.lat,

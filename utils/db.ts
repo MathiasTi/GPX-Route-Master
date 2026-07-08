@@ -100,7 +100,8 @@ export function initDb() {
       avg_hr REAL,
       description TEXT,
       location TEXT,
-      points_json TEXT
+      points_json TEXT,
+      user_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS app_version (
@@ -147,6 +148,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE garmin_activities ADD COLUMN points_json TEXT`);
   } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN user_id TEXT`);
+  } catch (e) {}
 
   // Create performance indexes to speed up name, description, and location searches
   try {
@@ -154,6 +158,8 @@ export function initDb() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_description ON garmin_activities(description)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_location ON garmin_activities(location)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_date ON garmin_activities(date)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_type ON garmin_activities(type)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_id ON garmin_activities(user_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_description ON tracks(description)`);
   } catch (e) {
@@ -374,11 +380,11 @@ export function saveGarminActivity(
   id: string, name: string, type: string, date: string,
   distance: number, duration: number, ascent?: number, descent?: number,
   calories?: number, avgHr?: number, description?: string, location?: string,
-  pointsJson?: string
+  pointsJson?: string, userId?: string
 ) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, points_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, points_json, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     id, name, type, date, distance, duration, 
@@ -388,7 +394,8 @@ export function saveGarminActivity(
     avgHr !== undefined ? avgHr : null, 
     description || null, 
     location || null,
-    pointsJson || null
+    pointsJson || null,
+    userId || null
   );
 }
 
@@ -409,6 +416,7 @@ export interface DbGarminActivityRecord {
   location?: string;
   max_slope?: number;
   points_json?: string;
+  user_id?: string;
 }
 
 export function searchGarminActivities(queryText: string = '', activityType?: string): DbGarminActivityRecord[] {

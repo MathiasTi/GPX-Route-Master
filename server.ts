@@ -1269,7 +1269,7 @@ async function startServer() {
             
             const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
             const timeKey = Object.keys(item).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
-            const hrKey = Object.keys(item).find(k => ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr"].includes(k.toLowerCase()));
+            const hrKey = Object.keys(item).find(k => ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"].includes(k.toLowerCase()));
             const cadKey = Object.keys(item).find(k => ["cadence", "cad", "average_cadence", "avg_cadence"].includes(k.toLowerCase()));
             const powKey = Object.keys(item).find(k => ["power", "watts", "average_power", "avg_power"].includes(k.toLowerCase()));
             
@@ -1457,6 +1457,7 @@ async function startServer() {
           const cols = uploadedDb.pragma("table_info(activity)") as any[];
           const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
+          const hasUserId = cols.some(c => c.name.toLowerCase() === "user_id");
           const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
           const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
           const ascentCol = cols.find(c => ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m", "total_elevation_gain", "elevationgain", "totalascent", "totalascentm", "total_ascent_m", "totalelevationgain", "elevation_gain_m", "elevationgainm", "elevation_gain_meters", "elevationgainmeters", "climb", "total_climb"].includes(c.name.toLowerCase()))?.name;
@@ -1510,6 +1511,7 @@ async function startServer() {
               start_ts, 
               distance, 
               duration
+              ${hasUserId ? ", user_id" : ""}
               ${hasCalories ? ", calories" : ""}
               ${hasAverageHr ? ", average_hr" : ""}
               ${descCol ? `, ${descCol}` : ""}
@@ -1539,8 +1541,43 @@ async function startServer() {
               const hrVal = hasAverageHr && row.average_hr ? parseFloat(row.average_hr) : undefined;
               const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
               const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
+              const userIdVal = hasUserId && row.user_id ? String(row.user_id) : undefined;
               let finalAscent = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
               let finalDescent = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
+
+              if (!finalAscent || !finalDescent) {
+                // Try to get ascent/descent from cycling_agg_metrics or running_agg_metrics
+                try {
+                  if (tNames.includes("cycling_agg_metrics")) {
+                    const stmtAgg = uploadedDb.prepare(`
+                      SELECT elevation_gain, elevation_loss 
+                      FROM cycling_agg_metrics 
+                      WHERE activity_id = ?
+                      LIMIT 1
+                    `);
+                    const aggRow = stmtAgg.get(row.activity_id) as any;
+                    if (aggRow) {
+                      if (!finalAscent && aggRow.elevation_gain) finalAscent = parseFloat(aggRow.elevation_gain);
+                      if (!finalDescent && aggRow.elevation_loss) finalDescent = parseFloat(aggRow.elevation_loss);
+                    }
+                  }
+                  if ((!finalAscent || !finalDescent) && tNames.includes("running_agg_metrics")) {
+                    const stmtAgg = uploadedDb.prepare(`
+                      SELECT elevation_gain, elevation_loss 
+                      FROM running_agg_metrics 
+                      WHERE activity_id = ?
+                      LIMIT 1
+                    `);
+                    const aggRow = stmtAgg.get(row.activity_id) as any;
+                    if (aggRow) {
+                      if (!finalAscent && aggRow.elevation_gain) finalAscent = parseFloat(aggRow.elevation_gain);
+                      if (!finalDescent && aggRow.elevation_loss) finalDescent = parseFloat(aggRow.elevation_loss);
+                    }
+                  }
+                } catch (aggErr) {
+                  console.error("Failed to query agg metrics for elevation gain/loss:", aggErr);
+                }
+              }
 
               let pointsJsonVal: string | undefined = undefined;
 
@@ -1569,7 +1606,7 @@ async function startServer() {
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm') THEN ${valCol} END) AS hr,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm', 'hf', 'herzfrequenz', 'puls') THEN ${valCol} END) AS hr,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
                       FROM activity_ts_metric
@@ -1756,7 +1793,7 @@ async function startServer() {
                 } catch (pe) {}
               }
 
-              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal);
+              saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal, userIdVal);
               activitiesImported++;
             }
           });

@@ -9,6 +9,71 @@ export const toDate = (timeVal: any): Date | undefined => {
 };
 
 /**
+ * Linearly interpolates missing elevation values (null, undefined, or NaN)
+ * in a robust manner to ensure a continuous and realistic ground profile.
+ * Handles negative elevations correctly.
+ */
+export const interpolateMissingElevations = (points: GPXPoint[]): void => {
+  if (!points || points.length === 0) return;
+
+  const n = points.length;
+  // Find the first point that has a valid numerical elevation (could be negative or 0)
+  const firstValidIndex = points.findIndex(
+    p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele)
+  );
+
+  if (firstValidIndex === -1) {
+    // If absolutely no valid elevation data is present, default everything to flat 0m
+    for (const p of points) {
+      p.ele = 0;
+    }
+    return;
+  }
+
+  // Backfill any points before the first valid index with that index's elevation value
+  const firstValidEle = points[firstValidIndex].ele!;
+  for (let i = 0; i < firstValidIndex; i++) {
+    points[i].ele = firstValidEle;
+  }
+
+  // Iteratively process and linearly interpolate any internal gaps of missing elevations
+  let i = firstValidIndex;
+  while (i < n) {
+    if (points[i].ele === undefined || points[i].ele === null || isNaN(points[i].ele!)) {
+      // Find the next point that has a valid elevation
+      let nextValidIndex = -1;
+      for (let j = i + 1; j < n; j++) {
+        if (points[j].ele !== undefined && points[j].ele !== null && !isNaN(points[j].ele)) {
+          nextValidIndex = j;
+          break;
+        }
+      }
+
+      if (nextValidIndex !== -1) {
+        // Linearly interpolate between points[i - 1] and points[nextValidIndex]
+        const startVal = points[i - 1].ele!;
+        const endVal = points[nextValidIndex].ele!;
+        const totalSteps = nextValidIndex - (i - 1);
+        for (let k = i; k < nextValidIndex; k++) {
+          const ratio = (k - (i - 1)) / totalSteps;
+          points[k].ele = Number((startVal + ratio * (endVal - startVal)).toFixed(2));
+        }
+        i = nextValidIndex + 1;
+      } else {
+        // If there are no more valid elevations, forward-fill the remaining points with points[i - 1]'s value
+        const lastVal = points[i - 1].ele!;
+        for (let k = i; k < n; k++) {
+          points[k].ele = lastVal;
+        }
+        break;
+      }
+    } else {
+      i++;
+    }
+  }
+};
+
+/**
  * Sanitizes GPX/FIT trackpoints by filtering out unrealistic sensor values.
  * Unrealistic values (e.g. Heart Rate = 255 or >= 230, Power > 2500W, Cadence > 250rpm)
  * are smoothly interpolated using linear interpolation from surrounding valid points.
@@ -118,11 +183,11 @@ export const findClimbs = (
   // Calculate cumulative distance and filled elevation
   const cumDist = new Float64Array(points.length);
   const filledEle = new Float64Array(points.length);
-  let lastEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
+  const tempPoints = points.map(p => ({ ...p }));
+  interpolateMissingElevations(tempPoints);
   
   for (let i = 0; i < points.length; i++) {
-    if (points[i].ele !== undefined && points[i].ele !== null && !isNaN(points[i].ele!)) lastEle = points[i].ele!;
-    filledEle[i] = lastEle;
+    filledEle[i] = tempPoints[i].ele!;
     if (i > 0) {
       cumDist[i] = cumDist[i - 1] + calculateDistance(points[i - 1], points[i]) * 1000;
     } else {
@@ -552,14 +617,12 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
     totalDist += d;
   }
 
-  // Pre-fill missing elevation data
+  // Pre-fill missing elevation data using linear interpolation
   const filledEle = new Float64Array(points.length);
-  let lastValidEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
-  for (let i = 0; i < points.length; i++) {
-    if (points[i].ele !== undefined && points[i].ele !== null && !isNaN(points[i].ele!)) {
-      lastValidEle = points[i].ele!;
-    }
-    filledEle[i] = lastValidEle;
+  const tempPoints = points.map(p => ({ ...p }));
+  interpolateMissingElevations(tempPoints);
+  for (let i = 0; i < tempPoints.length; i++) {
+    filledEle[i] = tempPoints[i].ele!;
   }
 
   // 1. Smooth elevation data (distance-based, 60m window to robustly filter GPS micro-jitter)
@@ -881,23 +944,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const points = sanitizeGPXPoints(rawPoints);
 
     // Validate elevation data existence and provide a meaningful default if missing
-    const hasElevation = points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
-    if (!hasElevation && points.length > 0) {
-      console.warn(`No elevation data found in GPX file "${fileName}". Generating a flat 0m baseline as default.`);
-      for (const p of points) {
-        p.ele = 0;
-      }
-    } else if (points.length > 0) {
-      // Smoothly fill/interpolate any scattered missing elevation values
-      let lastValidEle = points.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
-      for (let i = 0; i < points.length; i++) {
-        if (points[i].ele === undefined || points[i].ele === null || isNaN(points[i].ele!)) {
-          points[i].ele = lastValidEle;
-        } else {
-          lastValidEle = points[i].ele!;
-        }
-      }
-    }
+    interpolateMissingElevations(points);
 
     const hasTimestamps = points.some(p => p.time !== undefined);
     if (hasTimestamps && points.length > 0) {
@@ -1280,23 +1327,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     }
 
     // Validate elevation data existence and provide a meaningful default if missing
-    const hasElevation = sanitizedPoints.some(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele));
-    if (!hasElevation && sanitizedPoints.length > 0) {
-      console.warn(`No elevation data found in GPX stream "${fileName}". Generating a flat 0m baseline as default.`);
-      for (const p of sanitizedPoints) {
-        p.ele = 0;
-      }
-    } else if (sanitizedPoints.length > 0) {
-      // Smoothly fill/interpolate any scattered missing elevation values
-      let lastValidEle = sanitizedPoints.find(p => p.ele !== undefined && p.ele !== null && !isNaN(p.ele))?.ele || 0;
-      for (let i = 0; i < sanitizedPoints.length; i++) {
-        if (sanitizedPoints[i].ele === undefined || sanitizedPoints[i].ele === null || isNaN(sanitizedPoints[i].ele!)) {
-          sanitizedPoints[i].ele = lastValidEle;
-        } else {
-          lastValidEle = sanitizedPoints[i].ele!;
-        }
-      }
-    }
+    interpolateMissingElevations(sanitizedPoints);
 
     const hasTimestamps = sanitizedPoints.some(p => p.time !== undefined);
     if (hasTimestamps && sanitizedPoints.length > 0) {

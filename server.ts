@@ -1390,13 +1390,16 @@ async function startServer() {
 
     if (isGarminHealthData) {
       console.log("Detected diegoscarabelli/garmin-health-data database schema!");
+      addImportDebugLog("Spezialisiertes Garmin-Health-Data-Schema erkannt (diegoscarabelli/garmin-health-data)");
 
       // 1. SLEEP
       if (tNames.includes("sleep")) {
         try {
+          addImportDebugLog("[Sleep-Import] Analysiere Tabelle 'sleep'...");
           const cols = uploadedDb.pragma("table_info(sleep)") as any[];
           const hasRestingHr = cols.some(c => c.name.toLowerCase() === "resting_heart_rate");
           const hasSleepTimeSec = cols.some(c => c.name.toLowerCase() === "sleep_time_seconds");
+          addImportDebugLog(`[Sleep-Import] Spalten gefunden: ${cols.map(c => c.name).join(", ")}. hasRestingHr=${hasRestingHr}, hasSleepTimeSec=${hasSleepTimeSec}`);
           
           if (hasSleepTimeSec) {
             const query = `
@@ -1438,8 +1441,12 @@ async function startServer() {
                 }
               }
             });
+            addImportDebugLog(`[Sleep-Import] Schlafdaten erfolgreich importiert. Schlaf-Einträge: ${sleepImported}, Ruhepuls-Einträge: ${rhrImported}`);
+          } else {
+            addImportDebugLog("[Sleep-Import-Warnung] Spalte 'sleep_time_seconds' wurde nicht gefunden. Schlaftabelle übersprungen.");
           }
-        } catch (e) {
+        } catch (e: any) {
+          addImportDebugLog(`[Sleep-Import-Fehler] Fehler beim Importieren der Schlafdaten: ${e.message || e}`);
           console.error("Error importing sleep from garmin-health-data schema:", e);
         }
       }
@@ -1447,6 +1454,9 @@ async function startServer() {
       // 2. WEIGHT (body_composition)
       if (tNames.includes("body_composition")) {
         try {
+          addImportDebugLog("[Weight-Import] Analysiere Tabelle 'body_composition'...");
+          const cols = uploadedDb.pragma("table_info(body_composition)") as any[];
+          addImportDebugLog(`[Weight-Import] Spalten gefunden: ${cols.map(c => c.name).join(", ")}`);
           const stmt = uploadedDb.prepare(`
             SELECT timestamp, weight, bmi, body_fat 
             FROM body_composition
@@ -1468,7 +1478,9 @@ async function startServer() {
               weightImported++;
             }
           });
-        } catch (e) {
+          addImportDebugLog(`[Weight-Import] Gewichtsdaten erfolgreich importiert. Einträge: ${weightImported}`);
+        } catch (e: any) {
+          addImportDebugLog(`[Weight-Import-Fehler] Fehler beim Importieren der Gewichtsdaten: ${e.message || e}`);
           console.error("Error importing weight from body_composition:", e);
         }
       }
@@ -1476,6 +1488,9 @@ async function startServer() {
       // 3. STRESS (Aggregation)
       if (tNames.includes("stress")) {
         try {
+          addImportDebugLog("[Stress-Import] Analysiere Tabelle 'stress' und aggregiere Daten pro Tag...");
+          const cols = uploadedDb.pragma("table_info(stress)") as any[];
+          addImportDebugLog(`[Stress-Import] Spalten gefunden: ${cols.map(c => c.name).join(", ")}`);
           // Robust in-memory aggregation to avoid native sqlite date() function on numeric/Garmin epoch timestamps
           const stmt = uploadedDb.prepare(`
             SELECT timestamp, value 
@@ -1504,7 +1519,9 @@ async function startServer() {
               stressImported++;
             }
           });
-        } catch (e) {
+          addImportDebugLog(`[Stress-Import] Stressdaten erfolgreich aggregiert und importiert. Tage: ${stressImported}`);
+        } catch (e: any) {
+          addImportDebugLog(`[Stress-Import-Fehler] Fehler beim Aggregieren/Importieren von Stressdaten: ${e.message || e}`);
           console.error("Error aggregating and importing stress:", e);
         }
       }
@@ -1512,6 +1529,9 @@ async function startServer() {
       // 4. STEPS (Aggregation)
       if (tNames.includes("steps")) {
         try {
+          addImportDebugLog("[Steps-Import] Analysiere Tabelle 'steps' und aggregiere Schritte pro Tag...");
+          const cols = uploadedDb.pragma("table_info(steps)") as any[];
+          addImportDebugLog(`[Steps-Import] Spalten gefunden: ${cols.map(c => c.name).join(", ")}`);
           // Robust in-memory aggregation to avoid native sqlite date() function on numeric/Garmin epoch timestamps
           const stmt = uploadedDb.prepare(`
             SELECT timestamp, value 
@@ -1533,7 +1553,9 @@ async function startServer() {
               stepsImported++;
             }
           });
-        } catch (e) {
+          addImportDebugLog(`[Steps-Import] Schrittdaten erfolgreich aggregiert und importiert. Tage: ${stepsImported}`);
+        } catch (e: any) {
+          addImportDebugLog(`[Steps-Import-Fehler] Fehler beim Aggregieren/Importieren von Schrittdaten: ${e.message || e}`);
           console.error("Error aggregating and importing steps:", e);
         }
       }
@@ -1541,6 +1563,7 @@ async function startServer() {
       // 5. ACTIVITIES (activity)
       if (tNames.includes("activity")) {
         try {
+          addImportDebugLog("[Activity-Import] Analysiere Tabelle 'activity'...");
           const cols = uploadedDb.pragma("table_info(activity)") as any[];
           const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
@@ -1571,6 +1594,8 @@ async function startServer() {
             const n = c.name.toLowerCase();
             return ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"].includes(n) || n.includes("points_json") || n.includes("path_json") || n.includes("coordinates_json");
           })?.name;
+
+          addImportDebugLog(`[Activity-Import] Spaltendetektion: hasAverageHr=${hasAverageHr}, hasCalories=${hasCalories}, hasUserId=${hasUserId}, descCol=${descCol || '-'}, locCol=${locCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}`);
 
           // Scan for a separate points/coordinates table
           let pointsTable: string | null = null;
@@ -1624,6 +1649,12 @@ async function startServer() {
               })?.name || null;
               break;
             }
+          }
+
+          if (pointsTable) {
+            addImportDebugLog(`[Activity-Import] Separate Trackpunkt-Tabelle erkannt: '${pointsTable}' (ptActIdCol=${ptActIdCol}, ptJsonCol=${ptJsonCol || '-'}, ptLatCol=${ptLatCol || '-'}, ptLngCol=${ptLngCol || '-'}, ptEleCol=${ptEleCol || '-'}, ptTimeCol=${ptTimeCol || '-'})`);
+          } else {
+            addImportDebugLog("[Activity-Import] Keine separate Trackpunkt-Tabelle gefunden.");
           }
 
           const query = `
@@ -1932,13 +1963,16 @@ async function startServer() {
               activitiesImported++;
             }
           });
-        } catch (e) {
+          addImportDebugLog(`[Activity-Import] ${activitiesImported} Aktivitäten erfolgreich verarbeitet und importiert.`);
+        } catch (e: any) {
+          addImportDebugLog(`[Activity-Import-Fehler] Fehler beim Importieren der Aktivitäten: ${e.message || e}`);
           console.error("Error importing activity from garmin-health-data schema:", e);
         }
       }
 
     } else {
       // FALLBACK: Existing flexible/dynamic column matching importer
+      addImportDebugLog("Erkanntes Schema: Fallback (Generische Spalten- und Tabellensuche)");
       const findColumn = (columns: any[], options: string[]): string | null => {
         for (const opt of options) {
           const found = columns.find((c: any) => c.name.toLowerCase() === opt.toLowerCase());
@@ -1953,156 +1987,222 @@ async function startServer() {
         
         // 1. SLEEP
         if (tName.includes("sleep")) {
+          addImportDebugLog(`[Generic-Sleep] Tabelle '${table.name}' als Schlafdaten-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "start_time", "calendarDate", "start_ts", "end_ts"]);
           const durCol = findColumn(columns, ["duration", "duration_ms", "total_sleep", "sleep_duration", "seconds", "total_sleep_time", "sleep_time_seconds"]);
+          const deepCol = findColumn(columns, ["deep", "deep_sleep", "deep_duration", "deep_sleep_duration", "deep_sleep_seconds"]);
+          const lightCol = findColumn(columns, ["light", "light_sleep", "light_duration", "light_sleep_duration", "light_sleep_seconds"]);
+          const remCol = findColumn(columns, ["rem", "rem_sleep", "rem_duration", "rem_sleep_duration", "rem_sleep_seconds"]);
+          const awakeCol = findColumn(columns, ["awake", "awake_time", "awake_duration", "awake_sleep_seconds"]);
+          
+          addImportDebugLog(`[Generic-Sleep] Spaltenauflösung: dateCol=${dateCol || 'FEHLT'}, durCol=${durCol || 'FEHLT'}, deepCol=${deepCol || 'FEHLT'}, lightCol=${lightCol || 'FEHLT'}, remCol=${remCol || 'FEHLT'}, awakeCol=${awakeCol || 'FEHLT'}`);
+
           if (dateCol && durCol) {
-            const deepCol = findColumn(columns, ["deep", "deep_sleep", "deep_duration", "deep_sleep_duration", "deep_sleep_seconds"]);
-            const lightCol = findColumn(columns, ["light", "light_sleep", "light_duration", "light_sleep_duration", "light_sleep_seconds"]);
-            const remCol = findColumn(columns, ["rem", "rem_sleep", "rem_duration", "rem_sleep_duration", "rem_sleep_seconds"]);
-            const awakeCol = findColumn(columns, ["awake", "awake_time", "awake_duration", "awake_sleep_seconds"]);
+            let count = 0;
+            try {
+              runInTransaction(() => {
+                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+                for (const row of stmt.iterate() as Iterable<any>) {
+                  const dateVal = formatToLocalDateString(row[dateCol]);
+                  if (!dateVal) continue;
 
-            runInTransaction(() => {
-              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = formatToLocalDateString(row[dateCol]);
-                if (!dateVal) continue;
+                  let durVal = parseFloat(row[durCol]);
+                  if (isNaN(durVal)) continue;
+                  // Normalize duration to minutes
+                  if (durVal > 100000) durVal = durVal / 60000; // ms to min
+                  else if (durVal > 2000) durVal = durVal / 60; // seconds to min
+                  else if (durVal < 24) durVal = durVal * 60; // hours to min
 
-                let durVal = parseFloat(row[durCol]);
-                if (isNaN(durVal)) continue;
-                // Normalize duration to minutes
-                if (durVal > 100000) durVal = durVal / 60000; // ms to min
-                else if (durVal > 2000) durVal = durVal / 60; // seconds to min
-                else if (durVal < 24) durVal = durVal * 60; // hours to min
+                  const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
+                  const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
+                  const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
+                  const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
 
-                const deepVal = deepCol && row[deepCol] ? parseFloat(row[deepCol]) : 0;
-                const lightVal = lightCol && row[lightCol] ? parseFloat(row[lightCol]) : 0;
-                const remVal = remCol && row[remCol] ? parseFloat(row[remCol]) : 0;
-                const awakeVal = awakeCol && row[awakeCol] ? parseFloat(row[awakeCol]) : 0;
+                  const normMin = (v: number) => {
+                    if (v > 100000) return v / 60000;
+                    if (v > 2000) return v / 60;
+                    if (v < 24) return v * 60;
+                    return v;
+                  };
 
-                const normMin = (v: number) => {
-                  if (v > 100000) return v / 60000;
-                  if (v > 2000) return v / 60;
-                  if (v < 24) return v * 60;
-                  return v;
-                };
-
-                saveSleep(
-                  dateVal,
-                  durVal,
-                  deepVal ? normMin(deepVal) : undefined,
-                  lightVal ? normMin(lightVal) : undefined,
-                  remVal ? normMin(remVal) : undefined,
-                  awakeVal ? normMin(awakeVal) : undefined
-                );
-                sleepImported++;
-              }
-            });
+                  saveSleep(
+                    dateVal,
+                    durVal,
+                    deepVal ? normMin(deepVal) : undefined,
+                    lightVal ? normMin(lightVal) : undefined,
+                    remVal ? normMin(remVal) : undefined,
+                    awakeVal ? normMin(awakeVal) : undefined
+                  );
+                  sleepImported++;
+                  count++;
+                }
+              });
+              addImportDebugLog(`[Generic-Sleep] ${count} Schlaf-Einträge aus Tabelle '${table.name}' erfolgreich importiert.`);
+            } catch (err: any) {
+              addImportDebugLog(`[Generic-Sleep-Fehler] Fehler beim Verarbeiten von '${table.name}': ${err.message || err}`);
+            }
+          } else {
+            addImportDebugLog(`[Generic-Sleep-Warnung] Pflichtspalten dateCol oder durCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
 
         // 2. WEIGHT
         else if (tName.includes("weight") || tName === "body_composition") {
+          addImportDebugLog(`[Generic-Weight] Tabelle '${table.name}' als Gewichtsdaten-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const weightCol = findColumn(columns, ["weight", "weight_kg", "value", "weight_g", "weightKg"]);
+          const bmiCol = findColumn(columns, ["bmi", "body_mass_index"]);
+          const fatCol = findColumn(columns, ["body_fat", "fat", "fat_percent", "body_fat_percent", "bodyFat"]);
+
+          addImportDebugLog(`[Generic-Weight] Spaltenauflösung: dateCol=${dateCol || 'FEHLT'}, weightCol=${weightCol || 'FEHLT'}, bmiCol=${bmiCol || 'FEHLT'}, fatCol=${fatCol || 'FEHLT'}`);
+
           if (dateCol && weightCol) {
-            const bmiCol = findColumn(columns, ["bmi", "body_mass_index"]);
-            const fatCol = findColumn(columns, ["body_fat", "fat", "fat_percent", "body_fat_percent", "bodyFat"]);
+            let count = 0;
+            try {
+              runInTransaction(() => {
+                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+                for (const row of stmt.iterate() as Iterable<any>) {
+                  const dateVal = formatToLocalDateString(row[dateCol]);
+                  if (!dateVal) continue;
 
-            runInTransaction(() => {
-              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = formatToLocalDateString(row[dateCol]);
-                if (!dateVal) continue;
+                  let wVal = parseFloat(row[weightCol]);
+                  if (isNaN(wVal)) continue;
+                  if (wVal > 1000) wVal = wVal / 1000; // g to kg
 
-                let wVal = parseFloat(row[weightCol]);
-                if (isNaN(wVal)) continue;
-                if (wVal > 1000) wVal = wVal / 1000; // g to kg
+                  const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
+                  const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
 
-                const bmiVal = bmiCol && row[bmiCol] ? parseFloat(row[bmiCol]) : undefined;
-                const fatVal = fatCol && row[fatCol] ? parseFloat(row[fatCol]) : undefined;
-
-                saveWeight(dateVal, wVal, bmiVal, fatVal);
-                weightImported++;
-              }
-            });
+                  saveWeight(dateVal, wVal, bmiVal, fatVal);
+                  weightImported++;
+                  count++;
+                }
+              });
+              addImportDebugLog(`[Generic-Weight] ${count} Gewichts-Einträge aus Tabelle '${table.name}' erfolgreich importiert.`);
+            } catch (err: any) {
+              addImportDebugLog(`[Generic-Weight-Fehler] Fehler beim Verarbeiten von '${table.name}': ${err.message || err}`);
+            }
+          } else {
+            addImportDebugLog(`[Generic-Weight-Warnung] Pflichtspalten dateCol oder weightCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
 
         // 3. STRESS
         else if (tName.includes("stress")) {
+          addImportDebugLog(`[Generic-Stress] Tabelle '${table.name}' als Stressdaten-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const stressCol = findColumn(columns, ["avg_stress", "average_stress", "stress_level", "score", "averageStress", "stressLevel", "value"]);
+
+          addImportDebugLog(`[Generic-Stress] Spaltenauflösung: dateCol=${dateCol || 'FEHLT'}, stressCol=${stressCol || 'FEHLT'}`);
+
           if (dateCol && stressCol) {
-            runInTransaction(() => {
-              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = formatToLocalDateString(row[dateCol]);
-                if (!dateVal) continue;
+            let count = 0;
+            try {
+              runInTransaction(() => {
+                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+                for (const row of stmt.iterate() as Iterable<any>) {
+                  const dateVal = formatToLocalDateString(row[dateCol]);
+                  if (!dateVal) continue;
 
-                const stressVal = parseFloat(row[stressCol]);
-                if (isNaN(stressVal)) continue;
+                  const stressVal = parseFloat(row[stressCol]);
+                  if (isNaN(stressVal)) continue;
 
-                saveStress(dateVal, stressVal);
-                stressImported++;
-              }
-            });
+                  saveStress(dateVal, stressVal);
+                  stressImported++;
+                  count++;
+                }
+              });
+              addImportDebugLog(`[Generic-Stress] ${count} Stress-Einträge aus Tabelle '${table.name}' erfolgreich importiert.`);
+            } catch (err: any) {
+              addImportDebugLog(`[Generic-Stress-Fehler] Fehler beim Verarbeiten von '${table.name}': ${err.message || err}`);
+            }
+          } else {
+            addImportDebugLog(`[Generic-Stress-Warnung] Pflichtspalten dateCol oder stressCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
 
         // 4. RHR
         else if (tName.includes("rhr") || tName === "resting_heart_rate") {
+          addImportDebugLog(`[Generic-RHR] Tabelle '${table.name}' als Ruhepuls-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const rhrCol = findColumn(columns, ["rhr", "resting_heart_rate", "resting_hr", "resting", "restingHeartRate"]);
+
+          addImportDebugLog(`[Generic-RHR] Spaltenauflösung: dateCol=${dateCol || 'FEHLT'}, rhrCol=${rhrCol || 'FEHLT'}`);
+
           if (dateCol && rhrCol) {
-            runInTransaction(() => {
-              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = formatToLocalDateString(row[dateCol]);
-                if (!dateVal) continue;
+            let count = 0;
+            try {
+              runInTransaction(() => {
+                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+                for (const row of stmt.iterate() as Iterable<any>) {
+                  const dateVal = formatToLocalDateString(row[dateCol]);
+                  if (!dateVal) continue;
 
-                const rhrVal = parseFloat(row[rhrCol]);
-                if (isNaN(rhrVal)) continue;
+                  const rhrVal = parseFloat(row[rhrCol]);
+                  if (isNaN(rhrVal)) continue;
 
-                saveRhr(dateVal, rhrVal);
-                rhrImported++;
-              }
-            });
+                  saveRhr(dateVal, rhrVal);
+                  rhrImported++;
+                  count++;
+                }
+              });
+              addImportDebugLog(`[Generic-RHR] ${count} Ruhepuls-Einträge aus Tabelle '${table.name}' erfolgreich importiert.`);
+            } catch (err: any) {
+              addImportDebugLog(`[Generic-RHR-Fehler] Fehler beim Verarbeiten von '${table.name}': ${err.message || err}`);
+            }
+          } else {
+            addImportDebugLog(`[Generic-RHR-Warnung] Pflichtspalten dateCol oder rhrCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
 
         // 5. STEPS
         else if (tName.includes("step") || tName === "days" || tName === "day_summary" || tName === "steps") {
+          addImportDebugLog(`[Generic-Steps] Tabelle '${table.name}' als Schrittdaten-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "calendar_date", "timestamp", "calendarDate"]);
           const stepsCol = findColumn(columns, ["steps", "step_count", "count", "stepCount", "value"]);
+          const calCol = findColumn(columns, ["calories", "active_calories", "total_calories", "activeCalories", "totalCalories"]);
+          const distCol = findColumn(columns, ["distance", "meters", "meters_traveled", "distanceMeters"]);
+
+          addImportDebugLog(`[Generic-Steps] Spaltenauflösung: dateCol=${dateCol || 'FEHLT'}, stepsCol=${stepsCol || 'FEHLT'}, calCol=${calCol || '-'}, distCol=${distCol || '-'}`);
+
           if (dateCol && stepsCol) {
-            const calCol = findColumn(columns, ["calories", "active_calories", "total_calories", "activeCalories", "totalCalories"]);
-            const distCol = findColumn(columns, ["distance", "meters", "meters_traveled", "distanceMeters"]);
+            let count = 0;
+            try {
+              runInTransaction(() => {
+                const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
+                for (const row of stmt.iterate() as Iterable<any>) {
+                  const dateVal = formatToLocalDateString(row[dateCol]);
+                  if (!dateVal) continue;
 
-            runInTransaction(() => {
-              const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
-                const dateVal = formatToLocalDateString(row[dateCol]);
-                if (!dateVal) continue;
+                  const stepsVal = parseInt(row[stepsCol], 10);
+                  if (isNaN(stepsVal)) continue;
 
-                const stepsVal = parseInt(row[stepsCol], 10);
-                if (isNaN(stepsVal)) continue;
+                  const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
+                  let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
+                  if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
 
-                const calVal = calCol && row[calCol] ? parseFloat(row[calCol]) : undefined;
-                let distVal = distCol && row[distCol] ? parseFloat(row[distCol]) : undefined;
-                if (distVal && distVal > 100) distVal = distVal / 1000; // convert meters to km
-
-                saveSteps(dateVal, stepsVal, calVal, distVal);
-                stepsImported++;
-              }
-            });
+                  saveSteps(dateVal, stepsVal, calVal, distVal);
+                  stepsImported++;
+                  count++;
+                }
+              });
+              addImportDebugLog(`[Generic-Steps] ${count} Schritt-Einträge aus Tabelle '${table.name}' erfolgreich importiert.`);
+            } catch (err: any) {
+              addImportDebugLog(`[Generic-Steps-Fehler] Fehler beim Verarbeiten von '${table.name}': ${err.message || err}`);
+            }
+          } else {
+            addImportDebugLog(`[Generic-Steps-Warnung] Pflichtspalten dateCol oder stepsCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
 
         // 6. ACTIVITIES
         else if (tName.includes("activities") || tName === "activity" || tName === "tracks") {
+          addImportDebugLog(`[Generic-Activities] Tabelle '${table.name}' als Aktivitäten-Kandidat erkannt.`);
           const dateCol = findColumn(columns, ["date", "day", "start_time", "start_time_local", "startTimeLocal", "timestamp", "calendar_date", "calendarDate", "start_ts"]);
           const idCol = findColumn(columns, ["id", "activityId", "activity_id", "rowid"]);
           const nameCol = findColumn(columns, ["name", "activityName", "title", "activity_name"]);
+          
+          addImportDebugLog(`[Generic-Activities] Pflichtspaltenauflösung: dateCol=${dateCol || 'FEHLT'}, idCol=${idCol || 'FEHLT'}, nameCol=${nameCol || 'FEHLT'}`);
+
           if (dateCol && idCol && nameCol) {
             const typeCol = findColumn(columns, ["type", "activityType", "activity_type", "sport", "activity_type_key"]);
             const distCol = findColumn(columns, ["distance"]);
@@ -2116,6 +2216,8 @@ async function startServer() {
             const polylineCol = findColumn(columns, ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"]);
             const pointsJsonCol = findColumn(columns, ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"]);
 
+            addImportDebugLog(`[Generic-Activities] Optionale Spaltenauflösung: typeCol=${typeCol || '-'}, distCol=${distCol || '-'}, durCol=${durCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}`);
+
             // Scan for a separate points table if not direct columns
             let pointsTable: string | null = null;
             let ptLatCol: string | null = null;
@@ -2126,6 +2228,7 @@ async function startServer() {
             let ptJsonCol: string | null = null;
 
             if (!polylineCol && !pointsJsonCol) {
+              addImportDebugLog("[Generic-Activities] Keine Pfad/Polyline-Spalte direkt in Aktivitätstabelle gefunden. Scanne nach separater Trackpunkt-Tabelle...");
               for (const tbl of tables) {
                 if (tbl.name.toLowerCase() === tName) continue;
                 const tblCols = uploadedDb.pragma(`table_info(${tbl.name})`) as any[];
@@ -2149,8 +2252,14 @@ async function startServer() {
                   break;
                 }
               }
+              if (pointsTable) {
+                addImportDebugLog(`[Generic-Activities] Separate Trackpunkt-Tabelle gefunden: '${pointsTable}' (ptActIdCol=${ptActIdCol}, ptJsonCol=${ptJsonCol || '-'}, ptLatCol=${ptLatCol || '-'}, ptLngCol=${ptLngCol || '-'}, ptEleCol=${ptEleCol || '-'})`);
+              } else {
+                addImportDebugLog("[Generic-Activities] Keine separate Trackpunkt-Tabelle identifiziert.");
+              }
             }
 
+            let actTableCount = 0;
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
               for (const row of stmt.iterate() as Iterable<any>) {
@@ -2383,8 +2492,12 @@ async function startServer() {
 
                 saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal);
                 activitiesImported++;
+                actTableCount++;
               }
             });
+            addImportDebugLog(`[Generic-Activities] ${actTableCount} Aktivitäten erfolgreich aus Tabelle '${table.name}' importiert.`);
+          } else {
+            addImportDebugLog(`[Generic-Activities-Warnung] Pflichtspalten dateCol, idCol oder nameCol fehlen in Tabelle '${table.name}'. Import übersprungen.`);
           }
         }
       }

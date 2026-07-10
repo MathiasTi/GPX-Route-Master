@@ -1154,6 +1154,11 @@ async function startServer() {
         if (tAvg >= -50 && tAvg <= 3000) {
           score += 300;
         }
+
+        // Realism bonus for common human training elevations (0 to 1000 meters)
+        if (tAvg >= 0 && tAvg <= 1000) {
+          score += 150;
+        }
         
         // Massive penalty for impossible values
         if (tMax > 15000 || tMin < -500) {
@@ -1540,14 +1545,32 @@ async function startServer() {
           const hasAverageHr = cols.some(c => c.name.toLowerCase() === "average_hr");
           const hasCalories = cols.some(c => c.name.toLowerCase() === "calories");
           const hasUserId = cols.some(c => c.name.toLowerCase() === "user_id");
-          const descCol = cols.find(c => ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(c.name.toLowerCase()))?.name;
-          const locCol = cols.find(c => ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(c.name.toLowerCase()))?.name;
-          const ascentCol = cols.find(c => ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m", "total_elevation_gain", "elevationgain", "totalascent", "totalascentm", "total_ascent_m", "totalelevationgain", "elevation_gain_m", "elevationgainm", "elevation_gain_meters", "elevationgainmeters", "climb", "total_climb"].includes(c.name.toLowerCase()))?.name;
-          const descentCol = cols.find(c => ["descent", "total_descent", "elevation_loss", "loss", "descent_m", "total_elevation_loss", "elevationloss", "totaldescent", "totaldescentm", "total_descent_m", "totalelevationloss", "elevation_loss_m", "elevationlossm", "elevation_loss_meters", "elevationlossmeters", "drop", "total_drop"].includes(c.name.toLowerCase()))?.name;
+          const descCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["description", "notes", "comment", "activity_description", "activity_description_key"].includes(n) || n.includes("description") || n.includes("comment");
+          })?.name;
+          const locCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["location", "place", "city", "town", "start_location", "location_name", "start_location_name"].includes(n) || n.includes("location_name") || n.includes("start_location");
+          })?.name;
+          const ascentCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["ascent", "total_ascent", "elevation_gain", "gain", "ascent_m", "total_elevation_gain", "elevationgain", "totalascent", "totalascentm", "total_ascent_m", "totalelevationgain", "elevation_gain_m", "elevationgainm", "elevation_gain_meters", "elevationgainmeters", "climb", "total_climb"].includes(n) || n.includes("ascent") || n.includes("elevation_gain") || n.includes("elevationgain") || n.includes("gain") || n.includes("climb") || n === "total_climb";
+          })?.name;
+          const descentCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["descent", "total_descent", "elevation_loss", "loss", "descent_m", "total_elevation_loss", "elevationloss", "totaldescent", "totaldescentm", "total_descent_m", "totalelevationloss", "elevation_loss_m", "elevationlossm", "elevation_loss_meters", "elevationlossmeters", "drop", "total_drop"].includes(n) || n.includes("descent") || n.includes("elevation_loss") || n.includes("elevationloss") || n.includes("loss") || n.includes("drop") || n === "total_drop";
+          })?.name;
 
           // Detect points or polyline columns directly in the activity table
-          const polylineCol = cols.find(c => ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(c.name.toLowerCase()))?.name;
-          const pointsJsonCol = cols.find(c => ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"].includes(c.name.toLowerCase()))?.name;
+          const polylineCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"].includes(n) || n.includes("polyline");
+          })?.name;
+          const pointsJsonCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"].includes(n) || n.includes("points_json") || n.includes("path_json") || n.includes("coordinates_json");
+          })?.name;
 
           // Scan for a separate points/coordinates table
           let pointsTable: string | null = null;
@@ -1564,10 +1587,22 @@ async function startServer() {
               continue;
             }
             const tblCols = uploadedDb.pragma(`table_info(${tbl.name})`) as any[];
-            const latCol = tblCols.find(c => ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(c.name.toLowerCase()))?.name;
-            const lngCol = tblCols.find(c => ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(c.name.toLowerCase()))?.name;
-            const actIdCol = tblCols.find(c => ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(c.name.toLowerCase()))?.name;
-            const jsonCol = tblCols.find(c => ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates", "activity_path", "activitypath", "activity_path_json"].includes(c.name.toLowerCase()))?.name;
+            const latCol = tblCols.find(c => {
+              const n = c.name.toLowerCase();
+              return ["latitude", "lat", "lat_deg", "position_lat", "position_latitude"].includes(n) || n === "lat" || n === "latitude" || n.includes("position_lat") || n.includes("position_latitude") || n.includes("lat_deg") || n === "y";
+            })?.name;
+            const lngCol = tblCols.find(c => {
+              const n = c.name.toLowerCase();
+              return ["longitude", "lng", "lon", "lon_deg", "position_lon", "position_longitude"].includes(n) || n === "lng" || n === "longitude" || n === "lon" || n.includes("position_lon") || n.includes("position_longitude") || n.includes("lon_deg") || n.includes("lng_deg") || n === "x";
+            })?.name;
+            const actIdCol = tblCols.find(c => {
+              const n = c.name.toLowerCase();
+              return ["activity_id", "activityid", "track_id", "trackid", "parent_id", "id"].includes(n) || n.includes("activity_id") || n.includes("activityid") || n.includes("track_id") || n.includes("trackid");
+            })?.name;
+            const jsonCol = tblCols.find(c => {
+              const n = c.name.toLowerCase();
+              return ["path_json", "points_json", "points", "track_json", "coordinates_json", "pathjson", "path", "track", "route", "coordinates", "activity_path", "activitypath", "activity_path_json"].includes(n) || n.includes("path_json") || n.includes("points_json") || n.includes("track_json") || n.includes("coordinates_json");
+            })?.name;
 
             if (jsonCol && actIdCol) {
               pointsTable = tbl.name;
@@ -1579,8 +1614,14 @@ async function startServer() {
               ptLatCol = latCol;
               ptLngCol = lngCol;
               ptActIdCol = actIdCol;
-              ptEleCol = tblCols.find(c => ["elevation", "ele", "alt", "altitude", "altitude_m", "enhanced_altitude", "enhanced_altitude_m", "height", "ele_m", "avg_altitude", "max_altitude"].includes(c.name.toLowerCase()))?.name || null;
-              ptTimeCol = tblCols.find(c => ["time", "timestamp", "date", "ts", "time_val"].includes(c.name.toLowerCase()))?.name || null;
+              ptEleCol = tblCols.find(c => {
+                const n = c.name.toLowerCase();
+                return ["elevation", "ele", "alt", "altitude", "altitude_m", "enhanced_altitude", "enhanced_altitude_m", "height", "ele_m", "avg_altitude", "max_altitude"].includes(n) || n.includes("elevation") || n.includes("altitude") || n.includes("alt") || n.includes("height") || n === "ele" || n.startsWith("ele_");
+              })?.name || null;
+              ptTimeCol = tblCols.find(c => {
+                const n = c.name.toLowerCase();
+                return ["time", "timestamp", "date", "ts", "time_val"].includes(n) || n.includes("time") || n.includes("timestamp") || n === "ts";
+              })?.name || null;
               break;
             }
           }
@@ -1624,10 +1665,10 @@ async function startServer() {
               const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
               const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
               const userIdVal = hasUserId && row.user_id ? String(row.user_id) : undefined;
-              let finalAscent = ascentCol && row[ascentCol] ? parseFloat(row[ascentCol]) : undefined;
-              let finalDescent = descentCol && row[descentCol] ? parseFloat(row[descentCol]) : undefined;
+              let finalAscent = (ascentCol && row[ascentCol] !== undefined && row[ascentCol] !== null) ? parseFloat(row[ascentCol]) : undefined;
+              let finalDescent = (descentCol && row[descentCol] !== undefined && row[descentCol] !== null) ? parseFloat(row[descentCol]) : undefined;
 
-              if (!finalAscent || !finalDescent) {
+              if (finalAscent === undefined || finalDescent === undefined || finalAscent === 0 || finalDescent === 0) {
                 // Try to get ascent/descent from cycling_agg_metrics or running_agg_metrics
                 try {
                   if (tNames.includes("cycling_agg_metrics")) {
@@ -1685,13 +1726,13 @@ async function startServer() {
                     const ptsQuery = `
                       SELECT 
                         ${tsCol} AS timestamp,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm', 'hf', 'herzfrequenz', 'puls') THEN ${valCol} END) AS hr,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('speed', 'enhanced_speed', 'speed_m_s', 'velocity', 'geschwindigkeit') THEN ${valCol} END) AS speed
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%position_lat%' OR LOWER(${nameCol}) LIKE '%positionlat%' OR LOWER(${nameCol}) LIKE '%latitude%' OR LOWER(${nameCol}) = 'lat' THEN ${valCol} END) AS lat,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%position_long%' OR LOWER(${nameCol}) LIKE '%position_lng%' OR LOWER(${nameCol}) LIKE '%positionlong%' OR LOWER(${nameCol}) LIKE '%positionlng%' OR LOWER(${nameCol}) LIKE '%longitude%' OR LOWER(${nameCol}) = 'lon' OR LOWER(${nameCol}) = 'lng' THEN ${valCol} END) AS lng,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%enhanced_altitude%' OR LOWER(${nameCol}) LIKE '%altitude%' OR LOWER(${nameCol}) LIKE '%elevation%' OR LOWER(${nameCol}) = 'ele' OR LOWER(${nameCol}) = 'alt' OR LOWER(${nameCol}) LIKE '%height%' THEN ${valCol} END) AS ele,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%heart%' OR LOWER(${nameCol}) LIKE '%heart_rate%' OR LOWER(${nameCol}) LIKE '%heartrate%' OR LOWER(${nameCol}) = 'hr' OR LOWER(${nameCol}) = 'hf' OR LOWER(${nameCol}) LIKE '%herz%' OR LOWER(${nameCol}) LIKE '%puls%' THEN ${valCol} END) AS hr,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%cadence%' OR LOWER(${nameCol}) LIKE '%cad%' OR LOWER(${nameCol}) LIKE '%tritt%' THEN ${valCol} END) AS cadence,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%power%' OR LOWER(${nameCol}) LIKE '%watt%' OR LOWER(${nameCol}) LIKE '%leist%' THEN ${valCol} END) AS power,
+                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%speed%' OR LOWER(${nameCol}) LIKE '%velocity%' OR LOWER(${nameCol}) LIKE '%geschw%' THEN ${valCol} END) AS speed
                       FROM activity_ts_metric
                       WHERE ${actIdCol} = ?
                       GROUP BY ${tsCol}

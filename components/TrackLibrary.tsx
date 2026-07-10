@@ -166,6 +166,27 @@ function extractPower(p: any): number | undefined {
   return undefined;
 }
 
+// Robust helper to extract speed
+function extractSpeed(p: any): number | undefined {
+  if (!p) return undefined;
+  const keys = ["speed", "velocity", "enhanced_speed", "speed_m_s", "geschwindigkeit"];
+  for (const key of keys) {
+    if (p[key] !== undefined && p[key] !== null) {
+      const val = parseFloat(p[key]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  if (typeof p === 'object') {
+    for (const key of Object.keys(p)) {
+      if (keys.includes(key.toLowerCase())) {
+        const val = parseFloat(p[key]);
+        if (!isNaN(val)) return val;
+      }
+    }
+  }
+  return undefined;
+}
+
 // Robust helper to normalize activity type
 function isRunningType(type: string | undefined): boolean {
   if (!type) return false;
@@ -396,6 +417,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                 hr: extractHeartRate(p),
                 cadence: extractCadence(p),
                 power: extractPower(p),
+                speed: extractSpeed(p),
               };
             }).filter((p: any) => p !== null);
           }

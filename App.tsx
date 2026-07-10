@@ -561,6 +561,8 @@ const App: React.FC = () => {
     setMarkedTrackId(track.id);
     if (alreadyExists) {
       setSuccessMessage(`Aktivität "${track.name}" ist bereits im Workspace geladen.`);
+    } else {
+      setSuccessMessage(`Aktivität "${track.name}" wurde erfolgreich in den Workspace geladen.`);
     }
   }, []);
 

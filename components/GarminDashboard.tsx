@@ -171,6 +171,29 @@ function isCyclingType(type: string | undefined): boolean {
   return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking');
 }
 
+function normalizeCoordinateClient(val: number, isLng: boolean = false): number {
+  if (isNaN(val)) return val;
+  if (Math.abs(val) > 180) {
+    // Semicircles (2^31/180) -> degrees
+    const semi = val * 180 / 2147483648;
+    const maxLimit = isLng ? 180 : 90;
+    if (Math.abs(semi) <= maxLimit) return semi;
+    
+    // E7 notation (e.g., 481234567 -> 48.1234567)
+    const e7 = val / 10000000;
+    if (Math.abs(e7) <= maxLimit) return e7;
+    
+    // E6 microdegrees (e.g., 48123456 -> 48.123456)
+    const e6 = val / 1000000;
+    if (Math.abs(e6) <= maxLimit) return e6;
+
+    // E5 notation
+    const e5 = val / 100000;
+    if (Math.abs(e5) <= maxLimit) return e5;
+  }
+  return val;
+}
+
 
 export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoadTrack }) => {
   const [data, setData] = useState<HealthData | null>(null);
@@ -393,18 +416,69 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       let points: any[] = [];
       if (act.points_json) {
         try {
-          const parsed = JSON.parse(act.points_json);
+          let parsed = JSON.parse(act.points_json);
+          // Auto-unwrap nested coordinate object lists if needed
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
+            if (arrayKey) {
+              parsed = (parsed as any)[arrayKey];
+            }
+          }
+
           if (Array.isArray(parsed) && parsed.length > 0) {
-            points = parsed.map((p: any) => ({
-              lat: parseFloat(p.lat),
-              lng: parseFloat(p.lng),
-              ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
-              time: p.time ? new Date(p.time) : undefined,
-              hr: extractHeartRate(p),
-              cadence: extractCadence(p),
-              power: extractPower(p),
-              speed: extractSpeed(p),
-            }));
+            // Determine lat/lng index if they are nested arrays
+            let latIndex = 0;
+            let lngIndex = 1;
+            const firstArrayItem = parsed.find(item => Array.isArray(item));
+            if (firstArrayItem) {
+              const val0 = parseFloat(firstArrayItem[0]);
+              const val1 = parseFloat(firstArrayItem[1]);
+              if (!isNaN(val0) && !isNaN(val1)) {
+                const norm0 = normalizeCoordinateClient(val0, false);
+                if (Math.abs(norm0) > 90) {
+                  latIndex = 1;
+                  lngIndex = 0;
+                }
+              }
+            }
+
+            points = parsed.map((p: any) => {
+              if (!p) return null;
+              if (Array.isArray(p)) {
+                const rawLat = parseFloat(p[latIndex]);
+                const rawLng = parseFloat(p[lngIndex]);
+                if (isNaN(rawLat) || isNaN(rawLng)) return null;
+                return {
+                  lat: normalizeCoordinateClient(rawLat, false),
+                  lng: normalizeCoordinateClient(rawLng, true),
+                  ele: p[2] !== undefined ? parseFloat(p[2]) : undefined,
+                  time: p[3] ? new Date(p[3]) : undefined
+                };
+              } else if (typeof p === 'object') {
+                const latKey = Object.keys(p).find(k => ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"].includes(k.toLowerCase()));
+                const lngKey = Object.keys(p).find(k => ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"].includes(k.toLowerCase()));
+                if (!latKey || !lngKey) return null;
+                
+                const rawLat = parseFloat(p[latKey]);
+                const rawLng = parseFloat(p[lngKey]);
+                if (isNaN(rawLat) || isNaN(rawLng)) return null;
+
+                const eleKey = Object.keys(p).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
+                const timeKey = Object.keys(p).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
+
+                return {
+                  lat: normalizeCoordinateClient(rawLat, false),
+                  lng: normalizeCoordinateClient(rawLng, true),
+                  ele: eleKey !== undefined && p[eleKey] !== null ? parseFloat(p[eleKey]) : undefined,
+                  time: timeKey && p[timeKey] ? new Date(p[timeKey]) : undefined,
+                  hr: extractHeartRate(p),
+                  cadence: extractCadence(p),
+                  power: extractPower(p),
+                  speed: extractSpeed(p),
+                };
+              }
+              return null;
+            }).filter((p): p is any => p !== null);
           }
         } catch (pe) {
           console.error('Failed to parse points_json from database:', pe);

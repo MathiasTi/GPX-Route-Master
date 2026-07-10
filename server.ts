@@ -1100,6 +1100,84 @@ async function startServer() {
       return val;
     }
 
+    // Smart adaptive normalization of track point elevation arrays from various raw/scaled SQLite schemes
+    function autoNormalizeElevations(points: any[]): any[] {
+      if (!points || points.length === 0) return points;
+      
+      const validEles: number[] = [];
+      for (const p of points) {
+        if (p && p.ele !== undefined && p.ele !== null && !isNaN(p.ele)) {
+          validEles.push(p.ele);
+        }
+      }
+      
+      if (validEles.length === 0) return points;
+      
+      let minRaw = Infinity;
+      let maxRaw = -Infinity;
+      let sumRaw = 0;
+      for (const e of validEles) {
+        if (e < minRaw) minRaw = e;
+        if (e > maxRaw) maxRaw = e;
+        sumRaw += e;
+      }
+      const avgRaw = sumRaw / validEles.length;
+      
+      const candidates = [
+        { name: "none", transform: (v: number) => v },
+        { name: "fit_raw", transform: (v: number) => v / 5 - 500 },
+        { name: "centimeters", transform: (v: number) => v / 100 },
+        { name: "decimeters", transform: (v: number) => v / 10 },
+        { name: "millimeters", transform: (v: number) => v / 1000 }
+      ];
+      
+      let bestCandidate = candidates[0];
+      let bestScore = -Infinity;
+      
+      for (const cand of candidates) {
+        let score = 0;
+        const tMin = cand.transform(minRaw);
+        const tMax = cand.transform(maxRaw);
+        const tAvg = cand.transform(avgRaw);
+        
+        // Reward range overlap with normal earth elevations (e.g., -100m to 6000m)
+        if (tMin >= -100 && tMax <= 6000) {
+          score += 1000;
+        }
+        
+        // Extra reward for standard human cycling/running range
+        if (tMin >= 0 && tMax <= 2500) {
+          score += 500;
+        }
+        
+        // Avg realistic check
+        if (tAvg >= -50 && tAvg <= 3000) {
+          score += 300;
+        }
+        
+        // Massive penalty for impossible values
+        if (tMax > 15000 || tMin < -500) {
+          score -= 5000;
+        }
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = cand;
+        }
+      }
+      
+      if (bestCandidate.name !== "none") {
+        addImportDebugLog(`[Elevation-Normalization] Automatische Skalierung gewählt: ${bestCandidate.name} (MinRaw=${minRaw}, MaxRaw=${maxRaw} -> MinNeu=${bestCandidate.transform(minRaw).toFixed(1)}, MaxNeu=${bestCandidate.transform(maxRaw).toFixed(1)})`);
+        for (const p of points) {
+          if (p && p.ele !== undefined && p.ele !== null && !isNaN(p.ele)) {
+            p.ele = Math.round(bestCandidate.transform(p.ele) * 10) / 10;
+          }
+        }
+      }
+      
+      return points;
+    }
+
     // Helper to calculate cumulative elevation profile stats (ascent/descent) from raw coordinate arrays
     function calculateElevationStats(points: { lat?: number; lng?: number; ele?: number }[]): { ascent: number, descent: number } {
       let ascent = 0;
@@ -1245,7 +1323,7 @@ async function startServer() {
           }
         }
         
-        return parsed.map(item => {
+        const mappedPoints = parsed.map(item => {
           if (!item) return null;
           if (Array.isArray(item)) {
             const lat = normalizeCoordinate(parseFloat(item[latIndex]), false);
@@ -1272,6 +1350,7 @@ async function startServer() {
             const hrKey = Object.keys(item).find(k => ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"].includes(k.toLowerCase()));
             const cadKey = Object.keys(item).find(k => ["cadence", "cad", "average_cadence", "avg_cadence"].includes(k.toLowerCase()));
             const powKey = Object.keys(item).find(k => ["power", "watts", "average_power", "avg_power"].includes(k.toLowerCase()));
+            const spdKey = Object.keys(item).find(k => ["speed", "velocity", "enhanced_speed", "speed_m_s", "geschwindigkeit"].includes(k.toLowerCase()));
             
             return {
               lat,
@@ -1280,11 +1359,14 @@ async function startServer() {
               time: timeKey && (item as any)[timeKey] ? new Date((item as any)[timeKey]) : undefined,
               hr: hrKey !== undefined && (item as any)[hrKey] !== null ? parseFloat((item as any)[hrKey]) : undefined,
               cadence: cadKey !== undefined && (item as any)[cadKey] !== null ? parseFloat((item as any)[cadKey]) : undefined,
-              power: powKey !== undefined && (item as any)[powKey] !== null ? parseFloat((item as any)[powKey]) : undefined
+              power: powKey !== undefined && (item as any)[powKey] !== null ? parseFloat((item as any)[powKey]) : undefined,
+              speed: spdKey !== undefined && (item as any)[spdKey] !== null ? parseFloat((item as any)[spdKey]) : undefined
             };
           }
           return null;
         }).filter(p => p !== null) as any[];
+
+        return autoNormalizeElevations(mappedPoints);
       } catch (e) {
         console.error("Failed to parse path_json:", e);
         return null;
@@ -1608,7 +1690,8 @@ async function startServer() {
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm', 'hf', 'herzfrequenz', 'puls') THEN ${valCol} END) AS hr,
                         MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
-                        MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power,
+                        MAX(CASE WHEN LOWER(${nameCol}) IN ('speed', 'enhanced_speed', 'speed_m_s', 'velocity', 'geschwindigkeit') THEN ${valCol} END) AS speed
                       FROM activity_ts_metric
                       WHERE ${actIdCol} = ?
                       GROUP BY ${tsCol}
@@ -1686,6 +1769,15 @@ async function startServer() {
                         const pwrVal = parseFloat(p.power);
                         if (!isNaN(pwrVal)) pt.power = pwrVal;
 
+                        const spdVal = parseFloat(p.speed);
+                        if (!isNaN(spdVal)) {
+                          if (spdVal > 100) {
+                            pt.speed = spdVal / 1000;
+                          } else {
+                            pt.speed = spdVal;
+                          }
+                        }
+
                         pointsArray.push(pt);
                       }
 
@@ -1695,6 +1787,7 @@ async function startServer() {
                           addImportDebugLog(`[Pivot-Punkt-Check] lat_raw="${dbPoints[0].lat}", lng_raw="${dbPoints[0].lng}"`);
                         }
                       } else {
+                        autoNormalizeElevations(pointsArray);
                         pointsJsonVal = JSON.stringify(pointsArray);
                         addImportDebugLog(`[Pivot-Erfolg] ${pointsArray.length} GPS-Punkte erfolgreich extrahiert und normalisiert.`);
                         if (pointsArray.length > 0) {
@@ -1773,6 +1866,7 @@ async function startServer() {
                         ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
                         time: p.time ? new Date(p.time) : undefined
                       }));
+                      autoNormalizeElevations(mappedPoints);
                       pointsJsonVal = JSON.stringify(mappedPoints);
                     }
                   } catch (ptsErr) {
@@ -1781,14 +1875,14 @@ async function startServer() {
                 }
               }
 
-              // Automatically calculate ascent/descent if missing but points are loaded
-              if (pointsJsonVal && (!finalAscent || !finalDescent)) {
+              // Automatically calculate or synchronize ascent/descent if points are loaded
+              if (pointsJsonVal) {
                 try {
                   const pts = JSON.parse(pointsJsonVal);
                   if (Array.isArray(pts) && pts.length > 0) {
                     const stats = calculateElevationStats(pts);
-                    if (!finalAscent && stats.ascent > 0) finalAscent = stats.ascent;
-                    if (!finalDescent && stats.descent > 0) finalDescent = stats.descent;
+                    if (stats.ascent > 0) finalAscent = stats.ascent;
+                    if (stats.descent > 0) finalDescent = stats.descent;
                   }
                 } catch (pe) {}
               }
@@ -2064,9 +2158,10 @@ async function startServer() {
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') THEN ${valCol} END) AS lat,
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') THEN ${valCol} END) AS lng,
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') THEN ${valCol} END) AS ele,
-                          MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm') THEN ${valCol} END) AS hr,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('heart_rate', 'heartrate', 'hr', 'heartrate_bpm', 'hf', 'herzfrequenz', 'puls') THEN ${valCol} END) AS hr,
                           MAX(CASE WHEN LOWER(${nameCol}) IN ('cadence', 'bike_cadence', 'run_cadence', 'cadence_rpm') THEN ${valCol} END) AS cadence,
-                          MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('power', 'power_watts', 'watts') THEN ${valCol} END) AS power,
+                          MAX(CASE WHEN LOWER(${nameCol}) IN ('speed', 'enhanced_speed', 'speed_m_s', 'velocity', 'geschwindigkeit') THEN ${valCol} END) AS speed
                         FROM activity_ts_metric
                         WHERE ${actIdCol} = ?
                         GROUP BY ${tsCol}
@@ -2135,10 +2230,20 @@ async function startServer() {
                           const pwrVal = parseFloat(p.power);
                           if (!isNaN(pwrVal)) pt.power = pwrVal;
 
+                          const spdVal = parseFloat(p.speed);
+                          if (!isNaN(spdVal)) {
+                            if (spdVal > 100) {
+                              pt.speed = spdVal / 1000;
+                            } else {
+                              pt.speed = spdVal;
+                            }
+                          }
+
                           pointsArray.push(pt);
                         }
 
                         if (pointsArray.length > 0) {
+                          autoNormalizeElevations(pointsArray);
                           pointsJsonVal = JSON.stringify(pointsArray);
                         }
                       }
@@ -2212,6 +2317,7 @@ async function startServer() {
                           ele: (p.ele !== undefined && p.ele !== null && !isNaN(parseFloat(p.ele))) ? parseFloat(p.ele) : undefined,
                           time: p.time ? new Date(p.time) : undefined
                         }));
+                        autoNormalizeElevations(mappedPoints);
                         pointsJsonVal = JSON.stringify(mappedPoints);
                       }
                     } catch (ptsErr) {
@@ -2220,16 +2326,16 @@ async function startServer() {
                   }
                 }
 
-                // Automatically calculate ascent/descent if missing but points are loaded
+                // Automatically calculate or synchronize ascent/descent if points are loaded
                 let finalAscent = ascentVal;
                 let finalDescent = descentVal;
-                if (pointsJsonVal && (!finalAscent || !finalDescent)) {
+                if (pointsJsonVal) {
                   try {
                     const pts = JSON.parse(pointsJsonVal);
                     if (Array.isArray(pts) && pts.length > 0) {
                       const stats = calculateElevationStats(pts);
-                      if (!finalAscent && stats.ascent > 0) finalAscent = stats.ascent;
-                      if (!finalDescent && stats.descent > 0) finalDescent = stats.descent;
+                      if (stats.ascent > 0) finalAscent = stats.ascent;
+                      if (stats.descent > 0) finalDescent = stats.descent;
                     }
                   } catch (pe) {}
                 }

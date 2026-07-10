@@ -4,6 +4,7 @@ import { X, Heart, Clock, AlertCircle, Sparkles, TrendingUp, BarChart2, Check, R
 import { GPXTrack, GPXPoint } from '../types';
 import { ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
 import { HeartRateZones } from './HeartRateZones';
+import { HistoricalHeartRateZones } from './HistoricalHeartRateZones';
 
 export interface HRZoneConfig {
   key: 'KB' | 'GA1' | 'GA2' | 'EB' | 'SB';
@@ -99,7 +100,7 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
   const [isSimulationMode, setIsSimulationMode] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [modalActiveTab, setModalActiveTab] = useState<'comparison' | 'drift'>('comparison');
+  const [modalActiveTab, setModalActiveTab] = useState<'comparison' | 'drift' | 'historical'>('comparison');
   const [userFtp, setUserFtp] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('velo_user_ftp');
@@ -1037,10 +1038,10 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
                   </div>
 
                   {/* Navigation Tabs */}
-                  <div className="flex border-b border-slate-100 space-x-2">
+                  <div className="flex border-b border-slate-100 space-x-2 overflow-x-auto scrollbar-none">
                     <button
                       onClick={() => setModalActiveTab('comparison')}
-                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer border-b-2 ${
+                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer whitespace-nowrap border-b-2 ${
                         modalActiveTab === 'comparison'
                           ? 'border-indigo-600 text-indigo-600'
                           : 'border-transparent text-slate-450 hover:text-slate-650'
@@ -1050,13 +1051,23 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
                     </button>
                     <button
                       onClick={() => setModalActiveTab('drift')}
-                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer border-b-2 ${
+                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer whitespace-nowrap border-b-2 ${
                         modalActiveTab === 'drift'
                           ? 'border-indigo-600 text-indigo-600'
                           : 'border-transparent text-slate-450 hover:text-slate-650'
                       }`}
                     >
                       Kardiovaskulärer Drift (Decoupling)
+                    </button>
+                    <button
+                      onClick={() => setModalActiveTab('historical')}
+                      className={`pb-2.5 px-3 md:px-4 text-xs font-bold transition-all cursor-pointer whitespace-nowrap border-b-2 ${
+                        modalActiveTab === 'historical'
+                          ? 'border-indigo-600 text-indigo-600'
+                          : 'border-transparent text-slate-450 hover:text-slate-650'
+                      }`}
+                    >
+                      Historische Pulszonen (Multi-Aktivität)
                     </button>
                   </div>
 
@@ -1277,6 +1288,17 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
                         </div>
 
                       </div>
+                    </div>
+                  )}
+
+                  {/* TAB 3: Historical Heart Rate Zones */}
+                  {modalActiveTab === 'historical' && (
+                    <div className="space-y-6">
+                      <HistoricalHeartRateZones 
+                        tracks={tracks}
+                        maxHr={userMaxHr}
+                        userFtp={userFtp}
+                      />
                     </div>
                   )}
 

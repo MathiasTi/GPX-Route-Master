@@ -90,13 +90,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const pointsToUse = track.points.map((p, idx) => {
       let ele = p.ele;
       if (!hasElevationData || ele === undefined || ele === null || isNaN(Number(ele))) {
+        const denominator = track.points.length > 1 ? track.points.length - 1 : 1;
         if (track.ascent && track.ascent > 0) {
-          const angle = (idx / (track.points.length - 1)) * Math.PI;
+          const angle = (idx / denominator) * Math.PI;
           ele = 100 + Math.sin(angle) * track.ascent;
         } else {
           // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
-          const angle1 = (idx / (track.points.length - 1)) * Math.PI * 4; // 2 waves
-          const angle2 = (idx / (track.points.length - 1)) * Math.PI * 10; // 5 high frequency waves
+          const angle1 = (idx / denominator) * Math.PI * 4; // 2 waves
+          const angle2 = (idx / denominator) * Math.PI * 10; // 5 high frequency waves
           ele = 150 + Math.sin(angle1) * 15 + Math.cos(angle2) * 4;
         }
       }
@@ -255,41 +256,42 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
-    const minEle = Math.min(...data.map(d => d.ele));
-    const maxEle = Math.max(...data.map(d => d.ele));
-    const distRange = totalDist;
+    const validEles = data.map(d => d.ele).filter(e => e !== undefined && e !== null && !isNaN(e) && isFinite(e));
+    const minEle = validEles.length > 0 ? Math.min(...validEles) : 0;
+    const maxEle = validEles.length > 0 ? Math.max(...validEles) : 100;
+    const distRange = totalDist || 1;
     const eleRange = maxEle - minEle || 1;
 
     // Calculate HR range
-    const validHrData = data.filter(d => d.hr !== undefined).map(d => d.hr!);
+    const validHrData = data.filter(d => d.hr !== undefined && d.hr !== null && !isNaN(d.hr) && isFinite(d.hr)).map(d => d.hr!);
     const hasHr = validHrData.length > 0;
     const minHr = hasHr ? Math.max(0, Math.min(...validHrData) - 10) : 0; // Pad bottom
     const maxHr = hasHr ? Math.max(...validHrData) + 10 : 1; // Pad top
     const hrRange = maxHr - minHr || 1;
 
     // Calculate Power range
-    const validPowerData = data.filter(d => d.displayPower !== undefined).map(d => d.displayPower!);
+    const validPowerData = data.filter(d => d.displayPower !== undefined && d.displayPower !== null && !isNaN(d.displayPower) && isFinite(d.displayPower)).map(d => d.displayPower!);
     const hasPower = validPowerData.length > 0;
     const minPower = hasPower ? Math.max(0, Math.min(...validPowerData) - 10) : 0;
     const maxPower = hasPower ? Math.max(...validPowerData) + 10 : 1;
     const powerRange = maxPower - minPower || 1;
 
     // Calculate Speed range
-    const validSpeedData = data.filter(d => d.speed !== undefined).map(d => d.speed!);
+    const validSpeedData = data.filter(d => d.speed !== undefined && d.speed !== null && !isNaN(d.speed) && isFinite(d.speed)).map(d => d.speed!);
     const maxSpeedVal = hasSpeedData ? Math.max(...validSpeedData, 20) + 5 : 25;
     const minSpeedVal = 0;
     const speedRange = maxSpeedVal - minSpeedVal || 1;
 
     // Calculate Cadence range
-    const validCadenceData = data.filter(d => d.cadence !== undefined && d.cadence > 0).map(d => d.cadence!);
+    const validCadenceData = data.filter(d => d.cadence !== undefined && d.cadence !== null && !isNaN(d.cadence) && isFinite(d.cadence) && d.cadence > 0).map(d => d.cadence!);
     const maxCadenceVal = hasCadenceData ? Math.max(...validCadenceData, 100) + 10 : 120;
     const minCadenceVal = 0;
     const cadenceRange = maxCadenceVal - minCadenceVal || 1;
 
     // Calculate Slope range
-    const validSlopes = data.map(d => d.slope);
-    const minSlopeVal = Math.min(...validSlopes);
-    const maxSlopeVal = Math.max(...validSlopes);
+    const validSlopes = data.map(d => d.slope).filter(s => s !== undefined && s !== null && !isNaN(s) && isFinite(s));
+    const minSlopeVal = validSlopes.length > 0 ? Math.min(...validSlopes) : 0;
+    const maxSlopeVal = validSlopes.length > 0 ? Math.max(...validSlopes) : 0;
     const slopeMinLimit = Math.min(-6, minSlopeVal - 1);
     const slopeMaxLimit = Math.max(6, maxSlopeVal + 1);
     const slopeRange = slopeMaxLimit - slopeMinLimit || 1;

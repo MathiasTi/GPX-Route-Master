@@ -1075,11 +1075,13 @@ async function startServer() {
     }
     
     // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
-    // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
     // Supports distinguishing between latitude and longitude range limits
-    function normalizeCoordinate(val: number, isLng: boolean = false): number {
+    function normalizeCoordinate(val: number, isLng: boolean = false, forceSemicircle: boolean = false): number {
       if (isNaN(val)) return val;
       if (Math.abs(val) > 180) {
+        if (forceSemicircle) {
+          return val * 180 / 2147483648;
+        }
         // Semicircles (2^31/180) -> degrees
         const semi = val * 180 / 2147483648;
         const maxLimit = isLng ? 180 : 90;
@@ -1254,8 +1256,9 @@ async function startServer() {
         if (!Array.isArray(parsed)) return null;
 
         // Smart dynamic detection of coordinate order [lng, lat] vs [lat, lng] for array coordinates
-        let latIndex = 0;
-        let lngIndex = 1;
+        // Default to [lng, lat] as it's the standard for GeoJSON and activity_path in garmin-health-data
+        let latIndex = 1;
+        let lngIndex = 0;
 
         const arrayItems = parsed.filter(item => Array.isArray(item)) as [any, any][];
         if (arrayItems.length > 0) {
@@ -1803,7 +1806,18 @@ async function startServer() {
                       for (const p of dbPoints) {
                         const latVal = parseFloat(p.lat);
                         const lngVal = parseFloat(p.lng);
-                        if (isNaN(latVal) || isNaN(lngVal)) continue;
+                        const eleVal = parseFloat(p.ele);
+                        const hrVal = parseFloat(p.hr);
+                        const cadVal = parseFloat(p.cadence);
+                        const pwrVal = parseFloat(p.power);
+                        const spdVal = parseFloat(p.speed);
+
+                        const hasCoords = !isNaN(latVal) && !isNaN(lngVal);
+                        const hasMetrics = !isNaN(eleVal) || !isNaN(hrVal) || !isNaN(cadVal) || !isNaN(pwrVal) || !isNaN(spdVal);
+
+                        if (!hasCoords && !hasMetrics) {
+                          continue;
+                        }
 
                         let timeVal: Date | undefined = undefined;
                         if (p.timestamp) {
@@ -1824,24 +1838,18 @@ async function startServer() {
                         }
 
                         const pt: any = {
-                          lat: normalizeCoordinate(latVal, false),
-                          lng: normalizeCoordinate(lngVal, true),
                           time: timeVal
                         };
 
-                        const eleVal = parseFloat(p.ele);
+                        if (hasCoords) {
+                          pt.lat = normalizeCoordinate(latVal, false, true);
+                          pt.lng = normalizeCoordinate(lngVal, true, true);
+                        }
+
                         if (!isNaN(eleVal)) pt.ele = eleVal;
-
-                        const hrVal = parseFloat(p.hr);
                         if (!isNaN(hrVal)) pt.hr = hrVal;
-
-                        const cadVal = parseFloat(p.cadence);
                         if (!isNaN(cadVal)) pt.cadence = cadVal;
-
-                        const pwrVal = parseFloat(p.power);
                         if (!isNaN(pwrVal)) pt.power = pwrVal;
-
-                        const spdVal = parseFloat(p.speed);
                         if (!isNaN(spdVal)) {
                           if (spdVal > 100) {
                             pt.speed = spdVal / 1000;

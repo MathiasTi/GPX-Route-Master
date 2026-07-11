@@ -83,8 +83,11 @@ const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | 
     if (markedTrackId && markedTrackId !== prevMarkedId.current) {
       const track = tracks.find(t => t.id === markedTrackId);
       if (track && !track.isVirtual && track.points && track.points.length > 0) {
-        const bounds = L.latLngBounds(track.points.map(p => [p.lat, p.lng]));
-        map.fitBounds(bounds, { padding: [50, 50] });
+        const validPoints = track.points.filter(p => p && !isNaN(p.lat) && !isNaN(p.lng));
+        if (validPoints.length > 0) {
+          const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
+          map.fitBounds(bounds, { padding: [50, 50] });
+        }
       }
     }
     prevMarkedId.current = markedTrackId;
@@ -98,8 +101,11 @@ const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXT
 
   useEffect(() => {
     if (activeTrack && !activeTrack.isVirtual && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
-      const bounds = L.latLngBounds(activeTrack.points.map(p => [p.lat, p.lng]));
-      map.fitBounds(bounds, { padding: [50, 50] });
+      const validPoints = activeTrack.points.filter(p => p && !isNaN(p.lat) && !isNaN(p.lng));
+      if (validPoints.length > 0) {
+        const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
     }
   }, [recenterTrigger, activeTrack, map]);
 
@@ -670,12 +676,17 @@ const Map: React.FC<MapProps> = ({
         
         {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
           const isMarked = track.id === markedTrackId;
-          const positions = track.points.map(p => [p.lat, p.lng] as [number, number]);
+          const validPoints = (track.points || [])
+            .filter(p => p && typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng));
+          
+          if (validPoints.length === 0) return null;
+
+          const positions = validPoints.map(p => [p.lat, p.lng] as [number, number]);
           
           let selectedPolylines: [number, number][][] = [];
           if (isMarked && selectionBounds) {
             let currentLine: [number, number][] = [];
-            track.points.forEach(p => {
+            validPoints.forEach(p => {
               const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
                                p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
               if (inBounds) {
@@ -694,12 +705,12 @@ const Map: React.FC<MapProps> = ({
 
           // Build continuous segments of identical surface types
           const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
-          if (track.points.length > 0) {
-            let currentSurface = track.points[0].surface || "Asphalt";
-            let currentPositions: [number, number][] = [[track.points[0].lat, track.points[0].lng]];
+          if (validPoints.length > 0) {
+            let currentSurface = validPoints[0].surface || "Asphalt";
+            let currentPositions: [number, number][] = [[validPoints[0].lat, validPoints[0].lng]];
 
-            for (let i = 1; i < track.points.length; i++) {
-              const pt = track.points[i];
+            for (let i = 1; i < validPoints.length; i++) {
+              const pt = validPoints[i];
               const surf = pt.surface || "Asphalt";
               if (surf === currentSurface) {
                 currentPositions.push([pt.lat, pt.lng]);
@@ -717,11 +728,11 @@ const Map: React.FC<MapProps> = ({
 
           // Build continuous segments of identical zone colors
           const zoneSegments: { color: string; positions: [number, number][] }[] = [];
-          if (colorMode !== 'default' && track.points.length > 0) {
+          if (colorMode !== 'default' && validPoints.length > 0) {
             let activeSegmentColor: string | null = null;
             let currentPositions: [number, number][] = [];
 
-            track.points.forEach((pt) => {
+            validPoints.forEach((pt) => {
               const color = getPointColorMode(pt, track.activityType);
               const latlng: [number, number] = [pt.lat, pt.lng];
 
@@ -785,9 +796,9 @@ const Map: React.FC<MapProps> = ({
                   },
                   mousemove: (e) => {
                     if (onHoverPoint) {
-                      let closestPoint = track.points[0];
+                      let closestPoint = validPoints[0];
                       let minDiff = Infinity;
-                      for (const pt of track.points) {
+                      for (const pt of validPoints) {
                         const diff = Math.abs(pt.lat - e.latlng.lat) + Math.abs(pt.lng - e.latlng.lng);
                         if (diff < minDiff) {
                           minDiff = diff;
@@ -805,7 +816,7 @@ const Map: React.FC<MapProps> = ({
                 <Popup>
                     <div className="font-bold">{track.name}</div>
                     <div>Distanz: {track.distance.toFixed(2)} km</div>
-                    <div>Punkte: {track.points.length}</div>
+                    <div>Punkte: {validPoints.length}</div>
                     {track.duration ? (
                       <div>Dauer: {Math.floor(track.duration / 3600)}h {Math.floor((track.duration % 3600) / 60)}m</div>
                     ) : (

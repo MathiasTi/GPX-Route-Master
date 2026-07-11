@@ -194,6 +194,12 @@ function normalizeCoordinateClient(val: number, isLng: boolean = false): number 
   return val;
 }
 
+function parseFloatOrUndefined(val: any): number | undefined {
+  if (val === undefined || val === null) return undefined;
+  const parsed = parseFloat(val);
+  return isNaN(parsed) ? undefined : parsed;
+}
+
 
 export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoadTrack }) => {
   const [data, setData] = useState<HealthData | null>(null);
@@ -451,7 +457,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                 return {
                   lat: normalizeCoordinateClient(rawLat, false),
                   lng: normalizeCoordinateClient(rawLng, true),
-                  ele: p[2] !== undefined ? parseFloat(p[2]) : undefined,
+                  ele: p[2] !== undefined && p[2] !== null ? parseFloatOrUndefined(p[2]) : undefined,
                   time: p[3] ? new Date(p[3]) : undefined
                 };
               } else if (typeof p === 'object') {
@@ -469,7 +475,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                 return {
                   lat: normalizeCoordinateClient(rawLat, false),
                   lng: normalizeCoordinateClient(rawLng, true),
-                  ele: eleKey !== undefined && p[eleKey] !== null ? parseFloat(p[eleKey]) : undefined,
+                  ele: eleKey && p[eleKey] !== undefined && p[eleKey] !== null ? parseFloatOrUndefined(p[eleKey]) : undefined,
                   time: timeKey && p[timeKey] ? new Date(p[timeKey]) : undefined,
                   hr: extractHeartRate(p),
                   cadence: extractCadence(p),

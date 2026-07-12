@@ -1075,31 +1075,210 @@ async function startServer() {
     }
     
     // Robust coordinate conversion to support degrees, semicircles, microdegrees (E6/E7)
-    // Supports distinguishing between latitude and longitude range limits
-    function normalizeCoordinate(val: number, isLng: boolean = false, forceSemicircle: boolean = false): number {
+    // Supports distinguishing between latitude and longitude range limits with a scored heuristic
+    function normalizeCoordinate(val: number, isLng: boolean = false, forceSemicircle?: boolean): number {
       if (isNaN(val)) return val;
-      if (Math.abs(val) > 180) {
-        if (forceSemicircle) {
-          return val * 180 / 2147483648;
-        }
-        // Semicircles (2^31/180) -> degrees
-        const semi = val * 180 / 2147483648;
-        const maxLimit = isLng ? 180 : 90;
-        if (Math.abs(semi) <= maxLimit) return semi;
-        
-        // E7 notation (e.g., 481234567 -> 48.1234567)
-        const e7 = val / 10000000;
-        if (Math.abs(e7) <= maxLimit) return e7;
-        
-        // E6 microdegrees (e.g., 48123456 -> 48.123456)
-        const e6 = val / 1000000;
-        if (Math.abs(e6) <= maxLimit) return e6;
+      const absVal = Math.abs(val);
+      if (absVal <= 180) return val;
 
-        // E5 notation
-        const e5 = val / 100000;
-        if (Math.abs(e5) <= maxLimit) return e5;
+      const maxLimit = isLng ? 180 : 90;
+
+      // Candidate conversions
+      const semi = val * 180 / 2147483648;
+      const e7 = val / 10000000;
+      const e6 = val / 1000000;
+      const e5 = val / 100000;
+
+      const candidates = [
+        { name: 'semicircles', val: semi },
+        { name: 'e7', val: e7 },
+        { name: 'e6', val: e6 },
+        { name: 'e5', val: e5 }
+      ];
+
+      let bestCand = candidates[0];
+      let bestScore = -1;
+
+      for (const cand of candidates) {
+        const absC = Math.abs(cand.val);
+        if (absC > maxLimit) continue; // mathematically invalid
+
+        let score = 0;
+        // Human inhabited latitude/longitude bias
+        if (absC >= 15 && absC <= 80) {
+          score += 10;
+        } else if (absC >= 2 && absC <= 85) {
+          score += 5;
+        } else {
+          score += 1;
+        }
+
+        // Slight tie-breaker preference for semicircles and E7/E6 over E5
+        if (cand.name === 'semicircles') score += 0.1;
+        if (cand.name === 'e7') score += 0.05;
+
+        // Force semicircle override if requested
+        if (forceSemicircle && cand.name === 'semicircles') score += 100;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCand = cand;
+        }
       }
-      return val;
+
+      return bestCand.val;
+    }
+
+    // Helper to calculate total track distance in kilometers
+    function calculateTotalTrackDistance(pts: { lat: number, lng: number }[]): number {
+      let d = 0;
+      for (let i = 0; i < pts.length - 1; i++) {
+        d += calculateHaversine(pts[i].lat, pts[i].lng, pts[i + 1].lat, pts[i + 1].lng);
+      }
+      return d;
+    }
+
+    function calculateHaversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
+      const R = 6371; // Earth's radius in km
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = 
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    // Adaptive scale detector to support Degrees, Semicircles, E7, E6, E5
+    function normalizeTrackPointsWithScaleDetection(rawPoints: any[], targetDistanceKm: number = 0): any[] {
+      if (!rawPoints || rawPoints.length === 0) return [];
+
+      // Find first point with non-zero coordinates to inspect raw values.
+      // Crucial: Skip near-zero/noise points (like 1073 semicircles) if we can find a substantial coordinate point,
+      // because some watches log noise near (0,0) at the very start before achieving a GPS lock.
+      let sample = rawPoints.find(p => {
+        if (p.lat === undefined || p.lng === undefined || p.lat === null || p.lng === null) return false;
+        const latVal = Math.abs(parseFloat(p.lat));
+        const lngVal = Math.abs(parseFloat(p.lng));
+        if (isNaN(latVal) || isNaN(lngVal)) return false;
+        // Check if the point is substantial (e.g. raw semicircle > 1000000, or a real degrees range)
+        return latVal > 1000000 || lngVal > 1000000 || (latVal > 1 && latVal <= 90) || (lngVal > 1 && lngVal <= 180);
+      });
+
+      if (!sample) {
+        sample = rawPoints.find(p => p.lat !== undefined && p.lng !== undefined && p.lat !== 0 && p.lng !== 0) || rawPoints[0];
+      }
+
+      if (!sample) return rawPoints;
+
+      const rawLat = Math.abs(parseFloat(sample.lat));
+      const rawLng = Math.abs(parseFloat(sample.lng));
+
+      if (isNaN(rawLat) || isNaN(rawLng)) return rawPoints;
+
+      // Candidate scales
+      const candidates = [
+        { name: 'semicircles', scale: 180 / 2147483648 },
+        { name: 'e7', scale: 1 / 10000000 },
+        { name: 'e6', scale: 1 / 1000000 },
+        { name: 'e5', scale: 1 / 100000 }
+      ];
+
+      let bestCandidate = candidates[0];
+
+      // If the sample is already in degrees, check if other points are in degrees.
+      // But we should double check if the sample really is in degrees or just very close to 0.
+      if (rawLat <= 180 && rawLng <= 180 && rawLat > 0.01 && rawLng > 0.01) {
+        // Already in degrees
+        return rawPoints.map(p => ({
+          ...p,
+          lat: parseFloat(p.lat),
+          lng: parseFloat(p.lng)
+        }));
+      }
+
+      if (targetDistanceKm > 0.1) {
+        // Choose scale that gets closest to target distance
+        let minDiff = Infinity;
+        for (const cand of candidates) {
+          // Project a subset of points (e.g. first 200 points for speed) to compute track distance
+          const subsetPts = rawPoints.slice(0, 200).map(p => ({
+            lat: parseFloat(p.lat) * cand.scale,
+            lng: parseFloat(p.lng) * cand.scale
+          }));
+          const subsetDist = calculateTotalTrackDistance(subsetPts);
+          // Estimate full distance based on subset ratio
+          const estFullDist = subsetDist * (rawPoints.length / Math.min(rawPoints.length, 200));
+          const diff = Math.abs(estFullDist - targetDistanceKm);
+          
+          // Ensure resulting coordinates are mathematically valid
+          const testLat = rawLat * cand.scale;
+          const testLng = rawLng * cand.scale;
+          const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
+
+          if (isValid && diff < minDiff) {
+            minDiff = diff;
+            bestCandidate = cand;
+          }
+        }
+        addImportDebugLog(`[Scale-Detection] Detected scale '${bestCandidate.name}' using distance matching (Target: ${targetDistanceKm} km)`);
+      } else {
+        // Fallback to range-based detection
+        let bestScore = -1;
+        for (const cand of candidates) {
+          const testLat = rawLat * cand.scale;
+          const testLng = rawLng * cand.scale;
+          const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
+          if (!isValid) continue;
+
+          let score = 0;
+          if (Math.abs(testLat) >= 15 && Math.abs(testLat) <= 80) {
+            score += 10;
+          } else if (Math.abs(testLat) >= 2 && Math.abs(testLat) <= 85) {
+            score += 5;
+          } else {
+            score += 1;
+          }
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestCandidate = cand;
+          }
+        }
+        addImportDebugLog(`[Scale-Detection] Detected scale '${bestCandidate.name}' using range heuristics (Lat: ${(rawLat * bestCandidate.scale).toFixed(4)})`);
+      }
+
+      // Apply the chosen scale factor to all points
+      let normalized = rawPoints.map(p => ({
+        ...p,
+        lat: parseFloat(p.lat) * bestCandidate.scale,
+        lng: parseFloat(p.lng) * bestCandidate.scale
+      }));
+
+      // Post-processing filtering:
+      // If there are on-land coordinates in the track, remove any stray points that are extremely close to (0,0) (Gulf of Guinea / West of Africa).
+      // These are hardware artifacts from the watch before it achieves a solid GPS lock.
+      const hasOnLandPoint = normalized.some(p => {
+        return p.lat !== undefined && p.lng !== undefined && !isNaN(p.lat) && !isNaN(p.lng) &&
+               Math.abs(p.lat) > 1 && Math.abs(p.lng) > 1 &&
+               Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180;
+      });
+
+      if (hasOnLandPoint) {
+        const originalCount = normalized.length;
+        normalized = normalized.filter(p => {
+          if (p.lat === undefined || p.lng === undefined || isNaN(p.lat) || isNaN(p.lng)) return true;
+          const isNearZero = Math.abs(p.lat) < 1 && Math.abs(p.lng) < 1;
+          return !isNearZero;
+        });
+        const filteredCount = originalCount - normalized.length;
+        if (filteredCount > 0) {
+          addImportDebugLog(`[GPS-Filter] ${filteredCount} ungültige GPS-Punkte nahe (0,0) (Gulf of Guinea) wurden als Sensorrauschen gefiltert.`);
+        }
+      }
+
+      return normalized;
     }
 
     // Smart adaptive normalization of track point elevation arrays from various raw/scaled SQLite schemes
@@ -1237,7 +1416,7 @@ async function startServer() {
     }
     
     // Helper to parse complex and flexible coordinate JSON formats (e.g., path_json from activity_path)
-    function parsePathJson(jsonStr: any): { lat: number, lng: number, ele?: number, time?: Date, hr?: number, cadence?: number, power?: number }[] | null {
+    function parsePathJson(jsonStr: any, targetDistanceKm: number = 0): { lat: number, lng: number, ele?: number, time?: Date, hr?: number, cadence?: number, power?: number }[] | null {
       try {
         let parsed = jsonStr;
         if (typeof jsonStr === 'string') {
@@ -1334,14 +1513,18 @@ async function startServer() {
         const mappedPoints = parsed.map(item => {
           if (!item) return null;
           if (Array.isArray(item)) {
-            const lat = normalizeCoordinate(parseFloat(item[latIndex]), false);
-            const lng = normalizeCoordinate(parseFloat(item[lngIndex]), true);
+            const lat = parseFloat(item[latIndex]);
+            const lng = parseFloat(item[lngIndex]);
             if (isNaN(lat) || isNaN(lng)) return null;
             return {
               lat,
               lng,
               ele: item[2] !== undefined ? parseFloat(item[2]) : undefined,
-              time: item[3] ? new Date(item[3]) : undefined
+              time: item[3] ? new Date(item[3]) : undefined,
+              hr: item[4] !== undefined && item[4] !== null ? parseFloat(item[4]) : undefined,
+              cadence: item[5] !== undefined && item[5] !== null ? parseFloat(item[5]) : undefined,
+              power: item[6] !== undefined && item[6] !== null ? parseFloat(item[6]) : undefined,
+              speed: item[7] !== undefined && item[7] !== null ? parseFloat(item[7]) : undefined
             };
           } else if (typeof item === 'object') {
             // Format: { lat: 48, lng: 11 } or { latitude: 48, longitude: 11 } or with any matching casing
@@ -1349,8 +1532,8 @@ async function startServer() {
             const lngKey = Object.keys(item).find(k => ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"].includes(k.toLowerCase()));
             if (!latKey || !lngKey) return null;
             
-            const lat = normalizeCoordinate(parseFloat((item as any)[latKey]), false);
-            const lng = normalizeCoordinate(parseFloat((item as any)[lngKey]), true);
+            const lat = parseFloat((item as any)[latKey]);
+            const lng = parseFloat((item as any)[lngKey]);
             if (isNaN(lat) || isNaN(lng)) return null;
             
             const eleKey = Object.keys(item).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
@@ -1374,7 +1557,8 @@ async function startServer() {
           return null;
         }).filter(p => p !== null) as any[];
 
-        return autoNormalizeElevations(mappedPoints);
+        const normalizedPoints = normalizeTrackPointsWithScaleDetection(mappedPoints, targetDistanceKm);
+        return autoNormalizeElevations(normalizedPoints);
       } catch (e) {
         console.error("Failed to parse path_json:", e);
         return null;
@@ -1418,8 +1602,9 @@ async function startServer() {
               WHERE calendar_date IS NOT NULL
             `;
             const stmt = uploadedDb.prepare(query);
+            const rows = stmt.all();
             runInTransaction(() => {
-              for (const row of stmt.iterate() as Iterable<any>) {
+              for (const row of rows as any[]) {
                 const dateVal = formatToLocalDateString(row.calendar_date);
                 if (!dateVal) continue;
 
@@ -1464,8 +1649,9 @@ async function startServer() {
             SELECT timestamp, weight, bmi, body_fat 
             FROM body_composition
           `);
+          const rows = stmt.all();
           runInTransaction(() => {
-            for (const row of stmt.iterate() as Iterable<any>) {
+            for (const row of rows as any[]) {
               const dateVal = formatToLocalDateString(row.timestamp);
               if (!dateVal) continue;
 
@@ -1500,8 +1686,9 @@ async function startServer() {
             FROM stress 
             WHERE value >= 0
           `);
+          const rows = stmt.all();
           const stressByDate = new Map<string, { sum: number, count: number }>();
-          for (const row of stmt.iterate() as Iterable<any>) {
+          for (const row of rows as any[]) {
             const dateVal = formatToLocalDateString(row.timestamp);
             if (!dateVal) continue;
             const val = parseFloat(row.value);
@@ -1540,8 +1727,9 @@ async function startServer() {
             SELECT timestamp, value 
             FROM steps
           `);
+          const rows = stmt.all();
           const stepsByDate = new Map<string, number>();
-          for (const row of stmt.iterate() as Iterable<any>) {
+          for (const row of rows as any[]) {
             const dateVal = formatToLocalDateString(row.timestamp);
             if (!dateVal) continue;
             const val = parseInt(row.value, 10);
@@ -1597,8 +1785,16 @@ async function startServer() {
             const n = c.name.toLowerCase();
             return ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"].includes(n) || n.includes("points_json") || n.includes("path_json") || n.includes("coordinates_json");
           })?.name;
+          const startLatCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["start_latitude", "start_lat", "latitude", "startlat"].includes(n);
+          })?.name;
+          const startLngCol = cols.find(c => {
+            const n = c.name.toLowerCase();
+            return ["start_longitude", "start_lon", "longitude", "startlng", "startlong"].includes(n);
+          })?.name;
 
-          addImportDebugLog(`[Activity-Import] Spaltendetektion: hasAverageHr=${hasAverageHr}, hasCalories=${hasCalories}, hasUserId=${hasUserId}, descCol=${descCol || '-'}, locCol=${locCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}`);
+          addImportDebugLog(`[Activity-Import] Spaltendetektion: hasAverageHr=${hasAverageHr}, hasCalories=${hasCalories}, hasUserId=${hasUserId}, descCol=${descCol || '-'}, locCol=${locCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}, startLatCol=${startLatCol || '-'}, startLngCol=${startLngCol || '-'}`);
 
           // Scan for a separate points/coordinates table
           let pointsTable: string | null = null;
@@ -1677,11 +1873,14 @@ async function startServer() {
               ${pointsJsonCol ? `, ${pointsJsonCol}` : ""}
               ${ascentCol ? `, ${ascentCol}` : ""}
               ${descentCol ? `, ${descentCol}` : ""}
+              ${startLatCol ? `, ${startLatCol}` : ""}
+              ${startLngCol ? `, ${startLngCol}` : ""}
             FROM activity
           `;
           const stmt = uploadedDb.prepare(query);
+          const rows = stmt.all();
           runInTransaction(() => {
-            for (const row of stmt.iterate() as Iterable<any>) {
+            for (const row of rows as any[]) {
               const dateVal = formatToLocalDateString(row.start_ts);
               if (!dateVal) continue;
 
@@ -1699,6 +1898,16 @@ async function startServer() {
               const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
               const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
               const userIdVal = hasUserId && row.user_id ? String(row.user_id) : undefined;
+
+              const rawStartLat = startLatCol ? parseFloat(row[startLatCol]) : undefined;
+              const rawStartLng = startLngCol ? parseFloat(row[startLngCol]) : undefined;
+              let startLat: number | undefined = undefined;
+              let startLng: number | undefined = undefined;
+              if (rawStartLat !== undefined && !isNaN(rawStartLat) && rawStartLng !== undefined && !isNaN(rawStartLng)) {
+                startLat = normalizeCoordinate(rawStartLat, false);
+                startLng = normalizeCoordinate(rawStartLng, true);
+              }
+
               let finalAscent = (ascentCol && row[ascentCol] !== undefined && row[ascentCol] !== null) ? parseFloat(row[ascentCol]) : undefined;
               let finalDescent = (descentCol && row[descentCol] !== undefined && row[descentCol] !== null) ? parseFloat(row[descentCol]) : undefined;
 
@@ -1765,7 +1974,7 @@ async function startServer() {
                         MAX(CASE WHEN LOWER(${nameCol}) LIKE '%enhanced_altitude%' OR LOWER(${nameCol}) LIKE '%altitude%' OR LOWER(${nameCol}) LIKE '%elevation%' OR LOWER(${nameCol}) = 'ele' OR LOWER(${nameCol}) = 'alt' OR LOWER(${nameCol}) LIKE '%height%' THEN ${valCol} END) AS ele,
                         MAX(CASE WHEN LOWER(${nameCol}) LIKE '%heart%' OR LOWER(${nameCol}) LIKE '%heart_rate%' OR LOWER(${nameCol}) LIKE '%heartrate%' OR LOWER(${nameCol}) = 'hr' OR LOWER(${nameCol}) = 'hf' OR LOWER(${nameCol}) LIKE '%herz%' OR LOWER(${nameCol}) LIKE '%puls%' THEN ${valCol} END) AS hr,
                         MAX(CASE WHEN LOWER(${nameCol}) LIKE '%cadence%' OR LOWER(${nameCol}) LIKE '%cad%' OR LOWER(${nameCol}) LIKE '%tritt%' THEN ${valCol} END) AS cadence,
-                        MAX(CASE WHEN LOWER(${nameCol}) LIKE '%power%' OR LOWER(${nameCol}) LIKE '%watt%' OR LOWER(${nameCol}) LIKE '%leist%' THEN ${valCol} END) AS power,
+                        MAX(CASE WHEN (LOWER(${nameCol}) LIKE '%power%' OR LOWER(${nameCol}) LIKE '%watt%' OR LOWER(${nameCol}) LIKE '%leist%') AND LOWER(${nameCol}) NOT LIKE '%accumulated%' AND LOWER(${nameCol}) NOT LIKE '%zone%' AND LOWER(${nameCol}) NOT LIKE '%avg%' AND LOWER(${nameCol}) NOT LIKE '%max%' AND LOWER(${nameCol}) NOT LIKE '%normalized%' AND LOWER(${nameCol}) NOT LIKE '%threshold%' AND LOWER(${nameCol}) NOT LIKE '%ftp%' AND LOWER(${nameCol}) NOT LIKE '%battery%' THEN ${valCol} END) AS power,
                         MAX(CASE WHEN LOWER(${nameCol}) LIKE '%speed%' OR LOWER(${nameCol}) LIKE '%velocity%' OR LOWER(${nameCol}) LIKE '%geschw%' THEN ${valCol} END) AS speed
                       FROM activity_ts_metric
                       WHERE ${actIdCol} = ?
@@ -1842,8 +2051,8 @@ async function startServer() {
                         };
 
                         if (hasCoords) {
-                          pt.lat = normalizeCoordinate(latVal, false, true);
-                          pt.lng = normalizeCoordinate(lngVal, true, true);
+                          pt.lat = latVal;
+                          pt.lng = lngVal;
                         }
 
                         if (!isNaN(eleVal)) pt.ele = eleVal;
@@ -1867,11 +2076,12 @@ async function startServer() {
                           addImportDebugLog(`[Pivot-Punkt-Check] lat_raw="${dbPoints[0].lat}", lng_raw="${dbPoints[0].lng}"`);
                         }
                       } else {
-                        autoNormalizeElevations(pointsArray);
-                        pointsJsonVal = JSON.stringify(pointsArray);
-                        addImportDebugLog(`[Pivot-Erfolg] ${pointsArray.length} GPS-Punkte erfolgreich extrahiert und normalisiert.`);
-                        if (pointsArray.length > 0) {
-                          const firstPt = pointsArray[0];
+                        const normalizedPoints = normalizeTrackPointsWithScaleDetection(pointsArray, distVal);
+                        autoNormalizeElevations(normalizedPoints);
+                        pointsJsonVal = JSON.stringify(normalizedPoints);
+                        addImportDebugLog(`[Pivot-Erfolg] ${normalizedPoints.length} GPS-Punkte erfolgreich extrahiert und adaptiv normalisiert.`);
+                        if (normalizedPoints.length > 0) {
+                          const firstPt = normalizedPoints[0];
                           addImportDebugLog(`[Pivot-Normalisiert-Punkt 0] lat=${firstPt.lat}, lng=${firstPt.lng}, ele=${firstPt.ele || '-'}, hr=${firstPt.hr || '-'}`);
                         }
                       }
@@ -1885,7 +2095,7 @@ async function startServer() {
               // 2. If activity_ts_metric was not present or returned 0 points, fall back to other sources
               if (!pointsJsonVal) {
                 if (pointsJsonCol && row[pointsJsonCol]) {
-                  const parsedPoints = parsePathJson(row[pointsJsonCol]);
+                  const parsedPoints = parsePathJson(row[pointsJsonCol], distVal);
                   if (parsedPoints && parsedPoints.length > 0) {
                     pointsJsonVal = JSON.stringify(parsedPoints);
                   }
@@ -1913,7 +2123,7 @@ async function startServer() {
                       }
                     }
                     if (dbRow && dbRow.path_json) {
-                      const parsedPoints = parsePathJson(dbRow.path_json);
+                      const parsedPoints = parsePathJson(dbRow.path_json, distVal);
                       if (parsedPoints && parsedPoints.length > 0) {
                         pointsJsonVal = JSON.stringify(parsedPoints);
                       }
@@ -1967,6 +2177,35 @@ async function startServer() {
                 } catch (pe) {}
               }
 
+              // Apply start coordinates fallback if points are empty or contain only a single near-zero coordinate
+              if (startLat !== undefined && startLng !== undefined && !isNaN(startLat) && !isNaN(startLng)) {
+                let replaceWithStart = false;
+                if (!pointsJsonVal) {
+                  replaceWithStart = true;
+                } else {
+                  try {
+                    const pts = JSON.parse(pointsJsonVal);
+                    if (Array.isArray(pts)) {
+                      if (pts.length === 0) {
+                        replaceWithStart = true;
+                      } else if (pts.length === 1) {
+                        const firstPt = pts[0];
+                        if (firstPt && Math.abs(firstPt.lat) < 1 && Math.abs(firstPt.lng) < 1) {
+                          if (Math.abs(startLat) > 1 || Math.abs(startLng) > 1) {
+                            replaceWithStart = true;
+                          }
+                        }
+                      }
+                    }
+                  } catch (e) {}
+                }
+
+                if (replaceWithStart) {
+                  pointsJsonVal = JSON.stringify([{ lat: startLat, lng: startLng }]);
+                  addImportDebugLog(`[Start-Koordinate-Fallback] Nutze Startkoordinaten der Aktivität als Fallback: lat=${startLat.toFixed(6)}, lng=${startLng.toFixed(6)}`);
+                }
+              }
+
               saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal, userIdVal);
               activitiesImported++;
             }
@@ -2010,7 +2249,8 @@ async function startServer() {
             try {
               runInTransaction(() => {
                 const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
+                const rows = stmt.all();
+                for (const row of rows as any[]) {
                   const dateVal = formatToLocalDateString(row[dateCol]);
                   if (!dateVal) continue;
 
@@ -2069,7 +2309,8 @@ async function startServer() {
             try {
               runInTransaction(() => {
                 const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
+                const rows = stmt.all();
+                for (const row of rows as any[]) {
                   const dateVal = formatToLocalDateString(row[dateCol]);
                   if (!dateVal) continue;
 
@@ -2107,7 +2348,8 @@ async function startServer() {
             try {
               runInTransaction(() => {
                 const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
+                const rows = stmt.all();
+                for (const row of rows as any[]) {
                   const dateVal = formatToLocalDateString(row[dateCol]);
                   if (!dateVal) continue;
 
@@ -2141,7 +2383,8 @@ async function startServer() {
             try {
               runInTransaction(() => {
                 const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
+                const rows = stmt.all();
+                for (const row of rows as any[]) {
                   const dateVal = formatToLocalDateString(row[dateCol]);
                   if (!dateVal) continue;
 
@@ -2177,7 +2420,8 @@ async function startServer() {
             try {
               runInTransaction(() => {
                 const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-                for (const row of stmt.iterate() as Iterable<any>) {
+                const rows = stmt.all();
+                for (const row of rows as any[]) {
                   const dateVal = formatToLocalDateString(row[dateCol]);
                   if (!dateVal) continue;
 
@@ -2223,8 +2467,10 @@ async function startServer() {
             const locCol = findColumn(columns, ["location", "place", "city", "town", "start_location", "start_location_name", "location_name", "locationName", "startLocationName"]);
             const polylineCol = findColumn(columns, ["polyline", "map_polyline", "summary_polyline", "encoded_polyline"]);
             const pointsJsonCol = findColumn(columns, ["points_json", "points", "track_json", "pointsjson", "activity_path", "activitypath", "activity_path_json", "path_json", "coordinates_json"]);
+            const startLatCol = findColumn(columns, ["start_latitude", "start_lat", "latitude", "startlat"]);
+            const startLngCol = findColumn(columns, ["start_longitude", "start_lon", "longitude", "startlng", "startlong"]);
 
-            addImportDebugLog(`[Generic-Activities] Optionale Spaltenauflösung: typeCol=${typeCol || '-'}, distCol=${distCol || '-'}, durCol=${durCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}`);
+            addImportDebugLog(`[Generic-Activities] Optionale Spaltenauflösung: typeCol=${typeCol || '-'}, distCol=${distCol || '-'}, durCol=${durCol || '-'}, ascentCol=${ascentCol || '-'}, descentCol=${descentCol || '-'}, polylineCol=${polylineCol || '-'}, pointsJsonCol=${pointsJsonCol || '-'}, startLatCol=${startLatCol || '-'}, startLngCol=${startLngCol || '-'}`);
 
             // Scan for a separate points table if not direct columns
             let pointsTable: string | null = null;
@@ -2270,7 +2516,8 @@ async function startServer() {
             let actTableCount = 0;
             runInTransaction(() => {
               const stmt = uploadedDb.prepare(`SELECT * FROM ${table.name}`);
-              for (const row of stmt.iterate() as Iterable<any>) {
+              const rows = stmt.all();
+              for (const row of rows as any[]) {
                 const dateVal = formatToLocalDateString(row[dateCol]);
                 if (!dateVal) continue;
 
@@ -2288,6 +2535,15 @@ async function startServer() {
                 const hrVal = hrCol && row[hrCol] ? parseFloat(row[hrCol]) : undefined;
                 const descVal = descCol && row[descCol] ? String(row[descCol]) : undefined;
                 const locVal = locCol && row[locCol] ? String(row[locCol]) : undefined;
+
+                const rawStartLat = startLatCol && row[startLatCol] ? parseFloat(row[startLatCol]) : undefined;
+                const rawStartLng = startLngCol && row[startLngCol] ? parseFloat(row[startLngCol]) : undefined;
+                let startLat: number | undefined = undefined;
+                let startLng: number | undefined = undefined;
+                if (rawStartLat !== undefined && !isNaN(rawStartLat) && rawStartLng !== undefined && !isNaN(rawStartLng)) {
+                  startLat = normalizeCoordinate(rawStartLat, false);
+                  startLng = normalizeCoordinate(rawStartLng, true);
+                }
 
                 let pointsJsonVal: string | undefined = undefined;
 
@@ -2371,8 +2627,8 @@ async function startServer() {
                           }
 
                           const pt: any = {
-                            lat: normalizeCoordinate(latVal, false),
-                            lng: normalizeCoordinate(lngVal, true),
+                            lat: latVal,
+                            lng: lngVal,
                             time: timeVal
                           };
 
@@ -2401,8 +2657,9 @@ async function startServer() {
                         }
 
                         if (pointsArray.length > 0) {
-                          autoNormalizeElevations(pointsArray);
-                          pointsJsonVal = JSON.stringify(pointsArray);
+                          const normalizedPoints = normalizeTrackPointsWithScaleDetection(pointsArray, distVal);
+                          autoNormalizeElevations(normalizedPoints);
+                          pointsJsonVal = JSON.stringify(normalizedPoints);
                         }
                       }
                     }
@@ -2414,7 +2671,7 @@ async function startServer() {
                 // 2. If activity_ts_metric was not present or returned 0 points, fall back to other sources
                 if (!pointsJsonVal) {
                   if (pointsJsonCol && row[pointsJsonCol]) {
-                    const parsedPoints = parsePathJson(row[pointsJsonCol]);
+                    const parsedPoints = parsePathJson(row[pointsJsonCol], distVal);
                     if (parsedPoints && parsedPoints.length > 0) {
                       pointsJsonVal = JSON.stringify(parsedPoints);
                     }
@@ -2442,7 +2699,7 @@ async function startServer() {
                         }
                       }
                       if (dbRow && dbRow.path_json) {
-                        const parsedPoints = parsePathJson(dbRow.path_json);
+                        const parsedPoints = parsePathJson(dbRow.path_json, distVal);
                         if (parsedPoints && parsedPoints.length > 0) {
                           pointsJsonVal = JSON.stringify(parsedPoints);
                         }
@@ -2496,6 +2753,35 @@ async function startServer() {
                       if (stats.descent > 0) finalDescent = stats.descent;
                     }
                   } catch (pe) {}
+                }
+
+                // Apply start coordinates fallback if points are empty or contain only a single near-zero coordinate
+                if (startLat !== undefined && startLng !== undefined && !isNaN(startLat) && !isNaN(startLng)) {
+                  let replaceWithStart = false;
+                  if (!pointsJsonVal) {
+                    replaceWithStart = true;
+                  } else {
+                    try {
+                      const pts = JSON.parse(pointsJsonVal);
+                      if (Array.isArray(pts)) {
+                        if (pts.length === 0) {
+                          replaceWithStart = true;
+                        } else if (pts.length === 1) {
+                          const firstPt = pts[0];
+                          if (firstPt && Math.abs(firstPt.lat) < 1 && Math.abs(firstPt.lng) < 1) {
+                            if (Math.abs(startLat) > 1 || Math.abs(startLng) > 1) {
+                              replaceWithStart = true;
+                            }
+                          }
+                        }
+                      }
+                    } catch (e) {}
+                  }
+
+                  if (replaceWithStart) {
+                    pointsJsonVal = JSON.stringify([{ lat: startLat, lng: startLng }]);
+                    addImportDebugLog(`[Start-Koordinate-Fallback] Nutze Startkoordinaten der Aktivität als Fallback im Generischen Importer: lat=${startLat.toFixed(6)}, lng=${startLng.toFixed(6)}`);
+                  }
                 }
 
                 saveGarminActivity(idVal, nameVal, typeVal, dateVal, distVal, durVal, finalAscent, finalDescent, calVal, hrVal, descVal, locVal, pointsJsonVal);
@@ -3006,6 +3292,206 @@ async function startServer() {
     } catch (err: any) {
       console.error("Local SQLite import error:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to import local SQLite database" });
+    }
+  });
+
+  // POST /api/garmin/diagnose: Run deep diagnostic analysis on any SQLite file to debug column and schema issues
+  app.post("/api/garmin/diagnose", async (req, res) => {
+    try {
+      const { filepath } = req.body;
+      if (!filepath) {
+        return res.status(400).json({ success: false, error: "filepath is required" });
+      }
+
+      // Security check: Only allow files from process.cwd()
+      const absolutePath = path.resolve(filepath);
+      const workspaceRoot = path.resolve(process.cwd());
+      if (!absolutePath.startsWith(workspaceRoot)) {
+        return res.status(403).json({ success: false, error: "Access denied. Only workspace files can be accessed." });
+      }
+
+      if (!fs.existsSync(absolutePath)) {
+        return res.status(404).json({ success: false, error: "Datei wurde auf dem Server nicht gefunden." });
+      }
+
+      const DatabaseConstructor = (await import('better-sqlite3')).default;
+      let db;
+      try {
+        db = new DatabaseConstructor(absolutePath);
+      } catch (dbErr: any) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Fehler beim Öffnen der SQLite-Datei zur Diagnose: ${dbErr.message || dbErr}`
+        });
+      }
+
+      const report: any = {
+        filename: path.basename(filepath),
+        filepath: filepath,
+        filesize: fs.statSync(absolutePath).size,
+        timestamp: new Date().toISOString(),
+        tables: [] as any[],
+        schemas: {} as any,
+        samples: {} as any,
+        coordinateAnalysis: {} as any,
+        insights: [] as string[]
+      };
+
+      // 1. Get all tables
+      let tables: { name: string }[] = [];
+      try {
+        tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      } catch (e: any) {
+        report.insights.push(`Fehler beim Abrufen der Tabellenliste: ${e.message}`);
+      }
+
+      for (const t of tables) {
+        const tableName = t.name;
+        let count = 0;
+        try {
+          const countRes = db.prepare(`SELECT COUNT(*) as cnt FROM "${tableName}"`).get() as any;
+          count = countRes ? countRes.cnt : 0;
+        } catch (e) {
+          count = -1; // failed to count
+        }
+        report.tables.push({ name: tableName, rows: count });
+
+        // PRAGMA table_info
+        try {
+          const info = db.prepare(`PRAGMA table_info("${tableName}")`).all() as any[];
+          report.schemas[tableName] = info.map(col => ({
+            name: col.name,
+            type: col.type,
+            notnull: col.notnull,
+            dflt_value: col.dflt_value,
+            pk: col.pk
+          }));
+        } catch (e) {
+          report.schemas[tableName] = { error: "Failed to load columns" };
+        }
+
+        // Fetch sample rows for important tables
+        const lowerName = tableName.toLowerCase();
+        if (
+          lowerName.includes("activity") || 
+          lowerName.includes("metric") || 
+          lowerName.includes("path") || 
+          lowerName.includes("track") ||
+          lowerName.includes("point") ||
+          lowerName.includes("sleep") ||
+          lowerName.includes("weight") ||
+          lowerName.includes("steps") ||
+          lowerName.includes("stress") ||
+          lowerName.includes("rhr")
+        ) {
+          try {
+            const limit = lowerName.includes("metric") ? 10 : 5;
+            const sampleRows = db.prepare(`SELECT * FROM "${tableName}" LIMIT ${limit}`).all() as any[];
+            
+            // Redact potential PII if any, but keep keys, values for diagnostic purposes
+            report.samples[tableName] = sampleRows.map(row => {
+              const redacted = { ...row };
+              if (redacted.user_name) redacted.user_name = "[REDACTED]";
+              if (redacted.email) redacted.email = "[REDACTED]";
+              
+              for (const key of Object.keys(redacted)) {
+                if (typeof redacted[key] === 'string' && redacted[key].length > 400) {
+                  redacted[key] = redacted[key].substring(0, 150) + `... [TRUNCATED, original length: ${redacted[key].length} chars]`;
+                }
+              }
+              return redacted;
+            });
+          } catch (e: any) {
+            report.samples[tableName] = { error: `Failed to load samples: ${e.message}` };
+          }
+        }
+      }
+
+      // 2. Deep insight on activities and track points
+      const tNamesLower = report.tables.map((t: any) => t.name.toLowerCase());
+      
+      const actTableName = tables.find(t => ["activity", "activities", "garmin_activities", "garmin_activity"].includes(t.name.toLowerCase()))?.name;
+      if (actTableName) {
+        report.insights.push(`Aktivitätstabelle '${actTableName}' wurde gefunden.`);
+        const cols = report.schemas[actTableName] || [];
+        const colNames = cols.map((c: any) => c.name.toLowerCase());
+        
+        report.insights.push(`Verfügbare Spalten in '${actTableName}': ${cols.map((c: any) => c.name).join(", ")}`);
+
+        const hasPointsJson = colNames.some((c: string) => ["points_json", "pointsjson", "path_json", "pathjson", "geom", "polyline"].includes(c));
+        if (hasPointsJson) {
+          report.insights.push(`Die Aktivitätstabelle enthält eine JSON- oder Geometriespalte, was den direkten GPS-Pfadimport ermöglicht.`);
+        } else {
+          report.insights.push(`Hinweis: Die Aktivitätstabelle enthält keine standardmäßige 'points_json'-Spalte. Punkte müssen eventuell aus einer separaten Tabelle geladen werden.`);
+        }
+      } else {
+        report.insights.push(`Warnung: Keine standardmäßige Aktivitätstabelle (z.B. 'activity') gefunden!`);
+      }
+
+      const metricTableName = tables.find(t => ["activity_ts_metric", "activity_ts_metrics", "metrics", "ts_metrics"].includes(t.name.toLowerCase()))?.name;
+      if (metricTableName) {
+        report.insights.push(`Hochauflösende Zeitreihen-Tabelle '${metricTableName}' wurde gefunden.`);
+        
+        try {
+          const cols = report.schemas[metricTableName] || [];
+          const nameCol = cols.find((c: any) => c.name.toLowerCase() === "name")?.name;
+          const valCol = cols.find((c: any) => ["value", "val"].includes(c.name.toLowerCase()))?.name;
+
+          if (nameCol && valCol) {
+            const latStats = db.prepare(`
+              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM "${metricTableName}" 
+              WHERE LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') AND ${valCol} IS NOT NULL AND ${valCol} != 0
+            `).get() as any;
+
+            const lngStats = db.prepare(`
+              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM "${metricTableName}" 
+              WHERE LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') AND ${valCol} IS NOT NULL AND ${valCol} != 0
+            `).get() as any;
+
+            const eleStats = db.prepare(`
+              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM "${metricTableName}" 
+              WHERE LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') AND ${valCol} IS NOT NULL
+            `).get() as any;
+
+            report.coordinateAnalysis = {
+              latitude: latStats ? { min: latStats.min_val, max: latStats.max_val, count: latStats.cnt } : null,
+              longitude: lngStats ? { min: lngStats.min_val, max: lngStats.max_val, count: lngStats.cnt } : null,
+              elevation: eleStats ? { min: eleStats.min_val, max: eleStats.max_val, count: eleStats.cnt } : null
+            };
+
+            if (latStats && latStats.cnt > 0) {
+              const maxLat = Math.abs(latStats.max_val);
+              if (maxLat > 180) {
+                if (maxLat > 2000000000) {
+                  report.insights.push(`Erkannt: Breitengrade in '${metricTableName}' liegen im Garmin semicircles Format vor (Bereich bis 2^31).`);
+                } else if (maxLat > 10000000) {
+                  report.insights.push(`Erkannt: Breitengrade in '${metricTableName}' liegen im E7-Format vor (Faktor 10.000.000).`);
+                } else if (maxLat > 1000000) {
+                  report.insights.push(`Erkannt: Breitengrade in '${metricTableName}' liegen im E6-Format vor (Faktor 1.000.000).`);
+                } else {
+                  report.insights.push(`Erkannt: Breitengrade in '${metricTableName}' liegen in einem unüblichen Großwertformat vor (Max: ${latStats.max_val}).`);
+                }
+              } else {
+                report.insights.push(`Erkannt: Breitengrade in '${metricTableName}' liegen bereits in Grad vor (-90 bis +90).`);
+              }
+            } else {
+              report.insights.push(`Warnung: Keine gültigen GPS-Koordinaten in '${metricTableName}' gefunden (Wert-Count = 0).`);
+            }
+          }
+        } catch (coordErr: any) {
+          report.insights.push(`Fehler bei der Koordinaten-Wertebereichsanalyse: ${coordErr.message}`);
+        }
+      }
+
+      db.close();
+      res.json({ success: true, report });
+
+    } catch (err: any) {
+      console.error("Diagnostic error:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to run database diagnosis" });
     }
   });
 

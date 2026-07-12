@@ -8,7 +8,47 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 const dbPath = path.join(dbDir, 'gpx_library.db');
-const db = new Database(dbPath);
+
+export let db: Database.Database;
+
+function openAndVerifyDb(): Database.Database {
+  let tempDb: Database.Database | null = null;
+  try {
+    tempDb = new Database(dbPath);
+    // Simple verification query to make sure the db file and sqlite_master are healthy
+    tempDb.prepare("SELECT name FROM sqlite_master LIMIT 1").all();
+    return tempDb;
+  } catch (err: any) {
+    console.error("CRITICAL DATABASE CORRUPTION DETECTED during opening/verification:", err.message);
+    
+    // Close the corrupt handle if opened
+    try {
+      if (tempDb) {
+        tempDb.close();
+      }
+    } catch (e) {}
+
+    const corruptBackupPath = dbPath + `.corrupt_${Date.now()}`;
+    try {
+      if (fs.existsSync(dbPath)) {
+        fs.renameSync(dbPath, corruptBackupPath);
+        console.warn(`[Self-Healing] Corrupted database file was renamed to: ${corruptBackupPath}`);
+      }
+    } catch (renameErr: any) {
+      console.error("[Self-Healing] Failed to rename corrupted database file:", renameErr.message);
+      try {
+        fs.unlinkSync(dbPath);
+        console.warn(`[Self-Healing] Corrupted database file was deleted.`);
+      } catch (unlinkErr: any) {
+        console.error("[Self-Healing] Failed to delete corrupted database file:", unlinkErr.message);
+      }
+    }
+
+    return new Database(dbPath);
+  }
+}
+
+db = openAndVerifyDb();
 
 export interface DbTrackRecord {
   id: string;
@@ -33,6 +73,40 @@ export interface DbTrackRecord {
 }
 
 export function initDb() {
+  try {
+    runInitDbStatements();
+  } catch (err: any) {
+    console.error("CRITICAL DATABASE CORRUPTION DETECTED during execution/init:", err.message);
+    
+    // Close the corrupt handle
+    try {
+      db.close();
+    } catch (e) {}
+
+    const corruptBackupPath = dbPath + `.corrupt_${Date.now()}`;
+    try {
+      if (fs.existsSync(dbPath)) {
+        fs.renameSync(dbPath, corruptBackupPath);
+        console.warn(`[Self-Healing] Corrupted database file renamed to: ${corruptBackupPath}`);
+      }
+    } catch (renameErr: any) {
+      console.error("[Self-Healing] Failed to rename corrupted database file:", renameErr.message);
+      try {
+        fs.unlinkSync(dbPath);
+        console.warn(`[Self-Healing] Corrupted database file deleted.`);
+      } catch (unlinkErr: any) {
+        console.error("[Self-Healing] Failed to delete corrupted database file:", unlinkErr.message);
+      }
+    }
+
+    // Re-initialize a clean database
+    db = new Database(dbPath);
+    console.log("[Self-Healing] Retrying database initialization with a fresh file...");
+    runInitDbStatements();
+  }
+}
+
+function runInitDbStatements() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,

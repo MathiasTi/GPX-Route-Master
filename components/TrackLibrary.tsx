@@ -456,7 +456,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         }
       }
 
-      if (points.length === 0) {
+      if (points.length <= 1) {
         isVirtual = true;
         points = generateVirtualRoute(
           startCoords.lat,

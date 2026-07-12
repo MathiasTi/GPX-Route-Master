@@ -176,7 +176,7 @@ const App: React.FC = () => {
   // Recalculate power stats when FTP, weight, or estimated Speed changes
   useEffect(() => {
     setTracks(prev => prev.map(track => {
-      const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed);
+      const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed, track.activityType);
       return { ...track, powerStats };
     }));
   }, [ftp, userWeight, estimatedSpeed]);

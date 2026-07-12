@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Database, Upload, AlertCircle, CheckCircle, RefreshCw, Trash2, 
-  Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info 
+  Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info,
+  FileText, Download
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -173,25 +174,162 @@ function isCyclingType(type: string | undefined): boolean {
 
 function normalizeCoordinateClient(val: number, isLng: boolean = false): number {
   if (isNaN(val)) return val;
-  if (Math.abs(val) > 180) {
-    // Semicircles (2^31/180) -> degrees
-    const semi = val * 180 / 2147483648;
-    const maxLimit = isLng ? 180 : 90;
-    if (Math.abs(semi) <= maxLimit) return semi;
-    
-    // E7 notation (e.g., 481234567 -> 48.1234567)
-    const e7 = val / 10000000;
-    if (Math.abs(e7) <= maxLimit) return e7;
-    
-    // E6 microdegrees (e.g., 48123456 -> 48.123456)
-    const e6 = val / 1000000;
-    if (Math.abs(e6) <= maxLimit) return e6;
+  const absVal = Math.abs(val);
+  if (absVal <= 180) return val;
 
-    // E5 notation
-    const e5 = val / 100000;
-    if (Math.abs(e5) <= maxLimit) return e5;
+  const maxLimit = isLng ? 180 : 90;
+
+  // Candidate conversions
+  const semi = val * 180 / 2147483648;
+  const e7 = val / 10000000;
+  const e6 = val / 1000000;
+  const e5 = val / 100000;
+
+  const candidates = [
+    { name: 'semicircles', val: semi },
+    { name: 'e7', val: e7 },
+    { name: 'e6', val: e6 },
+    { name: 'e5', val: e5 }
+  ];
+
+  let bestCand = candidates[0];
+  let bestScore = -1;
+
+  for (const cand of candidates) {
+    const absC = Math.abs(cand.val);
+    if (absC > maxLimit) continue; // mathematically invalid
+
+    let score = 0;
+    // Human inhabited latitude/longitude bias
+    if (absC >= 15 && absC <= 80) {
+      score += 10;
+    } else if (absC >= 2 && absC <= 85) {
+      score += 5;
+    } else {
+      score += 1;
+    }
+
+    // Slight tie-breaker preference for semicircles and E7/E6 over E5
+    if (cand.name === 'semicircles') score += 0.1;
+    if (cand.name === 'e7') score += 0.05;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCand = cand;
+    }
   }
-  return val;
+
+  return bestCand.val;
+}
+
+// Helper to calculate total track distance in kilometers on the client
+function calculateTotalTrackDistanceClient(pts: { lat: number, lng: number }[]): number {
+  let d = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    d += calculateHaversineClient(pts[i].lat, pts[i].lng, pts[i + 1].lat, pts[i + 1].lng);
+  }
+  return d;
+}
+
+function calculateHaversineClient(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Adaptive scale detector to support Degrees, Semicircles, E7, E6, E5 on the client
+function normalizeTrackPointsWithScaleDetectionClient(rawPoints: any[], targetDistanceKm: number = 0): any[] {
+  if (!rawPoints || rawPoints.length === 0) return [];
+
+  // Find first point with non-zero coordinates to inspect raw values
+  const sample = rawPoints.find(p => p.lat !== undefined && p.lng !== undefined && p.lat !== 0 && p.lng !== 0) || rawPoints[0];
+  if (!sample) return rawPoints;
+
+  const rawLat = Math.abs(parseFloat(sample.lat));
+  const rawLng = Math.abs(parseFloat(sample.lng));
+
+  if (isNaN(rawLat) || isNaN(rawLng)) return rawPoints;
+
+  if (rawLat <= 180 && rawLng <= 180) {
+    // Already in degrees
+    return rawPoints.map(p => ({
+      ...p,
+      lat: parseFloat(p.lat),
+      lng: parseFloat(p.lng)
+    }));
+  }
+
+  // Candidate scales
+  const candidates = [
+    { name: 'semicircles', scale: 180 / 2147483648 },
+    { name: 'e7', scale: 1 / 10000000 },
+    { name: 'e6', scale: 1 / 1000000 },
+    { name: 'e5', scale: 1 / 100000 }
+  ];
+
+  let bestCandidate = candidates[0];
+
+  if (targetDistanceKm > 0.1) {
+    // Choose scale that gets closest to target distance
+    let minDiff = Infinity;
+    for (const cand of candidates) {
+      // Project a subset of points (e.g. first 200 points for speed) to compute track distance
+      const subsetPts = rawPoints.slice(0, 200).map(p => ({
+        lat: parseFloat(p.lat) * cand.scale,
+        lng: parseFloat(p.lng) * cand.scale
+      }));
+      const subsetDist = calculateTotalTrackDistanceClient(subsetPts);
+      // Estimate full distance based on subset ratio
+      const estFullDist = subsetDist * (rawPoints.length / Math.min(rawPoints.length, 200));
+      const diff = Math.abs(estFullDist - targetDistanceKm);
+      
+      // Ensure resulting coordinates are mathematically valid
+      const testLat = rawLat * cand.scale;
+      const testLng = rawLng * cand.scale;
+      const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
+
+      if (isValid && diff < minDiff) {
+        minDiff = diff;
+        bestCandidate = cand;
+      }
+    }
+  } else {
+    // Fallback to range-based detection
+    let bestScore = -1;
+    for (const cand of candidates) {
+      const testLat = rawLat * cand.scale;
+      const testLng = rawLng * cand.scale;
+      const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
+      if (!isValid) continue;
+
+      let score = 0;
+      if (Math.abs(testLat) >= 15 && Math.abs(testLat) <= 80) {
+        score += 10;
+      } else if (Math.abs(testLat) >= 2 && Math.abs(testLat) <= 85) {
+        score += 5;
+      } else {
+        score += 1;
+      }
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestCandidate = cand;
+      }
+    }
+  }
+
+  // Apply the chosen scale factor to all points
+  return rawPoints.map(p => ({
+    ...p,
+    lat: parseFloat(p.lat) * bestCandidate.scale,
+    lng: parseFloat(p.lng) * bestCandidate.scale
+  }));
 }
 
 function parseFloatOrUndefined(val: any): number | undefined {
@@ -206,7 +344,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics'>('overview');
   const [isDragging, setIsDragging] = useState(false);
   const [dbUploadProgress, setDbUploadProgress] = useState<{ percentage: number; statusText: string } | null>(null);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
@@ -214,6 +352,53 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
   const [selectedCorrelation, setSelectedCorrelation] = useState<'hr_speed' | 'speed_ascent' | 'hr_ascent'>('hr_speed');
+  
+  // Database deep diagnostics states
+  const [diagnosticFile, setDiagnosticFile] = useState<string>('');
+  const [diagnosticReport, setDiagnosticReport] = useState<any | null>(null);
+  const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
+  const [diagnoseError, setDiagnoseError] = useState<string | null>(null);
+
+  const handleRunDiagnosis = async (filepath: string) => {
+    setIsDiagnosing(true);
+    setDiagnoseError(null);
+    setDiagnosticFile(filepath);
+    setActiveTab('diagnostics');
+    try {
+      const res = await fetch(getApiUrl('/api/garmin/diagnose'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filepath })
+      });
+      const json = await res.json();
+      if (json.success) {
+        setDiagnosticReport(json.report);
+      } else {
+        setDiagnoseError(json.error || 'Diagnose fehlgeschlagen.');
+      }
+    } catch (err: any) {
+      setDiagnoseError(err.message || 'Netzwerkfehler bei der Diagnose.');
+    } finally {
+      setIsDiagnosing(false);
+    }
+  };
+
+  const handleDownloadDiagnosticReport = () => {
+    if (!diagnosticReport) return;
+    try {
+      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+        JSON.stringify(diagnosticReport, null, 2)
+      )}`;
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute('href', jsonString);
+      downloadAnchor.setAttribute('download', `garmin_diagnostics_${diagnosticReport.filename}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    } catch (e) {
+      console.error('Failed to download diagnostic report:', e);
+    }
+  };
   
   // Server-side SQLite Import Debug Logs State
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -455,10 +640,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                 const rawLng = parseFloat(p[lngIndex]);
                 if (isNaN(rawLat) || isNaN(rawLng)) return null;
                 return {
-                  lat: normalizeCoordinateClient(rawLat, false),
-                  lng: normalizeCoordinateClient(rawLng, true),
+                  lat: rawLat,
+                  lng: rawLng,
                   ele: p[2] !== undefined && p[2] !== null ? parseFloatOrUndefined(p[2]) : undefined,
-                  time: p[3] ? new Date(p[3]) : undefined
+                  time: p[3] ? new Date(p[3]) : undefined,
+                  hr: p[4] !== undefined && p[4] !== null ? parseFloatOrUndefined(p[4]) : undefined,
+                  cadence: p[5] !== undefined && p[5] !== null ? parseFloatOrUndefined(p[5]) : undefined,
+                  power: p[6] !== undefined && p[6] !== null ? parseFloatOrUndefined(p[6]) : undefined,
+                  speed: p[7] !== undefined && p[7] !== null ? parseFloatOrUndefined(p[7]) : undefined,
                 };
               } else if (typeof p === 'object') {
                 const latKey = Object.keys(p).find(k => ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"].includes(k.toLowerCase()));
@@ -473,8 +662,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                 const timeKey = Object.keys(p).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
 
                 return {
-                  lat: normalizeCoordinateClient(rawLat, false),
-                  lng: normalizeCoordinateClient(rawLng, true),
+                  lat: rawLat,
+                  lng: rawLng,
                   ele: eleKey && p[eleKey] !== undefined && p[eleKey] !== null ? parseFloatOrUndefined(p[eleKey]) : undefined,
                   time: timeKey && p[timeKey] ? new Date(p[timeKey]) : undefined,
                   hr: extractHeartRate(p),
@@ -485,13 +674,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
               }
               return null;
             }).filter((p): p is any => p !== null);
+
+            // Apply track-wide adaptive scale detection to resolve raw coordinate scales correctly
+            points = normalizeTrackPointsWithScaleDetectionClient(points, distanceKm);
           }
         } catch (pe) {
           console.error('Failed to parse points_json from database:', pe);
         }
       }
 
-      if (points.length === 0) {
+      if (points.length <= 1) {
         isVirtual = true;
         points = generateVirtualRoute(
           startCoords.lat,
@@ -1006,13 +1198,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                             <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>{f.filename}</p>
                             <p className="text-[10px] text-slate-400">{formatFileSize(f.size)}</p>
                           </div>
-                          <button
-                            onClick={() => handleLocalDbImport(f.path)}
-                            disabled={isLoading}
-                            className="shrink-0 px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
-                          >
-                            Importieren
-                          </button>
+                          <div className="flex gap-1.5 shrink-0">
+                            <button
+                              onClick={() => handleRunDiagnosis(f.path)}
+                              disabled={isDiagnosing}
+                              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1"
+                              title="Datenbankstruktur und Spalten diagnostizieren"
+                            >
+                              🔍 Diagnose
+                            </button>
+                            <button
+                              onClick={() => handleLocalDbImport(f.path)}
+                              disabled={isLoading}
+                              className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
+                            >
+                              Importieren
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1094,7 +1296,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'activities', 'analytics'] as const).map((tab) => (
+                {(['overview', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'activities', 'analytics', 'diagnostics'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -1110,6 +1312,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                       ? 'Aktivitäten' 
                       : tab === 'analytics' 
                       ? 'Erweiterte Analyse 📊' 
+                      : tab === 'diagnostics'
+                      ? '🔍 Diagnosetool'
                       : tab}
                   </button>
                 ))}
@@ -1181,13 +1385,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                   <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>{f.filename}</p>
                                   <p className="text-[10px] text-slate-400">{formatFileSize(f.size)}</p>
                                 </div>
-                                <button
-                                  onClick={() => handleLocalDbImport(f.path)}
-                                  disabled={isLoading}
-                                  className="shrink-0 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
-                                >
-                                  Importieren
-                                </button>
+                                <div className="flex gap-1.5 shrink-0">
+                                  <button
+                                    onClick={() => handleRunDiagnosis(f.path)}
+                                    disabled={isDiagnosing}
+                                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1"
+                                    title="Datenbankstruktur und Spalten diagnostizieren"
+                                  >
+                                    🔍 Diagnose
+                                  </button>
+                                  <button
+                                    onClick={() => handleLocalDbImport(f.path)}
+                                    disabled={isLoading}
+                                    className="shrink-0 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
+                                  >
+                                    Importieren
+                                  </button>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -1923,6 +2137,276 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                               </div>
                             </div>
                           </div>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+
+                  {activeTab === 'diagnostics' && (
+                    <motion.div
+                      key="diagnostics"
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="space-y-6 flex-1"
+                    >
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800/80 pb-4">
+                        <div>
+                          <h4 className="text-sm font-black text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                            <Database className="w-4 h-4 text-orange-500" />
+                            Garmin-Datenbank Diagnosezentrum & Inspektor
+                          </h4>
+                          <p className="text-xs text-slate-500">
+                            Analysiere Tabellenschemata, GPS-Spalten und Rohwerte, um Einleseprobleme präzise zu debuggen.
+                          </p>
+                        </div>
+                        {diagnosticReport && (
+                          <button
+                            onClick={handleDownloadDiagnosticReport}
+                            className="px-3.5 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Diagnosebericht herunterladen (JSON)
+                          </button>
+                        )}
+                      </div>
+
+                      {isDiagnosing && (
+                        <div className="p-12 text-center bg-white dark:bg-slate-850 rounded-3xl border border-slate-150 dark:border-slate-800/80 flex flex-col items-center justify-center space-y-4">
+                          <RefreshCw className="w-8 h-8 text-orange-500 animate-spin" />
+                          <p className="text-xs text-slate-600 font-bold">Führe tiefe Datenbank-Strukturanalyse aus...</p>
+                          <p className="text-[10px] text-slate-400">Prüfe Tabellenschemata und min/max GPS-Wertebereiche.</p>
+                        </div>
+                      )}
+
+                      {diagnoseError && (
+                        <div className="p-5 bg-red-50 dark:bg-red-950/20 border border-red-150 dark:border-red-900/40 rounded-2xl flex gap-3">
+                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                          <div>
+                            <h5 className="text-xs font-bold text-red-800 dark:text-red-400">Diagnosefehler</h5>
+                            <p className="text-xs text-red-600 dark:text-red-300 mt-1">{diagnoseError}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {!isDiagnosing && !diagnosticReport && (
+                        <div className="p-12 text-center bg-white dark:bg-slate-850 rounded-3xl border border-slate-150 dark:border-slate-800/80 flex flex-col items-center justify-center space-y-3">
+                          <Info className="w-8 h-8 text-slate-400" />
+                          <p className="text-xs text-slate-500 font-bold max-w-sm leading-normal">
+                            Bisher wurde kein Diagnosebericht generiert.
+                          </p>
+                          <p className="text-[10px] text-slate-400 max-w-sm">
+                            Klicke in der Dateiliste auf <strong className="text-orange-500">🔍 Diagnose</strong> neben einer deiner SQLite-Dateien im Workspace, um eine vollständige Tiefenanalyse zu starten.
+                          </p>
+                        </div>
+                      )}
+
+                      {!isDiagnosing && diagnosticReport && (
+                        <div className="space-y-6">
+                          {/* File metadata info */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Analysierte Datei</span>
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate block" title={diagnosticReport.filename}>
+                                {diagnosticReport.filename}
+                              </span>
+                            </div>
+                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Dateigröße</span>
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                {formatFileSize(diagnosticReport.filesize)}
+                              </span>
+                            </div>
+                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Gefundene Tabellen</span>
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                {diagnosticReport.tables.length} Tabellen
+                              </span>
+                            </div>
+                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Zeitpunkt</span>
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                {new Date(diagnosticReport.timestamp).toLocaleTimeString('de-DE')} Uhr
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Key insights list */}
+                          <div className="p-5 bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3">
+                            <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-orange-500" />
+                              Wichtigste Erkenntnisse & Strukturprüfungen
+                            </h5>
+                            <div className="space-y-2 pt-1">
+                              {diagnosticReport.insights.map((insight: string, idx: number) => {
+                                const isWarning = insight.toLowerCase().includes('warnung:');
+                                const isSuccess = insight.toLowerCase().includes('erkannt:') || insight.toLowerCase().includes('aktivitätstabelle \'');
+                                return (
+                                  <div 
+                                    key={idx} 
+                                    className={`p-2.5 rounded-xl border flex gap-2 text-[11px] leading-relaxed ${
+                                      isWarning 
+                                        ? 'bg-amber-50/40 dark:bg-amber-950/5 border-amber-200/50 dark:border-amber-900/30 text-amber-800 dark:text-amber-400' 
+                                        : isSuccess 
+                                        ? 'bg-emerald-50/40 dark:bg-emerald-950/5 border-emerald-200/50 dark:border-emerald-900/30 text-emerald-800 dark:text-emerald-400'
+                                        : 'bg-slate-50/40 dark:bg-slate-900/10 border-slate-150 dark:border-slate-800/80 text-slate-600 dark:text-slate-400'
+                                    }`}
+                                  >
+                                    {isWarning ? (
+                                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
+                                    ) : isSuccess ? (
+                                      <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500" />
+                                    ) : (
+                                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
+                                    )}
+                                    <span>{insight}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Coordinate Ranges & Table counts side-by-side */}
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Table row counts */}
+                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3">
+                              <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                                <Database className="w-3.5 h-3.5 text-slate-400" />
+                                Gefundene Datenbank-Tabellen
+                              </h5>
+                              <div className="max-h-[180px] overflow-y-auto pr-1 border border-slate-100 dark:border-slate-800/60 rounded-xl">
+                                <table className="w-full text-left border-collapse text-[11px]">
+                                  <thead>
+                                    <tr className="bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold border-b border-slate-100 dark:border-slate-800">
+                                      <th className="p-2">Tabellenname</th>
+                                      <th className="p-2 text-right">Zeilenanzahl</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {diagnosticReport.tables.map((t: any) => {
+                                      const isImportant = ["activity", "activities", "activity_ts_metric", "sleep", "weight", "steps", "stress", "rhr"].some(n => t.name.toLowerCase().includes(n));
+                                      return (
+                                        <tr 
+                                          key={t.name} 
+                                          className={`border-b border-slate-100 dark:border-slate-800/40 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 ${
+                                            isImportant ? 'font-semibold text-slate-800 dark:text-slate-100' : 'text-slate-500'
+                                          }`}
+                                        >
+                                          <td className="p-2 truncate max-w-[180px]" title={t.name}>{t.name}</td>
+                                          <td className="p-2 text-right">
+                                            {t.rows === -1 ? (
+                                              <span className="text-red-500">Fehler</span>
+                                            ) : (
+                                              t.rows.toLocaleString('de-DE')
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            {/* Coordinate format analysis */}
+                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3 flex flex-col justify-between">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                                  <FileText className="w-3.5 h-3.5 text-slate-400" />
+                                  GPS-Koordinaten Wertebereiche
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                                  Prüft, ob Breitengrade in Grad (z.B. 48.13), Semicircles (z.B. 574293847) oder E7 vorliegen.
+                                </p>
+                              </div>
+
+                              <div className="space-y-2 pt-1">
+                                {Object.keys(diagnosticReport.coordinateAnalysis).length === 0 ? (
+                                  <div className="p-4 bg-slate-50 dark:bg-slate-900/20 text-center text-[10px] text-slate-400 rounded-xl">
+                                    Keine Koordinatendaten im Garmin-Zeitreihenformat gefunden.
+                                  </div>
+                                ) : (
+                                  ['latitude', 'longitude', 'elevation'].map((k) => {
+                                    const stats = diagnosticReport.coordinateAnalysis[k];
+                                    if (!stats) return null;
+                                    return (
+                                      <div key={k} className="p-2.5 bg-slate-50/40 dark:bg-slate-900/10 border border-slate-150 dark:border-slate-800/80 rounded-xl text-[10px] flex justify-between items-center">
+                                        <div>
+                                          <span className="font-extrabold capitalize text-slate-700 dark:text-slate-300">
+                                            {k === 'latitude' ? 'Breitengrad (Lat)' : k === 'longitude' ? 'Längengrad (Lng)' : 'Höhe (Ele)'}
+                                          </span>
+                                          <span className="text-[9px] text-slate-400 block mt-0.5">
+                                            {stats.count.toLocaleString('de-DE')} Datenpunkte gefunden
+                                          </span>
+                                        </div>
+                                        <div className="text-right font-mono text-[9px] text-slate-600 dark:text-slate-400">
+                                          <div>Min: <span className="font-bold text-slate-800 dark:text-slate-200">{stats.min !== null ? stats.min : 'n/a'}</span></div>
+                                          <div>Max: <span className="font-bold text-slate-800 dark:text-slate-200">{stats.max !== null ? stats.max : 'n/a'}</span></div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Data Samples Inspector */}
+                          {Object.keys(diagnosticReport.samples).length > 0 && (
+                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-4">
+                              <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                                <FileText className="w-3.5 h-3.5 text-slate-400" />
+                                Rohdaten-Stichprobe (Erste Zeilen)
+                              </h5>
+                              
+                              <div className="space-y-4">
+                                {Object.keys(diagnosticReport.samples).map((tblName) => {
+                                  const sampleRows = diagnosticReport.samples[tblName];
+                                  if (!Array.isArray(sampleRows) || sampleRows.length === 0) return null;
+                                  
+                                  const keys = Object.keys(sampleRows[0]);
+                                  
+                                  return (
+                                    <div key={tblName} className="space-y-2 border-t border-slate-100 dark:border-slate-800/80 pt-3 first:border-0 first:pt-0">
+                                      <h6 className="text-[11px] font-extrabold text-orange-600 dark:text-orange-400 flex items-center gap-1">
+                                        <Database className="w-3 h-3" />
+                                        Tabelle: <span className="underline font-mono">{tblName}</span>
+                                      </h6>
+                                      
+                                      <div className="overflow-x-auto border border-slate-100 dark:border-slate-800/60 rounded-xl">
+                                        <table className="w-full text-left border-collapse text-[9px] font-mono whitespace-nowrap">
+                                          <thead>
+                                            <tr className="bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold border-b border-slate-100 dark:border-slate-800">
+                                              {keys.map(k => (
+                                                <th key={k} className="p-1.5 border-r border-slate-100 dark:border-slate-800">{k}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {sampleRows.map((row: any, rIdx: number) => (
+                                              <tr key={rIdx} className="border-b border-slate-100 dark:border-slate-800/40 hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
+                                                {keys.map(k => (
+                                                  <td key={k} className="p-1.5 border-r border-slate-100 dark:border-slate-800 max-w-[200px] truncate" title={String(row[k])}>
+                                                    {row[k] === null || row[k] === undefined ? (
+                                                      <span className="text-slate-300 italic">NULL</span>
+                                                    ) : typeof row[k] === 'object' ? (
+                                                      JSON.stringify(row[k])
+                                                    ) : (
+                                                      String(row[k])
+                                                    )}
+                                                  </td>
+                                                ))}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </motion.div>

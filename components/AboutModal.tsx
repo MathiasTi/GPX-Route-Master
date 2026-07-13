@@ -303,8 +303,14 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-150 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 flex justify-between items-center text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wide">
+        <div className="p-4 border-t border-slate-150 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 flex flex-col sm:flex-row justify-between items-center text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wide gap-2">
           <span>Persistenz: SQLite (data/gpx_library.db)</span>
+          {(() => {
+            const bDate = (typeof process !== 'undefined' && process.env && (process.env as any).VITE_BUILD_DATE) || '';
+            return bDate ? (
+              <span className="font-mono text-[9px] lowercase normal-case">build: {bDate}</span>
+            ) : null;
+          })()}
           <span>© 2026 GPX Route Master</span>
         </div>
       </motion.div>

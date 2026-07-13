@@ -196,6 +196,14 @@ function runInitDbStatements() {
       stmt.run('1.2.0', '2026-06-28T09:15:00.000Z', 'Integrated smart fallback engine to auto-generate virtual routes for activities lacking native GPS coordinates, maintaining beautiful layout continuity.');
       stmt.run('1.3.0', '2026-07-02T12:00:00.000Z', 'Added SQLite path query extraction for activity_path tables containing JSON path_json fields, preventing circular rendering and standardizing coordinates.');
     }
+
+    // Always ensure the latest minor version representing this update (v1.3.1) is present
+    const checkStmt = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasV131 = (checkStmt.get('1.3.1') as { count: number }).count > 0;
+    if (!hasV131) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('1.3.1', new Date().toISOString(), 'Added dynamic build date and time tracking with automatic versioning for continuous deployment transparency.');
+    }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
   }

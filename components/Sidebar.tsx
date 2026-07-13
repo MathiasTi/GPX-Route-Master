@@ -1040,15 +1040,25 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
           </div>
 
-          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex justify-between items-center font-medium rounded-b-xl">
-            <span>Reihenfolge bestimmt Verbindungssequenz</span>
-            <button
-              onClick={() => setIsAboutOpen(true)}
-              className="font-mono text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold"
-              title="Über dieses System / Versionsverlauf anzeigen"
-            >
-              v{latestVersion}
-            </button>
+          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-1 rounded-b-xl">
+            <div className="flex justify-between items-center font-medium">
+              <span>Reihenfolge bestimmt Verbindungssequenz</span>
+              <button
+                onClick={() => setIsAboutOpen(true)}
+                className="font-mono text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold"
+                title="Über dieses System / Versionsverlauf anzeigen"
+              >
+                v{latestVersion}
+              </button>
+            </div>
+            {(() => {
+              const bDate = (typeof process !== 'undefined' && process.env && (process.env as any).VITE_BUILD_DATE) || '';
+              return bDate ? (
+                <div className="text-[9px] text-slate-400 dark:text-slate-500 font-mono text-right mt-0.5 leading-none">
+                  Build: {bDate}
+                </div>
+              ) : null;
+            })()}
           </div>
         </div>
       </div>

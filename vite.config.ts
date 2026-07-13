@@ -28,7 +28,15 @@ export default defineConfig(({ mode }) => {
       },
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.VITE_BUILD_DATE': JSON.stringify(new Date().toLocaleString('de-DE', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        }))
       },
       resolve: {
         alias: {

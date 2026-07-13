@@ -484,6 +484,7 @@ interface SidebarProps {
   suggestedFtp: number | null;
   onOpenComparison: () => void;
   onOpenGarminHealth?: () => void;
+  onOpenPerformanceAnalysis?: () => void;
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
@@ -546,6 +547,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   suggestedFtp,
   onOpenComparison,
   onOpenGarminHealth,
+  onOpenPerformanceAnalysis,
   onOpenTrainingZones,
   onOpenSummaryReport,
   onOpenAnalytics,
@@ -775,6 +777,15 @@ const Sidebar: React.FC<SidebarProps> = ({
               >
                 <Database className="w-4 h-4" />
                 Garmin Fitness & Gesundheit
+              </button>
+
+              <button 
+                onClick={onOpenPerformanceAnalysis}
+                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-indigo-650 hover:bg-indigo-700 text-white shadow-md shadow-indigo-105 transition-all cursor-pointer"
+                title="Wissenschaftliche Leistungs- & Fitness-Analyse (CTL, ATL, TSB, Leistungskurven)"
+              >
+                <TrendingUp className="w-4 h-4" />
+                Leistungs- & Fitness-Analyse
               </button>
             </section>
 

@@ -20,6 +20,7 @@ import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
 import { GarminDashboard } from './components/GarminDashboard';
+import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
 import { getApiUrl } from './utils/api';
 
 const App: React.FC = () => {
@@ -96,6 +97,7 @@ const App: React.FC = () => {
   const [ftp, setFtp] = useState(250);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [garminHealthOpen, setGarminHealthOpen] = useState(false);
+  const [performanceAnalysisOpen, setPerformanceAnalysisOpen] = useState(false);
   const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
@@ -898,6 +900,10 @@ const App: React.FC = () => {
           setGarminHealthOpen(true);
           setIsMobileMenuOpen(false);
         }}
+        onOpenPerformanceAnalysis={() => {
+          setPerformanceAnalysisOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenTrainingZones={(id) => {
           if (id) {
             setMarkedTrackId(id);
@@ -1063,6 +1069,20 @@ const App: React.FC = () => {
               <GarminDashboard 
                 onClose={() => setGarminHealthOpen(false)}
                 onLoadTrack={handleLoadLibraryTrack}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {performanceAnalysisOpen && (
+              <FitnessPerformanceAnalysis 
+                onClose={() => setPerformanceAnalysisOpen(false)}
+                userWeight={userWeight}
+                userAge={userAge}
+                userMaxHr={userMaxHr}
+                ftp={ftp}
+                onUpdateFtp={setFtp}
+                onUpdateMaxHr={handleMaxHrChange}
               />
             )}
           </AnimatePresence>

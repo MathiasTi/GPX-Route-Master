@@ -576,6 +576,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
   const [isAboutOpen, setIsAboutOpen] = React.useState(false);
   const [latestVersion, setLatestVersion] = React.useState('1.3.0');
+  const [latestBuildDate, setLatestBuildDate] = React.useState('');
 
   // Load latest version on startup
   React.useEffect(() => {
@@ -585,6 +586,18 @@ const Sidebar: React.FC<SidebarProps> = ({
         const data = await res.json();
         if (data.success && data.versions.length > 0) {
           setLatestVersion(data.versions[0].version);
+          try {
+            const dateObj = new Date(data.versions[0].updated_at);
+            setLatestBuildDate(dateObj.toLocaleString('de-DE', {
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            }));
+          } catch (err) {
+            setLatestBuildDate(data.versions[0].updated_at);
+          }
         }
       } catch (e) {
         console.error('Failed to load latest version in sidebar:', e);
@@ -1051,14 +1064,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                 v{latestVersion}
               </button>
             </div>
-            {(() => {
-              const bDate = (typeof process !== 'undefined' && process.env && (process.env as any).VITE_BUILD_DATE) || '';
-              return bDate ? (
-                <div className="text-[9px] text-slate-400 dark:text-slate-500 font-mono text-right mt-0.5 leading-none">
-                  Build: {bDate}
-                </div>
-              ) : null;
-            })()}
+            {latestBuildDate && (
+              <div className="text-[9px] text-slate-400 dark:text-slate-500 font-mono text-right mt-0.5 leading-none">
+                Build: {latestBuildDate}
+              </div>
+            )}
           </div>
         </div>
       </div>

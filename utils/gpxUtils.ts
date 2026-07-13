@@ -1500,6 +1500,7 @@ export const parseLocationCoords = (locationStr?: string): { lat: number; lng: n
     'freiburg': { lat: 47.9990, lng: 7.8421 },
     'london': { lat: 51.5074, lng: -0.1278 },
     'paris': { lat: 48.8566, lng: 2.3522 },
+    'kalkar': { lat: 51.7391559, lng: 6.2984520 },
   };
   
   for (const [name, coords] of Object.entries(cities)) {

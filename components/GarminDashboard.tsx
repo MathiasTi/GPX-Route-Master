@@ -536,6 +536,30 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
     });
   }, [data, activitySearchQuery]);
 
+  const last4WeeksActivities = useMemo(() => {
+    if (!data || !data.activities || data.activities.length === 0) return [];
+    
+    const sorted = [...data.activities].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const latestDate = new Date(sorted[0].date);
+    const fourWeeksAgo = new Date(latestDate.getTime() - 28 * 24 * 60 * 60 * 1000);
+    
+    return data.activities
+      .filter(act => {
+        const actDate = new Date(act.date);
+        return actDate >= fourWeeksAgo && actDate <= latestDate;
+      })
+      .map(act => {
+        const speedKmh = act.duration > 0 ? (act.distance / (act.duration / 3600)) : 0;
+        return {
+          ...act,
+          formattedDate: new Date(act.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }),
+          avgSpeed: parseFloat(speedKmh.toFixed(1)),
+          avgHr: act.avg_hr || 0
+        };
+      })
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [data]);
+
   // Fetch metrics from backend
   const fetchHealthMetrics = useCallback(async () => {
     setIsLoading(true);
@@ -586,9 +610,22 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   }, []);
 
   // Load Garmin Activity into current workspace (generates virtual route)
-  const handleLoadActivity = useCallback((act: GarminActivity) => {
+  const handleLoadActivity = useCallback(async (act: GarminActivity) => {
     if (!onLoadTrack) return;
     try {
+      let pointsJson = act.points_json;
+      
+      // Attempt to load the full, un-downsampled track from the server!
+      try {
+        const res = await fetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const json = await res.json();
+        if (json.success && json.points_json) {
+          pointsJson = json.points_json;
+        }
+      } catch (err) {
+        console.error('Failed to fetch full track points, using fallback list track:', err);
+      }
+
       // Find starting coordinates
       let startCoords = parseLocationCoords((act as any).location);
       if (!startCoords) {
@@ -605,9 +642,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       
       let isVirtual = false;
       let points: any[] = [];
-      if (act.points_json) {
+      if (pointsJson) {
         try {
-          let parsed = JSON.parse(act.points_json);
+          let parsed = JSON.parse(pointsJson);
           // Auto-unwrap nested coordinate object lists if needed
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
@@ -2135,6 +2172,111 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                   )}
                                 </div>
                               </div>
+                            </div>
+
+                            {/* Row 6: 4-Week Training Performance Development Chart */}
+                            <div className="bg-white dark:bg-slate-850 p-6 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-6">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-orange-500" />
+                                  Trainingsleistung Entwicklung (Letzte 4 Wochen)
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                  Verfolgt deine kardiovaskuläre Effizienz, indem Herzfrequenz- und Geschwindigkeitsentwicklungen über die letzten 4 Wochen basierend auf den importierten Track-Daten korreliert werden.
+                                </p>
+                              </div>
+
+                              {last4WeeksActivities.length > 0 ? (
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                                  {/* Chart Section */}
+                                  <div className="lg:col-span-8 flex flex-col space-y-2">
+                                    <div className="h-72 w-full bg-slate-50/40 dark:bg-slate-900/10 rounded-xl p-2 border border-slate-100 dark:border-slate-800/80">
+                                      <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={last4WeeksActivities} margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
+                                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                          <XAxis 
+                                            dataKey="formattedDate" 
+                                            stroke="#94a3b8" 
+                                            fontSize={9} 
+                                          />
+                                          <YAxis 
+                                            yAxisId="left" 
+                                            stroke="#ef4444" 
+                                            fontSize={9} 
+                                            domain={['dataMin - 5', 'dataMax + 5']} 
+                                            label={{ value: 'Ø Puls (bpm)', angle: -90, position: 'insideLeft', style: {fontSize: 8, fill: '#ef4444'} }} 
+                                          />
+                                          <YAxis 
+                                            yAxisId="right" 
+                                            orientation="right" 
+                                            stroke="#3b82f6" 
+                                            fontSize={9} 
+                                            domain={['dataMin - 2', 'dataMax + 2']} 
+                                            label={{ value: 'Ø Tempo (km/h)', angle: 90, position: 'insideRight', style: {fontSize: 8, fill: '#3b82f6'} }} 
+                                          />
+                                          <Tooltip content={(props) => {
+                                            if (props.active && props.payload && props.payload.length) {
+                                              const pt = props.payload[0].payload;
+                                              return (
+                                                <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-800 shadow-xl text-[11px] space-y-1">
+                                                  <p className="font-bold text-slate-100">{pt.name}</p>
+                                                  <p className="text-[10px] text-slate-400">{pt.date}</p>
+                                                  <div className="border-t border-slate-800 my-1 pt-1 space-y-0.5">
+                                                    <div className="flex justify-between gap-4">
+                                                      <span className="text-slate-400">Ø Puls:</span>
+                                                      <span className="font-bold text-rose-400">{pt.avgHr > 0 ? `${pt.avgHr} bpm` : 'Keine Pulsdaten'}</span>
+                                                    </div>
+                                                    <div className="flex justify-between gap-4">
+                                                      <span className="text-slate-400">Ø Tempo:</span>
+                                                      <span className="font-bold text-blue-400">{pt.avgSpeed} km/h</span>
+                                                    </div>
+                                                    <div className="flex justify-between gap-4">
+                                                      <span className="text-slate-400">Distanz:</span>
+                                                      <span className="font-semibold text-slate-200">{pt.distance} km</span>
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+                                            return null;
+                                          }} />
+                                          <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: '10px' }} />
+                                          <Line yAxisId="left" type="monotone" dataKey="avgHr" name="Herzfrequenz (bpm)" stroke="#ef4444" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} connectNulls />
+                                          <Line yAxisId="right" type="monotone" dataKey="avgSpeed" name="Tempo (km/h)" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} connectNulls />
+                                        </LineChart>
+                                      </ResponsiveContainer>
+                                    </div>
+                                  </div>
+
+                                  {/* Physiology Explanation column */}
+                                  <div className="lg:col-span-4 flex flex-col justify-between p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800 space-y-4">
+                                    <div className="space-y-3">
+                                      <h6 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase">
+                                        Leistungsdiagnostik & Trend
+                                      </h6>
+                                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                                        Hier siehst du den direkten Verlauf deiner Trainingseinheiten der letzten 4 Wochen. 
+                                      </p>
+                                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                                        Ein positiver Trainingseffekt wird dadurch angezeigt, dass deine <span className="text-blue-600 dark:text-blue-400 font-bold">Geschwindigkeitskurve ansteigt</span>, während deine <span className="text-rose-600 dark:text-rose-400 font-bold">Herzfrequenzkurve sinkt oder stabil bleibt</span>. Das bedeutet, du läufst oder fährst schneller bei geringerer kardialer Belastung!
+                                      </p>
+                                    </div>
+
+                                    <div className="text-[10px] text-orange-600 dark:text-orange-400 leading-relaxed bg-orange-50/20 dark:bg-orange-950/10 p-3 rounded-lg border border-orange-100/50 dark:border-orange-900/20">
+                                      <p className="font-bold mb-1">📊 Auswertungsdaten:</p>
+                                      Es wurden <span className="font-bold">{last4WeeksActivities.length} Aktivitäten</span> in den letzten 4 Wochen analysiert. Nutze den Track-Import oder Garmin-Connect, um weitere Läufe oder Fahrten hinzuzufügen.
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="p-8 text-center bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800">
+                                  <AlertCircle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                                  <p className="text-xs text-slate-500 font-bold">Keine Aktivitäten in den letzten 4 Wochen gefunden</p>
+                                  <p className="text-[10px] text-slate-400 mt-1 max-w-sm mx-auto">
+                                    Es wurden keine Garmin-Aktivitäten mit einem Datum in den letzten 4 Wochen gefunden. Importiere Aktivitäten oder lade Garmin-Daten hoch, um diesen Verlauf zu aktivieren.
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>

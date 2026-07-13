@@ -39,6 +39,18 @@ interface GarminActivity {
   location?: string;
 }
 
+function isRunningType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike');
+}
+
+function isCyclingType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.toLowerCase();
+  return t.includes('cycle') || t.includes('bike') || t.includes('bik') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking') || t.includes('riding') || t.includes('bicyc');
+}
+
 export default function FitnessPerformanceAnalysis({
   onClose,
   userWeight,
@@ -338,7 +350,7 @@ export default function FitnessPerformanceAnalysis({
         calculatedTss = durationHours * Math.pow(calculatedIf, 2) * 100;
       } else {
         // Default estimate based on type
-        const isCycling = act.type.toLowerCase().includes('cycle') || act.type.toLowerCase().includes('bike');
+        const isCycling = isCyclingType(act.type);
         const intensity = isCycling ? 45 : 65; 
         calculatedTss = (act.duration / 3600) * intensity;
       }
@@ -352,7 +364,8 @@ export default function FitnessPerformanceAnalysis({
         hasPower,
         hasHr,
         peaks,
-        pointsCount: points.length
+        pointsCount: points.length,
+        points
       };
     });
   }, [activities, ftp, maxHr]);
@@ -698,12 +711,7 @@ export default function FitnessPerformanceAnalysis({
     const pwrZonesSeconds = [0, 0, 0, 0, 0, 0];
 
     calculatedActivities.forEach(act => {
-      let points: any[] = [];
-      if (act.points_json) {
-        try {
-          points = JSON.parse(act.points_json);
-        } catch (e) {}
-      }
+      const points = (act as any).points || [];
 
       // If no points, we split overall duration proportionally using avg heart rate / power
       if (points.length === 0) {
@@ -845,8 +853,8 @@ export default function FitnessPerformanceAnalysis({
   const filteredActivitiesList = useMemo(() => {
     return calculatedActivities.filter(act => {
       const typeMatch = filterType === 'all' || 
-        (filterType === 'cycling' && (act.type.toLowerCase().includes('cycle') || act.type.toLowerCase().includes('bike'))) ||
-        (filterType === 'running' && act.type.toLowerCase().includes('run'));
+        (filterType === 'cycling' && isCyclingType(act.type)) ||
+        (filterType === 'running' && isRunningType(act.type));
       
       const searchMatch = searchQuery.trim() === '' || 
         act.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -2676,7 +2684,7 @@ export default function FitnessPerformanceAnalysis({
                   {/* List Grid */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {filteredActivitiesList.map((act) => {
-                      const isCycling = act.type.toLowerCase().includes('cycle') || act.type.toLowerCase().includes('bike');
+                      const isCycling = isCyclingType(act.type);
                       
                       return (
                         <div 

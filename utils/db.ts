@@ -209,6 +209,16 @@ function runInitDbStatements() {
       const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
       insertStmt.run('1.3.2', new Date().toISOString(), 'Performance-Optimierung: Automatische adaptive GPS-Punkt-Downsampling-Technik für extrem große SQLite-Datenbanken integriert, um V8-Limitierungen ("Invalid string length") vollständig zu verhindern und RAM-Auslastung um bis zu 90% zu reduzieren.');
     }
+    
+    const hasV133 = (checkStmt.get('1.3.3') as { count: number }).count > 0;
+    if (!hasV133) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('1.3.3', new Date().toISOString(), 'Upgrade: 4-Wochen-Trainingsleistungs-Entwicklungschart hinzugefügt; On-Demand-Vollpfad-Nachladen für Garmin-Tracks implementiert; GPS-Vollpfade serverseitig downgesampelt, um Client-Abstürze ("Invalid string length") endgültig zu beheben.');
+    } else {
+      // Keep updating the timestamp of the current active development build (1.3.3) on server start to act as a real dynamic build-time indicator!
+      const updateStmt = db.prepare('UPDATE app_version SET updated_at = ? WHERE version = ?');
+      updateStmt.run(new Date().toISOString(), '1.3.3');
+    }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
   }
@@ -558,6 +568,15 @@ export function searchGarminActivities(queryText: string = '', activityType?: st
 
   const activities = db.prepare(sql).all(...params) as DbGarminActivityRecord[];
   return activities;
+}
+
+export function getGarminActivityById(id: string): DbGarminActivityRecord | null {
+  try {
+    return db.prepare('SELECT * FROM garmin_activities WHERE id = ?').get(id) as DbGarminActivityRecord;
+  } catch (e) {
+    console.error('Failed to get Garmin activity by ID:', e);
+    return null;
+  }
 }
 
 export function getHealthMetrics() {

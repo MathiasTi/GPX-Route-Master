@@ -83,7 +83,16 @@ const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | 
     if (markedTrackId && markedTrackId !== prevMarkedId.current) {
       const track = tracks.find(t => t.id === markedTrackId);
       if (track && !track.isVirtual && track.points && track.points.length > 0) {
-        const validPoints = track.points.filter(p => p && !isNaN(p.lat) && !isNaN(p.lng));
+        const validPoints = track.points
+          .map(p => {
+            if (!p) return null;
+            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+            if (isNaN(latVal) || isNaN(lngVal)) return null;
+            return { ...p, lat: latVal, lng: lngVal };
+          })
+          .filter((p): p is GPXPoint => p !== null);
+
         if (validPoints.length > 0) {
           const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
           map.fitBounds(bounds, { padding: [50, 50] });
@@ -101,7 +110,16 @@ const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXT
 
   useEffect(() => {
     if (activeTrack && !activeTrack.isVirtual && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
-      const validPoints = activeTrack.points.filter(p => p && !isNaN(p.lat) && !isNaN(p.lng));
+      const validPoints = activeTrack.points
+        .map(p => {
+          if (!p) return null;
+          const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+          const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+          if (isNaN(latVal) || isNaN(lngVal)) return null;
+          return { ...p, lat: latVal, lng: lngVal };
+        })
+        .filter((p): p is GPXPoint => p !== null);
+
       if (validPoints.length > 0) {
         const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
         map.fitBounds(bounds, { padding: [50, 50] });
@@ -677,7 +695,14 @@ const Map: React.FC<MapProps> = ({
         {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
           const isMarked = track.id === markedTrackId;
           const validPoints = (track.points || [])
-            .filter(p => p && typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng));
+            .map(p => {
+              if (!p) return null;
+              const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+              const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+              if (isNaN(latVal) || isNaN(lngVal)) return null;
+              return { ...p, lat: latVal, lng: lngVal };
+            })
+            .filter((p): p is GPXPoint => p !== null);
           
           if (validPoints.length === 0) return null;
 

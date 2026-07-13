@@ -383,8 +383,21 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
   };
 
   // Load Garmin Activity into current workspace (generates virtual route)
-  const handleLoadGarminActivity = (act: any) => {
+  const handleLoadGarminActivity = async (act: any) => {
     try {
+      let pointsJson = act.points_json;
+      
+      // Attempt to load the full, un-downsampled track from the server!
+      try {
+        const res = await fetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const json = await res.json();
+        if (json.success && json.points_json) {
+          pointsJson = json.points_json;
+        }
+      } catch (err) {
+        console.error('Failed to fetch full track points, using fallback list track:', err);
+      }
+
       // Find starting coordinates
       let startCoords = parseLocationCoords(act.location);
       if (!startCoords) {
@@ -401,9 +414,9 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       
       let isVirtual = false;
       let points: any[] = [];
-      if (act.points_json) {
+      if (pointsJson) {
         try {
-          const parsed = JSON.parse(act.points_json);
+          const parsed = JSON.parse(pointsJson);
           if (Array.isArray(parsed) && parsed.length > 0) {
             points = parsed.map((p: any) => {
               const latVal = extractLat(p);
@@ -923,11 +936,10 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
               })();
 
               const sportEmoji = (() => {
+                if (isRunningType(act.type)) return '🏃';
+                if (isCyclingType(act.type)) return '🚴';
                 const t = (act.type || '').toLowerCase();
-                if (t.includes('run') || t === 'running') return '🏃';
-                if (t.includes('cycle') || t.includes('bike') || t === 'cycling') return '🚴';
                 if (t.includes('swim') || t === 'swimming') return '🏊';
-                if (t.includes('walk') || t.includes('hike')) return '🥾';
                 return '🏅';
               })();
 

@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -933,14 +933,34 @@ async function startServer() {
     }
   });
 
+  // Helper to downsample points_json inside an activity record to prevent "Invalid string length" on the client
+  function downsampleActivity(act: any, maxPoints: number = 1000): any {
+    if (act && act.points_json) {
+      try {
+        const parsed = JSON.parse(act.points_json);
+        if (Array.isArray(parsed) && parsed.length > maxPoints) {
+          const downsampled = downsamplePoints(parsed, maxPoints);
+          return {
+            ...act,
+            points_json: JSON.stringify(downsampled)
+          };
+        }
+      } catch (e) {
+        console.error(`Error downsampling points for activity ${act.id}:`, e);
+      }
+    }
+    return act;
+  }
+
   // Garmin Activities API: Search and list imported Garmin activities with name, description or location
   app.get("/api/garmin-activities", (req, res) => {
     try {
       const q = typeof req.query.q === "string" ? req.query.q : "";
       const activityType = typeof req.query.activityType === "string" ? req.query.activityType : "all";
       const records = searchGarminActivities(q, activityType);
+      const downsampledRecords = records.map(act => downsampleActivity(act, 1000));
       
-      res.json({ success: true, activities: records });
+      res.json({ success: true, activities: downsampledRecords });
     } catch (err: any) {
       console.error("Error searching Garmin activities:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to search Garmin activities" });
@@ -3530,9 +3550,29 @@ async function startServer() {
   app.get("/api/health-metrics", (req, res) => {
     try {
       const data = getHealthMetrics();
+      if (data && data.activities) {
+        data.activities = data.activities.map(act => downsampleActivity(act, 1000));
+      }
       res.json({ success: true, data });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || "Failed to load health metrics" });
+    }
+  });
+
+  // Fetch full points_json for a specific activity
+  app.get("/api/activity-track-full", (req, res) => {
+    try {
+      const id = req.query.id as string;
+      if (!id) {
+        return res.status(400).json({ success: false, error: "Missing activity ID" });
+      }
+      const record = getGarminActivityById(id);
+      if (!record) {
+        return res.status(404).json({ success: false, error: "Activity not found" });
+      }
+      res.json({ success: true, points_json: record.points_json });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || "Failed to load full activity track" });
     }
   });
 

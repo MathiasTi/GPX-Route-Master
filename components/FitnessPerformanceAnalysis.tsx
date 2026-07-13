@@ -86,6 +86,8 @@ export default function FitnessPerformanceAnalysis({
   const [planDuration, setPlanDuration] = useState<4 | 8 | 12>(8);
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(0);
   const [historyAnalysisRange, setHistoryAnalysisRange] = useState<'1week' | '4weeks' | 'all'>('4weeks');
+  const [libraryTracks, setLibraryTracks] = useState<any[]>([]);
+  const [performanceMetric, setPerformanceMetric] = useState<'speed' | 'hr' | 'both'>('both');
 
   // Sync default presets when goalType changes
   useEffect(() => {
@@ -204,6 +206,15 @@ export default function FitnessPerformanceAnalysis({
         setActivities(result.data.activities);
       } else {
         throw new Error("Fehler beim Verarbeiten der Server-Antwort");
+      }
+
+      // Also fetch library tracks for a complete view of loaded track data
+      const libResponse = await fetch(getApiUrl("/api/library"));
+      if (libResponse.ok) {
+        const libResult = await libResponse.json();
+        if (libResult.success && libResult.tracks) {
+          setLibraryTracks(libResult.tracks);
+        }
       }
     } catch (err: any) {
       console.error("Error loading activities for science:", err);
@@ -345,6 +356,193 @@ export default function FitnessPerformanceAnalysis({
       };
     });
   }, [activities, ftp, maxHr]);
+
+  // Combine Garmin activities and Track Library tracks for a unified training performance dataset
+  const combinedTrainings = useMemo(() => {
+    const list: {
+      id: string;
+      name: string;
+      type: string;
+      date: string;
+      distance: number;
+      duration: number;
+      avg_hr?: number;
+      ascent?: number;
+      isTrackLibraryItem: boolean;
+    }[] = [];
+
+    // Add Garmin activities
+    activities.forEach(act => {
+      list.push({
+        id: act.id,
+        name: act.name,
+        type: act.type || 'running',
+        date: act.date,
+        distance: act.distance,
+        duration: act.duration,
+        avg_hr: act.avg_hr,
+        ascent: act.ascent,
+        isTrackLibraryItem: false
+      });
+    });
+
+    // Add Track Library tracks (if they are not already in activities by ID)
+    libraryTracks.forEach(track => {
+      if (!list.some(item => item.id === track.id)) {
+        const trackDate = track.dateCreated ? track.dateCreated.split('T')[0] : new Date().toISOString().split('T')[0];
+        list.push({
+          id: track.id,
+          name: track.name,
+          type: track.activityType || 'running',
+          date: trackDate,
+          distance: track.distance,
+          duration: track.duration,
+          avg_hr: undefined,
+          ascent: track.ascent,
+          isTrackLibraryItem: true
+        });
+      }
+    });
+
+    return list;
+  }, [activities, libraryTracks]);
+
+  // Performance Trend Data over the last 4 weeks (28 days relative to the latest session)
+  const performanceTrendData = useMemo(() => {
+    if (combinedTrainings.length === 0) return [];
+
+    // Sort ascending by date
+    const sorted = [...combinedTrainings]
+      .filter(t => t.date && t.distance > 0 && t.duration > 0)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (sorted.length === 0) return [];
+
+    // Find the latest date in the set
+    const latestDateStr = sorted[sorted.length - 1].date;
+    const latestDate = new Date(latestDateStr);
+
+    // Cutoff date is 28 days before latestDate
+    const cutoffDate = new Date(latestDate);
+    cutoffDate.setDate(cutoffDate.getDate() - 28);
+
+    // Filter items in the last 4 weeks (28 days)
+    const last4Weeks = sorted.filter(item => new Date(item.date) >= cutoffDate);
+
+    return last4Weeks.map(item => {
+      const speed = (item.distance * 3600) / item.duration; // in km/h
+      
+      // Pace: min/km
+      const paceMinDec = item.distance > 0 ? (item.duration / 60) / item.distance : 0;
+      const paceMin = Math.floor(paceMinDec);
+      const paceSec = Math.round((paceMinDec - paceMin) * 60);
+      const formattedPace = item.distance > 0 ? `${paceMin}:${paceSec < 10 ? '0' : ''}${paceSec}` : '-';
+
+      return {
+        id: item.id,
+        name: item.name,
+        date: item.date,
+        formattedDate: new Date(item.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }),
+        distance: parseFloat(item.distance.toFixed(1)),
+        duration: item.duration,
+        avg_hr: item.avg_hr || null,
+        speed: parseFloat(speed.toFixed(1)),
+        pace: parseFloat(paceMinDec.toFixed(2)),
+        formattedPace,
+        type: item.type,
+        isTrack: item.isTrackLibraryItem
+      };
+    });
+  }, [combinedTrainings]);
+
+  // Performance trends statistics
+  const performanceStats = useMemo(() => {
+    if (performanceTrendData.length === 0) {
+      return {
+        avgSpeed: 0,
+        avgHr: 0,
+        totalDistance: 0,
+        workoutCount: 0,
+        speedTrend: 'stable',
+        hrTrend: 'stable',
+        efficiencyTrend: 'stable',
+        efficiencyPercent: 0,
+        speedDiff: 0,
+        hrDiff: 0
+      };
+    }
+
+    const workouts = performanceTrendData;
+    const count = workouts.length;
+    
+    const totalDist = workouts.reduce((sum, w) => sum + w.distance, 0);
+    const totalHr = workouts.filter(w => w.avg_hr).reduce((sum, w) => sum + (w.avg_hr || 0), 0);
+    const hrCount = workouts.filter(w => w.avg_hr).length;
+    
+    const avgSpeed = workouts.reduce((sum, w) => sum + w.speed, 0) / count;
+    const avgHr = hrCount > 0 ? totalHr / hrCount : 0;
+
+    // Divide into 2 halves for trend comparison: Recent 14 days and Previous 14 days
+    const sorted = [...workouts].sort((a, b) => b.date.localeCompare(a.date));
+    const latestDate = new Date(sorted[0].date);
+    const midCutoff = new Date(latestDate);
+    midCutoff.setDate(midCutoff.getDate() - 14);
+
+    const recentHalf = workouts.filter(w => new Date(w.date) >= midCutoff);
+    const previousHalf = workouts.filter(w => new Date(w.date) < midCutoff);
+
+    let speedTrend = 'stable';
+    let hrTrend = 'stable';
+    let efficiencyTrend = 'stable';
+    
+    let speedDiff = 0;
+    let hrDiff = 0;
+    let efficiencyPercent = 0;
+
+    if (recentHalf.length > 0 && previousHalf.length > 0) {
+      const recentAvgSpeed = recentHalf.reduce((sum, w) => sum + w.speed, 0) / recentHalf.length;
+      const prevAvgSpeed = previousHalf.reduce((sum, w) => sum + w.speed, 0) / previousHalf.length;
+      
+      speedDiff = recentAvgSpeed - prevAvgSpeed;
+      if (speedDiff > 0.3) speedTrend = 'up';
+      else if (speedDiff < -0.3) speedTrend = 'down';
+
+      const recentHrActs = recentHalf.filter(w => w.avg_hr);
+      const prevHrActs = previousHalf.filter(w => w.avg_hr);
+
+      if (recentHrActs.length > 0 && prevHrActs.length > 0) {
+        const recentAvgHr = recentHrActs.reduce((sum, w) => sum + (w.avg_hr || 0), 0) / recentHrActs.length;
+        const prevAvgHr = prevHrActs.reduce((sum, w) => sum + (w.avg_hr || 0), 0) / prevHrActs.length;
+        
+        hrDiff = recentAvgHr - prevAvgHr;
+        if (hrDiff > 1.5) hrTrend = 'up';
+        else if (hrDiff < -1.5) hrTrend = 'down';
+
+        // Efficiency Factor = Speed / HR
+        const recentEf = recentAvgSpeed / recentAvgHr;
+        const prevEf = prevAvgSpeed / prevAvgHr;
+        
+        if (prevEf > 0) {
+          efficiencyPercent = ((recentEf - prevEf) / prevEf) * 100;
+          if (efficiencyPercent > 1) efficiencyTrend = 'up';
+          else if (efficiencyPercent < -1) efficiencyTrend = 'down';
+        }
+      }
+    }
+
+    return {
+      avgSpeed: parseFloat(avgSpeed.toFixed(1)),
+      avgHr: Math.round(avgHr),
+      totalDistance: parseFloat(totalDist.toFixed(1)),
+      workoutCount: count,
+      speedTrend,
+      hrTrend,
+      efficiencyTrend,
+      efficiencyPercent: parseFloat(efficiencyPercent.toFixed(1)),
+      speedDiff: parseFloat(speedDiff.toFixed(1)),
+      hrDiff: Math.round(hrDiff)
+    };
+  }, [performanceTrendData]);
 
   // Scientific Fitness Model (CTL / ATL / TSB) daily calculation
   const fitnessTrendData = useMemo(() => {
@@ -1457,6 +1655,272 @@ export default function FitnessPerformanceAnalysis({
                         </AreaChart>
                       </ResponsiveContainer>
                     </div>
+                  </div>
+
+                  {/* TAB 1 - SECTION 2: Training Performance Development (Last 4 Weeks) */}
+                  <div className="bg-slate-50 dark:bg-slate-800/30 border border-slate-200/50 dark:border-slate-800 rounded-3xl p-4 md:p-6 space-y-6">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-xs font-black text-slate-700 dark:text-slate-350 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                          <Activity className="w-4 h-4 text-emerald-500" />
+                          Trainingsleistung & Entwicklung (Letzte 4 Wochen)
+                        </h3>
+                        <p className="text-[11px] text-slate-500 leading-normal">
+                          Visualisierung deiner durchschnittlichen Herzfrequenz und Geschwindigkeit aller geladenen Aktivitäten.
+                        </p>
+                      </div>
+
+                      {/* Metric Toggle Buttons */}
+                      <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl self-start md:self-center">
+                        <button
+                          type="button"
+                          onClick={() => setPerformanceMetric('both')}
+                          className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all flex items-center gap-1 ${performanceMetric === 'both' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                        >
+                          <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                          Kombiniert
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPerformanceMetric('speed')}
+                          className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all flex items-center gap-1 ${performanceMetric === 'speed' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                        >
+                          <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                          Tempo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPerformanceMetric('hr')}
+                          className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all flex items-center gap-1 ${performanceMetric === 'hr' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                        >
+                          <Heart className="w-3.5 h-3.5 text-rose-500" />
+                          Puls
+                        </button>
+                      </div>
+                    </div>
+
+                    {performanceTrendData.length === 0 ? (
+                      <div className="h-64 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                        <Info className="w-8 h-8 text-slate-400 mb-2" />
+                        <p className="text-xs font-bold text-slate-600 dark:text-slate-400">Keine Aktivitätsdaten aus den letzten 4 Wochen vorhanden</p>
+                        <p className="text-[10px] text-slate-400 mt-1 max-w-sm">Importiere GPX-Tracks im Dashboard oder lade Trainingsdateien, um den Leistungstrend zu visualisieren.</p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Chart Container */}
+                        <div className="h-72 w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                              data={performanceTrendData}
+                              margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                              <XAxis 
+                                dataKey="formattedDate" 
+                                stroke="#888888" 
+                                fontSize={9}
+                                tickLine={false} 
+                              />
+                              
+                              {/* Left Y-Axis for Heart Rate */}
+                              {(performanceMetric === 'hr' || performanceMetric === 'both') && (
+                                <YAxis 
+                                  yAxisId="left"
+                                  domain={['dataMin - 10', 'dataMax + 10']}
+                                  stroke="#f43f5e" 
+                                  fontSize={9}
+                                  tickLine={false}
+                                  label={{ value: 'Puls (bpm)', angle: -90, position: 'insideLeft', style: { fill: '#f43f5e', fontSize: 9, fontWeight: 'bold' } }}
+                                />
+                              )}
+
+                              {/* Right Y-Axis for Speed */}
+                              {(performanceMetric === 'speed' || performanceMetric === 'both') && (
+                                <YAxis 
+                                  yAxisId="right"
+                                  orientation="right"
+                                  domain={['dataMin - 2', 'dataMax + 2']}
+                                  stroke="#10b981" 
+                                  fontSize={9}
+                                  tickLine={false}
+                                  label={{ value: 'Geschwindigkeit (km/h)', angle: 90, position: 'insideRight', style: { fill: '#10b981', fontSize: 9, fontWeight: 'bold' } }}
+                                />
+                              )}
+
+                              <Tooltip 
+                                content={({ active, payload }) => {
+                                  if (active && payload && payload.length) {
+                                    const data = payload[0].payload;
+                                    return (
+                                      <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-700/50 shadow-xl text-xs space-y-1.5 max-w-xs">
+                                        <p className="font-extrabold text-[11px] truncate text-slate-200">{data.name}</p>
+                                        <p className="text-[10px] text-slate-400 font-bold">{data.date} • {data.type === 'cycling' ? 'Radsport' : 'Laufsport'}</p>
+                                        <div className="border-t border-slate-800 my-1 pt-1 space-y-1 text-[10px]">
+                                          <div className="flex justify-between gap-4">
+                                            <span className="text-slate-400">Distanz:</span>
+                                            <span className="font-mono font-bold text-white">{data.distance} km</span>
+                                          </div>
+                                          <div className="flex justify-between gap-4">
+                                            <span className="text-slate-400">Dauer:</span>
+                                            <span className="font-mono font-bold text-white">
+                                              {Math.floor(data.duration / 3600)}h {Math.floor((data.duration % 3600) / 60)}m
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between gap-4">
+                                            <span className="text-slate-400">Geschwindigkeit:</span>
+                                            <span className="font-mono font-bold text-emerald-400">{data.speed} km/h</span>
+                                          </div>
+                                          <div className="flex justify-between gap-4">
+                                            <span className="text-slate-400">Pace:</span>
+                                            <span className="font-mono font-bold text-teal-400">{data.formattedPace} min/km</span>
+                                          </div>
+                                          {data.avg_hr && (
+                                            <div className="flex justify-between gap-4">
+                                              <span className="text-slate-400">⌀ Puls:</span>
+                                              <span className="font-mono font-bold text-rose-400">{data.avg_hr} bpm</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+
+                              <Legend wrapperStyle={{ fontSize: '9px', paddingTop: '8px' }} />
+
+                              {/* Heart Rate Line */}
+                              {(performanceMetric === 'hr' || performanceMetric === 'both') && (
+                                <Line 
+                                  yAxisId="left"
+                                  type="monotone" 
+                                  name="Durchschnittspuls (bpm)" 
+                                  dataKey="avg_hr" 
+                                  stroke="#f43f5e" 
+                                  strokeWidth={2} 
+                                  dot={{ r: 3, fill: '#f43f5e' }}
+                                  activeDot={{ r: 5 }}
+                                  connectNulls
+                                />
+                              )}
+
+                              {/* Speed Line */}
+                              {(performanceMetric === 'speed' || performanceMetric === 'both') && (
+                                <Line 
+                                  yAxisId="right"
+                                  type="monotone" 
+                                  name="Geschwindigkeit (km/h)" 
+                                  dataKey="speed" 
+                                  stroke="#10b981" 
+                                  strokeWidth={2} 
+                                  dot={{ r: 3, fill: '#10b981' }}
+                                  activeDot={{ r: 5 }}
+                                />
+                              )}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* Summary Cards */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 p-3 rounded-2xl flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500 shrink-0">
+                              <Calendar className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Workouts</p>
+                              <p className="text-sm font-black text-slate-800 dark:text-white font-mono">{performanceStats.workoutCount}</p>
+                            </div>
+                          </div>
+
+                          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 p-3 rounded-2xl flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-500 shrink-0">
+                              <Target className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Gesamtdistanz</p>
+                              <p className="text-sm font-black text-slate-800 dark:text-white font-mono">{performanceStats.totalDistance} km</p>
+                            </div>
+                          </div>
+
+                          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 p-3 rounded-2xl flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500 shrink-0">
+                              <TrendingUp className="w-4 h-4" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">⌀ Geschwindigkeit</p>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-sm font-black text-slate-800 dark:text-white font-mono">{performanceStats.avgSpeed} <span className="text-[10px] font-bold text-slate-400">km/h</span></span>
+                                {performanceStats.speedDiff !== 0 && (
+                                  <span className={`text-[9px] font-black flex items-center ${performanceStats.speedTrend === 'up' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                    {performanceStats.speedDiff > 0 ? `+${performanceStats.speedDiff}` : performanceStats.speedDiff}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 p-3 rounded-2xl flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-rose-500/10 text-rose-500 shrink-0">
+                              <Heart className="w-4 h-4" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">⌀ Herzfrequenz</p>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-sm font-black text-slate-800 dark:text-white font-mono">{performanceStats.avgHr > 0 ? `${performanceStats.avgHr} bpm` : '--'}</span>
+                                {performanceStats.avgHr > 0 && performanceStats.hrDiff !== 0 && (
+                                  <span className={`text-[9px] font-black flex items-center ${performanceStats.hrTrend === 'down' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                    {performanceStats.hrDiff > 0 ? `+${performanceStats.hrDiff}` : performanceStats.hrDiff}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Scientific Insights */}
+                        <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900/50 border border-slate-150 dark:border-slate-800 text-[11px] leading-relaxed text-slate-600 dark:text-slate-350 flex items-start gap-3">
+                          <Sparkles className="w-4 h-4 text-amber-500 shrink-0 mt-0.5 animate-spin-slow" />
+                          <div>
+                            <span className="font-extrabold text-slate-700 dark:text-white uppercase tracking-wider text-[9px] block mb-1">Leistungs-Analyse & Effizienztrend</span>
+                            {performanceStats.avgHr === 0 ? (
+                              <p>
+                                Deine durchschnittliche Geschwindigkeit beträgt <strong>{performanceStats.avgSpeed} km/h</strong>. 
+                                {performanceStats.speedDiff > 0 ? (
+                                  <span> Sie hat sich im Vergleich zur ersten Hälfte der 4 Wochen um <strong>{performanceStats.speedDiff} km/h gesteigert</strong> – ein exzellenter Trend!</span>
+                                ) : performanceStats.speedDiff < 0 ? (
+                                  <span> Sie ist im Vergleich zur ersten Hälfte um <strong>{Math.abs(performanceStats.speedDiff)} km/h gesunken</strong>. Achte darauf, dein Trainingsvolumen anzupassen.</span>
+                                ) : (
+                                  <span> Deine Leistung bleibt über die letzten 4 Wochen konstant stabil.</span>
+                                )}
+                              </p>
+                            ) : (
+                              <p>
+                                {performanceStats.efficiencyTrend === 'up' && (
+                                  <span>
+                                    🚀 <strong>Hervorragend!</strong> Deine aerobe Effizienz (Geschwindigkeit im Verhältnis zur Herzfrequenz) hat sich in den letzten 14 Tagen um <strong>{performanceStats.efficiencyPercent}% verbessert</strong>. 
+                                    Das bedeutet, du erreichst dieselbe Geschwindigkeit bei einem niedrigeren Puls – ein klassischer Beleg für gesteigerte kardiovaskuläre Fitness!
+                                  </span>
+                                )}
+                                {performanceStats.efficiencyTrend === 'down' && (
+                                  <span>
+                                    ⚠️ <strong>Erhöhte Belastung:</strong> Deine Trainingseffizienz ist um <strong>{Math.abs(performanceStats.efficiencyPercent)}% gesunken</strong>. 
+                                    Dies kann auf akute Müdigkeit, unzureichende Erholung, Stress oder einen Infekt hindeuten. Reduziere die Intensität für 2–3 Tage.
+                                  </span>
+                                )}
+                                {performanceStats.efficiencyTrend === 'stable' && (
+                                  <span>
+                                    ⚖️ <strong>Konsolidierungsphase:</strong> Deine aerobe Effizienz ist mit <strong>{performanceStats.efficiencyPercent}% Veränderung stabil</strong>. 
+                                    Dein Körper hat sich gut an das aktuelle Trainingsniveau angepasst. Ein neuer Reiz (z. B. Intervalle) könnte neue Leistungszuwächse triggern.
+                                  </span>
+                                )}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* Science explanation */}

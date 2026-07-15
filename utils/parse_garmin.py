@@ -63,82 +63,49 @@ def format_point_time(val):
         pass
     return str(val)
 
-def normalize_coordinate(val, is_lng=False, force_semicircle=False):
+def normalize_coordinate(val, is_lng=False, force_semicircle=False, prefer_e7=False):
     if val is None:
         return None
     try:
         val = float(val)
     except (ValueError, TypeError):
         return None
-        
+
     abs_val = abs(val)
     if abs_val <= 180:
         return val
-        
+
     max_limit = 180 if is_lng else 90
-    
+
     semi = val * 180.0 / 2147483648.0
     e7 = val / 10000000.0
     e6 = val / 1000000.0
     e5 = val / 100000.0
-    
-    candidates = [
-        {'name': 'semicircles', 'val': semi},
-        {'name': 'e7', 'val': e7},
-        {'name': 'e6', 'val': e6},
-        {'name': 'e5', 'val': e5}
-    ]
-    
-    # Calculate divisibility bonuses for this single value
-    val_int = int(round(val))
-    is_int = abs(val - val_int) < 1e-4
-    
-    e7_bonus = 0.0
-    semi_bonus = 0.0
-    
-    if is_int:
-        if val_int % 1000 == 0:
-            e7_bonus += 2.0
-        elif val_int % 100 == 0:
-            e7_bonus += 1.2
-        elif val_int % 10 == 0:
-            e7_bonus += 0.5
-        else:
-            semi_bonus += 0.5
-            
-    best_cand = candidates[0]
-    best_score = -1
-    
-    for cand in candidates:
-        abs_c = abs(cand['val'])
-        if abs_c > max_limit:
-            continue
-            
-        score = 0
-        if abs_c >= 15 and abs_c <= 80:
-            score += 10
-        elif abs_c >= 2 and abs_c <= 85:
-            score += 5
-        else:
-            score += 1
-            
-        if cand['name'] == 'semicircles':
-            score += (0.1 + semi_bonus)
-        elif cand['name'] == 'e7':
-            score += (0.05 + e7_bonus)
-        elif cand['name'] == 'e6':
-            score += 0.02
-        elif cand['name'] == 'e5':
-            score += 0.01
-            
-        if force_semicircle and cand['name'] == 'semicircles':
-            score += 100
-            
-        if score > best_score:
-            best_score = score
-            best_cand = cand
-            
-    return best_cand['val']
+
+    # Explicit encoding overrides, derived from the known data source.
+    # FIT files (e.g. activity_ts_metric) store semicircles; Garmin/Google JSON
+    # exports store integer degrees * 1e7 (or * 1e6). Distance is scale-invariant,
+    # so guessing between these two from the values alone is unreliable -- the
+    # source is the authoritative signal.
+    if force_semicircle:
+        return semi if abs(semi) <= max_limit else val
+    if prefer_e7:
+        if abs_val >= 1e8:
+            return e7 if abs(e7) <= max_limit else val
+        return e6 if abs(e6) <= max_limit else val
+
+    # Auto-detection (unknown source). The only mathematical signal is the valid
+    # range: e7 saturates at 9e8 for valid latitudes, while FIT semicircles reach
+    # ~1.074e9. A value beyond the e7 range must be e7. Otherwise default to FIT
+    # semicircles (the most common raw format for these exports).
+    if abs_val > 9e8:
+        return e7 if abs(e7) <= max_limit else (semi if abs(semi) <= max_limit else val)
+    if abs_val < 1e7:
+        # Small magnitude: likely e5/e6 integer-degree encoding.
+        if abs_val >= 1e6:
+            return e6 if abs(e6) <= max_limit else val
+        return e5 if abs(e5) <= max_limit else val
+    return semi if abs(semi) <= max_limit else val
 
 def calculate_haversine(lat1, lng1, lat2, lng2):
     R = 6371.0  # Earth's radius in km
@@ -158,10 +125,18 @@ def calculate_total_track_distance(pts):
             d += calculate_haversine(p1['lat'], p1['lng'], p2['lat'], p2['lng'])
     return d
 
-def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0.0):
+def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0.0, prefer_e7=False, force_semicircle=False):
+    """Normalize raw integer coordinate points to degrees.
+
+    The encoding is decided from the *source* of the data, not guessed from the
+    values (distance is scale-invariant, so distance-matching cannot tell e7 from
+    FIT semicircles). Pass ``prefer_e7=True`` for Garmin/Google JSON exports
+    (integer degrees * 1e7 / * 1e6) and ``force_semicircle=True`` for FIT files
+    (activity_ts_metric). When neither is known, a magnitude-based fallback is used.
+    """
     if not raw_points:
         return []
-        
+
     sample = None
     for p in raw_points:
         if p.get('lat') is None or p.get('lng') is None:
@@ -174,7 +149,7 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
         if lat_val > 1000000 or lng_val > 1000000 or (1 < lat_val <= 90) or (1 < lng_val <= 180):
             sample = p
             break
-            
+
     if not sample:
         for p in raw_points:
             if p.get('lat') is not None and p.get('lng') is not None and p['lat'] != 0 and p['lng'] != 0:
@@ -182,20 +157,13 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
                 break
         if not sample:
             sample = raw_points[0]
-            
+
     try:
         raw_lat = abs(float(sample.get('lat', 0)))
         raw_lng = abs(float(sample.get('lng', 0)))
     except (ValueError, TypeError):
         return raw_points
-        
-    candidates = [
-        {'name': 'semicircles', 'scale': 180.0 / 2147483648.0},
-        {'name': 'e7', 'scale': 1.0 / 10000000.0},
-        {'name': 'e6', 'scale': 1.0 / 1000000.0},
-        {'name': 'e5', 'scale': 1.0 / 100000.0}
-    ]
-    
+
     if raw_lat <= 180 and raw_lng <= 180 and raw_lat > 0.01 and raw_lng > 0.01:
         # Already in degrees
         normalized = []
@@ -208,95 +176,43 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
                 pass
             normalized.append(np)
         return normalized
-        
-    best_candidate = candidates[0]
-    
-    if target_distance_km > 0.1:
-        min_diff = float('inf')
-        for cand in candidates:
-            subset_pts = []
-            for p in raw_points[:200]:
-                try:
-                    subset_pts.append({
-                        'lat': float(p['lat']) * cand['scale'],
-                        'lng': float(p['lng']) * cand['scale']
-                    })
-                except:
-                    pass
-            subset_dist = calculate_total_track_distance(subset_pts)
-            est_full_dist = subset_dist * (len(raw_points) / max(1, len(raw_points[:200])))
-            diff = abs(est_full_dist - target_distance_km)
-            
-            test_lat = raw_lat * cand['scale']
-            test_lng = raw_lng * cand['scale']
-            is_valid = abs(test_lat) <= 90 and abs(test_lng) <= 180
-            
-            if is_valid and diff < min_diff:
-                min_diff = diff
-                best_candidate = cand
-        sys.stderr.write(f"[Scale-Detection] Detected scale '{best_candidate['name']}' using distance matching (Target: {target_distance_km} km)\n")
+
+    # Decide the scale from the known source encoding.
+    if force_semicircle:
+        scale = 180.0 / 2147483648.0
+        scale_name = 'semicircles'
+    elif prefer_e7:
+        if raw_lat >= 1e8 or raw_lng >= 1e8:
+            scale = 1.0 / 10000000.0
+            scale_name = 'e7'
+        else:
+            scale = 1.0 / 1000000.0
+            scale_name = 'e6'
     else:
-        # Detect if we should favor e7 or semicircles for the entire track
-        e7_votes = 0
-        semi_votes = 0
-        for p in raw_points[:100]:
-            try:
-                lat_v = float(p['lat'])
-                lat_int = int(round(lat_v))
-                if abs(lat_v - lat_int) < 1e-4:
-                    if lat_int % 10 == 0:
-                        e7_votes += 1
-                    else:
-                        semi_votes += 1
-            except:
-                pass
-                
-        favor_e7 = False
-        if e7_votes + semi_votes > 0:
-            pct_div_10 = e7_votes / (e7_votes + semi_votes)
-            if pct_div_10 > 0.3:
-                favor_e7 = True
-                
-        best_score = -1
-        for cand in candidates:
-            test_lat = raw_lat * cand['scale']
-            test_lng = raw_lng * cand['scale']
-            is_valid = abs(test_lat) <= 90 and abs(test_lng) <= 180
-            if not is_valid:
-                continue
-            score = 0
-            if 15 <= abs(test_lat) <= 80:
-                score += 10
-            elif 2 <= abs(test_lat) <= 85:
-                score += 5
-            else:
-                score += 1
-                
-            # Dynamic bias based on track points divisibility
-            if cand['name'] == 'semicircles':
-                score += (0.01 if favor_e7 else 0.5)
-            elif cand['name'] == 'e7':
-                score += (0.5 if favor_e7 else 0.01)
-            elif cand['name'] == 'e6':
-                score += 0.002
-            elif cand['name'] == 'e5':
-                score += 0.001
-                
-            if score > best_score:
-                best_score = score
-                best_candidate = cand
-        sys.stderr.write(f"[Scale-Detection] Detected scale '{best_candidate['name']}' using range heuristics (Lat: {(raw_lat * best_candidate['scale']):.4f}, favor_e7: {favor_e7})\n")
-        
+        # Unknown source: use the only mathematical signal -- the valid range.
+        # e7 saturates at 9e8 for valid latitudes; FIT semicircles reach ~1.074e9.
+        if raw_lat > 9e8 or raw_lng > 9e8:
+            scale = 1.0 / 10000000.0
+            scale_name = 'e7'
+        elif raw_lat < 1e7 and raw_lng < 1e7:
+            scale = 1.0 / 1000000.0
+            scale_name = 'e6'
+        else:
+            scale = 180.0 / 2147483648.0
+            scale_name = 'semicircles'
+
+    sys.stderr.write(f"[Scale-Detection] Detected scale '{scale_name}' (source={'e7' if prefer_e7 else ('semicircles' if force_semicircle else 'auto')}, Lat: {(raw_lat * scale):.4f})\n")
+
     normalized = []
     for p in raw_points:
         np = dict(p)
         try:
-            np['lat'] = float(p['lat']) * best_candidate['scale']
-            np['lng'] = float(p['lng']) * best_candidate['scale']
+            np['lat'] = float(p['lat']) * scale
+            np['lng'] = float(p['lng']) * scale
         except:
             pass
         normalized.append(np)
-        
+
     # GPS Gulf of Guinea noise filter
     has_on_land_point = False
     for p in normalized:
@@ -304,7 +220,7 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
             if abs(p['lat']) > 1 and abs(p['lng']) > 1 and abs(p['lat']) <= 90 and abs(p['lng']) <= 180:
                 has_on_land_point = True
                 break
-                
+
     if has_on_land_point:
         original_count = len(normalized)
         filtered_normalized = []
@@ -318,7 +234,7 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
         if filtered_count > 0:
             sys.stderr.write(f"[GPS-Filter] {filtered_count} ungültige GPS-Punkte nahe (0,0) (Gulf of Guinea) wurden als Sensorrauschen gefiltert.\n")
         normalized = filtered_normalized
-        
+
     return normalized
 
 def auto_normalize_elevations(points):
@@ -382,7 +298,7 @@ def auto_normalize_elevations(points):
                     pass
     return points
 
-def parse_path_json(json_str, target_distance_km=0.0):
+def parse_path_json(json_str, target_distance_km=0.0, prefer_e7=False):
     try:
         parsed = json_str
         if isinstance(json_str, str):
@@ -515,7 +431,7 @@ def parse_path_json(json_str, target_distance_km=0.0):
                         mapped_points.append(pt)
                     except:
                         pass
-        normalized_points = normalize_track_points_with_scale_detection(mapped_points, target_distance_km)
+        normalized_points = normalize_track_points_with_scale_detection(mapped_points, target_distance_km, prefer_e7=prefer_e7)
         return auto_normalize_elevations(normalized_points)
     except Exception as e:
         sys.stderr.write(f"Failed to parse path_json: {e}\n")
@@ -962,7 +878,8 @@ def main():
                                     if points_array:
                                         has_any_coords = any(p.get('lat') is not None and p.get('lng') is not None for p in points_array)
                                         if has_any_coords:
-                                            normalized_pts = normalize_track_points_with_scale_detection(points_array, dist_val)
+                                            # activity_ts_metric is a FIT-derived table: coordinates are in semicircles.
+                                            normalized_pts = normalize_track_points_with_scale_detection(points_array, dist_val, force_semicircle=True)
                                             auto_normalize_elevations(normalized_pts)
                                             points_json_val = json.dumps(normalized_pts)
                         except Exception as e:
@@ -971,7 +888,8 @@ def main():
                     # Fallback 2: parse encoded polyline / points_json / separate table
                     if not points_json_val:
                         if points_json_col and row[points_json_col]:
-                            parsed_pts = parse_path_json(row[points_json_col], dist_val)
+                            # Garmin/Google JSON point columns are integer degrees * 1e7 (e7).
+                            parsed_pts = parse_path_json(row[points_json_col], dist_val, prefer_e7=True)
                             if parsed_pts:
                                 points_json_val = json.dumps(parsed_pts)
                                 
@@ -982,7 +900,8 @@ def main():
                                 src_cursor.execute(f"SELECT {pt_json_col} FROM {points_table} WHERE {pt_act_id_col} = ?", (row['activity_id'],))
                                 r_pt = src_cursor.fetchone()
                                 if r_pt and r_pt[0]:
-                                    parsed_pts = parse_path_json(r_pt[0], dist_val)
+                                    # Garmin/Google JSON point columns are integer degrees * 1e7 (e7).
+                                    parsed_pts = parse_path_json(r_pt[0], dist_val, prefer_e7=True)
                                     if parsed_pts:
                                         points_json_val = json.dumps(parsed_pts)
                             elif pt_lat_col and pt_lng_col:

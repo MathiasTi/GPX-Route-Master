@@ -271,6 +271,57 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
 
       let startCoords = parseLocationCoords(act.location);
       if (!startCoords) {
+        // Try to find any other activity with a valid location or start coordinates in points_json
+        for (const otherAct of (comparedActivities || [])) {
+          if (otherAct.location) {
+            const coords = parseLocationCoords(otherAct.location);
+            if (coords) {
+              startCoords = coords;
+              break;
+            }
+          }
+          if (otherAct.points_json) {
+            try {
+              let parsed = JSON.parse(otherAct.points_json);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
+                if (arrayKey) parsed = (parsed as any)[arrayKey];
+              }
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                const firstPt = parsed[0];
+                let lat = 0, lng = 0;
+                if (Array.isArray(firstPt)) {
+                  lat = parseFloat(firstPt[0]);
+                  lng = parseFloat(firstPt[1]);
+                } else if (firstPt && typeof firstPt === 'object') {
+                  lat = parseFloat(firstPt.lat || firstPt.latitude);
+                  lng = parseFloat(firstPt.lng || firstPt.longitude);
+                }
+                
+                if (lat !== 0 && lng !== 0 && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+                  // Normalize coordinate scale if needed (semicircle or e7 vs degrees)
+                  if (Math.abs(lat) > 180) {
+                    const semi = lat * 180.0 / 2147483648.0;
+                    const e7 = lat / 10000000.0;
+                    lat = Math.abs(semi) <= 90 ? semi : e7;
+                  }
+                  if (Math.abs(lng) > 180) {
+                    const semi = lng * 180.0 / 2147483648.0;
+                    const e7 = lng / 10000000.0;
+                    lng = Math.abs(semi) <= 180 ? semi : e7;
+                  }
+                  
+                  if (Math.abs(lat) > 1 && Math.abs(lng) > 1 && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+                    startCoords = { lat, lng };
+                    break;
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+      }
+      if (!startCoords) {
         startCoords = { lat: 48.1351, lng: 11.5820 }; // Munich default fallback
       }
 

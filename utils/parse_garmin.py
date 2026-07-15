@@ -89,6 +89,23 @@ def normalize_coordinate(val, is_lng=False, force_semicircle=False):
         {'name': 'e5', 'val': e5}
     ]
     
+    # Calculate divisibility bonuses for this single value
+    val_int = int(round(val))
+    is_int = abs(val - val_int) < 1e-4
+    
+    e7_bonus = 0.0
+    semi_bonus = 0.0
+    
+    if is_int:
+        if val_int % 1000 == 0:
+            e7_bonus += 2.0
+        elif val_int % 100 == 0:
+            e7_bonus += 1.2
+        elif val_int % 10 == 0:
+            e7_bonus += 0.5
+        else:
+            semi_bonus += 0.5
+            
     best_cand = candidates[0]
     best_score = -1
     
@@ -106,9 +123,13 @@ def normalize_coordinate(val, is_lng=False, force_semicircle=False):
             score += 1
             
         if cand['name'] == 'semicircles':
-            score += 0.1
-        if cand['name'] == 'e7':
-            score += 0.05
+            score += (0.1 + semi_bonus)
+        elif cand['name'] == 'e7':
+            score += (0.05 + e7_bonus)
+        elif cand['name'] == 'e6':
+            score += 0.02
+        elif cand['name'] == 'e5':
+            score += 0.01
             
         if force_semicircle and cand['name'] == 'semicircles':
             score += 100
@@ -215,6 +236,27 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
                 best_candidate = cand
         sys.stderr.write(f"[Scale-Detection] Detected scale '{best_candidate['name']}' using distance matching (Target: {target_distance_km} km)\n")
     else:
+        # Detect if we should favor e7 or semicircles for the entire track
+        e7_votes = 0
+        semi_votes = 0
+        for p in raw_points[:100]:
+            try:
+                lat_v = float(p['lat'])
+                lat_int = int(round(lat_v))
+                if abs(lat_v - lat_int) < 1e-4:
+                    if lat_int % 10 == 0:
+                        e7_votes += 1
+                    else:
+                        semi_votes += 1
+            except:
+                pass
+                
+        favor_e7 = False
+        if e7_votes + semi_votes > 0:
+            pct_div_10 = e7_votes / (e7_votes + semi_votes)
+            if pct_div_10 > 0.3:
+                favor_e7 = True
+                
         best_score = -1
         for cand in candidates:
             test_lat = raw_lat * cand['scale']
@@ -230,15 +272,20 @@ def normalize_track_points_with_scale_detection(raw_points, target_distance_km=0
             else:
                 score += 1
                 
+            # Dynamic bias based on track points divisibility
             if cand['name'] == 'semicircles':
-                score += 0.1
-            if cand['name'] == 'e7':
-                score += 0.05
+                score += (0.01 if favor_e7 else 0.5)
+            elif cand['name'] == 'e7':
+                score += (0.5 if favor_e7 else 0.01)
+            elif cand['name'] == 'e6':
+                score += 0.002
+            elif cand['name'] == 'e5':
+                score += 0.001
                 
             if score > best_score:
                 best_score = score
                 best_candidate = cand
-        sys.stderr.write(f"[Scale-Detection] Detected scale '{best_candidate['name']}' using range heuristics (Lat: {(raw_lat * best_candidate['scale']):.4f})\n")
+        sys.stderr.write(f"[Scale-Detection] Detected scale '{best_candidate['name']}' using range heuristics (Lat: {(raw_lat * best_candidate['scale']):.4f}, favor_e7: {favor_e7})\n")
         
     normalized = []
     for p in raw_points:

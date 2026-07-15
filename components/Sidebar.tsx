@@ -484,6 +484,7 @@ interface SidebarProps {
   suggestedFtp: number | null;
   onOpenComparison: () => void;
   onOpenGarminHealth?: () => void;
+  onOpenGarminActivitiesAnalysis?: () => void;
   onOpenPerformanceAnalysis?: () => void;
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
@@ -508,6 +509,10 @@ interface SidebarProps {
   setShowCyclingHeatmap?: (show: boolean) => void;
   showRunningHeatmap?: boolean;
   setShowRunningHeatmap?: (show: boolean) => void;
+  showDbCyclingHeatmap?: boolean;
+  setShowDbCyclingHeatmap?: (show: boolean) => void;
+  showDbRunningHeatmap?: boolean;
+  setShowDbRunningHeatmap?: (show: boolean) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -547,6 +552,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   suggestedFtp,
   onOpenComparison,
   onOpenGarminHealth,
+  onOpenGarminActivitiesAnalysis,
   onOpenPerformanceAnalysis,
   onOpenTrainingZones,
   onOpenSummaryReport,
@@ -570,7 +576,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   showCyclingHeatmap = false,
   setShowCyclingHeatmap,
   showRunningHeatmap = false,
-  setShowRunningHeatmap
+  setShowRunningHeatmap,
+  showDbCyclingHeatmap = false,
+  setShowDbCyclingHeatmap,
+  showDbRunningHeatmap = false,
+  setShowDbRunningHeatmap
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
@@ -792,6 +802,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                 Garmin Fitness & Gesundheit
               </button>
 
+              {onOpenGarminActivitiesAnalysis && (
+                <button 
+                  onClick={onOpenGarminActivitiesAnalysis}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-orange-600 hover:bg-orange-700 text-white shadow-md shadow-orange-100 transition-all cursor-pointer"
+                  title="Garmin Connect Aktivitäten-Verlauf analysieren & Einheiten vergleichen"
+                >
+                  <GitCompare className="w-4 h-4" />
+                  Garmin Aktivitäten & Vergleich
+                </button>
+              )}
+
               <button 
                 onClick={onOpenPerformanceAnalysis}
                 className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-indigo-650 hover:bg-indigo-700 text-white shadow-md shadow-indigo-105 transition-all cursor-pointer"
@@ -857,6 +878,53 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <div className="relative">
                       <div className={`w-8 h-4 rounded-full transition-colors ${showRunningHeatmap ? 'bg-emerald-500' : 'bg-slate-200 dark:bg-slate-700'}`}>
                         <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showRunningHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </div>
+                    </div>
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Eigene Heatmaps (aus Datenbank)</h2>
+              <div className="space-y-2">
+                {setShowDbCyclingHeatmap && (
+                  <button
+                    onClick={() => setShowDbCyclingHeatmap(!showDbCyclingHeatmap)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
+                      showDbCyclingHeatmap 
+                        ? 'bg-blue-500/10 text-blue-600 border-blue-300 dark:border-blue-700/60 dark:text-blue-400' 
+                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">🚴</span>
+                      <span className="text-left leading-tight">Eigene Rad-Aktivitäten (DB)</span>
+                    </div>
+                    <div className="relative">
+                      <div className={`w-8 h-4 rounded-full transition-colors ${showDbCyclingHeatmap ? 'bg-blue-600' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showDbCyclingHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </div>
+                    </div>
+                  </button>
+                )}
+
+                {setShowDbRunningHeatmap && (
+                  <button
+                    onClick={() => setShowDbRunningHeatmap(!showDbRunningHeatmap)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
+                      showDbRunningHeatmap 
+                        ? 'bg-rose-500/10 text-rose-600 border-rose-300 dark:border-rose-700/60 dark:text-rose-400' 
+                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">🏃</span>
+                      <span className="text-left leading-tight">Eigene Lauf-Aktivitäten (DB)</span>
+                    </div>
+                    <div className="relative">
+                      <div className={`w-8 h-4 rounded-full transition-colors ${showDbRunningHeatmap ? 'bg-rose-600' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showDbRunningHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
                       </div>
                     </div>
                   </button>

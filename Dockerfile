@@ -21,6 +21,9 @@ FROM node:20-slim AS runner
 
 WORKDIR /app
 
+# Installiere Python 3
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+
 # Produktions-Umgebungsvariablen setzen
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -29,6 +32,7 @@ ENV PORT=3000
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/utils ./utils
 
 # Definiere das Datenverzeichnis als permanentes Volume für SQLite-Datenbanken und Garmin-Backups
 VOLUME ["/app/data"]

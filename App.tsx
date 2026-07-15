@@ -20,6 +20,7 @@ import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
 import { GarminDashboard } from './components/GarminDashboard';
+import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
 import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
 import { getApiUrl } from './utils/api';
 
@@ -73,6 +74,8 @@ const App: React.FC = () => {
   const [activeLayer, setActiveLayer] = useState<MapLayer>(MapLayer.OSM);
   const [showCyclingHeatmap, setShowCyclingHeatmap] = useState(false);
   const [showRunningHeatmap, setShowRunningHeatmap] = useState(false);
+  const [showDbCyclingHeatmap, setShowDbCyclingHeatmap] = useState(false);
+  const [showDbRunningHeatmap, setShowDbRunningHeatmap] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       const saved = localStorage.getItem('gpx_theme');
@@ -97,6 +100,7 @@ const App: React.FC = () => {
   const [ftp, setFtp] = useState(250);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [garminHealthOpen, setGarminHealthOpen] = useState(false);
+  const [garminActivitiesAnalysisOpen, setGarminActivitiesAnalysisOpen] = useState(false);
   const [performanceAnalysisOpen, setPerformanceAnalysisOpen] = useState(false);
   const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -900,6 +904,10 @@ const App: React.FC = () => {
           setGarminHealthOpen(true);
           setIsMobileMenuOpen(false);
         }}
+        onOpenGarminActivitiesAnalysis={() => {
+          setGarminActivitiesAnalysisOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenPerformanceAnalysis={() => {
           setPerformanceAnalysisOpen(true);
           setIsMobileMenuOpen(false);
@@ -957,6 +965,10 @@ const App: React.FC = () => {
         setShowCyclingHeatmap={setShowCyclingHeatmap}
         showRunningHeatmap={showRunningHeatmap}
         setShowRunningHeatmap={setShowRunningHeatmap}
+        showDbCyclingHeatmap={showDbCyclingHeatmap}
+        setShowDbCyclingHeatmap={setShowDbCyclingHeatmap}
+        showDbRunningHeatmap={showDbRunningHeatmap}
+        setShowDbRunningHeatmap={setShowDbRunningHeatmap}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {/* Mobile Header */}
@@ -1011,6 +1023,8 @@ const App: React.FC = () => {
               isDark={theme === 'dark'}
               showCyclingHeatmap={showCyclingHeatmap}
               showRunningHeatmap={showRunningHeatmap}
+              showDbCyclingHeatmap={showDbCyclingHeatmap}
+              showDbRunningHeatmap={showDbRunningHeatmap}
             />
           )}
 
@@ -1068,6 +1082,15 @@ const App: React.FC = () => {
             {garminHealthOpen && (
               <GarminDashboard 
                 onClose={() => setGarminHealthOpen(false)}
+                onLoadTrack={handleLoadLibraryTrack}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {garminActivitiesAnalysisOpen && (
+              <GarminActivitiesAnalysis 
+                onClose={() => setGarminActivitiesAnalysisOpen(false)}
                 onLoadTrack={handleLoadLibraryTrack}
               />
             )}

@@ -160,16 +160,20 @@ function extractSpeed(p: any): number | undefined {
 }
 
 // Robust helper to normalize activity type
-function isRunningType(type: string | undefined): boolean {
-  if (!type) return false;
-  const t = type.toLowerCase();
-  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike');
+function isRunningType(type: string | undefined, name?: string): boolean {
+  if (!type && !name) return false;
+  const t = (type || '').toLowerCase();
+  const n = (name || '').toLowerCase();
+  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike') ||
+         n.includes('run') || n.includes('laufen') || n.includes('jog') || n.includes('walk') || n.includes('hike') || n.includes('run');
 }
 
-function isCyclingType(type: string | undefined): boolean {
-  if (!type) return false;
-  const t = type.toLowerCase();
-  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking');
+function isCyclingType(type: string | undefined, name?: string): boolean {
+  if (!type && !name) return false;
+  const t = (type || '').toLowerCase();
+  const n = (name || '').toLowerCase();
+  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking') || t.includes('spin') ||
+         n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
 }
 
 function normalizeCoordinateClient(val: number, isLng: boolean = false): number {
@@ -638,7 +642,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
       const ascent = act.ascent || 0;
       const descent = act.descent || 0;
       const avgHr = act.avg_hr || undefined;
-      const activityType = isRunningType(act.type) ? 'running' : 'cycling';
+      const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
       
       let isVirtual = false;
       let points: any[] = [];
@@ -1081,7 +1085,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1705,7 +1709,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                                   <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
                                     <div className="flex flex-col gap-0.5">
                                       <div className="flex items-center gap-1.5 flex-wrap">
-                                        <span>{isRunningType(act.type) ? '🏃' : isCyclingType(act.type) ? '🚴' : '🏅'}</span>
+                                        <span>{isRunningType(act.type, act.name) ? '🏃' : isCyclingType(act.type, act.name) ? '🚴' : '🏅'}</span>
                                         <span>{act.name}</span>
                                         {!act.points_json && (
                                           <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">

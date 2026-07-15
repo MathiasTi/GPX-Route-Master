@@ -4,6 +4,7 @@ import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup,
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker } from '../types';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
+import { getApiUrl } from '../utils/api';
 import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
@@ -55,6 +56,8 @@ interface MapProps {
   isDark?: boolean;
   showCyclingHeatmap?: boolean;
   showRunningHeatmap?: boolean;
+  showDbCyclingHeatmap?: boolean;
+  showDbRunningHeatmap?: boolean;
 }
 
 const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
@@ -372,7 +375,9 @@ const Map: React.FC<MapProps> = ({
   ftp = 250,
   isDark = false,
   showCyclingHeatmap = false,
-  showRunningHeatmap = false
+  showRunningHeatmap = false,
+  showDbCyclingHeatmap = false,
+  showDbRunningHeatmap = false
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -390,9 +395,107 @@ const Map: React.FC<MapProps> = ({
       return false;
     }
   });
-  const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power'>('default');
+  const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power' | 'speed'>('default');
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+
+  // States for database activity heatmaps
+  const [dbCyclingPaths, setDbCyclingPaths] = useState<[number, number][][]>([]);
+  const [dbRunningPaths, setDbRunningPaths] = useState<[number, number][][]>([]);
+  const [isLoadingDbCycling, setIsLoadingDbCycling] = useState(false);
+  const [isLoadingDbRunning, setIsLoadingDbRunning] = useState(false);
+
+  // Helper to normalize raw database track points
+  const normalizeDbPoints = (rawPoints: any[]): [number, number][] => {
+    if (!rawPoints || rawPoints.length === 0) return [];
+    const sample = rawPoints.find(p => p.lat !== undefined && p.lng !== undefined && p.lat !== 0 && p.lng !== 0) || rawPoints[0];
+    if (!sample) return [];
+
+    const rawLat = Math.abs(parseFloat(sample.lat));
+    const rawLng = Math.abs(parseFloat(sample.lng));
+
+    if (isNaN(rawLat) || isNaN(rawLng)) return [];
+
+    let scale = 1.0;
+    if (rawLat > 180 || rawLng > 180) {
+      if (rawLat > 10000000) {
+        scale = 180 / 2147483648;
+      } else {
+        scale = 1 / 10000000;
+      }
+    }
+
+    return rawPoints
+      .map(p => {
+        const latVal = parseFloat(p.lat) * scale;
+        const lngVal = parseFloat(p.lng) * scale;
+        if (isNaN(latVal) || isNaN(lngVal)) return null;
+        return [latVal, lngVal] as [number, number];
+      })
+      .filter((coords): coords is [number, number] => coords !== null);
+  };
+
+  useEffect(() => {
+    if (showDbCyclingHeatmap && dbCyclingPaths.length === 0) {
+      setIsLoadingDbCycling(true);
+      fetch(getApiUrl('/api/garmin-activities?activityType=cycling'))
+        .then(res => res.json())
+        .then(json => {
+          if (json.success && Array.isArray(json.activities)) {
+            const paths: [number, number][][] = [];
+            json.activities.forEach((act: any) => {
+              if (act.points_json) {
+                try {
+                  const pts = JSON.parse(act.points_json);
+                  if (Array.isArray(pts) && pts.length > 1) {
+                    const normalized = normalizeDbPoints(pts);
+                    if (normalized.length > 1) {
+                      paths.push(normalized);
+                    }
+                  }
+                } catch (e) {
+                  console.error('Error parsing heatmap points:', e);
+                }
+              }
+            });
+            setDbCyclingPaths(paths);
+          }
+        })
+        .catch(err => console.error('Failed to fetch cycling heatmap:', err))
+        .finally(() => setIsLoadingDbCycling(false));
+    }
+  }, [showDbCyclingHeatmap, dbCyclingPaths.length]);
+
+  useEffect(() => {
+    if (showDbRunningHeatmap && dbRunningPaths.length === 0) {
+      setIsLoadingDbRunning(true);
+      fetch(getApiUrl('/api/garmin-activities?activityType=running'))
+        .then(res => res.json())
+        .then(json => {
+          if (json.success && Array.isArray(json.activities)) {
+            const paths: [number, number][][] = [];
+            json.activities.forEach((act: any) => {
+              if (act.points_json) {
+                try {
+                  const pts = JSON.parse(act.points_json);
+                  if (Array.isArray(pts) && pts.length > 1) {
+                    const normalized = normalizeDbPoints(pts);
+                    if (normalized.length > 1) {
+                      paths.push(normalized);
+                    }
+                  }
+                } catch (e) {
+                  console.error('Error parsing heatmap points:', e);
+                }
+              }
+            });
+            setDbRunningPaths(paths);
+          }
+        })
+        .catch(err => console.error('Failed to fetch running heatmap:', err))
+        .finally(() => setIsLoadingDbRunning(false));
+    }
+  }, [showDbRunningHeatmap, dbRunningPaths.length]);
 
   // Local state for POI options
   const [showPOIs, setShowPOIs] = useState(true);
@@ -654,6 +757,36 @@ const Map: React.FC<MapProps> = ({
       return powerZones[powerZones.length - 1].color;
     }
 
+    if (colorMode === 'speed') {
+      if (pt.speed === undefined || pt.speed <= 0.1) return null;
+      const speed = pt.speed; // in km/h
+      if (activityType === 'running') {
+        // Pace thresholds converted to speed:
+        // Sehr schnell: < 4:00 min/km (>= 15 km/h) -> Red (#ef4444)
+        // Schnell: 4:00 - 5:00 min/km (12.0 - 15.0 km/h) -> Orange (#f97316)
+        // Moderat: 5:00 - 6:00 min/km (10.0 - 12.0 km/h) -> Yellow (#eab308)
+        // Locker: 6:00 - 7:00 min/km (8.57 - 10.0 km/h) -> Green (#10b981)
+        // Sehr locker: > 7:00 min/km (< 8.57 km/h) -> Blue (#3b82f6)
+        if (speed >= 15.0) return '#ef4444';
+        if (speed >= 12.0) return '#f97316';
+        if (speed >= 10.0) return '#eab308';
+        if (speed >= 8.5) return '#10b981';
+        return '#3b82f6';
+      } else {
+        // Cycling speed thresholds:
+        // Sehr schnell: >= 35 km/h -> Red (#ef4444)
+        // Schnell: 30 - 35 km/h -> Orange (#f97316)
+        // Moderat: 25 - 30 km/h -> Yellow (#eab308)
+        // Locker: 20 - 25 km/h -> Green (#10b981)
+        // Sehr locker: < 20 km/h -> Blue (#3b82f6)
+        if (speed >= 35.0) return '#ef4444';
+        if (speed >= 30.0) return '#f97316';
+        if (speed >= 25.0) return '#eab308';
+        if (speed >= 20.0) return '#10b981';
+        return '#3b82f6';
+      }
+    }
+
     return null;
   };
 
@@ -691,6 +824,53 @@ const Map: React.FC<MapProps> = ({
             opacity={0.85}
           />
         )}
+
+        {/* Eigene Garmin DB-Heatmaps */}
+        {showDbCyclingHeatmap && dbCyclingPaths.map((path, idx) => (
+          <React.Fragment key={`db-cycling-${idx}`}>
+            {/* Outer glow line */}
+            <LeafletPolyline
+              positions={path}
+              color="#3b82f6"
+              weight={6}
+              opacity={0.15}
+              lineCap="round"
+              lineJoin="round"
+            />
+            {/* Core glowing line */}
+            <LeafletPolyline
+              positions={path}
+              color="#3b82f6"
+              weight={2.5}
+              opacity={0.4}
+              lineCap="round"
+              lineJoin="round"
+            />
+          </React.Fragment>
+        ))}
+
+        {showDbRunningHeatmap && dbRunningPaths.map((path, idx) => (
+          <React.Fragment key={`db-running-${idx}`}>
+            {/* Outer glow line */}
+            <LeafletPolyline
+              positions={path}
+              color="#f43f5e"
+              weight={6}
+              opacity={0.15}
+              lineCap="round"
+              lineJoin="round"
+            />
+            {/* Core glowing line */}
+            <LeafletPolyline
+              positions={path}
+              color="#f43f5e"
+              weight={2.5}
+              opacity={0.4}
+              lineCap="round"
+              lineJoin="round"
+            />
+          </React.Fragment>
+        ))}
         
         {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
           const isMarked = track.id === markedTrackId;
@@ -1438,6 +1618,18 @@ const Map: React.FC<MapProps> = ({
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300">Leistungs-Zonen (Watt)</span>
               </label>
+
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="radio" 
+                  name="colorMode" 
+                  value="speed"
+                  checked={colorMode === 'speed'} 
+                  onChange={() => setColorMode('speed')} 
+                  className="accent-blue-600"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Tempo / Pace</span>
+              </label>
             </div>
           </div>
 
@@ -1527,6 +1719,7 @@ const Map: React.FC<MapProps> = ({
 
             const hasHr = markedTrack.points.some(p => p.hr !== undefined);
             const hasPower = markedTrack.points.some(p => p.power !== undefined);
+            const hasSpeed = markedTrack.points.some(p => p.speed !== undefined && p.speed > 0.1);
             
             if (colorMode === 'hr' && !hasHr) {
               return (
@@ -1542,6 +1735,13 @@ const Map: React.FC<MapProps> = ({
                 </div>
               );
             }
+            if (colorMode === 'speed' && !hasSpeed) {
+              return (
+                <div className="text-[9px] text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900/40 p-1.5 rounded leading-tight">
+                  ⚠️ Keine Geschwindigkeits-/Tempodaten in dieser Strecke vorhanden.
+                </div>
+              );
+            }
             return null;
           })()}
         </div>
@@ -1552,7 +1752,7 @@ const Map: React.FC<MapProps> = ({
         isLegendVisible ? (
           <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]">
             <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
-              <span>{colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : 'Leistung'}</span>
+              <span>{colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
               <button
                 onClick={() => setIsLegendVisible(false)}
                 className="text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 font-bold text-[11px] leading-none cursor-pointer p-0.5"
@@ -1616,7 +1816,7 @@ const Map: React.FC<MapProps> = ({
                     </div>
                   </>
                 );
-              } else {
+              } else if (colorMode === 'power') {
                 return (
                   <>
                     <div className="flex items-center gap-2">
@@ -1641,6 +1841,59 @@ const Map: React.FC<MapProps> = ({
                     </div>
                   </>
                 );
+              } else {
+                // speed
+                if (isRunning) {
+                  return (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ef4444" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Sehr schnell: &lt; 4:00 min/km</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#f97316" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Schnell: 4:00-5:00 min/km</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#eab308" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Moderat: 5:00-6:00 min/km</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#10b981" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Locker: 6:00-7:00 min/km</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#3b82f6" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Sehr locker: &gt; 7:00 min/km</span>
+                      </div>
+                    </>
+                  );
+                } else {
+                  return (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ef4444" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Sehr schnell: &gt; 35 km/h</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#f97316" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Schnell: 30-35 km/h</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#eab308" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Moderat: 25-30 km/h</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#10b981" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Locker: 20-25 km/h</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#3b82f6" }}></span>
+                        <span className="font-bold text-slate-700 dark:text-slate-350">Sehr locker: &lt; 20 km/h</span>
+                      </div>
+                    </>
+                  );
+                }
               }
             })()}
           </div>
@@ -1761,6 +2014,12 @@ const Map: React.FC<MapProps> = ({
               </div>
             </div>
           )}
+        </div>
+      )}
+      {(isLoadingDbCycling || isLoadingDbRunning) && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-indigo-600/95 dark:bg-indigo-500/95 text-white font-sans text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-2 animate-pulse backdrop-blur-xs">
+          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          <span>Generiere DB-Heatmap...</span>
         </div>
       )}
     </div>

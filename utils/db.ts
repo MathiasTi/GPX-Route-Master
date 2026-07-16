@@ -437,8 +437,9 @@ export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minL
         let lat: number | undefined;
         let lng: number | undefined;
         if (Array.isArray(pt)) {
-          lat = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
-          lng = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
+          // parse_garmin.py stores points as [lng, lat, ele, ...]
+          lat = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
+          lng = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
         } else if (pt && typeof pt === 'object') {
           lat = pt.lat !== undefined ? parseFloat(pt.lat) : (pt.latitude !== undefined ? parseFloat(pt.latitude) : undefined);
           lng = pt.lng !== undefined ? parseFloat(pt.lng) : (pt.longitude !== undefined ? parseFloat(pt.longitude) : undefined);

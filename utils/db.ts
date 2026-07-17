@@ -184,6 +184,10 @@ function runInitDbStatements() {
       updated_at TEXT NOT NULL,
       changelog TEXT
     );
+    CREATE TABLE IF NOT EXISTS user_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // Seed with initial versions if empty
@@ -631,4 +635,38 @@ export function addAppVersion(version: string, changelog: string): boolean {
     return false;
   }
 }
+
+export function getSetting(key: string, defaultValue: string): string {
+  try {
+    const row = db.prepare('SELECT value FROM user_settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : defaultValue;
+  } catch (e) {
+    return defaultValue;
+  }
+}
+
+export function saveSetting(key: string, value: string): boolean {
+  try {
+    const stmt = db.prepare('INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)');
+    stmt.run(key, value);
+    return true;
+  } catch (e) {
+    console.error(`Failed to save setting ${key}:`, e);
+    return false;
+  }
+}
+
+export function getAllSettings(): Record<string, string> {
+  try {
+    const rows = db.prepare('SELECT key, value FROM user_settings').all() as { key: string; value: string }[];
+    const settings: Record<string, string> = {};
+    for (const row of rows) {
+      settings[row.key] = row.value;
+    }
+    return settings;
+  } catch (e) {
+    return {};
+  }
+}
+
 

@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints } from "./utils/db.js";
+import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
 import fs from "fs";
 import os from "os";
 
@@ -1799,6 +1799,40 @@ async function startServer() {
     } catch (err: any) {
       console.error("Failed to add app version:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to persist app version" });
+    }
+  });
+
+  // GET /api/settings: Retrieve all settings from SQLite
+  app.get("/api/settings", (req, res) => {
+    try {
+      const settings = getAllSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      console.error("Failed to load settings:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to retrieve settings" });
+    }
+  });
+
+  // POST /api/settings: Persist settings to SQLite (supports single key-value or bulk update)
+  app.post("/api/settings", (req, res) => {
+    try {
+      const { key, value, settings } = req.body;
+      if (settings && typeof settings === "object") {
+        for (const [k, v] of Object.entries(settings)) {
+          saveSetting(k, String(v));
+        }
+        return res.json({ success: true, message: "Settings saved successfully." });
+      }
+
+      if (key !== undefined) {
+        saveSetting(String(key), String(value ?? ""));
+        return res.json({ success: true, message: `Setting '${key}' saved successfully.` });
+      }
+
+      return res.status(400).json({ success: false, error: "Invalid request payload. Must supply 'key' & 'value' or 'settings' object." });
+    } catch (err: any) {
+      console.error("Failed to save settings:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to save settings" });
     }
   });
 

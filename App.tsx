@@ -164,6 +164,70 @@ const App: React.FC = () => {
       }
     } catch (e) {}
   }, [userAge]);
+
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  // Load settings on startup from SQLite database via API
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const response = await fetch(getApiUrl('/api/settings'));
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.settings) {
+            const s = data.settings;
+            if (s.ftp) setFtp(Number(s.ftp));
+            if (s.userWeight) setUserWeight(Number(s.userWeight));
+            if (s.userAge) setUserAge(Number(s.userAge));
+            if (s.userMaxHr) setUserMaxHr(Number(s.userMaxHr));
+            if (s.theme) {
+              setTheme(s.theme === 'dark' ? 'dark' : 'light');
+            }
+            if (s.velo_text_markers) {
+              try {
+                setTextMarkers(JSON.parse(s.velo_text_markers));
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load settings from DB:', e);
+      } finally {
+        setSettingsLoaded(true);
+      }
+    };
+    loadSettings();
+  }, []);
+
+  // Save settings when they change
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const saveSettings = async () => {
+      try {
+        await fetch(getApiUrl('/api/settings'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            settings: {
+              ftp: String(ftp),
+              userWeight: String(userWeight),
+              userAge: String(userAge),
+              userMaxHr: String(userMaxHr),
+              theme: theme,
+              velo_text_markers: JSON.stringify(textMarkers)
+            }
+          })
+        });
+      } catch (e) {
+        console.error('Failed to save settings to DB:', e);
+      }
+    };
+    
+    // Simple debounce to avoid hammering the DB
+    const timeout = setTimeout(saveSettings, 1000);
+    return () => clearTimeout(timeout);
+  }, [ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
+
   const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const today = new Date();

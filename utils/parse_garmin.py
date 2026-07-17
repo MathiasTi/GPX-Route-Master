@@ -328,8 +328,8 @@ def parse_path_json(json_str, target_distance_km=0.0, prefer_e7=False):
                     try:
                         val0 = float(pt[0])
                         val1 = float(pt[1])
-                        d0 = normalize_coordinate(val0, False)
-                        d1 = normalize_coordinate(val1, False)
+                        d0 = normalize_coordinate(val0, False, prefer_e7=prefer_e7)
+                        d1 = normalize_coordinate(val1, False, prefer_e7=prefer_e7)
                         if abs(d0) > 90:
                             has_0_outside_lat = True
                         if abs(d1) > 90:
@@ -352,8 +352,8 @@ def parse_path_json(json_str, target_distance_km=0.0, prefer_e7=False):
                         try:
                             val0 = float(pt[0])
                             val1 = float(pt[1])
-                            sum0 += normalize_coordinate(val0, False)
-                            sum1 += normalize_coordinate(val1, False)
+                            sum0 += normalize_coordinate(val0, False, prefer_e7=prefer_e7)
+                            sum1 += normalize_coordinate(val1, False, prefer_e7=prefer_e7)
                             count += 1
                         except:
                             pass

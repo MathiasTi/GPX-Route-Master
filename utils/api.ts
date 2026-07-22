@@ -1,7 +1,7 @@
 export function getOriginFromString(urlStr: string): string {
   if (!urlStr) return '';
-  // Match protocol and host: e.g. http://localhost:3000 or https://sub.domain.com
-  const match = urlStr.match(/^(https?:\/\/[^\/]+)/i);
+  // Match protocol and host anywhere in string, e.g. blob:https://sub.domain.com/path or https://domain.com
+  const match = urlStr.match(/(https?:\/\/[^\/\s\?#]+)/i);
   return match ? match[1] : '';
 }
 

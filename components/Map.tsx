@@ -511,7 +511,7 @@ const Map: React.FC<MapProps> = ({
     const list: POI[] = [];
     const visibleTracks = tracks.filter(t => t.visible && !t.isVirtual && t.points && t.points.length > 0);
 
-    visibleTracks.forEach(track => {
+    visibleTracks.forEach((track, trackIdx) => {
       const points = track.points;
       const n = points.length;
       if (n < 5) return;
@@ -642,7 +642,7 @@ const Map: React.FC<MapProps> = ({
         }
 
         list.push({
-          id: `poi-${track.id}-${target.type}-${bestIdx}`,
+          id: `poi-${track.id}-${trackIdx}-${target.type}-${bestIdx}-${targetIdx}`,
           lat,
           lng,
           type: target.type,
@@ -1355,7 +1355,7 @@ const Map: React.FC<MapProps> = ({
         })}
 
         {/* Verpflegung & POI Marker */}
-        {showPOIs && visiblePOIs.map(poi => {
+        {showPOIs && visiblePOIs.map((poi, pIdx) => {
           let emoji = '📍';
           let bgColor = '#3b82f6';
           let ringColor = 'rgba(59, 130, 246, 0.2)';
@@ -1380,7 +1380,7 @@ const Map: React.FC<MapProps> = ({
 
           return (
             <LeafletMarker
-              key={poi.id}
+              key={`poi-marker-${poi.id}-${pIdx}`}
               position={[poi.lat, poi.lng]}
               icon={new L.DivIcon({
                 className: 'custom-poi-marker',

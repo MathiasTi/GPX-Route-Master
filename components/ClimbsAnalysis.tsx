@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, TrendingUp, Compass, Settings, Sliders, Info } from 'lucide-react';
+import { X, TrendingUp, Compass, Settings, Sliders, Info, Target, ZoomIn, Eye, Check } from 'lucide-react';
 import { GPXTrack, MapLayer } from '../types';
 import { ClimbMiniMap } from './ClimbMiniMap';
 import { findClimbs, ClimbCriteria, getActiveClimbCriteria } from '../utils/gpxUtils';
@@ -9,6 +9,8 @@ interface ClimbsAnalysisProps {
   track: GPXTrack;
   onClose: () => void;
   activeLayer: MapLayer;
+  selectionBounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null;
+  onSelection?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null) => void;
 }
 
 const PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCriteria }> = {
@@ -34,12 +36,70 @@ const PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCrit
   }
 };
 
-export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ track, onClose, activeLayer }) => {
+export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ 
+  track, 
+  onClose, 
+  activeLayer,
+  selectionBounds,
+  onSelection
+}) => {
   const [selectedClimbIndex, setSelectedClimbIndex] = useState<number | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [activeCriteria, setActiveCriteria] = useState<ClimbCriteria>(() => {
     return getActiveClimbCriteria();
   });
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const getClimbBounds = (segmentPoints: typeof track.points) => {
+    if (!segmentPoints || segmentPoints.length === 0) return null;
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const p of segmentPoints) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+    }
+    if (minLat === Infinity) return null;
+    return { minLat, maxLat, minLng, maxLng };
+  };
+
+  const isClimbSelected = (segmentPoints: typeof track.points) => {
+    if (!selectionBounds || !segmentPoints || segmentPoints.length === 0) return false;
+    const bounds = getClimbBounds(segmentPoints);
+    if (!bounds) return false;
+    return (
+      Math.abs(bounds.minLat - selectionBounds.minLat) < 0.0001 &&
+      Math.abs(bounds.maxLat - selectionBounds.maxLat) < 0.0001 &&
+      Math.abs(bounds.minLng - selectionBounds.minLng) < 0.0001 &&
+      Math.abs(bounds.maxLng - selectionBounds.maxLng) < 0.0001
+    );
+  };
+
+  const handleSelectClimb = (segmentPoints: typeof track.points, closeAfter = false) => {
+    if (!onSelection) return;
+    const bounds = getClimbBounds(segmentPoints);
+    if (bounds) {
+      onSelection(bounds);
+      if (closeAfter) {
+        onClose();
+      }
+    }
+  };
+
+  const handleClearClimbSelection = () => {
+    if (onSelection) {
+      onSelection(null);
+    }
+  };
 
   const climbs = useMemo(() => {
     return findClimbs(track.points || [], activeCriteria);
@@ -195,81 +255,133 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ track, onClose, 
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {climbsDetailed.map((climb) => (
-                    <div
-                      key={climb.index}
-                      className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-xl hover:border-indigo-100 dark:hover:border-indigo-900/40 transition-all flex flex-col overflow-hidden group"
-                    >
-                      {/* Map Crop at top */}
-                      <div className="h-44 shrink-0 relative bg-slate-100 dark:bg-slate-950">
-                        <ClimbMiniMap 
-                          points={climb.points} 
-                          color={track.color} 
-                          activeLayer={activeLayer} 
-                        />
-                        
-                        {/* Category Overlay tag */}
-                        <div className="absolute top-3 left-3 z-[990]">
-                          <span className={`px-2.5 py-1 text-[9px] font-black rounded-full uppercase tracking-widest border shadow-md ${climb.category.color}`}>
-                            {climb.category.label}
-                          </span>
-                        </div>
+                  {climbsDetailed.map((climb) => {
+                    const selected = isClimbSelected(climb.points);
 
-                        <div className="absolute bottom-3 right-3 z-[990]">
-                          <span className="bg-slate-900/85 backdrop-blur-md border border-white/10 text-white font-mono text-[10px] font-black px-2 py-1 rounded-xl shadow-lg">
-                            #{climb.index + 1} Bergwertung
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Body Info */}
-                      <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
-                        <div className="space-y-3.5">
-                          {/* Grid values including Cum Ascent */}
-                          <div className="grid grid-cols-3 gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
-                            <div className="text-center">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Länge</span>
-                              <span className="text-xs font-black text-slate-800 dark:text-slate-150 font-mono">
-                                {(climb.distance / 1000).toFixed(2)} km
-                              </span>
-                            </div>
-                            <div className="text-center border-x border-slate-100 dark:border-slate-800">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Sektion Hm</span>
-                              <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 font-mono">
-                                +{Math.round(climb.ascent)}m
-                              </span>
-                            </div>
-                            <div className="text-center">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Ø Steigung</span>
-                              <span className="text-xs font-black text-slate-800 dark:text-slate-150 font-mono">
-                                {climb.avgGradient.toFixed(1)}%
-                              </span>
-                            </div>
+                    return (
+                      <div
+                        key={climb.index}
+                        className={`rounded-3xl border transition-all flex flex-col overflow-hidden group ${
+                          selected
+                            ? 'bg-indigo-50/20 dark:bg-indigo-950/20 border-indigo-500 dark:border-indigo-500 ring-2 ring-indigo-500/50 shadow-xl'
+                            : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-xl hover:border-indigo-100 dark:hover:border-indigo-900/40'
+                        }`}
+                      >
+                        {/* Map Crop at top */}
+                        <div className="h-44 shrink-0 relative bg-slate-100 dark:bg-slate-950">
+                          <ClimbMiniMap 
+                            points={climb.points} 
+                            color={track.color} 
+                            activeLayer={activeLayer} 
+                          />
+                          
+                          {/* Category Overlay tag */}
+                          <div className="absolute top-3 left-3 z-[990]">
+                            <span className={`px-2.5 py-1 text-[9px] font-black rounded-full uppercase tracking-widest border shadow-md ${climb.category.color}`}>
+                              {climb.category.label}
+                            </span>
                           </div>
 
-                          {/* Elevation Profile representation */}
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
-                              <span>Start: {Math.round(climb.startElevation)}m</span>
-                              <span>Max: {climb.maxGradient.toFixed(1)}%</span>
-                              <span>Ende: {Math.round(climb.endElevation)}m</span>
-                            </div>
-                            {/* Dynamic mini bar graph as elevation indicator */}
-                            <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                              <div 
-                                className="bg-gradient-to-r from-indigo-500 via-purple-500 to-rose-600 rounded-full h-full"
-                                style={{ width: `${Math.min(100, Math.max(10, climb.avgGradient * 8))}%` }}
-                              />
-                            </div>
+                          <div className="absolute bottom-3 right-3 z-[990] flex items-center gap-1.5">
+                            {selected && (
+                              <span className="bg-emerald-500 text-white font-mono text-[10px] font-black px-2 py-1 rounded-xl shadow-lg flex items-center gap-1">
+                                <Check size={12} /> Markiert
+                              </span>
+                            )}
+                            <span className="bg-slate-900/85 backdrop-blur-md border border-white/10 text-white font-mono text-[10px] font-black px-2 py-1 rounded-xl shadow-lg">
+                              #{climb.index + 1} Bergwertung
+                            </span>
                           </div>
                         </div>
 
-                        <p className="text-[11px] text-slate-400 dark:text-slate-500 italic leading-snug">
-                          {climb.category.desc}
-                        </p>
+                        {/* Body Info */}
+                        <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                          <div className="space-y-3.5">
+                            {/* Grid values including Cum Ascent */}
+                            <div className="grid grid-cols-3 gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
+                              <div className="text-center">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Länge</span>
+                                <span className="text-xs font-black text-slate-800 dark:text-slate-150 font-mono">
+                                  {(climb.distance / 1000).toFixed(2)} km
+                                </span>
+                              </div>
+                              <div className="text-center border-x border-slate-100 dark:border-slate-800">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Sektion Hm</span>
+                                <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                                  +{Math.round(climb.ascent)}m
+                                </span>
+                              </div>
+                              <div className="text-center">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Ø Steigung</span>
+                                <span className="text-xs font-black text-slate-800 dark:text-slate-150 font-mono">
+                                  {climb.avgGradient.toFixed(1)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Elevation Profile representation */}
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
+                                <span>Start: {Math.round(climb.startElevation)}m</span>
+                                <span>Max: {climb.maxGradient.toFixed(1)}%</span>
+                                <span>Ende: {Math.round(climb.endElevation)}m</span>
+                              </div>
+                              {/* Dynamic mini bar graph as elevation indicator */}
+                              <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
+                                <div 
+                                  className="bg-gradient-to-r from-indigo-500 via-purple-500 to-rose-600 rounded-full h-full"
+                                  style={{ width: `${Math.min(100, Math.max(10, climb.avgGradient * 8))}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <p className="text-[11px] text-slate-400 dark:text-slate-500 italic leading-snug">
+                            {climb.category.desc}
+                          </p>
+
+                          {/* Action Buttons */}
+                          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                            {selected ? (
+                              <>
+                                <button
+                                  onClick={() => handleClearClimbSelection()}
+                                  className="flex-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                                  title="Markierung auf der Karte zurücksetzen"
+                                >
+                                  <X size={14} /> Aufheben
+                                </button>
+                                <button
+                                  onClick={onClose}
+                                  className="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                                  title="Zur Hauptkarte wechseln und Anstieg betrachten"
+                                >
+                                  <Eye size={14} /> Anzeigen
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => handleSelectClimb(climb.points, false)}
+                                  className="flex-1 px-3 py-2 bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950 dark:hover:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-slate-800 hover:border-indigo-200 rounded-2xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                                  title="Diesen Anstieg auf der Karte und im Höhenprofil markieren"
+                                >
+                                  <Target size={14} /> Markieren
+                                </button>
+                                <button
+                                  onClick={() => handleSelectClimb(climb.points, true)}
+                                  className="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md hover:scale-[1.02] active:scale-[0.98]"
+                                  title="Auf Karte & Profil markieren und Analyse schließen"
+                                >
+                                  <ZoomIn size={14} /> Zoom & Schließen
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

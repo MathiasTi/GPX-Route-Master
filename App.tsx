@@ -1122,6 +1122,8 @@ const App: React.FC = () => {
               <ClimbsAnalysis 
                 track={markedTrack} 
                 activeLayer={activeLayer}
+                selectionBounds={selectionBounds}
+                onSelection={setSelectionBounds}
                 onClose={() => setClimbsOpen(false)} 
               />
             )}
@@ -1145,8 +1147,15 @@ const App: React.FC = () => {
           <AnimatePresence>
             {garminHealthOpen && (
               <GarminDashboard 
+                initialTab="overview"
                 onClose={() => setGarminHealthOpen(false)}
                 onLoadTrack={handleLoadLibraryTrack}
+                userWeight={userWeight}
+                userAge={userAge}
+                userMaxHr={userMaxHr}
+                ftp={ftp}
+                onUpdateFtp={setFtp}
+                onUpdateMaxHr={handleMaxHrChange}
               />
             )}
           </AnimatePresence>
@@ -1162,8 +1171,10 @@ const App: React.FC = () => {
 
           <AnimatePresence>
             {performanceAnalysisOpen && (
-              <FitnessPerformanceAnalysis 
+              <GarminDashboard 
+                initialTab="performance"
                 onClose={() => setPerformanceAnalysisOpen(false)}
+                onLoadTrack={handleLoadLibraryTrack}
                 userWeight={userWeight}
                 userAge={userAge}
                 userMaxHr={userMaxHr}

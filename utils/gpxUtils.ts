@@ -787,7 +787,14 @@ export const getGPXPoints = (xml: Document): Element[] => {
 
 export const getChildNode = (parent: Element, tagName: string): Element | null => {
   try {
-    let node = parent.querySelector(tagName);
+    let node: Element | null = null;
+    if (!tagName.includes(':')) {
+      try {
+        node = parent.querySelector(tagName);
+      } catch (e) {
+        // ignore invalid query selector
+      }
+    }
     if (node) return node;
 
     // Direct match with colon support or querySelector with namespaces

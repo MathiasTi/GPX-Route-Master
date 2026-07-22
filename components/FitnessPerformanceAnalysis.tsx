@@ -21,6 +21,7 @@ interface FitnessPerformanceAnalysisProps {
   ftp: number;
   onUpdateFtp?: (ftp: number) => void;
   onUpdateMaxHr?: (maxHr: number) => void;
+  isEmbedded?: boolean;
 }
 
 interface GarminActivity {
@@ -62,7 +63,8 @@ export default function FitnessPerformanceAnalysis({
   userMaxHr: initialMaxHr,
   ftp: initialFtp,
   onUpdateFtp,
-  onUpdateMaxHr
+  onUpdateMaxHr,
+  isEmbedded = false
 }: FitnessPerformanceAnalysisProps) {
   // Local adjustable sports metrics
   const [ftp, setFtp] = useState(initialFtp || 250);
@@ -104,6 +106,16 @@ export default function FitnessPerformanceAnalysis({
   const [historyAnalysisRange, setHistoryAnalysisRange] = useState<'1week' | '4weeks' | 'all'>('4weeks');
   const [libraryTracks, setLibraryTracks] = useState<any[]>([]);
   const [performanceMetric, setPerformanceMetric] = useState<'speed' | 'hr' | 'both'>('both');
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   // Sync default presets when goalType changes
   useEffect(() => {
@@ -1382,15 +1394,9 @@ export default function FitnessPerformanceAnalysis({
     URL.revokeObjectURL(url);
   }, [goalSport, ftp, maxHr]);
 
-  return (
-    <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 overflow-hidden">
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="w-full h-full md:max-w-7xl md:h-[92vh] bg-white dark:bg-slate-900 md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800"
-      >
-        {/* Header */}
+  const mainContent = (
+    <div className="w-full h-full flex flex-col overflow-hidden">
+      {!isEmbedded && (
         <div className="bg-slate-550 border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20">
@@ -1415,6 +1421,7 @@ export default function FitnessPerformanceAnalysis({
             <X className="w-5 h-5" />
           </button>
         </div>
+      )}
 
         {/* Settings Box & Key Stats Banner */}
         <div className="bg-slate-50/50 dark:bg-slate-950/20 border-b border-slate-100 dark:border-slate-800 p-4 md:px-6 shrink-0 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -2910,6 +2917,22 @@ export default function FitnessPerformanceAnalysis({
             </div>
           </div>
         )}
+    </div>
+  );
+
+  if (isEmbedded) {
+    return mainContent;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 overflow-hidden">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 15 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 15 }}
+        className="w-full h-full md:max-w-7xl md:h-[92vh] bg-white dark:bg-slate-900 md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800"
+      >
+        {mainContent}
       </motion.div>
     </div>
   );

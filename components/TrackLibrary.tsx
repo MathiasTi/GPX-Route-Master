@@ -218,7 +218,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!selectionBounds) {
+    if (!selectionBounds || typeof selectionBounds.minLat !== 'number' || typeof selectionBounds.maxLat !== 'number' || typeof selectionBounds.minLng !== 'number' || typeof selectionBounds.maxLng !== 'number' || isNaN(selectionBounds.minLat) || isNaN(selectionBounds.maxLat) || isNaN(selectionBounds.minLng) || isNaN(selectionBounds.maxLng)) {
       setBoundsTracks([]);
       return;
     }
@@ -228,6 +228,9 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       try {
         const { minLat, maxLat, minLng, maxLng } = selectionBounds;
         const res = await fetch(getApiUrl(`/api/library/search-by-bounds?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}`));
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
         const data = await res.json();
         if (data.success) {
           setBoundsTracks(data.tracks);

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Database, Upload, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info,
-  FileText, Download
+  FileText, Download, Zap
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -11,10 +11,18 @@ import {
 } from 'recharts';
 import { getApiUrl } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
+import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 
 interface GarminDashboardProps {
   onClose: () => void;
   onLoadTrack?: (track: any) => void;
+  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'diagnostics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress';
+  userWeight?: number;
+  userAge?: number;
+  userMaxHr?: number;
+  ftp?: number;
+  onUpdateFtp?: (ftp: number) => void;
+  onUpdateMaxHr?: (maxHr: number) => void;
 }
 
 interface SleepRecord {
@@ -343,12 +351,22 @@ function parseFloatOrUndefined(val: any): number | undefined {
 }
 
 
-export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoadTrack }) => {
+export const GarminDashboard: React.FC<GarminDashboardProps> = ({ 
+  onClose, 
+  onLoadTrack,
+  initialTab = 'overview',
+  userWeight = 75,
+  userAge = 35,
+  userMaxHr = 185,
+  ftp = 250,
+  onUpdateFtp,
+  onUpdateMaxHr
+}) => {
   const [data, setData] = useState<HealthData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics'>(initialTab);
   const [isDragging, setIsDragging] = useState(false);
   const [dbUploadProgress, setDbUploadProgress] = useState<{ percentage: number; statusText: string } | null>(null);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
@@ -362,6 +380,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
   const [diagnosticReport, setDiagnosticReport] = useState<any | null>(null);
   const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
   const [diagnoseError, setDiagnoseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const handleRunDiagnosis = async (filepath: string) => {
     setIsDiagnosing(true);
@@ -1337,11 +1365,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'activities', 'analytics', 'diagnostics'] as const).map((tab) => (
+                {(['overview', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'diagnostics'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold capitalize transition-all cursor-pointer whitespace-nowrap ${
+                    className={`px-4 py-2 rounded-xl text-xs font-bold capitalize transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
                       activeTab === tab
                         ? 'bg-orange-600 text-white shadow-md shadow-orange-100'
                         : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -1349,12 +1377,24 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
                   >
                     {tab === 'overview' 
                       ? 'Übersicht' 
+                      : tab === 'performance'
+                      ? '⚡ Leistungs- & Fitness-Analyse'
                       : tab === 'activities' 
                       ? 'Aktivitäten' 
                       : tab === 'analytics' 
-                      ? 'Erweiterte Analyse 📊' 
+                      ? 'Trends & Korrelationen 📊' 
                       : tab === 'diagnostics'
                       ? '🔍 Diagnosetool'
+                      : tab === 'sleep'
+                      ? 'Schlaf'
+                      : tab === 'weight'
+                      ? 'Gewicht'
+                      : tab === 'rhr'
+                      ? 'Ruhepuls'
+                      : tab === 'steps'
+                      ? 'Schritte'
+                      : tab === 'stress'
+                      ? 'Stress'
                       : tab}
                   </button>
                 ))}
@@ -1363,6 +1403,28 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({ onClose, onLoa
               {/* Dynamic Tab Panel */}
               <div className="bg-slate-50/40 dark:bg-slate-900/40 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 min-h-[380px] flex flex-col">
                 <AnimatePresence mode="wait">
+                  {/* Tab: PERFORMANCE ANALYSIS */}
+                  {activeTab === 'performance' && (
+                    <motion.div
+                      key="performance"
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="w-full flex-1 flex flex-col"
+                    >
+                      <FitnessPerformanceAnalysis 
+                        isEmbedded={true}
+                        onClose={onClose}
+                        userWeight={userWeight}
+                        userAge={userAge}
+                        userMaxHr={userMaxHr}
+                        ftp={ftp}
+                        onUpdateFtp={onUpdateFtp}
+                        onUpdateMaxHr={onUpdateMaxHr}
+                      />
+                    </motion.div>
+                  )}
+
                   {/* Tab 1: OVERVIEW */}
                   {activeTab === 'overview' && (
                     <motion.div 

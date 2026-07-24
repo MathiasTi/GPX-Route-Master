@@ -4,9 +4,9 @@ import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2, Menu, RefreshCw, FileText } from 'lucide-react';
+import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, generateMockSurfaceStats } from './utils/gpxUtils';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -23,6 +23,7 @@ import { GarminDashboard } from './components/GarminDashboard';
 import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
 import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
 import { getApiUrl } from './utils/api';
+import { triggerHaptic } from './utils/haptics';
 
 const App: React.FC = () => {
   const [unhydratedTracks, setTracks] = useState<GPXTrack[]>([]);
@@ -50,6 +51,21 @@ const App: React.FC = () => {
       return [];
     }
   });
+
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Sync with localStorage
   useEffect(() => {
@@ -279,6 +295,7 @@ const App: React.FC = () => {
     setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
     try {
       const apiUrl = getApiUrl("/api/analyze-surface");
+      const trackToAnalyze = tracks.find(t => t.id === trackId);
 
       const result = await fetch(apiUrl, {
         method: "POST",
@@ -286,7 +303,8 @@ const App: React.FC = () => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          points: pointsToAnalyze
+          points: pointsToAnalyze,
+          name: trackToAnalyze?.name
         })
       });
 
@@ -316,11 +334,29 @@ const App: React.FC = () => {
     }
   }, [analyzingSurfaces]);
 
+  const handleSetTrackSurface = useCallback((trackId: string, surfaceType: string) => {
+    setTracks(prev => prev.map(t => {
+      if (t.id === trackId) {
+        const updatedPoints = t.points.map(p => ({
+          ...p,
+          surface: surfaceType
+        }));
+        const updatedStats = [{ type: surfaceType, distance: t.distance }];
+        return {
+          ...t,
+          points: updatedPoints,
+          surfaceStats: updatedStats
+        };
+      }
+      return t;
+    }));
+  }, []);
+
   useEffect(() => {
     if (markedTrackId) {
       const track = tracks.find(t => t.id === markedTrackId);
       if (track && track.points.length > 0) {
-        const hasSurfaces = track.points.some(p => p.surface && p.surface !== "Asphalt");
+        const hasSurfaces = track.points.some(p => p.surface !== undefined && p.surface !== null && p.surface !== "");
         if (!hasSurfaces && !analyzingSurfaces[markedTrackId]) {
           analyzeTrackSurface(markedTrackId);
         }
@@ -621,6 +657,14 @@ const App: React.FC = () => {
 
   const handleLoadLibraryTrack = useCallback((track: GPXTrack) => {
     let alreadyExists = false;
+
+    if (track && track.points && track.points.length > 0) {
+      const calcStats = calculateSurfaceStatsFromPoints(track.points);
+      const surfaceStats = calcStats.length > 0 ? calcStats : (track.surfaceStats && track.surfaceStats.length > 0 ? track.surfaceStats : generateMockSurfaceStats(track.distance, track.name, track.activityType));
+      track.surfaceStats = surfaceStats;
+      hydratePointsWithSurface(track.points, surfaceStats, track.distance);
+    }
+
     setTracks(prev => {
       if (prev.some(t => t.id === track.id)) {
         alreadyExists = true;
@@ -1020,6 +1064,7 @@ const App: React.FC = () => {
           });
         }}
         onAnalyzeSurface={analyzeTrackSurface}
+        onSetTrackSurface={handleSetTrackSurface}
         analyzingSurfaces={analyzingSurfaces}
         selectionBounds={selectionBounds}
         onClearSelection={() => setSelectionBounds(null)}
@@ -1035,15 +1080,29 @@ const App: React.FC = () => {
         setShowDbRunningHeatmap={setShowDbRunningHeatmap}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
+        {!isOnline && (
+          <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-bold flex items-center justify-between shadow-md z-[70] border-b border-amber-600">
+            <div className="flex items-center gap-2">
+              <WifiOff size={16} className="shrink-0" />
+              <span>
+                <strong>Offline-Modus:</strong> Kartenkacheln und zuvor geladene GPX-Routen werden aus dem Service-Worker-Cache bereitgestellt.
+              </span>
+            </div>
+          </div>
+        )}
         {/* Mobile Header */}
-        <div className="md:hidden flex items-center justify-between p-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60]">
+        <div className="md:hidden flex items-center justify-between px-4 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60]">
           <div className="flex items-center gap-2">
             <Activity className="text-indigo-600 dark:text-indigo-400" size={24} />
             <span className="font-black tracking-tight text-lg text-slate-950 dark:text-slate-100">VeloAnalytics</span>
           </div>
           <button 
-            onClick={() => setIsMobileMenuOpen(true)}
-            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl border border-slate-200 dark:border-slate-700"
+            onClick={() => {
+              triggerHaptic('medium');
+              setIsMobileMenuOpen(true);
+            }}
+            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-transform"
+            title="Menü öffnen"
           >
             <BarChart2 size={24} />
           </button>
@@ -1091,17 +1150,6 @@ const App: React.FC = () => {
               showDbRunningHeatmap={showDbRunningHeatmap}
             />
           )}
-
-          <WeatherOverlay 
-            track={markedTrack}
-            selectedDate={selectedDate}
-            setSelectedDate={setSelectedDate}
-            selectedTime={selectedTime}
-            setSelectedTime={setSelectedTime}
-            isOpen={weatherOpen}
-            onOpenChange={setWeatherOpen}
-            hide={analyticsOpen || garminHealthOpen || climbsOpen || comparisonOpen || trainingZonesOpen || summaryReportOpen || rawDataOpen || isExportModalOpen}
-          />
 
           <AnimatePresence>
             {analyticsOpen && markedTrack && (

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal } from 'lucide-react';
+import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal, Wifi, WifiOff, HardDrive, Trash2 } from 'lucide-react';
 import { getApiUrl } from '../utils/api';
+import { getSWCacheStats, clearSWTileCache, SWCacheStats } from '../utils/serviceWorker';
 
 interface AppVersion {
   id: number;
@@ -27,6 +28,21 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [swStats, setSwStats] = useState<SWCacheStats>({ tileCount: 0, shellCount: 0 });
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
+  const fetchSWStats = async () => {
+    const stats = await getSWCacheStats();
+    setSwStats(stats);
+  };
+
+  const handleClearTileCache = async () => {
+    setIsClearingCache(true);
+    await clearSWTileCache();
+    await fetchSWStats();
+    setIsClearingCache(false);
+  };
 
   // Fetch versions
   const fetchVersions = async () => {
@@ -51,6 +67,15 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
 
   useEffect(() => {
     fetchVersions();
+    fetchSWStats();
+
+    const updateOnline = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    return () => {
+      window.removeEventListener('online', updateOnline);
+      window.removeEventListener('offline', updateOnline);
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -160,6 +185,69 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
                 Ein professioneller Full-Stack-Routenmanager mit nahtloser GPX-Modulverkettung, intelligenter Höhenprofilberechnung und tiefer Garmin-SQLite-Datenbankanalyse zur Synchronisierung von Sport- & Gesundheitsmetriken.
               </p>
             </div>
+          </div>
+
+          {/* Service Worker & Offline Cache Status Card */}
+          <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-lg ${isOnline ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-900/40' : 'bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border border-amber-200/50 dark:border-amber-900/40'}`}>
+                  {isOnline ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <span>Offline-Modus & Service Worker</span>
+                    <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${isOnline ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}>
+                      {isOnline ? 'Online' : 'Offline'}
+                    </span>
+                  </h4>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Kartenkacheln & App-Shell werden automatisch im Browser zwischengespeichert.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={fetchSWStats}
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
+                title="Cache-Statistik aktualisieren"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200/70 dark:border-slate-800 flex items-center gap-2.5">
+                <HardDrive className="w-4 h-4 text-blue-500 shrink-0" />
+                <div>
+                  <div className="text-[10px] text-slate-400 font-bold uppercase">Kartenkacheln Cache</div>
+                  <div className="text-xs font-black text-slate-800 dark:text-slate-200">
+                    {swStats.tileCount} Kacheln gespeichert
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200/70 dark:border-slate-800 flex items-center gap-2.5">
+                <Layers className="w-4 h-4 text-indigo-500 shrink-0" />
+                <div>
+                  <div className="text-[10px] text-slate-400 font-bold uppercase">App Shell Cache</div>
+                  <div className="text-xs font-black text-slate-800 dark:text-slate-200">
+                    {swStats.shellCount > 0 ? 'Aktiv (Precached)' : 'Bereit'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {swStats.tileCount > 0 && (
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={handleClearTileCache}
+                  disabled={isClearingCache}
+                  className="px-3 py-1.5 bg-slate-200/70 dark:bg-slate-800 hover:bg-rose-100 dark:hover:bg-rose-950/40 text-slate-700 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Kachelspeicher leeren</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* New version registration button / form */}

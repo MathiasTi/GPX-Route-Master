@@ -693,48 +693,122 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
   return { ascent, descent, maxSlope, totalDist };
 };
 
-export const generateMockSurfaceStats = (totalDist: number) => {
-  if (totalDist === 0) return [];
+export const normalizeSurfaceName = (rawSurface?: string): string => {
+  if (!rawSurface) return 'Asphalt';
+  const s = rawSurface.trim().toLowerCase();
   
-  const types = ['Asphalt', 'Fahrradweg', 'Schotter', 'Waldweg', 'Straße'];
-  const segments = [];
-  let remainingDist = totalDist;
-  
-  const numSegments = Math.floor(Math.random() * 3) + 2;
-  
-  for (let i = 0; i < numSegments - 1; i++) {
-    const dist = remainingDist * (Math.random() * 0.4 + 0.1);
-    segments.push({
-      type: types[Math.floor(Math.random() * types.length)],
-      distance: dist
-    });
-    remainingDist -= dist;
+  if (s.includes('schotter') || s.includes('gravel') || s.includes('dirt') || s.includes('unpaved') || s.includes('compacted') || s.includes('pebble') || s.includes('fine_gravel') || s.includes('grit')) {
+    return 'Schotter';
+  }
+  if (s.includes('wald') || s.includes('trail') || s.includes('path') || s.includes('forest') || s.includes('ground') || s.includes('earth') || s.includes('singletrack') || s.includes('wood') || s.includes('grass')) {
+    return 'Waldweg';
+  }
+  if (s.includes('fahrrad') || s.includes('radweg') || s.includes('cycleway') || s.includes('bike')) {
+    return 'Fahrradweg';
+  }
+  if (s.includes('asphalt') || s.includes('paved') || s.includes('concrete') || s.includes('straß') || s.includes('strasse') || s.includes('road') || s.includes('tar') || s.includes('cement') || s.includes('cobblestone') || s.includes('paving')) {
+    return 'Asphalt';
   }
   
-  segments.push({
-    type: types[Math.floor(Math.random() * types.length)],
-    distance: remainingDist
-  });
+  return rawSurface.charAt(0).toUpperCase() + rawSurface.slice(1);
+};
+
+export const calculateSurfaceStatsFromPoints = (points: GPXPoint[]): { type: string; distance: number }[] => {
+  if (!points || points.length < 2) return [];
   
-  const grouped = segments.reduce((acc, curr) => {
-    acc[curr.type] = (acc[curr.type] || 0) + curr.distance;
-    return acc;
-  }, {} as Record<string, number>);
-  
-  return Object.entries(grouped)
-    .map(([type, distance]) => ({ type, distance: distance as number }))
+  let hasSurface = false;
+  const surfaceDistances: Record<string, number> = {};
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const stepDist = calculateDistance(p1, p2);
+    const sType = p1.surface || p2.surface;
+    if (sType) {
+      hasSurface = true;
+      const normType = normalizeSurfaceName(sType);
+      surfaceDistances[normType] = (surfaceDistances[normType] || 0) + stepDist;
+    }
+  }
+
+  if (!hasSurface) return [];
+
+  return Object.entries(surfaceDistances)
+    .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
+    .filter(s => s.distance > 0)
     .sort((a, b) => b.distance - a.distance);
 };
 
+export const hydratePointsWithSurface = (points: GPXPoint[], surfaceStats: { type: string; distance: number }[], totalDist: number) => {
+  if (!points || points.length === 0 || !surfaceStats || surfaceStats.length === 0) return;
+  const numPts = points.length;
+  const trackDist = totalDist > 0 ? totalDist : calculateElevationStats(points).totalDist;
+
+  if (trackDist <= 0) {
+    const defaultSurf = surfaceStats[0]?.type || 'Asphalt';
+    points.forEach(p => { if (!p.surface) p.surface = defaultSurf; });
+    return;
+  }
+
+  points.forEach((pt, idx) => {
+    if (pt.surface) return;
+    const currentDist = (idx / Math.max(1, numPts - 1)) * trackDist;
+    let accDist = 0;
+    let matchedType = surfaceStats[surfaceStats.length - 1].type;
+    for (const stat of surfaceStats) {
+      accDist += stat.distance;
+      if (currentDist <= accDist) {
+        matchedType = stat.type;
+        break;
+      }
+    }
+    pt.surface = matchedType;
+  });
+};
+
+export const generateMockSurfaceStats = (totalDist: number, trackName?: string, activityType?: string) => {
+  if (totalDist === 0) return [];
+
+  const nameLower = (trackName || '').toLowerCase();
+  const actLower = (activityType || '').toLowerCase();
+
+  const isExplicitOffroad = 
+    nameLower.includes('gravel') ||
+    nameLower.includes('mtb') ||
+    nameLower.includes('mountain') ||
+    nameLower.includes('trail') ||
+    nameLower.includes('cross') ||
+    nameLower.includes('schotter') ||
+    nameLower.includes('wald') ||
+    nameLower.includes('offroad') ||
+    nameLower.includes('dirt') ||
+    nameLower.includes('unpaved') ||
+    nameLower.includes('singletrack') ||
+    actLower.includes('mtb') ||
+    actLower.includes('gravel');
+
+  // Road cycling, alpine pass tours (Stelvio, Alpentour, etc.), and default routes are 100% Asphalt
+  if (!isExplicitOffroad) {
+    return [{ type: 'Asphalt', distance: totalDist }];
+  }
+
+  // Explicit offroad tracks
+  return [
+    { type: 'Schotter', distance: Math.round(totalDist * 0.6 * 10) / 10 },
+    { type: 'Waldweg', distance: Math.round(totalDist * 0.3 * 10) / 10 },
+    { type: 'Asphalt', distance: Math.round(totalDist * 0.1 * 10) / 10 }
+  ].filter(s => s.distance > 0);
+};
+
 const HIGH_CONTRAST_COLORS = [
-  '#FF00FF', // Magenta
-  '#FF4500', // Orange Red
-  '#FFD700', // Gold
-  '#00FFFF', // Cyan
-  '#FF1493', // Deep Pink
-  '#8A2BE2', // Blue Violet
-  '#FF0000', // Red
-  '#00FF00', // Lime
+  '#2563eb', // Velo Royal Blue
+  '#0284c7', // Ocean Sky Blue
+  '#059669', // Emerald Green
+  '#d97706', // Amber Gold
+  '#6366f1', // Indigo Blue
+  '#0891b2', // Teal
+  '#dc2626', // Classic Crimson
+  '#7c3aed', // Deep Violet
 ];
 
 let colorIndex = 0;
@@ -945,7 +1019,25 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
         cadence = parseInt(cadNode.textContent || "0", 10);
       }
 
-      return { lat, lng, ele, time, power, hr, cadence };
+      // Extract Surface from extensions or comment tags
+      let surface: string | undefined;
+      const surfaceNode = getChildNode(pt, "surface") || getChildNode(pt, "brouter:surface") || getChildNode(pt, "komoot:surface");
+      if (surfaceNode && surfaceNode.textContent?.trim()) {
+        surface = normalizeSurfaceName(surfaceNode.textContent);
+      } else {
+        const cmtNode = getChildNode(pt, "cmt") || getChildNode(pt, "comment");
+        if (cmtNode && cmtNode.textContent) {
+          const cmtText = cmtNode.textContent.toLowerCase();
+          if (cmtText.includes("surface:") || cmtText.includes("untergrund:")) {
+            const parts = cmtText.split(/surface:|untergrund:/i);
+            if (parts[1]) {
+              surface = normalizeSurfaceName(parts[1].trim());
+            }
+          }
+        }
+      }
+
+      return { lat, lng, ele, time, power, hr, cadence, surface };
     });
 
     const points = sanitizeGPXPoints(rawPoints);
@@ -1007,7 +1099,13 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const activityType = detectActivityType(points, activityName, fileName);
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
     const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
-    const surfaceStats = generateMockSurfaceStats(totalDist);
+    
+    const realSurfaceStats = calculateSurfaceStatsFromPoints(points);
+    const surfaceStats = realSurfaceStats.length > 0 
+      ? realSurfaceStats 
+      : generateMockSurfaceStats(totalDist, activityName, activityType);
+    hydratePointsWithSurface(points, surfaceStats, totalDist);
+
     const climbs = findClimbs(points);
     
     let duration: number | undefined;
@@ -1124,7 +1222,13 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
   const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(combinedPoints);
   const activityType = tracks[0]?.activityType || 'cycling';
   const powerStats = calculatePowerStats(combinedPoints, 250, 75, 15, activityType);
-  const surfaceStats = generateMockSurfaceStats(totalDist);
+  
+  const realSurfaceStats = calculateSurfaceStatsFromPoints(combinedPoints);
+  const surfaceStats = realSurfaceStats.length > 0 
+    ? realSurfaceStats 
+    : generateMockSurfaceStats(totalDist, names, activityType);
+  hydratePointsWithSurface(combinedPoints, surfaceStats, totalDist);
+
   const climbs = findClimbs(combinedPoints);
   
   return {
@@ -1197,18 +1301,24 @@ export const exportToGPX = (track: GPXTrack): string => {
     let extensionStr = '';
     const hasHr = p.hr !== undefined && p.hr !== null && !isNaN(p.hr);
     const hasCad = p.cadence !== undefined && p.cadence !== null && !isNaN(p.cadence);
+    const hasSurface = !!p.surface;
     
-    if (hasHr || hasCad) {
-      extensionStr = `\n        <extensions>\n          <gpxtpx:TrackPointExtension>`;
-      if (hasHr) {
-        extensionStr += `\n            <gpxtpx:hr>${p.hr}</gpxtpx:hr>`;
+    if (hasHr || hasCad || hasSurface) {
+      extensionStr = `\n        <extensions>`;
+      if (hasSurface) {
+        extensionStr += `\n          <surface>${escapeXml(p.surface!)}</surface>`;
       }
-      if (hasCad) {
-        extensionStr += `\n            <gpxtpx:cad>${p.cadence}</gpxtpx:cad>`;
+      if (hasHr || hasCad) {
+        extensionStr += `\n          <gpxtpx:TrackPointExtension>`;
+        if (hasHr) {
+          extensionStr += `\n            <gpxtpx:hr>${p.hr}</gpxtpx:hr>`;
+        }
+        if (hasCad) {
+          extensionStr += `\n            <gpxtpx:cad>${p.cadence}</gpxtpx:cad>`;
+        }
+        extensionStr += `\n          </gpxtpx:TrackPointExtension>`;
       }
-      extensionStr += `\n          </gpxtpx:TrackPointExtension>\n        </extensions>`;
-    } else if (p.surface) {
-      extensionStr = `\n        <extensions>\n          <surface>${escapeXml(p.surface)}</surface>\n        </extensions>`;
+      extensionStr += `\n        </extensions>`;
     }
 
     xml += `\n      <trkpt lat="${lat}" lon="${lon}">${eleStr}${timeStr}${powerStr}${extensionStr}\n      </trkpt>`;
@@ -1308,7 +1418,11 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
           const cadMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?cad(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?cad>/i);
           const cadence = cadMatch ? parseInt(cadMatch[1], 10) : undefined;
 
-          const ptObj = { lat, lng, ele, time, power, hr, cadence };
+          const surfaceMatch = trkptXml.match(/<(?:[a-zA-Z0-9]+:)?surface(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?surface>/i) ||
+                              trkptXml.match(/<cmt(?:\s[^>]*)?>.*?(?:surface|untergrund):\s*([^<;]+).*?<\/cmt>/i);
+          const surface = surfaceMatch ? normalizeSurfaceName(surfaceMatch[1]) : undefined;
+
+          const ptObj = { lat, lng, ele, time, power, hr, cadence, surface };
           const tagNameLower = tagName.toLowerCase();
           if (tagNameLower === 'trkpt') {
             trkpts.push(ptObj);
@@ -1389,7 +1503,13 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     const activityType = detectActivityType(sanitizedPoints, activityName, fileName);
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(sanitizedPoints);
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
-    const surfaceStats = generateMockSurfaceStats(totalDist);
+    
+    const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
+    const surfaceStats = realSurfaceStats.length > 0 
+      ? realSurfaceStats 
+      : generateMockSurfaceStats(totalDist, activityName, activityType);
+    hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
+
     const climbs = findClimbs(sanitizedPoints);
     
     let duration: number | undefined;

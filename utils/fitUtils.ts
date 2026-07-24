@@ -1,15 +1,15 @@
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
 
 const HIGH_CONTRAST_COLORS = [
-  '#FF00FF', // Magenta
-  '#FF4500', // Orange Red
-  '#FFD700', // Gold
-  '#00FFFF', // Cyan
-  '#FF1493', // Deep Pink
-  '#8A2BE2', // Blue Violet
-  '#FF0000', // Red
-  '#00FF00', // Lime
+  '#2563eb', // Velo Royal Blue
+  '#0284c7', // Ocean Sky Blue
+  '#059669', // Emerald Green
+  '#d97706', // Amber Gold
+  '#6366f1', // Indigo Blue
+  '#0891b2', // Teal
+  '#dc2626', // Classic Crimson
+  '#7c3aed', // Deep Violet
 ];
 
 let colorIndex = 0;
@@ -2413,7 +2413,11 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(sanitizedPoints);
     const activityType = detectActivityType(sanitizedPoints, name, fileName);
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
-    const surfaceStats = generateMockSurfaceStats(totalDist);
+    const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
+    const surfaceStats = realSurfaceStats.length > 0 
+      ? realSurfaceStats 
+      : generateMockSurfaceStats(totalDist, name, activityType);
+    hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
     const climbs = findClimbs(sanitizedPoints);
     
     let duration: number | undefined;

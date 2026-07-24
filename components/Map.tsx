@@ -1,11 +1,12 @@
 
 import React, { useEffect, useState, useRef } from 'react';
-import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker } from '../types';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
 import { getApiUrl } from '../utils/api';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target } from 'lucide-react';
+import { triggerHaptic, shareTrackNative } from '../utils/haptics';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2 } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -179,6 +180,161 @@ const FlyoverFollow = ({ point, active }: { point: GPXPoint | null, active: bool
   return null;
 };
 
+const UserLocationMarker = ({ isTracking, autoCenter }: { isTracking: boolean; autoCenter: boolean }) => {
+  const map = useMap();
+  const [position, setPosition] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
+
+  useEffect(() => {
+    if (!isTracking || typeof window === 'undefined' || !('geolocation' in navigator)) {
+      setPosition(null);
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+        setPosition({ lat, lng, accuracy });
+        if (autoCenter) {
+          map.panTo([lat, lng], { animate: true });
+        }
+      },
+      (err) => {
+        console.warn('Geolocation error:', err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [isTracking, autoCenter, map]);
+
+  if (!isTracking || !position) return null;
+
+  const userIcon = L.divIcon({
+    className: 'user-location-pulse',
+    html: `
+      <div style="width: 18px; height: 18px; background-color: #2563eb; border: 3px solid #ffffff; border-radius: 50%; box-shadow: 0 0 10px rgba(37,99,235,0.8);"></div>
+    `,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+
+  return (
+    <>
+      <LeafletMarker position={[position.lat, position.lng]} icon={userIcon}>
+        <Popup>
+          <div className="text-xs font-bold text-slate-800 p-1">
+            📍 Ihr aktueller Standort<br/>
+            <span className="text-[10px] text-slate-500 font-normal">Genauigkeit: ~{Math.round(position.accuracy)}m</span>
+          </div>
+        </Popup>
+      </LeafletMarker>
+      {position.accuracy > 0 && position.accuracy < 500 && (
+        <LeafletCircle
+          center={[position.lat, position.lng]}
+          radius={position.accuracy}
+          pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.15, color: '#60a5fa', weight: 1.5, dashArray: '3 4' }}
+        />
+      )}
+    </>
+  );
+};
+
+const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; markedTrackId: string | null }) => {
+  const map = useMap();
+
+  const stopEvent = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+  };
+
+  const handleZoomIn = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    triggerHaptic('light');
+    map.zoomIn();
+  };
+
+  const handleZoomOut = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    triggerHaptic('light');
+    map.zoomOut();
+  };
+
+  const handleFitToTracks = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    triggerHaptic('medium');
+
+    const targetTracks = tracks.filter(t => t.visible || t.id === markedTrackId);
+    const allPoints: [number, number][] = [];
+
+    targetTracks.forEach(t => {
+      if (t.points && t.points.length > 0) {
+        t.points.forEach(p => {
+          if (p && typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng)) {
+            allPoints.push([p.lat, p.lng]);
+          }
+        });
+      }
+    });
+
+    if (allPoints.length > 0) {
+      const bounds = L.latLngBounds(allPoints);
+      map.fitBounds(bounds, { padding: [50, 50], animate: true });
+    }
+  };
+
+  return (
+    <div 
+      className="leaflet-control absolute bottom-36 right-2.5 sm:bottom-28 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto select-none"
+      onClick={stopEvent}
+      onDoubleClick={stopEvent}
+      onMouseDown={stopEvent}
+      onTouchStart={stopEvent}
+      onPointerDown={stopEvent}
+    >
+      <div className="flex flex-col rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl backdrop-blur-md overflow-hidden">
+        <button
+          type="button"
+          onClick={handleZoomIn}
+          onMouseDown={stopEvent}
+          onTouchStart={stopEvent}
+          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
+          title="Karte vergrößern (+)"
+          aria-label="Karte vergrößern"
+        >
+          <Plus className="w-6.5 h-6.5 stroke-[3]" />
+        </button>
+        <button
+          type="button"
+          onClick={handleZoomOut}
+          onMouseDown={stopEvent}
+          onTouchStart={stopEvent}
+          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
+          title="Karte verkleinern (-)"
+          aria-label="Karte verkleinern"
+        >
+          <Minus className="w-6.5 h-6.5 stroke-[3]" />
+        </button>
+        <button
+          type="button"
+          onClick={handleFitToTracks}
+          onMouseDown={stopEvent}
+          onTouchStart={stopEvent}
+          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-indigo-500 active:text-white dark:active:bg-indigo-600 transition-all cursor-pointer active:scale-95 touch-manipulation"
+          title="Karte auf alle ausgewählten und sichtbaren Strecken ausrichten"
+          aria-label="Auf ausgewählte und sichtbare Strecken zoomen"
+          id="btn-fit-tracks-zoom"
+        >
+          <Maximize2 className="w-5.5 h-5.5 stroke-[2.5] text-indigo-600 dark:text-indigo-400" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapViewChange: any, isFlying: boolean }) => {
   const map = useMap();
   const isInternalUpdate = useRef(false);
@@ -344,6 +500,7 @@ const LeafletMapContainer = MapContainer as any;
 const LeafletTileLayer = TileLayer as any;
 const LeafletPolyline = Polyline as any;
 const LeafletMarker = Marker as any;
+const LeafletCircle = Circle as any;
 
 interface POI {
   id: string;
@@ -381,23 +538,13 @@ const Map: React.FC<MapProps> = ({
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
-  const [isColorMenuOpen, setIsColorMenuOpen] = useState(() => {
-    try {
-      return typeof window !== 'undefined' && window.innerWidth >= 1280;
-    } catch (_) {
-      return false;
-    }
-  });
-  const [isLegendVisible, setIsLegendVisible] = useState(() => {
-    try {
-      return typeof window !== 'undefined' && window.innerWidth >= 1280;
-    } catch (_) {
-      return false;
-    }
-  });
+  const [isColorMenuOpen, setIsColorMenuOpen] = useState(false);
+  const [isLegendVisible, setIsLegendVisible] = useState(false);
   const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power' | 'speed'>('default');
-  const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
+  const [isStatsCollapsed, setIsStatsCollapsed] = useState(true);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+  const [isTrackingLocation, setIsTrackingLocation] = useState(false);
+  const [autoCenterLocation, setAutoCenterLocation] = useState(true);
 
   // States for database activity heatmaps
   const [dbCyclingPaths, setDbCyclingPaths] = useState<[number, number][][]>([]);
@@ -799,6 +946,7 @@ const Map: React.FC<MapProps> = ({
         zoom={mapView.zoom} 
         scrollWheelZoom={true}
         boxZoom={false}
+        zoomControl={false}
         className={`z-0 ${isDarkTile ? 'dark-tiles' : ''}`}
       >
         <LeafletTileLayer
@@ -908,15 +1056,42 @@ const Map: React.FC<MapProps> = ({
             }
           }
 
+          // Helper to avoid bright pink/magenta colors
+          const sanitizeColor = (col: string | undefined): string => {
+            if (!col) return "#2563eb";
+            const upper = col.toUpperCase();
+            if (upper === '#FF00FF' || upper === '#FF1493' || upper === '#DB2777' || upper === '#EC4899') {
+              return "#2563eb";
+            }
+            return col;
+          };
+
+          const displayTrackColor = sanitizeColor(track.color);
+
           // Build continuous segments of identical surface types
           const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
           if (validPoints.length > 0) {
-            let currentSurface = validPoints[0].surface || "Asphalt";
+            // Map surface either from point or from track surfaceStats
+            const pointsWithSurface = validPoints.map((pt, idx) => {
+              if (pt.surface) return pt.surface;
+              if (track.surfaceStats && track.surfaceStats.length > 0 && track.distance > 0) {
+                const currentDist = (idx / Math.max(1, validPoints.length - 1)) * track.distance;
+                let runningDist = 0;
+                for (const stat of track.surfaceStats) {
+                  runningDist += stat.distance;
+                  if (currentDist <= runningDist) return stat.type;
+                }
+                return track.surfaceStats[track.surfaceStats.length - 1].type;
+              }
+              return "Asphalt";
+            });
+
+            let currentSurface = pointsWithSurface[0];
             let currentPositions: [number, number][] = [[validPoints[0].lat, validPoints[0].lng]];
 
             for (let i = 1; i < validPoints.length; i++) {
               const pt = validPoints[i];
-              const surf = pt.surface || "Asphalt";
+              const surf = pointsWithSurface[i];
               if (surf === currentSurface) {
                 currentPositions.push([pt.lat, pt.lng]);
               } else {
@@ -975,13 +1150,15 @@ const Map: React.FC<MapProps> = ({
           }
 
           const getSurfaceColor = (surf: string, defaultColor: string) => {
+            const safeDefault = sanitizeColor(defaultColor);
             switch (surf) {
-              case "Asphalt": return "#4f46e5";
-              case "Schotter": return "#ea580c";
-              case "Waldweg": return "#16a34a";
-              case "Fahrradweg": return "#8b5cf6";
-              case "Kopfsteinpflaster": return "#db2777";
-              default: return defaultColor;
+              case "Asphalt": return "#2563eb"; // Royal Blue
+              case "Schotter": return "#d97706"; // Amber / Gravel Brown
+              case "Waldweg": return "#16a34a"; // Forest Green
+              case "Fahrradweg": return "#0284c7"; // Sky Blue
+              case "Kopfsteinpflaster": return "#78350f"; // Bronze / Cobble Brown
+              case "Straße": return "#4f46e5"; // Indigo Road
+              default: return safeDefault;
             }
           };
 
@@ -1055,7 +1232,7 @@ const Map: React.FC<MapProps> = ({
                   <LeafletPolyline
                     key={`seg-${sIdx}`}
                     positions={seg.positions}
-                    color={getSurfaceColor(seg.surface, track.color)}
+                    color={getSurfaceColor(seg.surface, displayTrackColor)}
                     weight={isMarked ? 8 : 4}
                     opacity={isMarked ? 1.0 : 0.6}
                     interactive={false}
@@ -1064,7 +1241,7 @@ const Map: React.FC<MapProps> = ({
               ) : (
                 <LeafletPolyline 
                   positions={positions}
-                  color={track.color}
+                  color={displayTrackColor}
                   weight={isMarked ? 8 : 4}
                   opacity={isMarked ? 1.0 : 0.6}
                   interactive={false}
@@ -1549,7 +1726,46 @@ const Map: React.FC<MapProps> = ({
             </Popup>
           </LeafletMarker>
         )}
+
+        <UserLocationMarker isTracking={isTrackingLocation} autoCenter={autoCenterLocation} />
+        <MobileZoomControls tracks={tracks} markedTrackId={markedTrackId} />
       </LeafletMapContainer>
+
+      {/* Mobile & Touch Floating Action Toolbar */}
+      <div className="absolute bottom-20 right-2 sm:bottom-4 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto">
+        <button
+          onClick={() => {
+            triggerHaptic('medium');
+            setIsTrackingLocation(prev => !prev);
+          }}
+          className={`p-2.5 sm:p-3 rounded-2xl shadow-lg border backdrop-blur-md transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 ${
+            isTrackingLocation 
+              ? 'bg-blue-600 text-white border-blue-400 ring-2 ring-blue-500/30' 
+              : 'bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+          }`}
+          title={isTrackingLocation ? "GPS Standort deaktivieren" : "Meinen GPS-Standort auf der Karte anzeigen"}
+        >
+          <Locate className={`w-4 h-4 ${isTrackingLocation ? 'animate-pulse text-white' : 'text-blue-500'}`} />
+          <span className="hidden xs:inline">{isTrackingLocation ? 'GPS Aktiv' : 'Standort'}</span>
+        </button>
+
+        {activeTrack && (
+          <button
+            onClick={() => {
+              triggerHaptic('medium');
+              shareTrackNative({
+                title: activeTrack.name,
+                text: `🚴 GPX Route: ${activeTrack.name}\n📏 Länge: ${activeTrack.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(activeTrack.ascent)}m`
+              });
+            }}
+            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
+            title="Aktivität auf Smartphone teilen (WhatsApp, Mail, Messages)"
+          >
+            <Share2 className="w-4 h-4 text-emerald-500" />
+            <span className="hidden xs:inline">Teilen</span>
+          </button>
+        )}
+      </div>
 
       {/* Strecken-Farbmodus & POI-Filter Switcher (oben rechts) */}
       {!isColorMenuOpen ? (
@@ -1764,11 +1980,11 @@ const Map: React.FC<MapProps> = ({
             {colorMode === 'default' ? (
               <>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#4f46e5" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#2563eb" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ea580c" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#d97706" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1776,11 +1992,11 @@ const Map: React.FC<MapProps> = ({
                   <span className="font-bold text-slate-700 dark:text-slate-350">Waldweg / Trail</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#8b5cf6" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#0284c7" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#db2777" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#78350f" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
                 </div>
               </>

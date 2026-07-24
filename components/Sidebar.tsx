@@ -4,9 +4,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
+import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
+import { WeatherOverlay } from './WeatherOverlay';
 import { 
   DndContext, 
   closestCenter, 
@@ -36,6 +38,7 @@ interface TrackItemProps {
   onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
   onAnalyzeSurface?: (id: string) => void;
+  onSetTrackSurface?: (id: string, surfaceType: string) => void;
   isAnalyzing?: boolean;
   onSaveTrackToLibrary?: (id: string) => void;
   onOpenRawData?: (id: string) => void;
@@ -53,6 +56,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onOpenTrainingZones,
   onOpenClimbs, 
   onAnalyzeSurface,
+  onSetTrackSurface,
   isAnalyzing,
   onSaveTrackToLibrary,
   onOpenRawData
@@ -102,7 +106,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
     <div 
       ref={setNodeRef} 
       style={style}
-      onClick={() => onMark(track.id)}
+      onClick={() => {
+        triggerHaptic('light');
+        onMark(track.id);
+      }}
       className={`group cursor-pointer bg-white dark:bg-slate-900 border rounded-xl p-3 hover:shadow-md transition-all ${
         isDragging ? 'shadow-xl opacity-50 bg-slate-50 dark:bg-slate-800' : ''
       } ${
@@ -221,6 +228,21 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             >
               <Download className="w-3.5 h-3.5 text-sky-655 dark:text-sky-450" />
               <span>Export</span>
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => {
+                shareTrackNative({
+                  title: track.name,
+                  text: `🚴 GPX Route: ${track.name}\n📏 Distanz: ${track.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(track.ascent)}m`
+                });
+              }} 
+              className="p-1.5 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-lg border border-emerald-250/20 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+              title="Route via Smartphone (WhatsApp, Messages, Strava) teilen"
+            >
+              <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>Teilen</span>
             </button>
 
             <button 
@@ -364,27 +386,49 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               </div>
             )}
 
-            {/* Surface analysis trigger */}
-            <div className="pt-1.5 border-t border-slate-100/60 dark:border-slate-800/40 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+            {/* Surface analysis trigger & manual surface override */}
+            <div className="pt-1.5 border-t border-slate-100/60 dark:border-slate-800/40 flex items-center justify-between gap-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
               <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 flex items-center gap-1 uppercase tracking-wider">
-                <Layers size={10} className="text-slate-400 dark:text-slate-500 stroke-[2.5]" /> OSM-Untergrund:
+                <Layers size={10} className="text-slate-400 dark:text-slate-500 stroke-[2.5]" /> Untergrund:
               </span>
-              <button
-                type="button"
-                disabled={isAnalyzing}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAnalyzeSurface?.(track.id);
-                }}
-                className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
-                  isAnalyzing
-                    ? "bg-blue-100/40 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900 animate-pulse cursor-wait"
-                    : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-450 hover:bg-blue-100 dark:hover:bg-blue-900/65 border-blue-100 dark:border-blue-900/50 hover:border-blue-300 dark:hover:border-blue-800"
-                }`}
-                title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
-              >
-                {isAnalyzing ? "Analysiere..." : "OSM ermitteln"}
-              </button>
+              <div className="flex items-center gap-1">
+                <select
+                  value={track.surfaceStats && track.surfaceStats.length === 1 ? track.surfaceStats[0].type : ""}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    if (e.target.value === "osm") {
+                      onAnalyzeSurface?.(track.id);
+                    } else if (e.target.value) {
+                      onSetTrackSurface?.(track.id, e.target.value);
+                    }
+                  }}
+                  className="text-[9px] font-medium bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-1 py-0.5 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                  title="Untergrundtyp manuell festlegen oder per OSM analysieren"
+                >
+                  <option value="">Status / Typ...</option>
+                  <option value="Asphalt">Asphalt (100%)</option>
+                  <option value="Schotter">Schotter / Gravel (100%)</option>
+                  <option value="Fahrradweg">Fahrradweg (100%)</option>
+                  <option value="Waldweg">Waldweg (100%)</option>
+                  <option value="osm">⚡ OSM auto-analysieren</option>
+                </select>
+                <button
+                  type="button"
+                  disabled={isAnalyzing}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAnalyzeSurface?.(track.id);
+                  }}
+                  className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
+                    isAnalyzing
+                      ? "bg-blue-100/40 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900 animate-pulse cursor-wait"
+                      : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-450 hover:bg-blue-100 dark:hover:bg-blue-900/65 border-blue-100 dark:border-blue-900/50 hover:border-blue-300 dark:hover:border-blue-800"
+                  }`}
+                  title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+                >
+                  {isAnalyzing ? "Analysiere..." : "OSM"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -498,6 +542,7 @@ interface SidebarProps {
   hoveredPoint: any;
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
   onAnalyzeSurface?: (id: string) => void;
+  onSetTrackSurface?: (id: string, surfaceType: string) => void;
   analyzingSurfaces?: Record<string, boolean>;
   onLoadLibraryTrack?: (track: GPXTrack) => void;
   onSaveTrackToLibrary?: (id: string) => void;
@@ -566,6 +611,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   hoveredPoint,
   onMapViewChange,
   onAnalyzeSurface,
+  onSetTrackSurface,
   analyzingSurfaces,
   onLoadLibraryTrack,
   onSaveTrackToLibrary,
@@ -584,9 +630,21 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
+  const [isWeatherExpanded, setIsWeatherExpanded] = React.useState(false);
   const [isAboutOpen, setIsAboutOpen] = React.useState(false);
   const [latestVersion, setLatestVersion] = React.useState('1.3.0');
   const [latestBuildDate, setLatestBuildDate] = React.useState('');
+  const [isOnline, setIsOnline] = React.useState(navigator.onLine);
+
+  React.useEffect(() => {
+    const updateOnline = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    return () => {
+      window.removeEventListener('online', updateOnline);
+      window.removeEventListener('offline', updateOnline);
+    };
+  }, []);
 
   // Load latest version on startup
   React.useEffect(() => {
@@ -677,7 +735,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         {/* Inner Content Wrapper */}
-        <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
+        <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
           {/* Mobile Close Button */}
           <button 
             onClick={() => setIsMobileMenuOpen(false)}
@@ -821,6 +879,34 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <TrendingUp className="w-4 h-4" />
                 Leistungs- & Fitness-Analyse
               </button>
+            </section>
+
+            <section className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
+                className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🌤️</span>
+                  <div className="text-left">
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">Wetter & Routen-Prognose</div>
+                    <div className="text-[10px] text-slate-400 font-medium">Prognose am Startpunkt</div>
+                  </div>
+                </div>
+                {isWeatherExpanded ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+              </button>
+
+              {isWeatherExpanded && (
+                <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <WeatherOverlay
+                    track={markedTrack}
+                    selectedDate={selectedDate}
+                    setSelectedDate={setSelectedDate}
+                    selectedTime={selectedTime}
+                    setSelectedTime={setSelectedTime}
+                  />
+                </div>
+              )}
             </section>
 
             <section className="space-y-3">
@@ -1094,6 +1180,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onOpenTrainingZones={onOpenTrainingZones}
                             onOpenClimbs={onOpenClimbs}
                             onAnalyzeSurface={onAnalyzeSurface}
+                            onSetTrackSurface={onSetTrackSurface}
                             isAnalyzing={analyzingSurfaces?.[track.id] || false}
                             onSaveTrackToLibrary={onSaveTrackToLibrary}
                             onOpenRawData={onOpenRawData}
@@ -1123,11 +1210,16 @@ const Sidebar: React.FC<SidebarProps> = ({
 
           <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-1 rounded-b-xl">
             <div className="flex justify-between items-center font-medium">
-              <span>Reihenfolge bestimmt Verbindungssequenz</span>
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                <span className="font-semibold text-slate-600 dark:text-slate-400">
+                  {isOnline ? 'Online (PWA)' : 'Offline (Cache)'}
+                </span>
+              </div>
               <button
                 onClick={() => setIsAboutOpen(true)}
                 className="font-mono text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold"
-                title="Über dieses System / Versionsverlauf anzeigen"
+                title="Über dieses System / Versionsverlauf & Cache anzeigen"
               >
                 v{latestVersion}
               </button>

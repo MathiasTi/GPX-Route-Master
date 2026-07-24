@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
+import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateMockSurfaceStats } from "./utils/gpxUtils.js";
 import fs from "fs";
 import os from "os";
 
@@ -383,7 +384,7 @@ async function startServer() {
 
   // API route to automatically analyze GPX path coordinates and map to OpenStreetMap surface tags
   app.post("/api/analyze-surface", async (req, res) => {
-    const { points } = req.body;
+    const { points, name } = req.body;
     if (!points || !Array.isArray(points) || points.length === 0) {
       return res.status(400).json({ error: "Missing or invalid points array" });
     }
@@ -640,12 +641,20 @@ async function startServer() {
       const firstPt = points[0] || { lat: 50.0, lng: 10.0 };
       const seed = Math.abs(Math.sin(firstPt.lat * 12.9898 + firstPt.lng * 78.233) * 43758.5453);
       
-      // Determine probable track nature from bounding box or size
-      const isMountainous = points.some((p: any, i: number) => {
-        if (i === 0) return false;
-        const diff = Math.abs((p.ele || 0) - (points[i-1].ele || 0));
-        return diff > 5; // frequent elevation fluctuations
-      });
+      // Determine probable track nature from name and keywords
+      const nameLower = (name || "").toLowerCase();
+      const isExplicitOffroad =
+        nameLower.includes("gravel") ||
+        nameLower.includes("mtb") ||
+        nameLower.includes("mountain") ||
+        nameLower.includes("trail") ||
+        nameLower.includes("cross") ||
+        nameLower.includes("schotter") ||
+        nameLower.includes("wald") ||
+        nameLower.includes("offroad") ||
+        nameLower.includes("dirt") ||
+        nameLower.includes("unpaved") ||
+        nameLower.includes("singletrack");
 
       // Split the track into 3-5 macro chunks
       const chunkCount = Math.floor((seed % 3)) + 3; // 3 to 5 chunks
@@ -655,15 +664,13 @@ async function startServer() {
       for (let c = 0; c < chunkCount; c++) {
         const chunkSeed = (seed + c * 17) % 100;
         let pType = "Asphalt";
-        if (isMountainous) {
-          if (chunkSeed < 30) pType = "Waldweg";
-          else if (chunkSeed < 70) pType = "Schotter";
+        if (isExplicitOffroad) {
+          if (chunkSeed < 60) pType = "Schotter";
+          else if (chunkSeed < 90) pType = "Waldweg";
           else pType = "Asphalt";
         } else {
-          if (chunkSeed < 50) pType = "Asphalt";
-          else if (chunkSeed < 75) pType = "Fahrradweg";
-          else if (chunkSeed < 90) pType = "Schotter";
-          else pType = "Waldweg";
+          // Alpine pass tours (e.g. Stelvio / Alpentour), road rides, and general cycling tracks are Asphalt
+          pType = "Asphalt";
         }
         chunkSurfaces.push(pType);
       }
@@ -770,23 +777,30 @@ async function startServer() {
       const records = searchTracks(q, activityType);
       
       // Map to thin, metadata-focused structure for the list view
-      const mapped = records.map(r => ({
-        id: r.id,
-        name: r.name,
-        distance: r.distance,
-        ascent: r.ascent,
-        descent: r.descent,
-        duration: r.duration,
-        activityType: r.activity_type,
-        description: r.description || "",
-        tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
-        dateCreated: r.date_created,
-        originalFilename: r.original_filename,
-        maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
-        color: r.color || '#3b82f6',
-        hasTimestamps: r.has_timestamps === 1,
-        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined
-      }));
+      const mapped = records.map(r => {
+        let surfaceStats = r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined;
+        if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
+          surfaceStats = generateMockSurfaceStats(r.distance, r.name, r.activity_type);
+        }
+        return {
+          id: r.id,
+          name: r.name,
+          distance: r.distance,
+          ascent: r.ascent,
+          descent: r.descent,
+          duration: r.duration,
+          activityType: r.activity_type,
+          description: r.description || "",
+          tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+          dateCreated: r.date_created,
+          originalFilename: r.original_filename,
+          maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+          color: r.color || '#3b82f6',
+          hasTimestamps: r.has_timestamps === 1,
+          surfaceStats,
+          rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined
+        };
+      });
       
       res.json({ success: true, tracks: mapped });
     } catch (err: any) {
@@ -805,6 +819,18 @@ async function startServer() {
         return res.status(404).json({ success: false, error: "Track not found in library" });
       }
 
+      const points = JSON.parse(r.points_json || '[]');
+      let surfaceStats = r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined;
+
+      const calcStats = calculateSurfaceStatsFromPoints(points);
+      if (calcStats.length > 0) {
+        surfaceStats = calcStats;
+      } else if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
+        surfaceStats = generateMockSurfaceStats(r.distance, r.name, r.activity_type);
+      }
+
+      hydratePointsWithSurface(points, surfaceStats, r.distance);
+
       // Reconstruct fully hydrated track structure
       const track = {
         id: r.id,
@@ -818,9 +844,9 @@ async function startServer() {
         tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
         dateCreated: r.date_created,
         originalFilename: r.original_filename,
-        points: JSON.parse(r.points_json),
+        points,
         powerStats: r.power_stats_json ? JSON.parse(r.power_stats_json) : undefined,
-        surfaceStats: r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined,
+        surfaceStats,
         climbs: r.climbs_json ? JSON.parse(r.climbs_json) : undefined,
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',

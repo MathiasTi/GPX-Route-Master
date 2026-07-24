@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateMockSurfaceStats } from './gpxUtils';
 
 // Store the SQLite database file in a data directory for clean docker volume persistence
 const dbDir = path.join(process.cwd(), 'data');
@@ -267,6 +268,51 @@ function runInitDbStatements() {
     console.error('Failed to create database indexes:', e);
   }
 
+  // Ensure surface stats and point surfaces for ALL tracks in database
+  try {
+    const allTracks = db.prepare(`SELECT id, name, distance, activity_type, points_json, surface_stats_json FROM tracks`).all() as any[];
+    for (const rt of allTracks) {
+      let pts: any[] = [];
+      try {
+        pts = JSON.parse(rt.points_json || '[]');
+      } catch (e) {
+        continue;
+      }
+      if (!pts || pts.length === 0) continue;
+
+      let surfaceStats: any[] = [];
+      try {
+        if (rt.surface_stats_json) surfaceStats = JSON.parse(rt.surface_stats_json);
+      } catch (e) {}
+
+      let needsUpdate = false;
+      const calculated = calculateSurfaceStatsFromPoints(pts);
+
+      if (calculated.length > 0) {
+        if (JSON.stringify(calculated) !== JSON.stringify(surfaceStats)) {
+          surfaceStats = calculated;
+          needsUpdate = true;
+        }
+      } else if (!surfaceStats || surfaceStats.length === 0) {
+        surfaceStats = generateMockSurfaceStats(rt.distance, rt.name, rt.activity_type);
+        needsUpdate = true;
+      }
+
+      // Check if any point lacks surface property
+      const missingPointSurface = pts.some((p: any) => !p.surface);
+      if (missingPointSurface) {
+        hydratePointsWithSurface(pts, surfaceStats, rt.distance);
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        db.prepare(`UPDATE tracks SET surface_stats_json = ?, points_json = ? WHERE id = ?`).run(JSON.stringify(surfaceStats), JSON.stringify(pts), rt.id);
+      }
+    }
+  } catch (e) {
+    console.error('Error auto-sanitizing road track surface stats:', e);
+  }
+
   console.log('SQLite database initialized successfully at', dbPath);
 }
 
@@ -351,7 +397,7 @@ export function saveTrack(track: {
 }
 
 export function searchTracks(queryText: string = '', activityType?: string): DbTrackRecord[] {
-  let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, raw_file_json FROM tracks`;
+  let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json FROM tracks`;
   const conditions: string[] = [];
   const params: any[] = [];
 

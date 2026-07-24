@@ -356,7 +356,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     { key: 'elevation', label: 'Höhenprofil [m]', color1: '#3b82f6', color2: '#10b981', displayFn: (v: number) => `${v} m` },
     { key: 'pace', label: 'Pace / Tempo [min/km]', color1: '#f97316', color2: '#06b6d4', isPace: true, displayFn: (v: number) => formatPaceDecimal(v) },
     { key: 'speed', label: 'Geschwindigkeit [km/h]', color1: '#a855f7', color2: '#eab308', displayFn: (v: number) => `${v.toFixed(1)} km/h` },
-    { key: 'hr', label: 'Herzfrequenz [bpm]', color1: '#ef4444', color2: '#ec4899', displayFn: (v: number) => `${v} bpm` },
+    { key: 'hr', label: 'Herzfrequenz [bpm]', color1: '#ef4444', color2: '#0284c7', displayFn: (v: number) => `${v} bpm` },
     { key: 'power', label: 'Leistung / Watt [W]', color1: '#facc15', color2: '#14b8a6', displayFn: (v: number) => `${v} W` }
   ];
 

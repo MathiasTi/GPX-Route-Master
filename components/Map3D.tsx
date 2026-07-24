@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint } from '../types';
 import { calculateBearing } from '../utils/gpxUtils';
+import { Maximize2 } from 'lucide-react';
 
 interface Map3DProps {
   tracks: GPXTrack[];
@@ -564,6 +565,19 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
       </Map>
 
       <div className="absolute bottom-6 left-6 bg-white/90 backdrop-blur-sm p-4 rounded-xl shadow-lg z-10 w-64 border border-slate-200">
+        <div className="mb-3 pb-3 border-b border-slate-200">
+          <button
+            type="button"
+            onClick={fitToTracks}
+            className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 shadow cursor-pointer active:scale-95"
+            title="Zoom & Zentrieren auf ausgewählte & sichtbare Strecken"
+            aria-label="Auf ausgewählte und sichtbare Strecken zoomen"
+            id="btn-fit-tracks-3d"
+          >
+            <Maximize2 className="w-4 h-4" />
+            <span>Strecken anpassen</span>
+          </button>
+        </div>
         <div className="mb-4">
           <label className="flex justify-between text-xs font-bold text-slate-600 mb-2">
             <span>Neigung (Pitch)</span>

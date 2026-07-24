@@ -81,6 +81,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
 
 
+  const displayTrackColor = useMemo(() => {
+    if (!track.color) return '#2563eb';
+    const u = track.color.toUpperCase();
+    if (u === '#FF00FF' || u === '#FF1493' || u === '#DB2777' || u === '#EC4899') {
+      return '#2563eb';
+    }
+    return track.color;
+  }, [track.color]);
+
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;
 
@@ -343,7 +352,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     };
   }, [track, isSmoothed, estimatedSpeed]);
 
-  const padding = { top: 25, bottom: 25, left: 10, right: 10 };
+  const padding = { top: 25, bottom: 25, left: 52, right: 16 };
   const width = 1000;
   const height = 150;
 
@@ -676,7 +685,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       {/* Desktop Topbar */}
       <div className="hidden lg:flex justify-between items-center mb-2 px-2">
         <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: track.color }}></div>
+          <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: displayTrackColor }}></div>
           <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider md:max-w-md lg:max-w-xl break-words whitespace-normal leading-tight" title={track.name}>
             {track.name}
           </h3>
@@ -723,12 +732,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 HF
               </label>
             )}
-            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-pink-600 transition-colors uppercase tracking-wider">
+            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-violet-600 transition-colors uppercase tracking-wider">
               <input 
                 type="checkbox" 
                 checked={showSlope} 
                 onChange={(e) => setShowSlope(e.target.checked)}
-                className="w-3.5 h-3.5 text-pink-500 rounded bg-slate-100 border-slate-300 focus:ring-pink-500 cursor-pointer"
+                className="w-3.5 h-3.5 text-violet-500 rounded bg-slate-100 border-slate-300 focus:ring-violet-500 cursor-pointer"
               />
               Steigung
             </label>
@@ -896,12 +905,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 HF
               </label>
             )}
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-pink-600">
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-violet-600">
               <input 
                 type="checkbox" 
                 checked={showSlope} 
                 onChange={(e) => setShowSlope(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-pink-500"
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-violet-500"
               />
               Steigung
             </label>
@@ -983,12 +992,26 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 )}
               </>
             ) : (
-              <>
-                <span className="flex gap-1 items-center"><span className="text-emerald-600 text-[14px]">▲</span> <span className="text-sm text-slate-700">{track.ascent.toFixed(0)}m</span></span>
-                <span className="flex gap-1 items-center"><span className="text-rose-600 text-[14px]">▼</span> <span className="text-sm text-slate-700">{track.descent.toFixed(0)}m</span></span>
-                <span className="flex gap-1 items-center"><span className="text-slate-400">MAX STEIGUNG:</span> <span className="text-emerald-700 text-sm">{(track.maxSlope ?? 0).toFixed(1)}%</span></span>
-                <span className="flex gap-1 items-center"><span className="text-slate-400">MIN/MAX:</span> <span className="text-slate-700 text-sm">{`${minEle.toFixed(0)}/${maxEle.toFixed(0)}`}m</span></span>
-              </>
+              <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold font-mono">
+                <span className="flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60">
+                  <span className="text-[10px] text-emerald-600">▲</span>
+                  <span>{track.ascent.toFixed(0)}m</span>
+                  <span className="text-[9px] text-emerald-600 dark:text-emerald-400 uppercase tracking-wider font-sans font-extrabold ml-0.5">Anstieg</span>
+                </span>
+                <span className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60">
+                  <span className="text-[10px] text-rose-600">▼</span>
+                  <span>{track.descent.toFixed(0)}m</span>
+                  <span className="text-[9px] text-rose-600 dark:text-rose-400 uppercase tracking-wider font-sans font-extrabold ml-0.5">Abstieg</span>
+                </span>
+                <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2 py-0.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60">
+                  <span className="text-[9px] text-indigo-500 font-sans font-extrabold uppercase">Höhe:</span>
+                  <span>{minEle.toFixed(0)}m – {maxEle.toFixed(0)}m</span>
+                </span>
+                <span className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg border border-amber-200/80 dark:border-amber-800/60">
+                  <span className="text-[9px] text-amber-600 font-sans font-extrabold uppercase">Max Steigung:</span>
+                  <span>{(track.maxSlope ?? 0).toFixed(1)}%</span>
+                </span>
+              </div>
             )}
           </div>
       
@@ -1012,8 +1035,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         >
           <defs>
             <linearGradient id={`grad-${track.id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={track.color} stopOpacity="0.4" />
-              <stop offset="100%" stopColor={track.color} stopOpacity="0.05" />
+              <stop offset="0%" stopColor={displayTrackColor} stopOpacity="0.4" />
+              <stop offset="100%" stopColor={displayTrackColor} stopOpacity="0.05" />
             </linearGradient>
             {profileData.hasPower && (
               <linearGradient id={`power-gradient-${track.id}`} gradientUnits="userSpaceOnUse" x1="0" y1={height - padding.bottom} x2="0" y2={padding.top}>
@@ -1025,9 +1048,47 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </filter>
           </defs>
           
-          {/* Horizontal Grid */}
-          <line x1={padding.left} y1={padding.top} x2={width - padding.right} y2={padding.top} stroke="#f1f5f9" strokeWidth="1" />
-          <line x1={padding.left} y1={padding.top + graphHeight / 2} x2={width - padding.right} y2={padding.top + graphHeight / 2} stroke="#f8fafc" strokeWidth="1" />
+          {/* Horizontal Grid & Y-Axis Elevation Labels */}
+          {(() => {
+            const count = 4;
+            const step = eleRange / (count - 1);
+            const ticks = [];
+            for (let i = 0; i < count; i++) {
+              const val = minEle + i * step;
+              const y = height - padding.bottom - ((val - minEle) / eleRange) * graphHeight;
+              ticks.push({ val, y });
+            }
+            return ticks.map((tick, i) => (
+              <g key={`y-grid-${i}`}>
+                <line 
+                  x1={padding.left} 
+                  y1={tick.y} 
+                  x2={width - padding.right} 
+                  y2={tick.y} 
+                  stroke="rgba(203, 213, 225, 0.5)" 
+                  strokeWidth="1" 
+                  strokeDasharray={i === 0 ? undefined : "3 3"} 
+                />
+                <rect 
+                  x={2} 
+                  y={tick.y - 7} 
+                  width={padding.left - 6} 
+                  height={14} 
+                  rx="4" 
+                  fill="rgba(248, 250, 252, 0.95)" 
+                  className="dark:fill-slate-900/95" 
+                />
+                <text 
+                  x={padding.left - 6} 
+                  y={tick.y + 3.5} 
+                  textAnchor="end" 
+                  className="text-[10px] font-black font-mono fill-slate-800 dark:fill-slate-100"
+                >
+                  {Math.round(tick.val)}m
+                </text>
+              </g>
+            ));
+          })()}
           
           {/* Selection Highlights */}
           {selectedRegions.map((region, i) => (
@@ -1049,7 +1110,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           {showElevation && (
             <polyline
               fill="none"
-              stroke={track.color}
+              stroke={displayTrackColor}
               strokeWidth="2.5"
               strokeLinejoin="round"
               strokeLinecap="round"
@@ -1122,13 +1183,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   y1={yZero} 
                   x2={width - padding.right} 
                   y2={yZero} 
-                  stroke="rgba(236, 72, 153, 0.3)" // Light pink indicator
+                  stroke="rgba(139, 92, 246, 0.3)" 
                   strokeWidth="1" 
                   strokeDasharray="3 3" 
                 />
                 <polyline
                   fill="none"
-                  stroke="rgba(236, 72, 153, 0.75)" // Pink
+                  stroke="rgba(139, 92, 246, 0.8)" 
                   strokeWidth="1.5"
                   strokeLinejoin="round"
                   strokeLinecap="round"
@@ -1215,21 +1276,34 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <circle 
                 cx={maxSlopeX} 
                 cy={maxSlopeY} 
-                r="4.5" 
+                r="5" 
                 fill="#10b981" 
                 stroke="white" 
-                strokeWidth="1.5"
+                strokeWidth="2"
                 className="animate-pulse"
-                style={{ filter: 'drop-shadow(0px 0px 2px rgba(16,185,129,0.5))' }}
+                style={{ filter: 'drop-shadow(0px 0px 3px rgba(16,185,129,0.6))' }}
               />
-              <text 
-                x={maxSlopeX} 
-                y={maxSlopeY - 10} 
-                textAnchor="middle" 
-                className="text-[9px] fill-emerald-700 font-bold font-mono"
-              >
-                Max Steigung: {maxPosSlopeVal.toFixed(1)}%
-              </text>
+              <g transform={`translate(${maxSlopeX}, ${maxSlopeY - 14})`}>
+                <rect 
+                  x="-50" 
+                  y="-10" 
+                  width="100" 
+                  height="16" 
+                  rx="8" 
+                  fill="#059669" 
+                  stroke="#ffffff" 
+                  strokeWidth="1.5" 
+                  filter="url(#shadow)"
+                />
+                <text 
+                  x="0" 
+                  y="1.5" 
+                  textAnchor="middle" 
+                  className="text-[9px] fill-white font-extrabold font-mono"
+                >
+                  Steigung: {maxPosSlopeVal.toFixed(1)}%
+                </text>
+              </g>
             </g>
           )}
 
@@ -1239,21 +1313,34 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <circle 
                 cx={maxEleX} 
                 cy={maxEleY} 
-                r="4.5" 
+                r="5" 
                 fill="#ef4444" 
                 stroke="white" 
-                strokeWidth="1.5"
+                strokeWidth="2"
                 className="animate-pulse"
-                style={{ filter: 'drop-shadow(0px 0px 2px rgba(239,68,68,0.5))' }}
+                style={{ filter: 'drop-shadow(0px 0px 3px rgba(239,68,68,0.6))' }}
               />
-              <text 
-                x={maxEleX} 
-                y={maxEleY - 10} 
-                textAnchor="middle" 
-                className="text-[9px] fill-red-700 font-bold font-mono"
-              >
-                Höchster Punkt: {maxEle.toFixed(0)}m
-              </text>
+              <g transform={`translate(${maxEleX}, ${maxEleY - 14})`}>
+                <rect 
+                  x="-52" 
+                  y="-10" 
+                  width="104" 
+                  height="16" 
+                  rx="8" 
+                  fill="#dc2626" 
+                  stroke="#ffffff" 
+                  strokeWidth="1.5" 
+                  filter="url(#shadow)"
+                />
+                <text 
+                  x="0" 
+                  y="1.5" 
+                  textAnchor="middle" 
+                  className="text-[9px] fill-white font-extrabold font-mono"
+                >
+                  Höchster Ort: {Math.round(maxEle)}m
+                </text>
+              </g>
             </g>
           )}
 

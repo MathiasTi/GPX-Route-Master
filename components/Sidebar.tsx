@@ -1,10 +1,10 @@
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
@@ -29,6 +29,8 @@ import { CSS } from '@dnd-kit/utilities';
 interface TrackItemProps {
   track: GPXTrack;
   isMarked: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: (id: string) => void;
   onMark: (id: string) => void;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
@@ -37,16 +39,21 @@ interface TrackItemProps {
   onOpenAnalytics?: (id: string) => void;
   onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
-  onAnalyzeSurface?: (id: string) => void;
+  onAnalyzeSurface?: (id: string, force?: boolean) => void;
   onSetTrackSurface?: (id: string, surfaceType: string) => void;
   isAnalyzing?: boolean;
+  surfaceStatus?: { status: 'idle' | 'loading' | 'success' | 'error' | 'simulated'; message?: string; source?: 'osm' | 'terrain' | 'manual'; timestamp?: number };
   onSaveTrackToLibrary?: (id: string) => void;
   onOpenRawData?: (id: string) => void;
+  onOpenTimeGapAnalysis?: (id: string) => void;
+  onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
 const SortableTrackItem: React.FC<TrackItemProps> = ({ 
   track, 
   isMarked, 
+  isExpanded,
+  onToggleExpand,
   onMark, 
   onToggleVisibility, 
   onRemoveTrack, 
@@ -58,9 +65,24 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onAnalyzeSurface,
   onSetTrackSurface,
   isAnalyzing,
+  surfaceStatus,
   onSaveTrackToLibrary,
-  onOpenRawData
+  onOpenRawData,
+  onOpenTimeGapAnalysis,
+  onSelection
 }) => {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = isExpanded !== undefined ? isExpanded : localExpanded;
+
+  const handleToggleExpand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onToggleExpand) {
+      onToggleExpand(track.id);
+    } else {
+      setLocalExpanded(prev => !prev);
+    }
+  };
+
   const {
     attributes,
     listeners,
@@ -110,7 +132,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
         triggerHaptic('light');
         onMark(track.id);
       }}
-      className={`group cursor-pointer bg-white dark:bg-slate-900 border rounded-xl p-3 hover:shadow-md transition-all ${
+      className={`group cursor-pointer bg-white dark:bg-slate-900 border rounded-xl p-2.5 sm:p-3 hover:shadow-md transition-all ${
         isDragging ? 'shadow-xl opacity-50 bg-slate-50 dark:bg-slate-800' : ''
       } ${
         isMarked 
@@ -119,372 +141,553 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
       }`}
     >
       <div className="flex items-start gap-2">
-        <div {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} className="drag-handle p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 dark:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing">
+        <div {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} className="drag-handle p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 dark:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing mt-0.5">
           <GripVertical className="w-4 h-4" />
         </div>
         
         <div className="flex-1 min-w-0">
-          {/* Header row: color dot, title, activity toggle buttons */}
-          <div className="flex items-center justify-between gap-2 border-b border-slate-100/60 dark:border-slate-800/60 pb-2 mb-2">
+          {/* Header row: color dot, title, badges, visibility button, fold/unfold button */}
+          <div className="flex items-center justify-between gap-1.5 min-w-0">
             <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
               <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: track.color || '#3b82f6' }}></div>
               <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
                 {track.name}
               </span>
               {track.isVirtual && (
-                <span className="shrink-0 text-[8px] bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-extrabold px-1.5 py-0.5 rounded border border-orange-200/40 dark:border-orange-900/30 cursor-help" title="Diese Aktivität enthält keine echten GPS-Koordinaten (nur Leistungs-/Gesundheitsdaten)">
-                  ⚠️ Keine GPS-Spur
+                <span className="shrink-0 text-[8px] bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-extrabold px-1 py-0.5 rounded border border-orange-200/40 dark:border-orange-900/30 cursor-help" title="Diese Aktivität enthält keine echten GPS-Koordinaten (nur Leistungs-/Gesundheitsdaten)">
+                  ⚠️
                 </span>
               )}
             </div>
             
-            <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
               {track.activityType === 'running' ? (
                 <span 
-                  className="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-emerald-200/40 dark:border-emerald-900/30"
+                  className="inline-flex items-center gap-0.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md border border-emerald-200/40 dark:border-emerald-900/30"
                   title="Automatisch erkannt: Laufen"
                 >
-                  🏃 Lauf
+                  🏃
                 </span>
               ) : (
                 <span 
-                  className="inline-flex items-center gap-1 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-blue-200/40 dark:border-blue-900/30"
+                  className="inline-flex items-center gap-0.5 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md border border-blue-200/40 dark:border-blue-900/30"
                   title="Automatisch erkannt: Radsport"
                 >
-                  🚴 Rad
+                  🚴
                 </span>
               )}
+
+              {/* Quick eye visibility toggle */}
+              <button 
+                type="button"
+                onClick={() => onToggleVisibility(track.id)} 
+                className={`p-1 rounded-md border transition-all cursor-pointer flex items-center justify-center ${
+                  track.visible 
+                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/60 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700' 
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-200/60 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/50'
+                }`}
+                title={track.visible ? "Sichtbar (Klicken zum Ausblenden)" : "Ausgeblendet (Klicken zum Einblenden)"}
+              >
+                {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Fold / Unfold chevron toggle button */}
+              <button
+                type="button"
+                onClick={handleToggleExpand}
+                className={`p-1 rounded-md border transition-all cursor-pointer flex items-center justify-center ${
+                  expanded 
+                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/50' 
+                    : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 border-slate-200/60 dark:border-slate-700'
+                }`}
+                title={expanded ? "Details einklappen" : "Details ausklappen"}
+                aria-expanded={expanded}
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${expanded ? 'rotate-180 text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'}`} />
+              </button>
             </div>
           </div>
-                      {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) positioned exactly here! */}
-          <div className="grid grid-cols-4 gap-1 mb-2.5 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
-            <button 
-              type="button"
-              onClick={() => onToggleVisibility(track.id)} 
-              className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
-                track.visible 
-                  ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
-                  : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
-              }`}
-              title="Sichtbarkeit umschalten"
-            >
-              {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
-              <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
-            </button>
-            
-            {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-              <button 
-                type="button"
-                onClick={() => onOpenAnalytics(track.id)} 
-                className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                title="Ausführliche Daten- & Leistungsanalyse"
-              >
-                <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
-                <span>Analyse</span>
-              </button>
-            )}
 
-            {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
-              <button 
-                type="button"
-                onClick={() => onOpenClimbs(track.id)} 
-                className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                title="Steigungs- & Bergwertungs-Analyse öffnen"
-              >
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                <span>Berge ({trackClimbs.length})</span>
-              </button>
-            )}
-
-            {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-              <button 
-                type="button"
-                onClick={() => onOpenTrainingZones(track.id)} 
-                className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                title="Trainingszonen & Puls-Analyse öffnen"
-              >
-                <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
-                <span>Zonen</span>
-              </button>
-            )}
-
-            {onOpenRawData && (
-              <button 
-                type="button"
-                onClick={() => onOpenRawData(track.id)} 
-                className="p-1.5 bg-teal-50/80 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-350 rounded-lg border border-teal-250/20 dark:border-teal-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                title="Rohdaten & Telemetrie-Sätze inspizieren"
-              >
-                <FileCode className="w-3.5 h-3.5 text-teal-650 dark:text-teal-400" />
-                <span>Rohdaten</span>
-              </button>
-            )}
-
-            <button 
-              type="button"
-              onClick={handleExportGPX} 
-              className="p-1.5 bg-sky-50/80 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 rounded-lg border border-sky-250/20 dark:border-sky-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
-              title="Track zurück als GPX-Datei exportieren"
-            >
-              <Download className="w-3.5 h-3.5 text-sky-655 dark:text-sky-450" />
-              <span>Export</span>
-            </button>
-
-            <button 
-              type="button"
-              onClick={() => {
-                shareTrackNative({
-                  title: track.name,
-                  text: `🚴 GPX Route: ${track.name}\n📏 Distanz: ${track.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(track.ascent)}m`
-                });
-              }} 
-              className="p-1.5 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-lg border border-emerald-250/20 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
-              title="Route via Smartphone (WhatsApp, Messages, Strava) teilen"
-            >
-              <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Teilen</span>
-            </button>
-
-            <button 
-              type="button"
-              onClick={() => onSaveTrackToLibrary?.(track.id)} 
-              className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
-              title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
-            >
-              <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
-              <span>Sichern</span>
-            </button>
-
-            <button 
-              type="button"
-              onClick={() => onRemoveTrack(track.id)} 
-              className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-              title="Track vollständig entfernen"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
-              <span>Löschen</span>
-            </button>
-          </div>
-          
-          <div className="flex flex-col gap-1.5">
-            {/* Bento Grid Row 1: Strecke, Dauer, Pace */}
-            <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
-              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Strecke</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                  {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
-                </span>
-              </div>
-              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Dauer</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                  {track.duration ? (
-                    `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
-                  ) : (
-                    `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 65)}m`
-                  )}
-                </span>
-              </div>
-              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Tempo</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-300 truncate max-w-full">
-                  {track.duration ? (
-                    track.activityType === 'running' 
-                      ? formatPace(track.duration, track.distance)
-                      : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
-                  ) : (
-                    track.activityType === 'running'
-                      ? getPaceString(estimatedSpeed)
-                      : `${estimatedSpeed} km/h`
-                  )}
-                </span>
-              </div>
-            </div>
-
-            {/* Bento Grid Row 2: Anstieg, Abstieg, Max. Steigung */}
-            <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
-              <div className="bg-emerald-500/5 dark:bg-emerald-950/10 border border-emerald-100/30 dark:border-emerald-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-emerald-600 dark:text-emerald-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
-                  Anstieg
-                </span>
-                <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
-                  +{Math.round(track.ascent).toLocaleString('de-DE')}m
-                </span>
-              </div>
-              <div className="bg-rose-500/5 dark:bg-rose-950/10 border border-rose-100/30 dark:border-rose-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-rose-600 dark:text-rose-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
-                  Abstieg
-                </span>
-                <span className="font-extrabold text-rose-700 dark:text-rose-400">
-                  -{Math.round(track.descent).toLocaleString('de-DE')}m
-                </span>
-              </div>
-              <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Steigung</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                  {(track.maxSlope ?? 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
-                </span>
-              </div>
-            </div>
-
-            {/* Miscellaneous status bar for HR or point length */}
-            <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/40 dark:border-slate-800/40 pt-1.5 mt-0.5">
-              <span>{track.points.length.toLocaleString('de-DE')} GPX-Punkte</span>
-              {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
-                <span className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5 px-1 py-0.5 rounded border border-rose-500/10 shadow-3xs">
-                  <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HF-Daten
-                </span>
+          {/* Compact summary bar (Always visible to provide immediate overview) */}
+          <div 
+            onClick={handleToggleExpand}
+            className="flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-slate-400 pt-1.5 mt-1 border-t border-slate-100/60 dark:border-slate-800/60 cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+            title={expanded ? "Klicken zum Einklappen" : "Klicken zum Ausklappen der Details"}
+          >
+            <span className="font-bold text-slate-700 dark:text-slate-300">
+              {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
+            </span>
+            <span>·</span>
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+              +{Math.round(track.ascent)}m
+            </span>
+            <span>·</span>
+            <span>
+              {track.duration ? (
+                `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
+              ) : (
+                `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
               )}
-            </div>
-
-            {/* Description/Notes block if present */}
-            {track.description && (
-              <div className="bg-indigo-50/50 dark:bg-indigo-950/10 border border-indigo-100/45 dark:border-indigo-900/30 rounded-lg p-2 text-[10px] text-slate-650 dark:text-slate-300 leading-normal font-semibold text-left">
-                <span className="font-bold text-indigo-600 dark:text-indigo-400 block text-[8px] uppercase tracking-wider mb-0.5">Notiz / Kommentar</span>
-                {track.description}
-              </div>
-            )}
-
-            {/* Power Stats Widget */}
-            {track.powerStats && (
-              <div className="bg-amber-500/5 dark:bg-amber-950/10 border border-amber-100/40 dark:border-amber-900/20 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
-                <span className="flex items-center gap-1 text-amber-600 dark:text-amber-500 font-extrabold text-[8px] uppercase tracking-wider">
-                  <Zap className="w-3 h-3 fill-amber-500/10" /> NP Daten
-                </span>
-                <span className="text-slate-300 dark:text-slate-800">|</span>
-                <span className="font-bold text-slate-700 dark:text-slate-350" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
-                <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
-                <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">TSS {Math.round(track.powerStats.tss || 0)}</span>
-              </div>
-            )}
-
-            {/* Climb Analysis Info Box */}
+            </span>
             {trackClimbs && trackClimbs.length > 0 && (
-              <div 
-                className="bg-indigo-50/20 dark:bg-indigo-950/15 border border-indigo-100/40 dark:border-indigo-900/25 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20"
-                onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
-                title="Bergwertungs-Analyse auf separater Seite öffnen"
-              >
-                <span className="flex items-center gap-1 text-indigo-700 dark:text-indigo-450 font-extrabold text-[8px] uppercase tracking-wider">
-                  <TrendingUp className="w-3 h-3 shrink-0 text-indigo-500" />
-                  <span>Anstiege / Berganalyse</span>
-                </span>
-                <span className="font-extrabold text-blue-650 dark:text-blue-400 underline hover:no-underline">
-                  {trackClimbs.length} Berge ➔
-                </span>
-              </div>
+              <>
+                <span>·</span>
+                <span className="text-amber-600 dark:text-amber-400 font-semibold">{trackClimbs.length} ⛰️</span>
+              </>
             )}
+            <span className="text-[8.5px] font-sans font-bold text-blue-600 dark:text-blue-400 ml-1">
+              {expanded ? '▲' : '▼'}
+            </span>
+          </div>
 
-            {/* Surface stats presentation */}
-            {track.surfaceStats && track.surfaceStats.length > 0 && (
-              <div className="text-[9.5px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-1 font-mono">
-                {track.surfaceStats.map((surface, idx) => (
-                  <span key={idx} className="bg-slate-50 dark:bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 text-[9px]">
-                    {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Surface analysis trigger & manual surface override */}
-            <div className="pt-1.5 border-t border-slate-100/60 dark:border-slate-800/40 flex items-center justify-between gap-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
-              <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 flex items-center gap-1 uppercase tracking-wider">
-                <Layers size={10} className="text-slate-400 dark:text-slate-500 stroke-[2.5]" /> Untergrund:
-              </span>
-              <div className="flex items-center gap-1">
-                <select
-                  value={track.surfaceStats && track.surfaceStats.length === 1 ? track.surfaceStats[0].type : ""}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    if (e.target.value === "osm") {
-                      onAnalyzeSurface?.(track.id);
-                    } else if (e.target.value) {
-                      onSetTrackSurface?.(track.id, e.target.value);
-                    }
-                  }}
-                  className="text-[9px] font-medium bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-1 py-0.5 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                  title="Untergrundtyp manuell festlegen oder per OSM analysieren"
-                >
-                  <option value="">Status / Typ...</option>
-                  <option value="Asphalt">Asphalt (100%)</option>
-                  <option value="Schotter">Schotter / Gravel (100%)</option>
-                  <option value="Fahrradweg">Fahrradweg (100%)</option>
-                  <option value="Waldweg">Waldweg (100%)</option>
-                  <option value="osm">⚡ OSM auto-analysieren</option>
-                </select>
-                <button
+          {/* Expanded Content Section */}
+          {expanded && (
+            <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+              {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) */}
+              <div className="grid grid-cols-4 gap-1 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
+                <button 
                   type="button"
-                  disabled={isAnalyzing}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAnalyzeSurface?.(track.id);
-                  }}
-                  className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md transition-all cursor-pointer select-none border ${
-                    isAnalyzing
-                      ? "bg-blue-100/40 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900 animate-pulse cursor-wait"
-                      : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-450 hover:bg-blue-100 dark:hover:bg-blue-900/65 border-blue-100 dark:border-blue-900/50 hover:border-blue-300 dark:hover:border-blue-800"
+                  onClick={() => onToggleVisibility(track.id)} 
+                  className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
+                    track.visible 
+                      ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
+                      : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
                   }`}
-                  title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+                  title="Sichtbarkeit umschalten"
                 >
-                  {isAnalyzing ? "Analysiere..." : "OSM"}
+                  {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
+                  <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
+                </button>
+                
+                {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenAnalytics(track.id)} 
+                    className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Ausführliche Daten- & Leistungsanalyse"
+                  >
+                    <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                    <span>Analyse</span>
+                  </button>
+                )}
+
+                {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenClimbs(track.id)} 
+                    className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Steigungs- & Bergwertungs-Analyse öffnen"
+                  >
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Berge ({trackClimbs.length})</span>
+                  </button>
+                )}
+
+                {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenTrainingZones(track.id)} 
+                    className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Trainingszonen & Puls-Analyse öffnen"
+                  >
+                    <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
+                    <span>Zonen</span>
+                  </button>
+                )}
+
+                {onOpenRawData && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenRawData(track.id)} 
+                    className="p-1.5 bg-teal-50/80 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-350 rounded-lg border border-teal-250/20 dark:border-teal-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Rohdaten & Telemetrie-Sätze inspizieren"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-teal-650 dark:text-teal-400" />
+                    <span>Rohdaten</span>
+                  </button>
+                )}
+
+                {onOpenTimeGapAnalysis && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenTimeGapAnalysis(track.id)} 
+                    className="p-1.5 bg-amber-50/80 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 rounded-lg border border-amber-250/20 dark:border-amber-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Zeitlücken > 30s analysieren & Track trennen"
+                  >
+                    <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>Zeitlücken</span>
+                  </button>
+                )}
+
+                <button 
+                  type="button"
+                  onClick={handleExportGPX} 
+                  className="p-1.5 bg-sky-50/80 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 rounded-lg border border-sky-250/20 dark:border-sky-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+                  title="Track zurück als GPX-Datei exportieren"
+                >
+                  <Download className="w-3.5 h-3.5 text-sky-655 dark:text-sky-450" />
+                  <span>Export</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => {
+                    shareTrackNative({
+                      title: track.name,
+                      text: `🚴 GPX Route: ${track.name}\n📏 Distanz: ${track.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(track.ascent)}m`
+                    });
+                  }} 
+                  className="p-1.5 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-lg border border-emerald-250/20 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+                  title="Route via Smartphone (WhatsApp, Messages, Strava) teilen"
+                >
+                  <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>Teilen</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => onSaveTrackToLibrary?.(track.id)} 
+                  className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
+                  title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
+                >
+                  <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                  <span>Sichern</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => onRemoveTrack(track.id)} 
+                  className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                  title="Track vollständig entfernen"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
+                  <span>Löschen</span>
                 </button>
               </div>
+              
+              <div className="flex flex-col gap-1.5">
+                {/* Bento Grid Row 1: Strecke, Dauer, Pace */}
+                <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Strecke</span>
+                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                      {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
+                    </span>
+                  </div>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Dauer</span>
+                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                      {track.duration ? (
+                        `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
+                      ) : (
+                        `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 65)}m`
+                      )}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Tempo</span>
+                    <span className="font-extrabold text-slate-700 dark:text-slate-300 truncate max-w-full">
+                      {track.duration ? (
+                        track.activityType === 'running' 
+                          ? formatPace(track.duration, track.distance)
+                          : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+                      ) : (
+                        track.activityType === 'running'
+                          ? getPaceString(estimatedSpeed)
+                          : `${estimatedSpeed} km/h`
+                      )}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bento Grid Row 2: Anstieg, Abstieg, Max. Steigung */}
+                <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+                  <div 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const climbs = trackClimbs && trackClimbs.length > 0 ? trackClimbs : findClimbs(track.points || []);
+                      if (climbs.length > 0 && onSelection) {
+                        const pts = climbs.flatMap(c => track.points.slice(c.startIndex, c.endIndex + 1));
+                        if (pts.length > 0) {
+                          const lats = pts.map(p => p.lat);
+                          const lngs = pts.map(p => p.lng);
+                          const minLat = Math.min(...lats);
+                          const maxLat = Math.max(...lats);
+                          const minLng = Math.min(...lngs);
+                          const maxLng = Math.max(...lngs);
+                          const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
+                          const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
+                          onSelection({
+                            minLat: minLat - latBuf,
+                            maxLat: maxLat + latBuf,
+                            minLng: minLng - lngBuf,
+                            maxLng: maxLng + lngBuf
+                          });
+                        }
+                      }
+                    }}
+                    className="bg-emerald-500/5 dark:bg-emerald-950/10 border border-emerald-100/30 dark:border-emerald-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 transition-colors"
+                    title="Klicken zum Zoomen auf Anstiege auf der Karte"
+                  >
+                    <span className="text-[8px] text-emerald-600 dark:text-emerald-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                      Anstieg 🔍
+                    </span>
+                    <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
+                      +{Math.round(track.ascent).toLocaleString('de-DE')}m
+                    </span>
+                  </div>
+                  <div className="bg-rose-500/5 dark:bg-rose-950/10 border border-rose-100/30 dark:border-rose-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-rose-600 dark:text-rose-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                      Abstieg
+                    </span>
+                    <span className="font-extrabold text-rose-700 dark:text-rose-400">
+                      -{Math.round(track.descent).toLocaleString('de-DE')}m
+                    </span>
+                  </div>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Steigung</span>
+                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                      {(track.maxSlope ?? 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Miscellaneous status bar for HR or point length */}
+                <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/40 dark:border-slate-800/40 pt-1.5 mt-0.5">
+                  <span>{track.points.length.toLocaleString('de-DE')} GPX-Punkte</span>
+                  {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
+                    <span className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5 px-1 py-0.5 rounded border border-rose-500/10 shadow-3xs">
+                      <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HF-Daten
+                    </span>
+                  )}
+                </div>
+
+                {/* Description/Notes block if present */}
+                {track.description && (
+                  <div className="bg-indigo-50/50 dark:bg-indigo-950/10 border border-indigo-100/45 dark:border-indigo-900/30 rounded-lg p-2 text-[10px] text-slate-650 dark:text-slate-300 leading-normal font-semibold text-left">
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400 block text-[8px] uppercase tracking-wider mb-0.5">Notiz / Kommentar</span>
+                    {track.description}
+                  </div>
+                )}
+
+                {/* Power Stats Widget */}
+                {track.powerStats && (
+                  <div className="bg-amber-500/5 dark:bg-amber-950/10 border border-amber-100/40 dark:border-amber-900/20 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
+                    <span className="flex items-center gap-1 text-amber-600 dark:text-amber-500 font-extrabold text-[8px] uppercase tracking-wider">
+                      <Zap className="w-3 h-3 fill-amber-500/10" /> NP Daten
+                    </span>
+                    <span className="text-slate-300 dark:text-slate-800">|</span>
+                    <span className="font-bold text-slate-700 dark:text-slate-350" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
+                    <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
+                    <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">TSS {Math.round(track.powerStats.tss || 0)}</span>
+                  </div>
+                )}
+
+                {/* Climb Analysis Info Box & Quick Zoom Chips */}
+                {trackClimbs && trackClimbs.length > 0 && (
+                  <div className="space-y-1">
+                    <div 
+                      className="bg-indigo-50/20 dark:bg-indigo-950/15 border border-indigo-100/40 dark:border-indigo-900/25 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20"
+                      onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
+                      title="Bergwertungs-Analyse auf separater Seite öffnen"
+                    >
+                      <span className="flex items-center gap-1 text-indigo-700 dark:text-indigo-450 font-extrabold text-[8px] uppercase tracking-wider">
+                        <TrendingUp className="w-3 h-3 shrink-0 text-indigo-500" />
+                        <span>Anstiege / Berganalyse</span>
+                      </span>
+                      <span className="font-extrabold text-blue-650 dark:text-blue-400 underline hover:no-underline">
+                        {trackClimbs.length} Berge ➔
+                      </span>
+                    </div>
+                    
+                    {/* Individual climb quick zoom chips */}
+                    <div className="flex flex-wrap gap-1 pt-0.5">
+                      {trackClimbs.map((climb, cIdx) => (
+                        <button
+                          key={cIdx}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const climbPts = track.points.slice(climb.startIndex, climb.endIndex + 1);
+                            if (climbPts.length > 0 && onSelection) {
+                              const lats = climbPts.map(p => p.lat);
+                              const lngs = climbPts.map(p => p.lng);
+                              const minLat = Math.min(...lats);
+                              const maxLat = Math.max(...lats);
+                              const minLng = Math.min(...lngs);
+                              const maxLng = Math.max(...lngs);
+                              const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
+                              const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
+                              onSelection({
+                                minLat: minLat - latBuf,
+                                maxLat: maxLat + latBuf,
+                                minLng: minLng - lngBuf,
+                                maxLng: maxLng + lngBuf
+                              });
+                            }
+                          }}
+                          className="bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/40 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-colors cursor-pointer flex items-center gap-1"
+                          title={`Anstieg #${cIdx + 1} auf Karte anzoomen (${(climb.distance / 1000).toFixed(1)} km · +${Math.round(climb.ascent)}m)`}
+                        >
+                          <span>🚩 Berg #{cIdx + 1}</span>
+                          <span className="text-[8px] text-amber-600 dark:text-amber-400 font-normal">+{Math.round(climb.ascent)}m</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Surface stats presentation */}
+                {track.surfaceStats && track.surfaceStats.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+                      {track.surfaceStats.map((surface, idx) => {
+                        const totalDist = track.surfaceStats!.reduce((sum, s) => sum + s.distance, 0) || 1;
+                        const pct = (surface.distance / totalDist) * 100;
+                        const getSurfColor = (s: string) => {
+                          switch (s) {
+                            case "Asphalt": return "#2563eb"; // Royal Blue
+                            case "Schotter": return "#d97706"; // Amber
+                            case "Waldweg": return "#16a34a"; // Forest Green
+                            case "Fahrradweg": return "#0284c7"; // Sky Blue
+                            case "Kopfsteinpflaster": return "#78350f"; // Brown
+                            case "Straße": return "#4f46e5"; // Indigo
+                            default: return "#64748b"; // Slate
+                          }
+                        };
+                        return (
+                          <div 
+                            key={idx} 
+                            style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
+                            title={`${surface.type} (${pct.toFixed(1)}%)`} 
+                          />
+                        );
+                      })}
+                    </div>
+                    <div className="text-[9.5px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-1 font-mono">
+                      {track.surfaceStats.map((surface, idx) => {
+                        const getSurfColor = (s: string) => {
+                          switch (s) {
+                            case "Asphalt": return "#2563eb";
+                            case "Schotter": return "#d97706";
+                            case "Waldweg": return "#16a34a";
+                            case "Fahrradweg": return "#0284c7";
+                            case "Kopfsteinpflaster": return "#78350f";
+                            case "Straße": return "#4f46e5";
+                            default: return "#64748b";
+                          }
+                        };
+                        return (
+                          <span key={idx} className="bg-slate-50 dark:bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 text-[9px] flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSurfColor(surface.type) }}></span>
+                            {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Surface analysis trigger & manual surface override */}
+                <div className="pt-1.5 border-t border-slate-100/60 dark:border-slate-800/40 flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 flex items-center gap-1 uppercase tracking-wider">
+                      <Layers size={10} className="text-slate-400 dark:text-slate-500 stroke-[2.5]" /> Untergrund:
+                    </span>
+                    <select
+                      value={track.surfaceStats && track.surfaceStats.length === 1 ? track.surfaceStats[0].type : ""}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        if (e.target.value === "osm") {
+                          onAnalyzeSurface?.(track.id, true);
+                        } else if (e.target.value) {
+                          onSetTrackSurface?.(track.id, e.target.value);
+                        }
+                      }}
+                      className="text-[9px] font-medium bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-1 py-0.5 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      title="Untergrundtyp manuell festlegen oder per OSM analysieren"
+                    >
+                      <option value="">Status / Typ wählen...</option>
+                      <option value="osm">🌐 Per OpenStreetMap (OSM) analysieren</option>
+                      <option value="Asphalt">Asphalt (100%)</option>
+                      <option value="Schotter">Schotter / Gravel (100%)</option>
+                      <option value="Fahrradweg">Fahrradweg (100%)</option>
+                      <option value="Waldweg">Waldweg (100%)</option>
+                    </select>
+                  </div>
+
+                  {/* Status Feedback Badge / Card */}
+                  {surfaceStatus && surfaceStatus.status !== 'idle' && (
+                    <div className={`p-1.5 rounded-md text-[10px] flex items-start gap-1.5 border shadow-sm ${
+                      surfaceStatus.status === 'loading'
+                        ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/80 text-blue-800 dark:text-blue-200 animate-pulse'
+                        : surfaceStatus.status === 'success'
+                        ? 'bg-emerald-50/90 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/80 text-emerald-800 dark:text-emerald-200'
+                        : surfaceStatus.status === 'simulated'
+                        ? 'bg-amber-50/90 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/80 text-amber-800 dark:text-amber-200'
+                        : 'bg-rose-50/90 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/80 text-rose-800 dark:text-rose-200'
+                    }`}>
+                      {surfaceStatus.status === 'loading' && <Loader2 size={13} className="animate-spin shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />}
+                      {surfaceStatus.status === 'success' && <CheckCircle2 size={13} className="shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />}
+                      {surfaceStatus.status === 'simulated' && <Info size={13} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />}
+                      {surfaceStatus.status === 'error' && <AlertTriangle size={13} className="shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />}
+
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-[10px] flex items-center justify-between">
+                          <span>
+                            {surfaceStatus.status === 'loading' && "Analyse läuft..."}
+                            {surfaceStatus.status === 'success' && "OSM-Analyse abgeschlossen"}
+                            {surfaceStatus.status === 'simulated' && "Geländeprofil ermittelt"}
+                            {surfaceStatus.status === 'error' && "Analyse-Fehler"}
+                          </span>
+                          {surfaceStatus.timestamp && (
+                            <span className="text-[8.5px] font-normal opacity-70 ml-1">
+                              {new Date(surfaceStatus.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                        </div>
+                        {surfaceStatus.message && (
+                          <p className="text-[9px] opacity-90 mt-0.5 leading-tight">{surfaceStatus.message}</p>
+                        )}
+                      </div>
+
+                      {surfaceStatus.status === 'error' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAnalyzeSurface?.(track.id, true);
+                          }}
+                          className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-[9px] font-bold shrink-0 transition-colors cursor-pointer"
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Permanent action button - always ready so user never needs to click twice */}
+                  <button
+                    type="button"
+                    disabled={isAnalyzing}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAnalyzeSurface?.(track.id, true);
+                    }}
+                    className={`w-full flex items-center justify-center gap-1.5 text-[10px] font-bold px-2 py-1.5 rounded-md transition-all cursor-pointer select-none border shadow-sm ${
+                      isAnalyzing
+                        ? "bg-blue-100/60 text-blue-700 border-blue-300 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-700 animate-pulse cursor-wait"
+                        : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 border-blue-200 dark:border-blue-800/50 hover:border-blue-300 dark:hover:border-blue-700 shadow-blue-500/5 dark:shadow-blue-900/10"
+                    }`}
+                    title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+                  >
+                    <RefreshCw size={11} className={isAnalyzing ? "animate-spin text-blue-600 dark:text-blue-400" : ""} />
+                    {isAnalyzing ? "Oberflächen-Analyse läuft..." : "Oberflächen-Analyse starten (OSM)"}
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-
-        {/* Hover actions panel on the right of the card, only visible on md screens & above */}
-        <div className="hidden md:flex flex-col gap-1 items-center bg-slate-50 dark:bg-slate-900 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          <button 
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onToggleVisibility(track.id); }} 
-            className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors cursor-pointer" 
-            title="Sichtbarkeit umschalten"
-          >
-            {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-          </button>
-          
-          {track.powerStats && showAnalyticsAndZones && onOpenAnalytics && (
-            <button 
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenAnalytics(track.id); }} 
-              className="p-1 hover:bg-indigo-100 rounded text-indigo-600 transition-colors cursor-pointer" 
-              title="Erweiterte Analyse"
-            >
-              <BarChart2 className="w-3.5 h-3.5" />
-            </button>
           )}
-
-          {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
-            <button 
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenClimbs(track.id); }} 
-              className="p-1 hover:bg-emerald-100 rounded text-emerald-600 transition-colors cursor-pointer" 
-              title="Steigungs- & Bergwertungs-Analyse öffnen"
-            >
-              <TrendingUp className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          {showAnalyticsAndZones && onOpenTrainingZones && (
-            <button 
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenTrainingZones(track.id); }} 
-              className="p-1 hover:bg-rose-100 rounded text-rose-600 transition-colors cursor-pointer" 
-              title="Trainingszonen & Puls-Analyse öffnen"
-            >
-              <Heart className="w-3.5 h-3.5 fill-rose-100" />
-            </button>
-          )}
-
-          <button 
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onRemoveTrack(track.id); }} 
-            className="p-1 hover:bg-red-100 rounded text-red-500 transition-colors cursor-pointer" 
-            title="Track entfernen"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
         </div>
       </div>
     </div>
@@ -534,19 +737,23 @@ interface SidebarProps {
   onOpenSummaryReport?: (id?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
+  onOpenWeather?: () => void;
   onOpenRawData?: (id: string) => void;
+  onOpenTimeGapAnalysis?: (id?: string) => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
   onUpdateTextMarker: (id: string, updates: Partial<TextMarker>) => void;
   hoveredPoint: any;
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
-  onAnalyzeSurface?: (id: string) => void;
+  onAnalyzeSurface?: (id: string, force?: boolean) => void;
   onSetTrackSurface?: (id: string, surfaceType: string) => void;
   analyzingSurfaces?: Record<string, boolean>;
+  surfaceAnalysisStatuses?: Record<string, any>;
   onLoadLibraryTrack?: (track: GPXTrack) => void;
   onSaveTrackToLibrary?: (id: string) => void;
   selectionBounds?: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
+  onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
   onClearSelection?: () => void;
   isDark?: boolean;
   onToggleTheme?: () => void;
@@ -603,7 +810,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenSummaryReport,
   onOpenAnalytics,
   onOpenClimbs,
+  onOpenWeather,
   onOpenRawData,
+  onOpenTimeGapAnalysis,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
@@ -613,9 +822,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   onAnalyzeSurface,
   onSetTrackSurface,
   analyzingSurfaces,
+  surfaceAnalysisStatuses,
   onLoadLibraryTrack,
   onSaveTrackToLibrary,
   selectionBounds,
+  onSelection,
   onClearSelection,
   isDark,
   onToggleTheme,
@@ -628,15 +839,15 @@ const Sidebar: React.FC<SidebarProps> = ({
   showDbRunningHeatmap = false,
   setShowDbRunningHeatmap
 }) => {
-  const [showAdvancedSettings, setShowAdvancedSettings] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'active' | 'library'>('active');
-  const [isWeatherExpanded, setIsWeatherExpanded] = React.useState(false);
-  const [isAboutOpen, setIsAboutOpen] = React.useState(false);
-  const [latestVersion, setLatestVersion] = React.useState('1.3.0');
-  const [latestBuildDate, setLatestBuildDate] = React.useState('');
-  const [isOnline, setIsOnline] = React.useState(navigator.onLine);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
+  const [isWeatherExpanded, setIsWeatherExpanded] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [latestVersion, setLatestVersion] = useState('1.3.0');
+  const [latestBuildDate, setLatestBuildDate] = useState('');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const updateOnline = () => setIsOnline(navigator.onLine);
     window.addEventListener('online', updateOnline);
     window.addEventListener('offline', updateOnline);
@@ -647,7 +858,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, []);
 
   // Load latest version on startup
-  React.useEffect(() => {
+  useEffect(() => {
     const fetchLatestVersion = async () => {
       try {
         const res = await fetch(getApiUrl('/api/versions'));
@@ -675,7 +886,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, []);
 
   // Auto-switch to Library tab when user draws a selection bound
-  React.useEffect(() => {
+  useEffect(() => {
     if (selectionBounds) {
       setActiveTab('library');
     }
@@ -829,6 +1040,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                 Aktivitäten vergleichen
               </button>
 
+              <button 
+                onClick={() => onOpenTimeGapAnalysis?.(markedTrackId || undefined)}
+                disabled={tracks.length === 0}
+                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-orange-100 dark:shadow-none transition-all cursor-pointer"
+                title="Erkennt Unterbrechungen > 30s und erlaubt das Trennen oder Schließen von Zeitlücken"
+              >
+                <Scissors className="w-4 h-4 text-amber-200" />
+                Zeitlücken & Trennen
+              </button>
+
               {markedTrack && (
                 <button 
                   onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
@@ -882,24 +1103,42 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
 
             <section className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <button
-                onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
-                className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 transition-all cursor-pointer"
-              >
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 transition-all">
+                <button
+                  onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
+                  className="flex-1 flex items-center gap-2 text-left cursor-pointer"
+                >
                   <span className="text-base">🌤️</span>
-                  <div className="text-left">
+                  <div>
                     <div className="text-xs font-bold text-slate-800 dark:text-slate-100">Wetter & Routen-Prognose</div>
-                    <div className="text-[10px] text-slate-400 font-medium">Prognose am Startpunkt</div>
+                    <div className="text-[10px] text-slate-400 font-medium">Start, Gipfel & Zielprognose</div>
                   </div>
+                </button>
+                <div className="flex items-center gap-1">
+                  {onOpenWeather && (
+                    <button
+                      onClick={onOpenWeather}
+                      title="Große Wetter-Ansicht öffnen"
+                      className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                    >
+                      <ExternalLink size={13} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
+                    className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 transition-colors cursor-pointer"
+                  >
+                    {isWeatherExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
                 </div>
-                {isWeatherExpanded ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
-              </button>
+              </div>
 
               {isWeatherExpanded && (
                 <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                   <WeatherOverlay
-                    track={markedTrack}
+                    track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                    allTracks={tracks}
+                    onSelectTrack={onMarkTrack}
                     selectedDate={selectedDate}
                     setSelectedDate={setSelectedDate}
                     selectedTime={selectedTime}
@@ -1038,6 +1277,62 @@ const Sidebar: React.FC<SidebarProps> = ({
             )}
 
 
+
+            {/* Custom Text Markers / Notes Section */}
+            {textMarkers && textMarkers.length > 0 && (
+              <section className="space-y-2.5 border-t border-slate-100/60 dark:border-slate-800/40 pt-3">
+                <div className="flex justify-between items-center px-1">
+                  <div className="flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-blue-500" />
+                    <h2 className="text-xs font-bold text-slate-700 dark:text-slate-300">Notizen & Marker ({textMarkers.length})</h2>
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerHaptic('medium');
+                      textMarkers.forEach(m => onDeleteTextMarker(m.id));
+                    }}
+                    className="text-[10px] font-extrabold text-red-500 hover:text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 px-2 py-0.5 rounded transition-all cursor-pointer flex items-center gap-1 border border-red-200/50 dark:border-red-900/30"
+                    title="Alle Marker entfernen"
+                    id="btn-remove-all-markers"
+                  >
+                    <Trash2 className="w-2.5 h-2.5" />
+                    <span>Alle entfernen</span>
+                  </button>
+                </div>
+
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                  {textMarkers.map((m) => (
+                    <div 
+                      key={m.id}
+                      className="p-2 bg-slate-50 dark:bg-slate-900/60 hover:bg-slate-100/80 dark:hover:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between text-xs transition-all"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs shrink-0">🏷️</span>
+                        <div className="min-w-0">
+                          <div className="font-extrabold text-slate-800 dark:text-slate-200 text-[11px] truncate">{m.label}</div>
+                          <div className="text-[9px] text-slate-400 font-mono">
+                            {m.distanceAlongTrack !== undefined ? `km ${m.distanceAlongTrack.toFixed(1)} · ` : ''}
+                            {m.lat.toFixed(4)}, {m.lng.toFixed(4)}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          triggerHaptic('light');
+                          onDeleteTextMarker(m.id);
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-red-500 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors shrink-0 cursor-pointer"
+                        title="Marker entfernen"
+                        aria-label={`Marker "${m.label}" entfernen`}
+                        id={`btn-sidebar-remove-marker-${m.id}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
             <section className="space-y-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-4">
               <button 
@@ -1182,8 +1477,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onAnalyzeSurface={onAnalyzeSurface}
                             onSetTrackSurface={onSetTrackSurface}
                             isAnalyzing={analyzingSurfaces?.[track.id] || false}
+                            surfaceStatus={surfaceAnalysisStatuses?.[track.id]}
                             onSaveTrackToLibrary={onSaveTrackToLibrary}
                             onOpenRawData={onOpenRawData}
+                            onOpenTimeGapAnalysis={onOpenTimeGapAnalysis}
+                            onSelection={onSelection}
                           />
                         ))}
                       </div>
@@ -1218,10 +1516,11 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
               <button
                 onClick={() => setIsAboutOpen(true)}
-                className="font-mono text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold"
-                title="Über dieses System / Versionsverlauf & Cache anzeigen"
+                className="font-mono text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200/70 dark:border-slate-700 hover:border-blue-300"
+                title="Über dieses System / Versionsverlauf & Changelog öffnen"
               >
-                v{latestVersion}
+                <span>v{latestVersion}</span>
+                <span className="text-[9px] text-blue-600 dark:text-blue-400 font-semibold underline underline-offset-2">Changelog</span>
               </button>
             </div>
             {latestBuildDate && (

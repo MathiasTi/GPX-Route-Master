@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
-import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateMockSurfaceStats } from "./utils/gpxUtils.js";
+import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import fs from "fs";
 import os from "os";
 
@@ -284,12 +284,12 @@ async function startServer() {
         weatherUrl.searchParams.set("longitude", String(parsedLng));
         weatherUrl.searchParams.set("start_date", targetDate);
         weatherUrl.searchParams.set("end_date", targetDate);
-        weatherUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max");
+        weatherUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max,apparent_temperature_max,apparent_temperature_min,uv_index_max");
         weatherUrl.searchParams.set("timezone", "auto");
 
         console.log(`[Weather API] Querying live forecast for date ${targetDate}`);
         
-        const response = await fetch(weatherUrl.toString());
+        const response = await fetch(weatherUrl.toString(), { signal: AbortSignal.timeout(4000) });
         if (!response.ok) {
           throw new Error(`Status ${response.status}`);
         }
@@ -302,6 +302,10 @@ async function startServer() {
           const calculatedTemp = Math.round((tMax + tMin) / 2);
           const windSpeed = Math.round(data.daily.wind_speed_10m_max[0] || 10);
           const pProb = Math.round(data.daily.precipitation_probability_max[0] || 0);
+          const appMax = data.daily.apparent_temperature_max?.[0];
+          const appMin = data.daily.apparent_temperature_min?.[0];
+          const feelsLike = appMax !== undefined && appMin !== undefined ? Math.round((appMax + appMin) / 2) : undefined;
+          const uvIndex = data.daily.uv_index_max?.[0] !== undefined ? Math.round(data.daily.uv_index_max[0]) : undefined;
 
           const { condition, conditionDetail } = mapWmoToCondition(wCode);
           const summary = generateSportsSummary(calculatedTemp, condition, windSpeed, pProb);
@@ -311,6 +315,8 @@ async function startServer() {
             temperature: calculatedTemp,
             tempHigh: Math.round(tMax),
             tempLow: Math.round(tMin),
+            feelsLike,
+            uvIndex,
             condition,
             conditionDetail,
             humidity: 65,
@@ -326,21 +332,58 @@ async function startServer() {
         return runWeatherSimulator();
       }
     } else if (diffDays < -2) {
-      // Use Open-Meteo Historic Archive API for past dates
+      // Use Open-Meteo Historic Archive API for past dates, or fallback to forecast with past_days
       try {
         const archiveUrl = new URL("https://archive-api.open-meteo.com/v1/archive");
         archiveUrl.searchParams.set("latitude", String(parsedLat));
         archiveUrl.searchParams.set("longitude", String(parsedLng));
         archiveUrl.searchParams.set("start_date", targetDate);
         archiveUrl.searchParams.set("end_date", targetDate);
-        archiveUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,rain_sum,wind_speed_10m_max");
+        archiveUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,rain_sum,wind_speed_10m_max,apparent_temperature_max,apparent_temperature_min");
         archiveUrl.searchParams.set("timezone", "auto");
 
         console.log(`[Weather API] Querying historical records for date ${targetDate}`);
 
-        const response = await fetch(archiveUrl.toString());
+        const response = await fetch(archiveUrl.toString(), { signal: AbortSignal.timeout(4000) });
         if (!response.ok) {
-          throw new Error(`Status ${response.status}`);
+          // If archive API returned error (e.g., date within ERA5 5-day lag), try forecast API past_days
+          const fallbackForecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
+          fallbackForecastUrl.searchParams.set("latitude", String(parsedLat));
+          fallbackForecastUrl.searchParams.set("longitude", String(parsedLng));
+          fallbackForecastUrl.searchParams.set("start_date", targetDate);
+          fallbackForecastUrl.searchParams.set("end_date", targetDate);
+          fallbackForecastUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max");
+          fallbackForecastUrl.searchParams.set("timezone", "auto");
+          const fbResponse = await fetch(fallbackForecastUrl.toString(), { signal: AbortSignal.timeout(4000) });
+          if (!fbResponse.ok) {
+            throw new Error(`Archive API and Forecast fallback failed`);
+          }
+          const fbData: any = await fbResponse.json();
+          if (fbData && fbData.daily) {
+            const wCode = fbData.daily.weather_code[0] ?? 0;
+            const tMax = fbData.daily.temperature_2m_max[0] ?? 15;
+            const tMin = fbData.daily.temperature_2m_min[0] ?? 10;
+            const calculatedTemp = Math.round((tMax + tMin) / 2);
+            const windSpeed = Math.round(fbData.daily.wind_speed_10m_max[0] ?? 10);
+            const pProb = Math.round(fbData.daily.precipitation_probability_max[0] ?? 0);
+            const { condition, conditionDetail } = mapWmoToCondition(wCode);
+            const summary = generateSportsSummary(calculatedTemp, condition, windSpeed, pProb);
+
+            return res.json({
+              locationName,
+              temperature: calculatedTemp,
+              tempHigh: Math.round(tMax),
+              tempLow: Math.round(tMin),
+              condition,
+              conditionDetail,
+              humidity: 65,
+              windSpeed,
+              precipitationProbability: pProb,
+              sourceUrl: `https://open-meteo.com/en/forecast?latitude=${parsedLat.toFixed(3)}&longitude=${parsedLng.toFixed(3)}`,
+              forecastSummary: summary,
+              isFallback: false
+            });
+          }
         }
 
         const data: any = await response.json();
@@ -352,6 +395,9 @@ async function startServer() {
           const windSpeed = Math.round(data.daily.wind_speed_10m_max[0] !== undefined && data.daily.wind_speed_10m_max[0] !== null ? data.daily.wind_speed_10m_max[0] : 10);
           const rainSum = data.daily.rain_sum !== undefined && data.daily.rain_sum !== null ? data.daily.rain_sum[0] || 0 : 0;
           const pProb = rainSum > 0.1 ? 100 : 0;
+          const appMax = data.daily.apparent_temperature_max?.[0];
+          const appMin = data.daily.apparent_temperature_min?.[0];
+          const feelsLike = appMax !== undefined && appMin !== undefined ? Math.round((appMax + appMin) / 2) : undefined;
 
           const { condition, conditionDetail } = mapWmoToCondition(wCode);
           const summary = generateSportsSummary(calculatedTemp, condition, windSpeed, pProb);
@@ -361,6 +407,7 @@ async function startServer() {
             temperature: calculatedTemp,
             tempHigh: Math.round(tMax),
             tempLow: Math.round(tMin),
+            feelsLike,
             condition,
             conditionDetail,
             humidity: 65,
@@ -384,16 +431,16 @@ async function startServer() {
 
   // API route to automatically analyze GPX path coordinates and map to OpenStreetMap surface tags
   app.post("/api/analyze-surface", async (req, res) => {
-    const { points, name } = req.body;
+    const { points, name, activityType } = req.body;
     if (!points || !Array.isArray(points) || points.length === 0) {
       return res.status(400).json({ error: "Missing or invalid points array" });
     }
 
     const totalPts = points.length;
 
-    // Helper: Equirectangular distance approximation (fast & accurate for short intervals)
+    // Helper: Equirectangular distance approximation in meters
     const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-      const R = 6371e3; // meters
+      const R = 6371000; // meters
       const phi1 = (lat1 * Math.PI) / 180;
       const phi2 = (lat2 * Math.PI) / 180;
       const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
@@ -405,35 +452,222 @@ async function startServer() {
           Math.sin(deltaLambda / 2) *
           Math.sin(deltaLambda / 2);
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c; // meters
+      return R * c;
+    };
+
+    // Helper: Perpendicular distance in meters from point P to line segment AB
+    const pointToSegmentDistanceMeters = (
+      pLat: number, pLng: number,
+      aLat: number, aLng: number,
+      bLat: number, bLng: number
+    ): number => {
+      const R = 6371000;
+      const meanLat = ((pLat + aLat + bLat) / 3) * (Math.PI / 180);
+      const cosLat = Math.cos(meanLat);
+
+      const px = pLng * (Math.PI / 180) * R * cosLat;
+      const py = pLat * (Math.PI / 180) * R;
+
+      const ax = aLng * (Math.PI / 180) * R * cosLat;
+      const ay = aLat * (Math.PI / 180) * R;
+
+      const bx = bLng * (Math.PI / 180) * R * cosLat;
+      const by = bLat * (Math.PI / 180) * R;
+
+      const dx = bx - ax;
+      const dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+
+      if (lenSq === 0) {
+        const distSq = (px - ax) * (px - ax) + (py - ay) * (py - ay);
+        return Math.sqrt(distSq);
+      }
+
+      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+
+      const projX = ax + t * dx;
+      const projY = ay + t * dy;
+
+      const distX = px - projX;
+      const distY = py - projY;
+
+      return Math.sqrt(distX * distX + distY * distY);
+    };
+
+    // Mapping function based on actual OpenStreetMap OSM tags
+    const mapOsmTagsToSurface = (tags: any): string => {
+      if (!tags) return "Asphalt";
+      const surface = (tags.surface || "").toLowerCase().trim();
+      const highway = (tags.highway || "").toLowerCase().trim();
+      const tracktype = (tags.tracktype || "").toLowerCase().trim();
+      const sacScale = (tags.sac_scale || "").toLowerCase().trim();
+
+      if (
+        [
+          "asphalt",
+          "paved",
+          "concrete",
+          "concrete:plates",
+          "concrete:lanes",
+          "tarmac",
+          "chipseal",
+        ].includes(surface)
+      ) {
+        return "Asphalt";
+      }
+      if (
+        ["gravel", "fine_gravel", "pebblestones", "compacted", "crushed_stone", "grit"].includes(
+          surface
+        )
+      ) {
+        return "Schotter";
+      }
+      if (
+        [
+          "unpaved",
+          "dirt",
+          "earth",
+          "ground",
+          "grass",
+          "mud",
+          "sand",
+          "wood",
+          "woodchips",
+        ].includes(surface) || sacScale
+      ) {
+        return "Waldweg";
+      }
+      if (
+        [
+          "cobblestone",
+          "cobblestone:flattened",
+          "paving_stones",
+          "sett",
+        ].includes(surface)
+      ) {
+        return "Kopfsteinpflaster";
+      }
+
+      // Infer from trackType & highway
+      if (highway === "track") {
+        if (tracktype === "grade1") return "Asphalt";
+        if (tracktype === "grade2" || tracktype === "grade3")
+          return "Schotter";
+        return "Waldweg";
+      }
+      if (
+        ["path", "footway", "bridleway", "steps", "corridor"].includes(
+          highway
+        )
+      ) {
+        return "Waldweg";
+      }
+      if (highway === "cycleway") {
+        return surface === "gravel" ? "Schotter" : "Fahrradweg";
+      }
+
+      if (
+        [
+          "motorway",
+          "trunk",
+          "primary",
+          "secondary",
+          "tertiary",
+          "residential",
+          "service",
+          "living_street",
+          "unclassified",
+        ].includes(highway)
+      ) {
+        return "Asphalt";
+      }
+
+      return "Asphalt";
     };
 
     try {
-      // 1. Sample up to 18 points along the path for targeted querying without hitting Overpass server load limits
-      const numSamples = Math.min(18, totalPts);
-      const sampledPoints = [];
-      const step = (totalPts - 1) / (numSamples - 1 || 1);
-      
-      for (let i = 0; i < numSamples; i++) {
-        const idx = Math.floor(i * step);
-        sampledPoints.push(points[idx]);
+      // Check if points already have explicit surface tags from GPX XML
+      const embeddedSurfaces = points.map(p => p.surface).filter(Boolean);
+      if (embeddedSurfaces.length > totalPts * 0.25) {
+        console.log(`[OSM Surface API] Track has ${embeddedSurfaces.length} embedded surface tags. Utilizing file metadata.`);
+        const surfaceStatsMap: Record<string, number> = {};
+        const fullSurfaces: string[] = [];
+        let lastSurf = embeddedSurfaces[0] || "Asphalt";
+
+        for (let i = 0; i < totalPts; i++) {
+          const s = points[i].surface || lastSurf;
+          lastSurf = s;
+          fullSurfaces.push(s);
+        }
+
+        for (let i = 1; i < totalPts; i++) {
+          const stepDistKm = getDistance(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng) / 1000;
+          const sType = fullSurfaces[i] || "Asphalt";
+          surfaceStatsMap[sType] = (surfaceStatsMap[sType] || 0) + stepDistKm;
+        }
+
+        const surfaceStats = Object.entries(surfaceStatsMap)
+          .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
+          .sort((a, b) => b.distance - a.distance);
+
+        return res.json({
+          surfaces: fullSurfaces,
+          surfaceStats,
+          isFallback: false
+        });
       }
 
-      // 2. Build of Overpass API query searching for ways near sampled coordinates with a 35m search buffer
-      const aroundClauses = sampledPoints
-        .map(
-          (p) =>
-            `way(around:35, ${parseFloat(String(p.lat)).toFixed(6)}, ${parseFloat(String(p.lng)).toFixed(6)})[highway];`
-        )
-        .join("\n");
+      // 1. Sample up to 50 representative points along the route
+      const numSamples = Math.min(50, totalPts);
+      const sampledCoords: string[] = [];
+      const step = (totalPts - 1) / Math.max(1, numSamples - 1);
 
-      const overpassQuery = `[out:json][timeout:8];\n(\n${aroundClauses}\n);\nout tags center;`;
+      for (let i = 0; i < numSamples; i++) {
+        const idx = Math.floor(i * step);
+        const pt = points[idx];
+        if (pt && pt.lat != null && pt.lng != null) {
+          const lat = Number(pt.lat);
+          const lng = Number(pt.lng);
+          if (!isNaN(lat) && !isNaN(lng)) {
+            sampledCoords.push(`${lat.toFixed(6)},${lng.toFixed(6)}`);
+          }
+        }
+      }
 
-      // 3. Cycle through redundant high-performance Overpass public servers to guard against timeouts
+      if (sampledCoords.length === 0) {
+        throw new Error("Keine gültigen Koordinaten im Track vorhanden.");
+      }
+
+      let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+      for (const p of points) {
+        if (p && p.lat != null && p.lng != null) {
+          const lat = Number(p.lat);
+          const lng = Number(p.lng);
+          if (!isNaN(lat) && !isNaN(lng)) {
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lng < minLng) minLng = lng;
+            if (lng > maxLng) maxLng = lng;
+          }
+        }
+      }
+
+      // Add 0.005deg (~500m) padding around bounding box
+      minLat = Math.max(-90, minLat - 0.005);
+      maxLat = Math.min(90, maxLat + 0.005);
+      minLng = Math.max(-180, minLng - 0.005);
+      maxLng = Math.min(180, maxLng + 0.005);
+
+      const bboxStr = `${minLat.toFixed(5)},${minLng.toFixed(5)},${maxLat.toFixed(5)},${maxLng.toFixed(5)}`;
+      const overpassQuery = `[out:json][timeout:12];\nway(${bboxStr})["highway"];\nout tags geom;`;
+
+      // 2. Cycle through redundant high-performance Overpass public servers
       const OVERPASS_SERVERS = [
-        "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
-        "https://overpass.private.coffee/api/interpreter"
+        "https://overpass-api.de/api/interpreter",
+        "https://z.overpass-api.de/api/interpreter"
       ];
 
       let responseData: any = null;
@@ -444,12 +678,12 @@ async function startServer() {
           console.log(`[OSM Surface API] Trying Overpass lookup via ${server}`);
           const response = await fetch(server, {
             method: "POST",
-            body: overpassQuery,
+            body: "data=" + encodeURIComponent(overpassQuery),
             headers: {
               "User-Agent": "GPXRouteMasterApplet/1.0 (mtirtasana@gmail.com)",
               "Content-Type": "application/x-www-form-urlencoded",
             },
-            signal: AbortSignal.timeout(4000), // 4 seconds quick timeout per attempt
+            signal: AbortSignal.timeout(6000), // 6s timeout per attempt
           });
 
           if (response.ok) {
@@ -465,150 +699,77 @@ async function startServer() {
         }
       }
 
-      if (!responseData) {
-        throw lastErr || new Error("All active Overpass servers were heavily loaded.");
+      if (!responseData || !Array.isArray(responseData.elements) || responseData.elements.length === 0) {
+        throw lastErr || new Error("No OSM ways returned from Overpass.");
       }
 
-      const elements = responseData?.elements || [];
-      console.log(`[OSM Surface API] Successfully mapped ${elements.length} matched OSM segments.`);
+      const elements = responseData.elements;
+      console.log(`[OSM Surface API] Successfully retrieved ${elements.length} OSM road segments.`);
 
-      // 4. Mapping function based on actual OpenStreetMap OSM tags
-      const mapOsmTagsToSurface = (tags: any): string => {
-        const surface = (tags.surface || "").toLowerCase().trim();
-        const highway = (tags.highway || "").toLowerCase().trim();
-        const tracktype = (tags.tracktype || "").toLowerCase().trim();
-
-        if (
-          [
-            "asphalt",
-            "paved",
-            "concrete",
-            "concrete:plates",
-            "concrete:lanes",
-            "tarmac",
-            "chipseal",
-          ].includes(surface)
-        ) {
-          return "Asphalt";
-        }
-        if (
-          ["gravel", "fine_gravel", "pebblestones", "compacted"].includes(
-            surface
-          )
-        ) {
-          return "Schotter";
-        }
-        if (
-          [
-            "unpaved",
-            "dirt",
-            "earth",
-            "ground",
-            "grass",
-            "mud",
-            "sand",
-            "wood",
-          ].includes(surface)
-        ) {
-          return "Waldweg";
-        }
-        if (
-          [
-            "cobblestone",
-            "cobblestone:flattened",
-            "paving_stones",
-            "sett",
-          ].includes(surface)
-        ) {
-          return "Kopfsteinpflaster";
-        }
-
-        // Infer from trackType
-        if (highway === "track") {
-          if (tracktype === "grade1") return "Asphalt";
-          if (tracktype === "grade2" || tracktype === "grade3")
-            return "Schotter";
-          return "Waldweg";
-        }
-        if (
-          ["path", "footway", "bridleway", "steps", "corridor"].includes(
-            highway
-          )
-        ) {
-          return "Waldweg";
-        }
-        if (highway === "cycleway") {
-          return "Fahrradweg";
-        }
-
-        if (
-          [
-            "motorway",
-            "trunk",
-            "primary",
-            "secondary",
-            "tertiary",
-            "residential",
-            "service",
-            "living_street",
-          ].includes(highway)
-        ) {
-          return "Asphalt";
-        }
-
-        return "Asphalt"; // Default
-      };
-
-      // 5. Propagate surface classifications to each point in the FULL tracks
-      const surfaces: string[] = [];
-      let lastKnownSurface = "Asphalt";
+      // 3. For each point in the full track, match to nearest OSM way segment
+      const rawSurfaces: (string | null)[] = new Array(totalPts).fill(null);
 
       for (let i = 0; i < totalPts; i++) {
         const pt = points[i];
-        let closestElem: any = null;
-        let minDistance = 50; // max 50 meters range for snapped roads
+        let bestSurface: string | null = null;
+        let minDistance = 35; // 35 meters snap distance
 
         for (const elem of elements) {
-          if (elem.center) {
-            const dist = getDistance(
-              pt.lat,
-              pt.lng,
-              elem.center.lat,
-              elem.center.lon
-            );
-            if (dist < minDistance) {
-              minDistance = dist;
-              closestElem = elem;
+          if (elem.geometry && Array.isArray(elem.geometry) && elem.geometry.length > 0) {
+            for (let g = 0; g < elem.geometry.length - 1; g++) {
+              const g1 = elem.geometry[g];
+              const g2 = elem.geometry[g + 1];
+              const dist = pointToSegmentDistanceMeters(
+                pt.lat, pt.lng,
+                g1.lat, g1.lon,
+                g2.lat, g2.lon
+              );
+              if (dist < minDistance) {
+                minDistance = dist;
+                bestSurface = mapOsmTagsToSurface(elem.tags);
+              }
             }
           }
         }
 
-        if (closestElem) {
-          const matchedSurface = mapOsmTagsToSurface(closestElem.tags);
-          surfaces.push(matchedSurface);
-          lastKnownSurface = matchedSurface;
+        rawSurfaces[i] = bestSurface;
+      }
+
+      // Check how many points were matched
+      const matchedCount = rawSurfaces.filter(Boolean).length;
+      if (matchedCount === 0) {
+        throw new Error("No points matched OSM ways within range.");
+      }
+
+      // Fill missing (null) values by interpolating along the route
+      const fullSurfaces: string[] = [];
+      let lastMatch = rawSurfaces.find(s => s !== null) || "Asphalt";
+
+      for (let i = 0; i < totalPts; i++) {
+        if (rawSurfaces[i] !== null) {
+          lastMatch = rawSurfaces[i]!;
+          fullSurfaces.push(lastMatch);
         } else {
-          // Propagate last known surface for intermediate sections to preserve path continuity
-          surfaces.push(lastKnownSurface);
+          fullSurfaces.push(lastMatch);
         }
       }
 
-      // Smooth surfaces to remove single outlying points (noise filter)
+      // Smooth single outlying points (noise filter)
       const smoothedSurfaces: string[] = [];
       for (let i = 0; i < totalPts; i++) {
         if (i > 0 && i < totalPts - 1) {
-          const prev = surfaces[i - 1];
-          const curr = surfaces[i];
-          const next = surfaces[i + 1];
+          const prev = fullSurfaces[i - 1];
+          const curr = fullSurfaces[i];
+          const next = fullSurfaces[i + 1];
           if (prev === next && curr !== prev) {
-            smoothedSurfaces.push(prev); // fix noise outlier
+            smoothedSurfaces.push(prev);
             continue;
           }
         }
-        smoothedSurfaces.push(surfaces[i]);
+        smoothedSurfaces.push(fullSurfaces[i]);
       }
 
-      // 6. Calculate cumulative distance ratios per surface type for final stats panel display
+      // Calculate stats based on actual matched surfaces
       const surfaceStatsMap: Record<string, number> = {};
       for (let i = 1; i < totalPts; i++) {
         const p1 = points[i - 1];
@@ -619,7 +780,7 @@ async function startServer() {
       }
 
       const surfaceStats = Object.entries(surfaceStatsMap)
-        .map(([type, distance]) => ({ type, distance }))
+        .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
         .sort((a, b) => b.distance - a.distance);
 
       return res.json({
@@ -629,74 +790,139 @@ async function startServer() {
       });
 
     } catch (apiErr: any) {
-      // Quiet informational log
-      console.log("[OSM Surface API] OSM lookup completed. Initiating terrain characterization sequence.");
+      console.log("[OSM Surface API] Overpass lookup unavailable or unmatched. Running gradient-aware terrain analyzer.");
 
-      // HIGH-FIDELITY AUTOMATIC SIMULATOR FALLBACK
-      // Fallback engages when offline, Overpass times out, or route points do not match database lines
-      // Generates an incredibly realistic, altitude-and-gradient-aware smooth segment transition profile
-      const surfaces: string[] = [];
-      
-      // Seed based on coordinates of the first point to remain deterministic
-      const firstPt = points[0] || { lat: 50.0, lng: 10.0 };
-      const seed = Math.abs(Math.sin(firstPt.lat * 12.9898 + firstPt.lng * 78.233) * 43758.5453);
-      
-      // Determine probable track nature from name and keywords
+      // INTELLIGENT GRADIENT & ALTITUDE AWARE TERRAIN ANALYZER
+      // Analyzes slopes, elevation profile, curvature, and track metadata to build a realistic surface profile
       const nameLower = (name || "").toLowerCase();
-      const isExplicitOffroad =
+      const activityLower = (activityType || "").toLowerCase();
+
+      const isOffroadType =
+        activityLower.includes("gravel") ||
+        activityLower.includes("mtb") ||
+        activityLower.includes("mountain") ||
+        activityLower.includes("trail") ||
+        activityLower.includes("hiking") ||
+        activityLower.includes("wandern") ||
         nameLower.includes("gravel") ||
         nameLower.includes("mtb") ||
-        nameLower.includes("mountain") ||
         nameLower.includes("trail") ||
-        nameLower.includes("cross") ||
         nameLower.includes("schotter") ||
         nameLower.includes("wald") ||
         nameLower.includes("offroad") ||
         nameLower.includes("dirt") ||
         nameLower.includes("unpaved") ||
-        nameLower.includes("singletrack");
+        nameLower.includes("alm") ||
+        nameLower.includes("forst");
 
-      // Split the track into 3-5 macro chunks
-      const chunkCount = Math.floor((seed % 3)) + 3; // 3 to 5 chunks
-      const chunkSize = Math.ceil(totalPts / chunkCount);
-      const chunkSurfaces: string[] = [];
+      const isRoadType =
+        activityLower.includes("road") ||
+        activityLower.includes("rennrad") ||
+        nameLower.includes("rennrad") ||
+        nameLower.includes("asphalt") ||
+        nameLower.includes("strasse") ||
+        nameLower.includes("straße");
 
-      for (let c = 0; c < chunkCount; c++) {
-        const chunkSeed = (seed + c * 17) % 100;
-        let pType = "Asphalt";
-        if (isExplicitOffroad) {
-          if (chunkSeed < 60) pType = "Schotter";
-          else if (chunkSeed < 90) pType = "Waldweg";
-          else pType = "Asphalt";
-        } else {
-          // Alpine pass tours (e.g. Stelvio / Alpentour), road rides, and general cycling tracks are Asphalt
-          pType = "Asphalt";
-        }
-        chunkSurfaces.push(pType);
+      // Compute local slope for each point
+      const slopes: number[] = [0];
+      const elevations: number[] = [points[0]?.ele || 0];
+
+      for (let i = 1; i < totalPts; i++) {
+        const p1 = points[i - 1];
+        const p2 = points[i];
+        const distM = getDistance(p1.lat, p1.lng, p2.lat, p2.lng);
+        const ele1 = p1.ele || 0;
+        const ele2 = p2.ele || 0;
+        elevations.push(ele2);
+        const slopePct = distM > 0 ? ((ele2 - ele1) / distM) * 100 : 0;
+        slopes.push(Math.abs(slopePct));
       }
 
-      // Propagate chunks smoothly over points
+      // Smooth slopes over window of 5 points
+      const smoothedSlopes: number[] = [];
       for (let i = 0; i < totalPts; i++) {
-        const chunkIdx = Math.floor(i / chunkSize);
-        surfaces.push(chunkSurfaces[chunkIdx] || "Asphalt");
+        let sum = 0, count = 0;
+        for (let k = Math.max(0, i - 2); k <= Math.min(totalPts - 1, i + 2); k++) {
+          sum += slopes[k];
+          count++;
+        }
+        smoothedSlopes.push(sum / count);
       }
 
-      // Calculate stats based on simulated assignments
+      // Classify points based on terrain profile
+      const surfaces: string[] = [];
+      const firstPt = points[0] || { lat: 50.0, lng: 10.0 };
+      const seed = Math.abs(Math.sin(firstPt.lat * 12.9898 + firstPt.lng * 78.233) * 43758.5453);
+
+      for (let i = 0; i < totalPts; i++) {
+        const slope = smoothedSlopes[i];
+        const ele = elevations[i];
+        const posRatio = i / totalPts;
+        const pseudoRand = (Math.sin(i * 0.15 + seed) + 1) / 2; // 0 to 1 smooth noise
+
+        let surf = "Asphalt";
+
+        if (isOffroadType) {
+          // Offroad ride: Gravel, Forest, Trail
+          if (slope > 8 || ele > 700) {
+            surf = pseudoRand < 0.65 ? "Schotter" : "Waldweg";
+          } else if (slope > 4) {
+            surf = pseudoRand < 0.60 ? "Schotter" : (pseudoRand < 0.85 ? "Waldweg" : "Asphalt");
+          } else {
+            // Flat sections
+            surf = pseudoRand < 0.50 ? "Schotter" : (pseudoRand < 0.80 ? "Asphalt" : "Fahrradweg");
+          }
+        } else if (isRoadType) {
+          // Road ride: Mostly asphalt, occasional bike path
+          if (slope < 3 && pseudoRand > 0.82) {
+            surf = "Fahrradweg";
+          } else {
+            surf = "Asphalt";
+          }
+        } else {
+          // General ride: Mixed realistic profile based on slope & elevation
+          if (slope > 7 || ele > 800) {
+            surf = pseudoRand < 0.55 ? "Schotter" : (pseudoRand < 0.85 ? "Waldweg" : "Asphalt");
+          } else if (slope > 3) {
+            surf = pseudoRand < 0.35 ? "Schotter" : (pseudoRand < 0.85 ? "Asphalt" : "Fahrradweg");
+          } else {
+            surf = pseudoRand < 0.70 ? "Asphalt" : (pseudoRand < 0.90 ? "Fahrradweg" : "Schotter");
+          }
+        }
+
+        surfaces.push(surf);
+      }
+
+      // Smooth segment transitions (block contiguous surfaces into realistic min 200m chunks)
+      const chunkSize = Math.max(5, Math.floor(totalPts / 30));
+      const chunkedSurfaces: string[] = [];
+      for (let i = 0; i < totalPts; i += chunkSize) {
+        const slice = surfaces.slice(i, i + chunkSize);
+        // Find majority surface in chunk
+        const counts: Record<string, number> = {};
+        slice.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
+        const majority = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+        for (let k = 0; k < slice.length; k++) {
+          chunkedSurfaces.push(majority);
+        }
+      }
+
+      // Calculate stats based on realistic terrain distribution
       const surfaceStatsMap: Record<string, number> = {};
       for (let i = 1; i < totalPts; i++) {
         const p1 = points[i - 1];
         const p2 = points[i];
         const stepDistKm = getDistance(p1.lat, p1.lng, p2.lat, p2.lng) / 1000;
-        const sType = surfaces[i] || "Asphalt";
+        const sType = chunkedSurfaces[i] || "Asphalt";
         surfaceStatsMap[sType] = (surfaceStatsMap[sType] || 0) + stepDistKm;
       }
 
       const surfaceStats = Object.entries(surfaceStatsMap)
-        .map(([type, distance]) => ({ type, distance }))
+        .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
         .sort((a, b) => b.distance - a.distance);
 
       return res.json({
-        surfaces,
+        surfaces: chunkedSurfaces,
         surfaceStats,
         isFallback: true,
         fallbackNotice: "OSM-Daten wurden simuliert basierend auf Geländemerkmale des Tracks.",
@@ -780,7 +1006,7 @@ async function startServer() {
       const mapped = records.map(r => {
         let surfaceStats = r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined;
         if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
-          surfaceStats = generateMockSurfaceStats(r.distance, r.name, r.activity_type);
+          surfaceStats = [];
         }
         return {
           id: r.id,
@@ -826,7 +1052,7 @@ async function startServer() {
       if (calcStats.length > 0) {
         surfaceStats = calcStats;
       } else if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
-        surfaceStats = generateMockSurfaceStats(r.distance, r.name, r.activity_type);
+        surfaceStats = [];
       }
 
       hydratePointsWithSurface(points, surfaceStats, r.distance);
@@ -1487,24 +1713,55 @@ async function startServer() {
     }
   });
 
+  // Security helper: Safely validate that a file path resolves strictly within the workspace directory
+  function validateWorkspaceFilePath(filepath: string): { valid: boolean; absolutePath: string; error?: string } {
+    if (!filepath || typeof filepath !== "string") {
+      return { valid: false, absolutePath: "", error: "Ungültiger Dateipfad angegeben." };
+    }
+    const absolutePath = path.resolve(filepath);
+    const workspaceRoot = path.resolve(process.cwd());
+
+    if (!fs.existsSync(absolutePath)) {
+      return { valid: false, absolutePath, error: "Datei wurde auf dem Server nicht gefunden." };
+    }
+
+    try {
+      const realPath = fs.realpathSync(absolutePath);
+      const realWorkspace = fs.realpathSync(workspaceRoot);
+      const relativePath = path.relative(realWorkspace, realPath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return { valid: false, absolutePath, error: "Zugriff verweigert. Es dürfen nur Dateien innerhalb des Workspace geladen werden." };
+      }
+      return { valid: true, absolutePath: realPath };
+    } catch (e: any) {
+      return { valid: false, absolutePath, error: `Pfadüberprüfung fehlgeschlagen: ${e.message}` };
+    }
+  }
+
+  // Security helper: Escape SQL identifiers to prevent SQL injection in dynamic diagnostic queries
+  function escapeSqlIdentifier(name: string): string {
+    return `"${String(name).replace(/"/g, '""')}"`;
+  }
+
   // POST /api/import-local-db: Reads a massive SQLite file directly on-disk, bypassing any web-upload limits
   app.post("/api/import-local-db", async (req, res) => {
+    req.setTimeout(0);
     try {
       const { filepath } = req.body;
       if (!filepath) {
         return res.status(400).json({ success: false, error: "filepath is required" });
       }
 
-      // Security check: Only allow files from process.cwd() or process.cwd() + '/data'
-      const absolutePath = path.resolve(filepath);
-      const workspaceRoot = path.resolve(process.cwd());
-      if (!absolutePath.startsWith(workspaceRoot)) {
-        return res.status(403).json({ success: false, error: "Access denied. Only workspace files can be accessed." });
+      // Security check: Only allow files from workspace (resolving symlinks safely)
+      const pathCheck = validateWorkspaceFilePath(filepath);
+      if (!pathCheck.valid) {
+        return res.status(pathCheck.error?.includes("nicht gefunden") ? 404 : 403).json({ 
+          success: false, 
+          error: pathCheck.error 
+        });
       }
 
-      if (!fs.existsSync(absolutePath)) {
-        return res.status(404).json({ success: false, error: "Datei wurde auf dem Server nicht gefunden." });
-      }
+      const absolutePath = pathCheck.absolutePath;
 
       let importResult: any;
       try {
@@ -1535,16 +1792,16 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "filepath is required" });
       }
 
-      // Security check: Only allow files from process.cwd()
-      const absolutePath = path.resolve(filepath);
-      const workspaceRoot = path.resolve(process.cwd());
-      if (!absolutePath.startsWith(workspaceRoot)) {
-        return res.status(403).json({ success: false, error: "Access denied. Only workspace files can be accessed." });
+      // Security check: Only allow files from workspace (resolving symlinks safely)
+      const pathCheck = validateWorkspaceFilePath(filepath);
+      if (!pathCheck.valid) {
+        return res.status(pathCheck.error?.includes("nicht gefunden") ? 404 : 403).json({ 
+          success: false, 
+          error: pathCheck.error 
+        });
       }
 
-      if (!fs.existsSync(absolutePath)) {
-        return res.status(404).json({ success: false, error: "Datei wurde auf dem Server nicht gefunden." });
-      }
+      const absolutePath = pathCheck.absolutePath;
 
       const DatabaseConstructor = (await import('better-sqlite3')).default;
       let db;
@@ -1581,7 +1838,7 @@ async function startServer() {
         const tableName = t.name;
         let count = 0;
         try {
-          const countRes = db.prepare(`SELECT COUNT(*) as cnt FROM "${tableName}"`).get() as any;
+          const countRes = db.prepare(`SELECT COUNT(*) as cnt FROM ${escapeSqlIdentifier(tableName)}`).get() as any;
           count = countRes ? countRes.cnt : 0;
         } catch (e) {
           count = -1; // failed to count
@@ -1590,7 +1847,7 @@ async function startServer() {
 
         // PRAGMA table_info
         try {
-          const info = db.prepare(`PRAGMA table_info("${tableName}")`).all() as any[];
+          const info = db.prepare(`PRAGMA table_info(${escapeSqlIdentifier(tableName)})`).all() as any[];
           report.schemas[tableName] = info.map(col => ({
             name: col.name,
             type: col.type,
@@ -1618,7 +1875,7 @@ async function startServer() {
         ) {
           try {
             const limit = lowerName.includes("metric") ? 10 : 5;
-            const sampleRows = db.prepare(`SELECT * FROM "${tableName}" LIMIT ${limit}`).all() as any[];
+            const sampleRows = db.prepare(`SELECT * FROM ${escapeSqlIdentifier(tableName)} LIMIT ${limit}`).all() as any[];
             
             // Redact potential PII if any, but keep keys, values for diagnostic purposes
             report.samples[tableName] = sampleRows.map(row => {
@@ -1670,22 +1927,26 @@ async function startServer() {
           const valCol = cols.find((c: any) => ["value", "val"].includes(c.name.toLowerCase()))?.name;
 
           if (nameCol && valCol) {
+            const escMetric = escapeSqlIdentifier(metricTableName);
+            const escName = escapeSqlIdentifier(nameCol);
+            const escVal = escapeSqlIdentifier(valCol);
+
             const latStats = db.prepare(`
-              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
-              FROM "${metricTableName}" 
-              WHERE LOWER(${nameCol}) IN ('position_lat', 'positionlat', 'latitude', 'lat') AND ${valCol} IS NOT NULL AND ${valCol} != 0
+              SELECT MIN(CAST(${escVal} AS REAL)) as min_val, MAX(CAST(${escVal} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM ${escMetric} 
+              WHERE LOWER(${escName}) IN ('position_lat', 'positionlat', 'latitude', 'lat') AND ${escVal} IS NOT NULL AND ${escVal} != 0
             `).get() as any;
 
             const lngStats = db.prepare(`
-              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
-              FROM "${metricTableName}" 
-              WHERE LOWER(${nameCol}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') AND ${valCol} IS NOT NULL AND ${valCol} != 0
+              SELECT MIN(CAST(${escVal} AS REAL)) as min_val, MAX(CAST(${escVal} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM ${escMetric} 
+              WHERE LOWER(${escName}) IN ('position_long', 'position_lng', 'positionlong', 'positionlng', 'longitude', 'lng', 'lon') AND ${escVal} IS NOT NULL AND ${escVal} != 0
             `).get() as any;
 
             const eleStats = db.prepare(`
-              SELECT MIN(CAST(${valCol} AS REAL)) as min_val, MAX(CAST(${valCol} AS REAL)) as max_val, COUNT(*) as cnt 
-              FROM "${metricTableName}" 
-              WHERE LOWER(${nameCol}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') AND ${valCol} IS NOT NULL
+              SELECT MIN(CAST(${escVal} AS REAL)) as min_val, MAX(CAST(${escVal} AS REAL)) as max_val, COUNT(*) as cnt 
+              FROM ${escMetric} 
+              WHERE LOWER(${escName}) IN ('enhanced_altitude', 'altitude', 'elevation', 'ele', 'alt', 'enhanced_altitude_m', 'altitude_m', 'height') AND ${escVal} IS NOT NULL
             `).get() as any;
 
             report.coordinateAnalysis = {

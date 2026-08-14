@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, FileCode, Search, ChevronRight, ChevronLeft, Cpu, 
@@ -571,10 +571,26 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
     linkElement.click();
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [onClose]);
+
   if (tracks.length === 0 || !currentTrack) {
     return (
-      <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[2000] flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 max-w-md text-center shadow-xl space-y-4">
+      <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[2000] flex items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 max-w-md text-center shadow-xl space-y-4" onClick={(e) => e.stopPropagation()}>
           <ShieldAlert className="text-rose-500 mx-auto" size={48} />
           <h3 className="text-lg font-black text-slate-800 dark:text-slate-100">Keine Aktivitäten</h3>
           <p className="text-xs text-slate-500">Lade zuerst eine .fit oder .gpx Datei in den Workspace, um die Rohdatenstruktur zu analysieren.</p>
@@ -590,6 +606,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 bg-slate-950/65 backdrop-blur-md z-[2000] flex items-center justify-center p-3 md:p-6"
+      onClick={onClose}
     >
       <motion.div 
         initial={{ scale: 0.98, y: 10 }}

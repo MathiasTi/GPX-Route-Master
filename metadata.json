@@ -1,6 +1,6 @@
 {
-  "name": "New GPX Route Master",
-  "description": "A professional GPX file visualizer and editor with OpenStreetMap integration, allowing route merging and distance measurements.",
+  "name": "GPX Route Master",
+  "description": "A professional GPX and FIT file visualizer, editor, and multi-track analysis tool with 2D/3D elevation profiling, surface analysis, temporal gap splitting, and performance telemetry.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

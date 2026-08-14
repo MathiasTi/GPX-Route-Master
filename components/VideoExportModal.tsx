@@ -1312,6 +1312,23 @@ export const VideoExportModal: React.FC<VideoExportModalProps> = ({
     };
   }, [isOpen, exporting, track, theme, mapMode, mapStyle, precomputedStats]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !exporting) {
+        handleClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isOpen, exporting, handleClose]);
+
   return (
     <AnimatePresence>
       {isOpen && (

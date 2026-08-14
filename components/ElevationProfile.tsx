@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState, useRef } from 'react';
-import { GPXTrack, GPXPoint } from '../types';
+import { GPXTrack, GPXPoint, TextMarker } from '../types';
 import { calculateDistance, getPaceString } from '../utils/gpxUtils';
 
 interface ElevationProfileProps {
@@ -20,6 +20,25 @@ interface ElevationProfileProps {
   onOpenVideoExport?: () => void;
   ftp: number;
   onCollapse?: () => void;
+  textMarkers?: TextMarker[];
+  onAddTextMarker?: (marker: Omit<TextMarker, 'id'>) => void;
+  onDeleteTextMarker?: (id: string) => void;
+}
+
+export interface ProfileMarkerItem {
+  id: string;
+  type: 'climb-start' | 'climb-end' | 'poi' | 'start' | 'finish';
+  label: string;
+  sublabel?: string;
+  color: string;
+  icon: string;
+  dist: number;
+  ele: number;
+  slope?: number;
+  lat: number;
+  lng: number;
+  index: number;
+  originalMarkerId?: string;
 }
 
 interface HoverInfo {
@@ -33,6 +52,8 @@ interface HoverInfo {
   speed?: number;
   x: number;
   y: number;
+  lat: number;
+  lng: number;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({ 
@@ -51,9 +72,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onOpenAnalytics,
   onOpenVideoExport,
   ftp,
-  onCollapse
+  onCollapse,
+  textMarkers = [],
+  onAddTextMarker,
+  onDeleteTextMarker
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 1000, height: 140 });
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [isSmoothed, setIsSmoothed] = useState(false);
   const [showSettingsPopover, setShowSettingsPopover] = useState(false);
@@ -63,6 +89,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [showSlope, setShowSlope] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
   const [showCadence, setShowCadence] = useState(false);
+  const [showPoiMarkers, setShowPoiMarkers] = useState(true);
+  const [showSegmentMarkers, setShowSegmentMarkers] = useState(true);
+  const [activeMarkerId, setActiveMarkerId] = useState<string | null>(null);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragCurrentX, setDragCurrentX] = useState<number | null>(null);
   const [showSelectedSurfaceStats, setShowSelectedSurfaceStats] = useState(true);
@@ -78,6 +107,44 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   React.useEffect(() => {
     setShowSelectedSurfaceStats(true);
   }, [selectionBounds]);
+
+  // Track exact container dimensions via ResizeObserver so SVG scale is always 1:1 pixel-perfect and fonts never stretch
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    let rafId: number | null = null;
+    const updateDimensions = (w: number, h: number) => {
+      if (w > 50 && h > 30) {
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          setDimensions(prev => {
+            const roundedW = Math.round(w);
+            const roundedH = Math.round(h);
+            if (prev.width === roundedW && prev.height === roundedH) return prev;
+            return { width: roundedW, height: roundedH };
+          });
+        });
+      }
+    };
+
+    const rect = el.getBoundingClientRect();
+    updateDimensions(rect.width, rect.height);
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const { width: rw, height: rh } = entry.contentRect;
+          updateDimensions(rw, rh);
+        }
+      });
+      ro.observe(el);
+      return () => {
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        ro.disconnect();
+      };
+    }
+  }, []);
 
 
 
@@ -352,9 +419,109 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     };
   }, [track, isSmoothed, estimatedSpeed]);
 
+  const profileMarkers = useMemo(() => {
+    if (!profileData || !profileData.data || profileData.data.length === 0) return [];
+    const markers: ProfileMarkerItem[] = [];
+
+    // 1. Climb Segment Starts and Tops
+    if (showSegmentMarkers && track.climbs && track.climbs.length > 0) {
+      track.climbs.forEach((climb, idx) => {
+        const startPt = profileData.data[climb.startIndex] || profileData.data[0];
+        const endPt = profileData.data[climb.endIndex] || profileData.data[profileData.data.length - 1];
+
+        if (startPt) {
+          markers.push({
+            id: `climb-start-${idx}`,
+            type: 'climb-start',
+            label: `Anstieg #${idx + 1}`,
+            sublabel: `${(climb.distance / 1000).toFixed(1)} km · +${Math.round(climb.ascent)}m (${climb.avgGradient.toFixed(1)}%)`,
+            color: '#f59e0b',
+            icon: '🚩',
+            dist: startPt.dist,
+            ele: startPt.ele,
+            slope: startPt.slope,
+            lat: startPt.lat,
+            lng: startPt.lng,
+            index: climb.startIndex
+          });
+        }
+
+        if (endPt) {
+          markers.push({
+            id: `climb-end-${idx}`,
+            type: 'climb-end',
+            label: `Gipfel #${idx + 1}`,
+            sublabel: `${Math.round(endPt.ele)}m Höhe`,
+            color: '#ef4444',
+            icon: '⛰️',
+            dist: endPt.dist,
+            ele: endPt.ele,
+            slope: endPt.slope,
+            lat: endPt.lat,
+            lng: endPt.lng,
+            index: climb.endIndex
+          });
+        }
+      });
+    }
+
+    // 2. Custom Points of Interest (textMarkers)
+    if (showPoiMarkers && textMarkers && textMarkers.length > 0) {
+      textMarkers.forEach((tm) => {
+        let bestIdx = -1;
+        let minDist = Infinity;
+
+        if (tm.trackId === track.id && typeof tm.distanceAlongTrack === 'number') {
+          for (let i = 0; i < profileData.data.length; i++) {
+            const diff = Math.abs(profileData.data[i].dist - tm.distanceAlongTrack);
+            if (diff < minDist) {
+              minDist = diff;
+              bestIdx = i;
+            }
+          }
+        } else {
+          for (let i = 0; i < profileData.data.length; i++) {
+            const pt = profileData.data[i];
+            const d = Math.abs(pt.lat - tm.lat) + Math.abs(pt.lng - tm.lng);
+            if (d < minDist) {
+              minDist = d;
+              bestIdx = i;
+            }
+          }
+          if (minDist > 0.05 && tm.trackId !== track.id) {
+            bestIdx = -1;
+          }
+        }
+
+        if (bestIdx >= 0 && profileData.data[bestIdx]) {
+          const pt = profileData.data[bestIdx];
+          markers.push({
+            id: `poi-${tm.id}`,
+            type: 'poi',
+            label: tm.label,
+            sublabel: `${pt.dist.toFixed(1)} km · ${Math.round(pt.ele)}m`,
+            color: tm.color || '#6366f1',
+            icon: '📍',
+            dist: pt.dist,
+            ele: pt.ele,
+            slope: pt.slope,
+            lat: pt.lat,
+            lng: pt.lng,
+            index: bestIdx,
+            originalMarkerId: tm.id
+          });
+        }
+      });
+    }
+
+    // Sort by distance along track
+    markers.sort((a, b) => a.dist - b.dist);
+    return markers;
+  }, [profileData, showSegmentMarkers, showPoiMarkers, track.climbs, track.id, textMarkers]);
+
   const padding = { top: 25, bottom: 25, left: 52, right: 16 };
-  const width = 1000;
-  const height = 150;
+  const width = dimensions.width;
+  const height = dimensions.height;
 
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!svgRef.current) return;
@@ -409,7 +576,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       cadence: point.cadence,
       speed: point.speed,
       x,
-      y
+      y,
+      lat: point.lat,
+      lng: point.lng
     });
     if (onHoverPoint && !isFlying) {
       const originalPoint = track.points[closestIdx];
@@ -475,7 +644,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       cadence: point.cadence,
       speed: point.speed,
       x,
-      y
+      y,
+      lat: point.lat,
+      lng: point.lng
     });
     if (onHoverPoint && !isFlying) {
       const originalPoint = track.points[closestIdx];
@@ -686,7 +857,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       <div className="hidden lg:flex justify-between items-center mb-2 px-2">
         <div className="flex items-center gap-3">
           <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: displayTrackColor }}></div>
-          <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider md:max-w-md lg:max-w-xl break-words whitespace-normal leading-tight" title={track.name}>
+          <h3 className="text-xs font-bold text-slate-700 dark:text-slate-200 md:max-w-md lg:max-w-xl break-words whitespace-normal leading-tight" title={track.name}>
             {track.name}
           </h3>
         </div>
@@ -701,7 +872,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </button>
           )}
           <div className="flex items-center gap-3 mr-2">
-            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-slate-700 transition-colors uppercase tracking-wider">
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 transition-colors">
               <input 
                 type="checkbox" 
                 checked={showElevation} 
@@ -711,7 +882,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               Höhe
             </label>
             {profileData.hasPower && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-amber-600 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 transition-colors">
                 <input 
                   type="checkbox" 
                   checked={showPower} 
@@ -722,7 +893,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </label>
             )}
             {profileData.hasHr && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-550 hover:text-red-500 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-red-500 transition-colors">
                 <input 
                   type="checkbox" 
                   checked={showHr} 
@@ -732,7 +903,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 HF
               </label>
             )}
-            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-violet-600 transition-colors uppercase tracking-wider">
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 transition-colors">
               <input 
                 type="checkbox" 
                 checked={showSlope} 
@@ -742,7 +913,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               Steigung
             </label>
             {profileData.hasSpeed && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-500 hover:text-teal-600 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-teal-600 transition-colors">
                 <input 
                   type="checkbox" 
                   checked={showSpeed} 
@@ -753,7 +924,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </label>
             )}
             {profileData.hasCadence && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-bold text-slate-550 hover:text-purple-600 transition-colors uppercase tracking-wider">
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-purple-600 transition-colors">
                 <input 
                   type="checkbox" 
                   checked={showCadence} 
@@ -763,7 +934,26 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 Trittfrequenz
               </label>
             )}
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={showPoiMarkers} 
+                onChange={(e) => setShowPoiMarkers(e.target.checked)}
+                className="w-3.5 h-3.5 text-indigo-600 rounded bg-slate-100 border-slate-300 focus:ring-indigo-500 cursor-pointer"
+              />
+              POIs
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={showSegmentMarkers} 
+                onChange={(e) => setShowSegmentMarkers(e.target.checked)}
+                className="w-3.5 h-3.5 text-amber-600 rounded bg-slate-100 border-slate-300 focus:ring-amber-500 cursor-pointer"
+              />
+              Anstiege
+            </label>
           </div>
+
           <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-505 hover:text-slate-700 transition-colors">
             <input 
               type="checkbox" 
@@ -936,6 +1126,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 Trittfrequenz
               </label>
             )}
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
+              <input 
+                type="checkbox" 
+                checked={showPoiMarkers} 
+                onChange={(e) => setShowPoiMarkers(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-indigo-600"
+              />
+              POIs
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
+              <input 
+                type="checkbox" 
+                checked={showSegmentMarkers} 
+                onChange={(e) => setShowSegmentMarkers(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-600"
+              />
+              Anstiege
+            </label>
           </div>
 
           <div className="border-t border-dashed my-0.5" />
@@ -976,11 +1184,53 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 {showSelectedSurfaceStats && selectedSurfaceStats.length > 0 && (
                   <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-200">
                     <span className="text-slate-400">UNTERGRUND:</span>
-                    {selectedSurfaceStats.map((surface, idx) => (
-                      <span key={idx} className="text-sm text-slate-700">
-                        {surface.type} ({surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}km)
-                      </span>
-                    ))}
+                    <div className="flex flex-col gap-1 w-48">
+                      <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+                        {selectedSurfaceStats.map((surface, idx) => {
+                          const totalDist = selectedSurfaceStats.reduce((sum, s) => sum + s.distance, 0) || 1;
+                          const pct = (surface.distance / totalDist) * 100;
+                          const getSurfColor = (s: string) => {
+                            switch (s) {
+                              case "Asphalt": return "#2563eb"; // Royal Blue
+                              case "Schotter": return "#d97706"; // Amber
+                              case "Waldweg": return "#16a34a"; // Forest Green
+                              case "Fahrradweg": return "#0284c7"; // Sky Blue
+                              case "Kopfsteinpflaster": return "#78350f"; // Brown
+                              case "Straße": return "#4f46e5"; // Indigo
+                              default: return "#64748b"; // Slate
+                            }
+                          };
+                          return (
+                            <div 
+                              key={idx} 
+                              style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
+                              title={`${surface.type} (${pct.toFixed(1)}%)`} 
+                            />
+                          );
+                        })}
+                      </div>
+                      <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                        {selectedSurfaceStats.map((surface, idx) => {
+                          const getSurfColor = (s: string) => {
+                            switch (s) {
+                              case "Asphalt": return "#2563eb";
+                              case "Schotter": return "#d97706";
+                              case "Waldweg": return "#16a34a";
+                              case "Fahrradweg": return "#0284c7";
+                              case "Kopfsteinpflaster": return "#78350f";
+                              case "Straße": return "#4f46e5";
+                              default: return "#64748b";
+                            }
+                          };
+                          return (
+                            <span key={idx} className="text-[10px] text-slate-700 font-mono flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSurfColor(surface.type) }}></span>
+                              {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}km
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
                     <button 
                       onClick={(e) => { e.stopPropagation(); setShowSelectedSurfaceStats(false); }}
                       className="ml-1 text-slate-400 hover:text-slate-600 transition-colors"
@@ -993,34 +1243,33 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </>
             ) : (
               <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold font-mono">
-                <span className="flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60">
-                  <span className="text-[10px] text-emerald-600">▲</span>
+                <span className="flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60 font-medium">
+                  <span className="text-[10px] text-emerald-600 font-bold">▲</span>
                   <span>{track.ascent.toFixed(0)}m</span>
-                  <span className="text-[9px] text-emerald-600 dark:text-emerald-400 uppercase tracking-wider font-sans font-extrabold ml-0.5">Anstieg</span>
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold font-sans ml-0.5">Anstieg</span>
                 </span>
-                <span className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60">
-                  <span className="text-[10px] text-rose-600">▼</span>
+                <span className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60 font-medium">
+                  <span className="text-[10px] text-rose-600 font-bold">▼</span>
                   <span>{track.descent.toFixed(0)}m</span>
-                  <span className="text-[9px] text-rose-600 dark:text-rose-400 uppercase tracking-wider font-sans font-extrabold ml-0.5">Abstieg</span>
+                  <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold font-sans ml-0.5">Abstieg</span>
                 </span>
-                <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2 py-0.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60">
-                  <span className="text-[9px] text-indigo-500 font-sans font-extrabold uppercase">Höhe:</span>
+                <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2 py-0.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60 font-medium">
+                  <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold font-sans">Höhe:</span>
                   <span>{minEle.toFixed(0)}m – {maxEle.toFixed(0)}m</span>
                 </span>
-                <span className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg border border-amber-200/80 dark:border-amber-800/60">
-                  <span className="text-[9px] text-amber-600 font-sans font-extrabold uppercase">Max Steigung:</span>
+                <span className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg border border-amber-200/80 dark:border-amber-800/60 font-medium">
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold font-sans">Max. Steigung:</span>
                   <span>{(track.maxSlope ?? 0).toFixed(1)}%</span>
                 </span>
               </div>
             )}
           </div>
       
-      <div className="flex-1 min-h-0 relative">
+      <div ref={containerRef} className="flex-1 min-h-0 relative">
         <svg 
           ref={svgRef}
           viewBox={`0 0 ${width} ${height}`} 
           className={`w-full h-full overflow-visible ${dragStartX !== null ? 'cursor-ew-resize' : 'cursor-crosshair'}`}
-          preserveAspectRatio="none"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -1283,27 +1532,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 className="animate-pulse"
                 style={{ filter: 'drop-shadow(0px 0px 3px rgba(16,185,129,0.6))' }}
               />
-              <g transform={`translate(${maxSlopeX}, ${maxSlopeY - 14})`}>
-                <rect 
-                  x="-50" 
-                  y="-10" 
-                  width="100" 
-                  height="16" 
-                  rx="8" 
-                  fill="#059669" 
-                  stroke="#ffffff" 
-                  strokeWidth="1.5" 
-                  filter="url(#shadow)"
-                />
-                <text 
-                  x="0" 
-                  y="1.5" 
-                  textAnchor="middle" 
-                  className="text-[9px] fill-white font-extrabold font-mono"
-                >
-                  Steigung: {maxPosSlopeVal.toFixed(1)}%
-                </text>
-              </g>
             </g>
           )}
 
@@ -1320,29 +1548,65 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 className="animate-pulse"
                 style={{ filter: 'drop-shadow(0px 0px 3px rgba(239,68,68,0.6))' }}
               />
-              <g transform={`translate(${maxEleX}, ${maxEleY - 14})`}>
-                <rect 
-                  x="-52" 
-                  y="-10" 
-                  width="104" 
-                  height="16" 
-                  rx="8" 
-                  fill="#dc2626" 
-                  stroke="#ffffff" 
-                  strokeWidth="1.5" 
-                  filter="url(#shadow)"
-                />
-                <text 
-                  x="0" 
-                  y="1.5" 
-                  textAnchor="middle" 
-                  className="text-[9px] fill-white font-extrabold font-mono"
-                >
-                  Höchster Ort: {Math.round(maxEle)}m
-                </text>
-              </g>
             </g>
           )}
+
+          {/* Segment Starts & POI Markers on SVG Profile (Guidelines & Dots) */}
+          {profileMarkers.map((m, idx) => {
+            const x = padding.left + (m.dist / profileData.distRange) * graphWidth;
+            const y = height - padding.bottom - ((m.ele - minEle) / eleRange) * graphHeight;
+            const isSelected = activeMarkerId === m.id;
+
+            return (
+              <g 
+                key={m.id} 
+                className="cursor-pointer group select-none"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveMarkerId(isSelected ? null : m.id);
+                  if (onHoverPoint && track.points[m.index]) {
+                    onHoverPoint(track.points[m.index]);
+                  }
+                }}
+                onMouseEnter={() => {
+                  if (onHoverPoint && track.points[m.index]) {
+                    onHoverPoint(track.points[m.index]);
+                  }
+                }}
+              >
+                {/* Vertical guide line */}
+                <line 
+                  x1={x} 
+                  y1={padding.top + 8} 
+                  x2={x} 
+                  y2={y} 
+                  stroke={m.color} 
+                  strokeWidth={isSelected ? "2" : "1.2"} 
+                  strokeDasharray="3 2" 
+                  opacity={isSelected ? "1" : "0.75"} 
+                />
+
+                {/* Dot at elevation curve */}
+                <circle 
+                  cx={x} 
+                  cy={y} 
+                  r={isSelected ? "6" : "4"} 
+                  fill={m.color} 
+                  stroke="white" 
+                  strokeWidth="2" 
+                  className={isSelected ? "animate-ping opacity-75" : "group-hover:scale-125 transition-transform"}
+                />
+                <circle 
+                  cx={x} 
+                  cy={y} 
+                  r={isSelected ? "5" : "3.5"} 
+                  fill={m.color} 
+                  stroke="white" 
+                  strokeWidth="1.5" 
+                />
+              </g>
+            );
+          })}
 
           {/* Distance Ticks */}
           {(() => {
@@ -1390,12 +1654,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
               return (
                 <g key={i}>
-                  <line x1={x} y1={height - padding.bottom} x2={x} y2={height - padding.bottom + 4} stroke="#cbd5e1" strokeWidth="1" />
-                  <text x={x} y={height - 14} textAnchor="middle" className="text-[9px] fill-slate-400 font-mono font-medium">
+                  <line x1={x} y1={height - padding.bottom} x2={x} y2={height - padding.bottom + 4} stroke="currentColor" className="text-slate-300 dark:text-slate-700" strokeWidth="1" />
+                  <text x={x} y={height - 14} textAnchor="middle" className="text-[10px] fill-slate-600 dark:fill-slate-300 font-mono font-bold select-none">
                     {d.toFixed(d % 1 === 0 ? 0 : 1)}
                   </text>
                   {timeStr && (
-                    <text x={x} y={height - 4} textAnchor="middle" className="text-[8px] fill-blue-400 font-mono font-medium">
+                    <text x={x} y={height - 4} textAnchor="middle" className="text-[8.5px] fill-blue-600 dark:fill-blue-400 font-mono font-semibold select-none">
                       {timeStr}
                     </text>
                   )}
@@ -1403,7 +1667,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               );
             });
           })()}
-          <text x={width / 2} y={height - 2} textAnchor="middle" className="text-[8px] fill-slate-300 font-bold uppercase tracking-widest">Entfernung (km) / Zeit</text>
+          {/* Distance Axis Label */}
+          <text x={width / 2} y={height - 2} textAnchor="middle" className="text-[9px] fill-slate-400 dark:fill-slate-500 font-semibold select-none">Entfernung (km) / Zeit</text>
 
           {/* Interaction Tooltip (Mouse Hover) */}
           {hoverInfo && (
@@ -1613,6 +1878,163 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             })()
           )}
         </svg>
+
+        {/* HTML Badges & Interactive Tag Overlay for 100% Unstretched, Crisp Typography */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 select-none">
+          {/* Special Marker Tag: Max Positive Slope */}
+          {showElevation && maxPosSlopeVal > 0 && (
+            <div 
+              className="absolute pointer-events-auto -translate-x-1/2 -translate-y-full flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-bold text-white bg-emerald-600 border border-white shadow-sm whitespace-nowrap"
+              style={{
+                left: `${maxSlopeX}px`,
+                top: `${maxSlopeY - 6}px`
+              }}
+            >
+              Steigung: {maxPosSlopeVal.toFixed(1)}%
+            </div>
+          )}
+
+          {/* Special Marker Tag: Max Elevation */}
+          {showElevation && (
+            <div 
+              className="absolute pointer-events-auto -translate-x-1/2 -translate-y-full flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-bold text-white bg-red-600 border border-white shadow-sm whitespace-nowrap"
+              style={{
+                left: `${maxEleX}px`,
+                top: `${maxEleY - 6}px`
+              }}
+            >
+              Höchster Ort: {Math.round(maxEle)}m
+            </div>
+          )}
+
+          {/* Climb Starts (Anstieg) & Summits (Gipfel) & POI Badges */}
+          {profileMarkers.map((m, idx) => {
+            const x = padding.left + (m.dist / profileData.distRange) * graphWidth;
+            const prevM = idx > 0 ? profileMarkers[idx - 1] : null;
+            const prevX = prevM ? padding.left + (prevM.dist / profileData.distRange) * graphWidth : -999;
+            const isClose = Math.abs(x - prevX) < 70;
+            const yOffset = isClose ? (idx % 2 === 1 ? -16 : 0) : 0;
+            const isSelected = activeMarkerId === m.id;
+
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveMarkerId(isSelected ? null : m.id);
+                  if (onHoverPoint && track.points[m.index]) {
+                    onHoverPoint(track.points[m.index]);
+                  }
+                  if (m.type === 'climb-start' || m.type === 'climb-end') {
+                    const match = m.id.match(/climb-(?:start|end)-(\d+)/);
+                    if (match && track.climbs) {
+                      const cIdx = parseInt(match[1], 10);
+                      const climb = track.climbs[cIdx];
+                      if (climb && onSelection) {
+                        const climbPts = track.points.slice(climb.startIndex, climb.endIndex + 1);
+                        if (climbPts.length > 0) {
+                          const lats = climbPts.map(p => p.lat);
+                          const lngs = climbPts.map(p => p.lng);
+                          const minLat = Math.min(...lats);
+                          const maxLat = Math.max(...lats);
+                          const minLng = Math.min(...lngs);
+                          const maxLng = Math.max(...lngs);
+                          const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
+                          const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
+                          onSelection({
+                            minLat: minLat - latBuf,
+                            maxLat: maxLat + latBuf,
+                            minLng: minLng - lngBuf,
+                            maxLng: maxLng + lngBuf
+                          });
+                        }
+                      }
+                    }
+                  }
+                }}
+                onMouseEnter={() => {
+                  if (onHoverPoint && track.points[m.index]) {
+                    onHoverPoint(track.points[m.index]);
+                  }
+                }}
+                className={`absolute pointer-events-auto -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-sans font-bold text-white shadow-md border border-white/90 cursor-pointer transition-all ${
+                  isSelected ? 'scale-110 ring-2 ring-indigo-400 z-20' : 'hover:scale-105 active:scale-95'
+                }`}
+                style={{
+                  left: `${x}px`,
+                  top: `${padding.top + yOffset}px`,
+                  backgroundColor: m.color,
+                  maxWidth: '130px'
+                }}
+                title={`${m.label}: ${m.sublabel || ''}`}
+              >
+                <span className="shrink-0">{m.icon}</span>
+                <span className="truncate tracking-normal">{m.label}</span>
+              </button>
+            );
+          })}
+
+          {/* Active Marker Popover Card */}
+          {activeMarkerId && (() => {
+            const m = profileMarkers.find(item => item.id === activeMarkerId);
+            if (!m) return null;
+
+            const x = padding.left + (m.dist / profileData.distRange) * graphWidth;
+            const y = height - padding.bottom - ((m.ele - minEle) / eleRange) * graphHeight;
+            const boxWidth = 200;
+            const tooltipX = Math.max(8, Math.min(width - boxWidth - 8, x - boxWidth / 2));
+            const tooltipY = Math.max(8, Math.min(height - 90, y - 95));
+            const hasDelete = Boolean(m.originalMarkerId && onDeleteTextMarker);
+
+            return (
+              <div 
+                className="absolute pointer-events-auto bg-slate-900/95 text-white p-2.5 rounded-xl border shadow-xl z-30 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-1 text-left font-sans"
+                style={{
+                  left: `${tooltipX}px`,
+                  top: `${tooltipY}px`,
+                  width: `${boxWidth}px`,
+                  borderColor: m.color
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-extrabold text-xs">
+                    <span>{m.icon}</span>
+                    <span>{m.label}</span>
+                  </div>
+                  <button 
+                    onClick={() => setActiveMarkerId(null)}
+                    className="text-slate-400 hover:text-white text-xs font-bold p-0.5 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {m.sublabel && (
+                  <p className="text-[10px] text-slate-300 font-medium leading-tight">
+                    {m.sublabel}
+                  </p>
+                )}
+                <div className="text-[10px] font-mono font-bold text-emerald-400 mt-0.5">
+                  {m.dist.toFixed(2)} km · {Math.round(m.ele)}m Höhe {m.slope ? `· ${m.slope.toFixed(1)}%` : ''}
+                </div>
+                {hasDelete && (
+                  <button
+                    onClick={() => {
+                      if (m.originalMarkerId && onDeleteTextMarker) {
+                        onDeleteTextMarker(m.originalMarkerId);
+                      }
+                      setActiveMarkerId(null);
+                    }}
+                    className="mt-1 w-full py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white font-bold text-[9.5px] transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    Marker löschen 🗑️
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+        </div>
       </div>
     </div>
   );

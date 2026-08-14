@@ -1,12 +1,12 @@
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
-import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker } from '../types';
-import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
+import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
+import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs } from '../utils/gpxUtils';
 import { getApiUrl } from '../utils/api';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2 } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -16,6 +16,41 @@ L.Icon.Default.mergeOptions({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
+
+const sanitizeColor = (col: string | undefined): string => {
+  if (!col) return "#2563eb";
+  const upper = col.toUpperCase();
+  if (upper === '#FF00FF' || upper === '#FF1493' || upper === '#DB2777' || upper === '#EC4899') {
+    return "#2563eb";
+  }
+  return col;
+};
+
+const getSurfaceColor = (surf: string, defaultColor: string = "#2563eb") => {
+  const safeDefault = sanitizeColor(defaultColor);
+  if (!surf) return safeDefault;
+  const s = surf.toLowerCase().trim();
+  
+  if (s.includes("asphalt") || s.includes("paved") || s.includes("beton") || s.includes("straße") || s.includes("road")) {
+    return "#2563eb"; // Royal Blue - Asphalt
+  }
+  if (s.includes("schotter") || s.includes("gravel") || s.includes("kies") || s.includes("compacted")) {
+    return "#d97706"; // Amber / Gravel Brown
+  }
+  if (s.includes("waldweg") || s.includes("trail") || s.includes("singletrail") || s.includes("pfad") || s.includes("dirt") || s.includes("ground") || s.includes("earth") || s.includes("natur")) {
+    return "#16a34a"; // Forest Green - Trail & Waldweg
+  }
+  if (s.includes("fahrradweg") || s.includes("radweg") || s.includes("cycleway")) {
+    return "#0284c7"; // Sky Blue - Fahrradweg
+  }
+  if (s.includes("kopfstein") || s.includes("pflaster") || s.includes("cobblestone") || s.includes("sett")) {
+    return "#805ad5"; // Purple / Bronze - Pflasterstein
+  }
+  if (s.includes("unbefestigt") || s.includes("unpaved") || s.includes("sand") || s.includes("matsch")) {
+    return "#ca8a04"; // Gold-Brown - Unbefestigt
+  }
+  return safeDefault;
+};
 
 const escapeHtml = (unsafe: string): string => {
   return unsafe
@@ -59,11 +94,32 @@ interface MapProps {
   showRunningHeatmap?: boolean;
   showDbCyclingHeatmap?: boolean;
   showDbRunningHeatmap?: boolean;
+  onAnalyzeSurface?: (id: string, force?: boolean) => void;
+  analyzingSurfaces?: Record<string, boolean>;
+  surfaceAnalysisStatuses?: Record<string, any>;
+  timeGaps?: TimeGap[];
+  selectedGapId?: string | null;
+  onSelectGap?: (gap: TimeGap) => void;
+  onSplitGap?: (originalTrackId: string, splitIndex: number) => void;
+  onCloseGap?: (originalTrackId: string, gap: TimeGap) => void;
 }
+
+const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (selectedGap) {
+      map.flyTo([selectedGap.startPoint.lat, selectedGap.startPoint.lng], Math.max(15, map.getZoom()), {
+        animate: true,
+        duration: 0.8
+      });
+    }
+  }, [selectedGap, map]);
+  return null;
+};
 
 const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
   const map = useMap();
-  const prevTracksLength = React.useRef(tracks.length);
+  const prevTracksLength = useRef(tracks.length);
 
   useEffect(() => {
     const visibleTracks = tracks.filter(t => t.visible);
@@ -81,7 +137,7 @@ const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
 
 const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | null; tracks: GPXTrack[] }) => {
   const map = useMap();
-  const prevMarkedId = React.useRef<string | null>(null);
+  const prevMarkedId = useRef<string | null>(null);
 
   useEffect(() => {
     if (markedTrackId && markedTrackId !== prevMarkedId.current) {
@@ -154,7 +210,29 @@ const MapResizer = ({ markedTrackId, tracksLength }: { markedTrackId: string | n
     const timeout = setTimeout(() => {
       map.invalidateSize();
     }, 300);
-    return () => clearTimeout(timeout);
+
+    const handleResize = () => {
+      map.invalidateSize();
+    };
+
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+
+    const container = map.getContainer();
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && container) {
+      ro = new ResizeObserver(() => {
+        map.invalidateSize();
+      });
+      ro.observe(container);
+    }
+
+    return () => {
+      clearTimeout(timeout);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      if (ro) ro.disconnect();
+    };
   }, [markedTrackId, tracksLength, map]);
   return null;
 };
@@ -241,8 +319,26 @@ const UserLocationMarker = ({ isTracking, autoCenter }: { isTracking: boolean; a
   );
 };
 
-const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; markedTrackId: string | null }) => {
+const MobileZoomControls = ({ 
+  tracks, 
+  markedTrackId, 
+  activeTrack, 
+  onRecenterActiveTrack 
+}: { 
+  tracks: GPXTrack[]; 
+  markedTrackId: string | null; 
+  activeTrack?: GPXTrack | null; 
+  onRecenterActiveTrack?: () => void; 
+}) => {
   const map = useMap();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (containerRef.current) {
+      L.DomEvent.disableClickPropagation(containerRef.current);
+      L.DomEvent.disableScrollPropagation(containerRef.current);
+    }
+  }, []);
 
   const stopEvent = (e: React.SyntheticEvent) => {
     e.stopPropagation();
@@ -260,6 +356,34 @@ const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; mar
     e.preventDefault();
     triggerHaptic('light');
     map.zoomOut();
+  };
+
+  const handleCenterActiveTrack = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    triggerHaptic('medium');
+
+    if (onRecenterActiveTrack) {
+      onRecenterActiveTrack();
+    } else {
+      const trackToFit = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible)) || tracks[0];
+      if (trackToFit && trackToFit.points && trackToFit.points.length > 0) {
+        const validPoints: [number, number][] = [];
+        trackToFit.points.forEach(p => {
+          if (p) {
+            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+            if (!isNaN(latVal) && !isNaN(lngVal)) {
+              validPoints.push([latVal, lngVal]);
+            }
+          }
+        });
+        if (validPoints.length > 0) {
+          const bounds = L.latLngBounds(validPoints);
+          map.fitBounds(bounds, { padding: [50, 50], animate: true });
+        }
+      }
+    }
   };
 
   const handleFitToTracks = (e: React.SyntheticEvent) => {
@@ -286,8 +410,11 @@ const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; mar
     }
   };
 
+  const currentActive = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible));
+
   return (
     <div 
+      ref={containerRef}
       className="leaflet-control absolute bottom-36 right-2.5 sm:bottom-28 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto select-none"
       onClick={stopEvent}
       onDoubleClick={stopEvent}
@@ -304,6 +431,7 @@ const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; mar
           className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
           title="Karte vergrößern (+)"
           aria-label="Karte vergrößern"
+          id="btn-zoom-in"
         >
           <Plus className="w-6.5 h-6.5 stroke-[3]" />
         </button>
@@ -315,9 +443,25 @@ const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; mar
           className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
           title="Karte verkleinern (-)"
           aria-label="Karte verkleinern"
+          id="btn-zoom-out"
         >
           <Minus className="w-6.5 h-6.5 stroke-[3]" />
         </button>
+
+        <button
+          type="button"
+          onClick={handleCenterActiveTrack}
+          onMouseDown={stopEvent}
+          onTouchStart={stopEvent}
+          disabled={!currentActive}
+          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-amber-500 active:text-white dark:active:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
+          title={currentActive ? `Karte auf gesamte aktive Route ("${currentActive.name}") zentrieren` : "Keine aktive Route zum Zentrieren"}
+          aria-label="Aktive Route zentrieren"
+          id="btn-center-active-route"
+        >
+          <Target className="w-5.5 h-5.5 stroke-[2.5] text-amber-500 dark:text-amber-400" />
+        </button>
+
         <button
           type="button"
           onClick={handleFitToTracks}
@@ -337,50 +481,68 @@ const MobileZoomControls = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; mar
 
 const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapViewChange: any, isFlying: boolean }) => {
   const map = useMap();
-  const isInternalUpdate = useRef(false);
-  
-  // Sync map instance to mapView prop (only when external change)
+  const lastEmittedView = useRef<{ lat: number; lng: number; zoom: number } | null>(null);
+  const lastPropView = useRef<{ lat: number; lng: number; zoom: number } | null>(null);
+
+  // Sync external changes from props to Leaflet map (only when external props genuinely change from outside)
   useEffect(() => {
-    if (isFlying || isInternalUpdate.current) {
-      isInternalUpdate.current = false;
-      return;
-    }
+    if (isFlying) return;
     
+    const propChanged = !lastPropView.current ||
+      Math.abs(lastPropView.current.lat - mapView.lat) > 0.00001 ||
+      Math.abs(lastPropView.current.lng - mapView.lng) > 0.00001 ||
+      Math.abs(lastPropView.current.zoom - mapView.zoom) > 0.05;
+
+    if (!propChanged) return;
+
+    lastPropView.current = { lat: mapView.lat, lng: mapView.lng, zoom: mapView.zoom };
+
+    // Check if the current map state is significantly different
     const currentCenter = map.getCenter();
     const currentZoom = map.getZoom();
-    
-    const isDifferent = 
-        Math.abs(currentCenter.lat - mapView.lat) > 0.00001 || 
-        Math.abs(currentCenter.lng - mapView.lng) > 0.00001 || 
-        Math.abs(currentZoom - mapView.zoom) > 0.05;
 
-    if (isDifferent) {
+    const isDifferentFromMap =
+      Math.abs(currentCenter.lat - mapView.lat) > 0.0001 ||
+      Math.abs(currentCenter.lng - mapView.lng) > 0.0001 ||
+      Math.abs(currentZoom - mapView.zoom) > 0.05;
+
+    // Guard against echo loops where the prop is merely reflecting the map's own emitted view
+    const isReflectionOfEmission = lastEmittedView.current &&
+      Math.abs(lastEmittedView.current.lat - mapView.lat) < 0.0001 &&
+      Math.abs(lastEmittedView.current.lng - mapView.lng) < 0.0001 &&
+      Math.abs(lastEmittedView.current.zoom - mapView.zoom) < 0.05;
+
+    if (isDifferentFromMap && !isReflectionOfEmission) {
       map.setView([mapView.lat, mapView.lng], mapView.zoom, { animate: false });
     }
   }, [mapView.lat, mapView.lng, mapView.zoom, map, isFlying]);
 
-  useMapEvents({
-    moveend() {
-      if (isFlying) return;
-      const center = map.getCenter();
-      const zoom = map.getZoom();
-      
-      const isSignificant =
-        Math.abs(center.lat - mapView.lat) > 0.00001 ||
-        Math.abs(center.lng - mapView.lng) > 0.00001 ||
-        Math.abs(zoom - mapView.zoom) > 0.05;
+  const handleMapChange = useCallback(() => {
+    if (isFlying) return;
+    const center = map.getCenter();
+    const zoom = map.getZoom();
 
-      if (isSignificant) {
-        isInternalUpdate.current = true;
-        onMapViewChange({
-          lat: center.lat,
-          lng: center.lng,
-          zoom: zoom,
-          pitch: 0,
-          bearing: 0
-        });
-      }
+    const isSignificant = !lastEmittedView.current ||
+      Math.abs(center.lat - lastEmittedView.current.lat) > 0.00001 ||
+      Math.abs(center.lng - lastEmittedView.current.lng) > 0.00001 ||
+      Math.abs(zoom - lastEmittedView.current.zoom) > 0.02;
+
+    if (isSignificant) {
+      lastEmittedView.current = { lat: center.lat, lng: center.lng, zoom };
+      lastPropView.current = { lat: center.lat, lng: center.lng, zoom };
+      onMapViewChange({
+        lat: center.lat,
+        lng: center.lng,
+        zoom: zoom,
+        pitch: 0,
+        bearing: 0
+      });
     }
+  }, [map, isFlying, onMapViewChange]);
+
+  useMapEvents({
+    moveend: handleMapChange,
+    zoomend: handleMapChange
   });
 
   return null;
@@ -534,13 +696,21 @@ const Map: React.FC<MapProps> = ({
   showCyclingHeatmap = false,
   showRunningHeatmap = false,
   showDbCyclingHeatmap = false,
-  showDbRunningHeatmap = false
+  showDbRunningHeatmap = false,
+  onAnalyzeSurface,
+  analyzingSurfaces,
+  surfaceAnalysisStatuses,
+  timeGaps = [],
+  selectedGapId,
+  onSelectGap,
+  onSplitGap,
+  onCloseGap
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
   const [isColorMenuOpen, setIsColorMenuOpen] = useState(false);
   const [isLegendVisible, setIsLegendVisible] = useState(false);
-  const [colorMode, setColorMode] = useState<'default' | 'hr' | 'power' | 'speed'>('default');
+  const [colorMode, setColorMode] = useState<'default' | 'surface' | 'hr' | 'power' | 'speed'>('surface');
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(true);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
   const [isTrackingLocation, setIsTrackingLocation] = useState(false);
@@ -654,7 +824,7 @@ const Map: React.FC<MapProps> = ({
   });
 
   // Deterministic POI Generator along active/visible routes
-  const poiList = React.useMemo(() => {
+  const poiList = useMemo(() => {
     const list: POI[] = [];
     const visibleTracks = tracks.filter(t => t.visible && !t.isVirtual && t.points && t.points.length > 0);
 
@@ -803,7 +973,7 @@ const Map: React.FC<MapProps> = ({
     return list;
   }, [tracks, calculateDistance]);
 
-  const visiblePOIs = React.useMemo(() => {
+  const visiblePOIs = useMemo(() => {
     if (!showPOIs) return [];
     return poiList.filter(poi => poiFilters[poi.type]);
   }, [poiList, showPOIs, poiFilters]);
@@ -814,14 +984,14 @@ const Map: React.FC<MapProps> = ({
     }
   }, [markedTrackId]);
 
-  const activeTrack = React.useMemo(() => {
+  const activeTrack = useMemo(() => {
     if (markedTrackId) {
       return tracks.find(t => t.id === markedTrackId) || null;
     }
     return tracks.find(t => t.visible) || null;
   }, [tracks, markedTrackId]);
 
-  const movingTimeSecs = React.useMemo(() => {
+  const movingTimeSecs = useMemo(() => {
     if (!activeTrack) return 0;
     return activeTrack.duration 
       ? activeTrack.duration 
@@ -841,7 +1011,7 @@ const Map: React.FC<MapProps> = ({
     return `${s} Sek.`;
   };
 
-  const hrZones = React.useMemo(() => {
+  const hrZones = useMemo(() => {
     let baseZones = [
       { key: 'KB', color: '#3b82f6', min: 96, max: 112 },
       { key: 'GA1', color: '#10b981', min: 112, max: 136 },
@@ -866,7 +1036,7 @@ const Map: React.FC<MapProps> = ({
     return baseZones;
   }, []);
 
-  const powerZones = React.useMemo(() => {
+  const powerZones = useMemo(() => {
     return [
       { key: 'KB', color: '#3b82f6', min: 0, max: 0.55 * ftp },
       { key: 'GA1', color: '#10b981', min: 0.55 * ftp, max: 0.75 * ftp },
@@ -954,6 +1124,8 @@ const Map: React.FC<MapProps> = ({
           url={layer.url}
           maxZoom={layer.maxZoom || 19}
         />
+
+        <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
         
         {showCyclingHeatmap && (
           <LeafletTileLayer
@@ -1034,7 +1206,8 @@ const Map: React.FC<MapProps> = ({
           
           if (validPoints.length === 0) return null;
 
-          const positions = validPoints.map(p => [p.lat, p.lng] as [number, number]);
+          const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 1500);
+          const positions = renderPoints.map(p => [p.lat, p.lng] as [number, number]);
           
           let selectedPolylines: [number, number][][] = [];
           if (isMarked && selectionBounds) {
@@ -1055,16 +1228,6 @@ const Map: React.FC<MapProps> = ({
               selectedPolylines.push(currentLine);
             }
           }
-
-          // Helper to avoid bright pink/magenta colors
-          const sanitizeColor = (col: string | undefined): string => {
-            if (!col) return "#2563eb";
-            const upper = col.toUpperCase();
-            if (upper === '#FF00FF' || upper === '#FF1493' || upper === '#DB2777' || upper === '#EC4899') {
-              return "#2563eb";
-            }
-            return col;
-          };
 
           const displayTrackColor = sanitizeColor(track.color);
 
@@ -1149,19 +1312,6 @@ const Map: React.FC<MapProps> = ({
             }
           }
 
-          const getSurfaceColor = (surf: string, defaultColor: string) => {
-            const safeDefault = sanitizeColor(defaultColor);
-            switch (surf) {
-              case "Asphalt": return "#2563eb"; // Royal Blue
-              case "Schotter": return "#d97706"; // Amber / Gravel Brown
-              case "Waldweg": return "#16a34a"; // Forest Green
-              case "Fahrradweg": return "#0284c7"; // Sky Blue
-              case "Kopfsteinpflaster": return "#78350f"; // Bronze / Cobble Brown
-              case "Straße": return "#4f46e5"; // Indigo Road
-              default: return safeDefault;
-            }
-          };
-
           return (
             <React.Fragment key={track.id}>
               {/* Invisible thick line for easier hovering/clicking that holds the Popup */}
@@ -1216,7 +1366,7 @@ const Map: React.FC<MapProps> = ({
               </LeafletPolyline>
 
               {/* Visible line(s) either segmented by surface, training zones or solid default */}
-              {colorMode !== 'default' && zoneSegments.length > 0 ? (
+              {(colorMode === 'hr' || colorMode === 'power' || colorMode === 'speed') && zoneSegments.length > 0 ? (
                 zoneSegments.map((seg, sIdx) => (
                   <LeafletPolyline
                     key={`zone-seg-${track.id}-${sIdx}`}
@@ -1227,17 +1377,35 @@ const Map: React.FC<MapProps> = ({
                     interactive={false}
                   />
                 ))
-              ) : surfaceSegments.length > 1 ? (
-                surfaceSegments.map((seg, sIdx) => (
-                  <LeafletPolyline
-                    key={`seg-${sIdx}`}
-                    positions={seg.positions}
-                    color={getSurfaceColor(seg.surface, displayTrackColor)}
-                    weight={isMarked ? 8 : 4}
-                    opacity={isMarked ? 1.0 : 0.6}
-                    interactive={false}
-                  />
-                ))
+              ) : (colorMode === 'surface' || colorMode === 'default') && surfaceSegments.length > 0 ? (
+                surfaceSegments.map((seg, sIdx) => {
+                  const segColor = getSurfaceColor(seg.surface, displayTrackColor);
+                  const isSurfaceHeatmap = colorMode === 'surface';
+                  return (
+                    <React.Fragment key={`surface-seg-${track.id}-${sIdx}`}>
+                      {/* Outer Heatmap Glow Effect when surface heatmap is active */}
+                      {isSurfaceHeatmap && (
+                        <LeafletPolyline
+                          key={`seg-glow-${sIdx}`}
+                          positions={seg.positions}
+                          color={segColor}
+                          weight={isMarked ? 14 : 9}
+                          opacity={0.35}
+                          interactive={false}
+                        />
+                      )}
+                      {/* Core Surface Line */}
+                      <LeafletPolyline
+                        key={`seg-core-${sIdx}`}
+                        positions={seg.positions}
+                        color={segColor}
+                        weight={isMarked ? (isSurfaceHeatmap ? 6 : 8) : 4}
+                        opacity={isMarked ? 1.0 : 0.7}
+                        interactive={false}
+                      />
+                    </React.Fragment>
+                  );
+                })
               ) : (
                 <LeafletPolyline 
                   positions={positions}
@@ -1493,11 +1661,18 @@ const Map: React.FC<MapProps> = ({
             <LeafletMarker
               key={marker.id}
               position={[marker.lat, marker.lng]}
+              eventHandlers={{
+                contextmenu: (e: any) => {
+                  L.DomEvent.stopPropagation(e);
+                  triggerHaptic('medium');
+                  onDeleteTextMarker(marker.id);
+                }
+              }}
               icon={new L.DivIcon({
                 className: 'custom-text-marker',
                 html: `
-                  <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -100%); margin-top: -12px;">
-                    <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1" style="background-color: ${bgColor};">
+                  <div class="relative flex flex-col items-center select-none cursor-pointer group" style="transform: translate(-50%, -100%); margin-top: -12px;" title="Rechtsklick oder Klick zum Entfernen">
+                    <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1 transition-transform group-hover:scale-110" style="background-color: ${bgColor};">
                       <span>🏷️</span> ${escapeHtml(marker.label)}
                     </div>
                     <div class="w-2.5 h-2.5 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white" style="background-color: ${bgColor};"></div>
@@ -1508,22 +1683,30 @@ const Map: React.FC<MapProps> = ({
               })}
             >
               <Popup>
-                <div className="text-xs p-1 min-w-[124px]">
-                  <div className="font-bold mb-1 text-slate-800 dark:text-slate-100">{marker.label}</div>
+                <div className="text-xs p-1 min-w-[130px] space-y-1.5">
+                  <div className="font-extrabold text-slate-800 dark:text-slate-100 flex items-center justify-between">
+                    <span>🏷️ {marker.label}</span>
+                  </div>
                   {marker.distanceAlongTrack !== undefined && (
-                    <div className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mb-1">km {marker.distanceAlongTrack.toFixed(2)}</div>
+                    <div className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">
+                      km {marker.distanceAlongTrack.toFixed(2)}
+                    </div>
                   )}
-                  <div className="text-[9px] text-slate-400 font-mono mb-2">
+                  <div className="text-[9px] text-slate-400 font-mono">
                     {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
                   </div>
                   <button
+                    type="button"
                     onClick={(e) => {
                       L.DomEvent.stopPropagation(e);
+                      triggerHaptic('medium');
                       onDeleteTextMarker(marker.id);
                     }}
-                    className="w-full text-center px-1.5 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-[10px] font-bold border border-red-200 transition-colors"
+                    className="w-full text-center px-2 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/60 text-red-600 dark:text-red-300 rounded-lg text-[10px] font-extrabold border border-red-200 dark:border-red-800 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                    id={`btn-delete-marker-${marker.id}`}
                   >
-                    Notiz löschen
+                    <span>🗑️</span>
+                    <span>Marker entfernen</span>
                   </button>
                 </div>
               </Popup>
@@ -1728,11 +1911,31 @@ const Map: React.FC<MapProps> = ({
         )}
 
         <UserLocationMarker isTracking={isTrackingLocation} autoCenter={autoCenterLocation} />
-        <MobileZoomControls tracks={tracks} markedTrackId={markedTrackId} />
+        <MobileZoomControls 
+          tracks={tracks} 
+          markedTrackId={markedTrackId} 
+          activeTrack={activeTrack}
+          onRecenterActiveTrack={() => setRecenterTrigger(prev => prev + 1)}
+        />
       </LeafletMapContainer>
 
       {/* Mobile & Touch Floating Action Toolbar */}
       <div className="absolute bottom-20 right-2 sm:bottom-4 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto">
+        {activeTrack && (
+          <button
+            onClick={() => {
+              triggerHaptic('medium');
+              setRecenterTrigger(prev => prev + 1);
+            }}
+            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
+            title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten`}
+            id="btn-toolbar-center-route"
+          >
+            <Target className="w-4 h-4 text-amber-500" />
+            <span className="hidden xs:inline">Route zentrieren</span>
+          </button>
+        )}
+
         <button
           onClick={() => {
             triggerHaptic('medium');
@@ -1803,12 +2006,26 @@ const Map: React.FC<MapProps> = ({
                 <input 
                   type="radio" 
                   name="colorMode" 
+                  value="surface"
+                  checked={colorMode === 'surface'} 
+                  onChange={() => setColorMode('surface')} 
+                  className="accent-blue-600 font-sans"
+                />
+                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <span>🗺️</span> Oberflächen-Heatmap
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                <input 
+                  type="radio" 
+                  name="colorMode" 
                   value="default"
                   checked={colorMode === 'default'} 
                   onChange={() => setColorMode('default')} 
                   className="accent-blue-600 font-sans"
                 />
-                <span className="font-semibold text-slate-700 dark:text-slate-300">Standard / Untergrund</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Standard (Streckenfarbe)</span>
               </label>
               
               <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
@@ -1968,7 +2185,7 @@ const Map: React.FC<MapProps> = ({
         isLegendVisible ? (
           <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]">
             <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
-              <span>{colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
+              <span>{colorMode === 'surface' ? 'Oberflächen-Heatmap' : colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
               <button
                 onClick={() => setIsLegendVisible(false)}
                 className="text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 font-bold text-[11px] leading-none cursor-pointer p-0.5"
@@ -1977,28 +2194,105 @@ const Map: React.FC<MapProps> = ({
                 ✕
               </button>
             </div>
-            {colorMode === 'default' ? (
+            {(colorMode === 'surface' || colorMode === 'default') ? (
               <>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#2563eb" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#2563eb" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt (Paved)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#d97706" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#d97706" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#16a34a" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Waldweg / Trail</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#16a34a" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Singletrail / Waldweg</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#0284c7" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#0284c7" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#78350f" }}></span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#805ad5" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#ca8a04" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-350">Unbefestigt / Natur</span>
+                </div>
+
+                {/* Live Surface Distribution breakdown for marked track */}
+                {(() => {
+                  const markedTrack = tracks.find(t => t.id === markedTrackId);
+                  if (!markedTrack) return null;
+
+                  if (markedTrack.surfaceStats && markedTrack.surfaceStats.length > 0) {
+                    const totalDist = markedTrack.surfaceStats.reduce((acc, s) => acc + s.distance, 0) || markedTrack.distance || 1;
+                    return (
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-150 dark:border-slate-800 flex flex-col gap-1.5">
+                        <div className="font-sans font-bold text-[9.5px] text-slate-700 dark:text-slate-300 truncate">
+                          📊 {markedTrack.name}
+                        </div>
+                        {/* Stacked surface bar */}
+                        <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-800 border border-black/10">
+                          {markedTrack.surfaceStats.map((stat, idx) => {
+                            const pct = Math.min(100, (stat.distance / totalDist) * 100);
+                            if (pct <= 0) return null;
+                            const color = getSurfaceColor(stat.type);
+                            return (
+                              <div
+                                key={idx}
+                                style={{ width: `${pct}%`, backgroundColor: color }}
+                                title={`${stat.type}: ${stat.distance.toFixed(1)} km (${pct.toFixed(0)}%)`}
+                                className="h-full"
+                              />
+                            );
+                          })}
+                        </div>
+                        {/* Breakdown badges */}
+                        <div className="flex flex-col gap-0.5">
+                          {markedTrack.surfaceStats.map((stat, idx) => {
+                            const pct = (stat.distance / totalDist) * 100;
+                            const color = getSurfaceColor(stat.type);
+                            return (
+                              <div key={idx} className="flex items-center justify-between text-[8.5px] font-sans font-medium text-slate-600 dark:text-slate-400">
+                                <span className="flex items-center gap-1.5 truncate">
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }}></span>
+                                  <span className="truncate">{stat.type}</span>
+                                </span>
+                                <span className="font-bold text-slate-800 dark:text-slate-200 shrink-0 ml-1">
+                                  {stat.distance.toFixed(1)} km ({pct.toFixed(0)}%)
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // If track lacks surface analysis, offer quick OSM trigger
+                  return (
+                    <div className="mt-1.5 pt-1.5 border-t border-slate-150 dark:border-slate-800 font-sans">
+                      <button
+                        type="button"
+                        disabled={analyzingSurfaces?.[markedTrack.id]}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAnalyzeSurface?.(markedTrack.id, true);
+                        }}
+                        className={`w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] font-bold text-white shadow-2xs transition cursor-pointer ${
+                          analyzingSurfaces?.[markedTrack.id] 
+                            ? "bg-blue-400 cursor-wait animate-pulse" 
+                            : "bg-blue-600 hover:bg-blue-700 active:scale-95"
+                        }`}
+                      >
+                        <RefreshCw className={`w-2.5 h-2.5 ${analyzingSurfaces?.[markedTrack.id] ? "animate-spin" : ""}`} />
+                        {analyzingSurfaces?.[markedTrack.id] ? "OSM-Analyse..." : "Oberflächen analysieren"}
+                      </button>
+                    </div>
+                  );
+                })()}
               </>
             ) : (() => {
               const markedTrack = tracks.find(t => t.id === markedTrackId);
@@ -2193,9 +2487,35 @@ const Map: React.FC<MapProps> = ({
                 </div>
 
                 {/* Elevation Gain Key Metric */}
-                <div className="bg-emerald-500/[0.04] dark:bg-emerald-950/[0.08] border border-emerald-100/30 dark:border-emerald-900/15 rounded-lg p-2 flex flex-col items-center text-center">
+                <div 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const climbs = activeTrack.climbs && activeTrack.climbs.length > 0 ? activeTrack.climbs : findClimbs(activeTrack.points || []);
+                    if (climbs.length > 0 && onSelection) {
+                      const pts = climbs.flatMap(c => activeTrack.points.slice(c.startIndex, c.endIndex + 1));
+                      if (pts.length > 0) {
+                        const lats = pts.map(p => p.lat);
+                        const lngs = pts.map(p => p.lng);
+                        const minLat = Math.min(...lats);
+                        const maxLat = Math.max(...lats);
+                        const minLng = Math.min(...lngs);
+                        const maxLng = Math.max(...lngs);
+                        const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
+                        const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
+                        onSelection({
+                          minLat: minLat - latBuf,
+                          maxLat: maxLat + latBuf,
+                          minLng: minLng - lngBuf,
+                          maxLng: maxLng + lngBuf
+                        });
+                      }
+                    }
+                  }}
+                  className="bg-emerald-500/[0.04] dark:bg-emerald-950/[0.08] border border-emerald-100/30 dark:border-emerald-900/15 hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 rounded-lg p-2 flex flex-col items-center text-center cursor-pointer transition-colors"
+                  title="Klicken zum Zoomen auf Anstiege auf der Karte"
+                >
                   <span className="text-[9px] text-emerald-600 dark:text-emerald-500 font-bold uppercase tracking-wider mb-0.5 flex items-center gap-0.5">
-                    <TrendingUp className="w-2.5 h-2.5 shrink-0" /> Anstieg
+                    <TrendingUp className="w-2.5 h-2.5 shrink-0" /> Anstieg 🔍
                   </span>
                   <span className="font-extrabold text-[11px] sm:text-xs text-emerald-700 dark:text-emerald-400 font-mono font-black">
                     +{Math.round(activeTrack.ascent).toLocaleString('de-DE')}m

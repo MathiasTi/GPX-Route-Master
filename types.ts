@@ -79,6 +79,21 @@ export interface GPXTrack {
   isVirtual?: boolean;
 }
 
+export interface TimeGap {
+  id: string;
+  trackId: string;
+  trackName: string;
+  startIndex: number; // Index of point before gap
+  endIndex: number;   // Index of point after gap
+  startTime?: Date;
+  endTime?: Date;
+  gapSeconds: number; // Duration of time gap in seconds
+  distanceMeters: number; // Spatial distance between start and end point in meters
+  distanceFromStartKm: number; // Accumulated distance from track start in km
+  startPoint: GPXPoint;
+  endPoint: GPXPoint;
+}
+
 export enum MapLayer {
   OSM = 'OpenStreetMap',
   TOPOLOGY = 'OpenTopoMap',
@@ -116,6 +131,8 @@ export interface WeatherData {
   temperature: number;
   tempHigh: number;
   tempLow: number;
+  feelsLike?: number;
+  uvIndex?: number;
   condition: string;
   conditionDetail: string;
   humidity?: number;
@@ -125,6 +142,8 @@ export interface WeatherData {
   forecastSummary: string;
   isFallback?: boolean;
   fallbackNotice?: string;
+  pointType?: 'start' | 'summit' | 'end';
+  elevation?: number;
 }
 
 export interface TextMarker {

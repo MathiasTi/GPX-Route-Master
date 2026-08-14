@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Activity, Zap, TrendingUp, BarChart2, Shield, Heart, Clock, Maximize2, Flame, Settings, HelpCircle, Info, ChevronUp, ChevronDown } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
@@ -74,6 +74,15 @@ const METRIC_EXPLANATIONS: Record<string, { title: string; subtitle: string; for
           "Da sie enzymatisch viel schneller gespalten werden können als Fette und pro Liter verbrauchtem Sauerstoff mehr Energie (ATP) freisetzen, schaltet dein Körper bei mittlerer bis hoher Intensität (> 75% FTP) fast vollständig auf die Verbrennung von Glykogen um.\n\n" +
           "Da deine Glykogenspeicher im Muskel und der Leber sehr begrenzt sind (ca. 400 Gramm beim trainierten Athleten, entsprechend ca. 1600 kcal), leert sich dieser Tank bei Fahrten im roten Bereich rasant.\n\n" +
           "Umgerechnet in Gramm: 1 Gramm Kohlenhydrate besitzt einen physiologischen Brennwert von ca. 4.1 Kilokalorien."
+  },
+  carbGels: {
+    title: "⚡ Verpflegungs- & Gel-Bedarf (30g Carbs / Gel)",
+    subtitle: "Abschätzung benötigter Kalorien und Energy Gels für optimale Wettkampf- & Trainingsverpflegung",
+    formula: "Gels (Gesamt) = Kohlenhydrate (g) / 30g | Gel-Zufuhrrate = Total Gels / Dauer (Std.)",
+    text: "Damit deine Muskelglykogenspeicher bei längeren Einheiten nicht entleert werden (was zum gefürchteten 'Hungerast' oder Leistungsabfall führt), müssen Kohlenhydrate zeitnah zugeführt werden.\n\n" +
+          "• **Standard Energy Gel**:\n  Ein typisches Ausdauer-Gel liefert ca. 30 Gramm schnell verfügbare Kohlenhydrate (~120 kcal aus Glukose, Maltodextrin & Fruktose).\n\n" +
+          "• **Nährstoff- und Gel-Berechnung**:\n  Aus deiner berechneten mechanischen Arbeit und dem Intensitätsprofil ermitteln wir den physiologischen Kalorien- und Kohlenhydratverbrauch (in Gramm). Daraus ergibt sich die Gesamtanzahl benötigter 30g-Gels sowie die empfohlene Zufuhrrate pro Stunde.\n\n" +
+          "• **Praxis-Empfehlung**:\n  - Belastung < 50 min: Glykogenspeicher reichen meist aus.\n  - Belastung 1 bis 2.5 Std.: ca. 30g bis 60g Carbs pro Stunde (1 bis 2 Gels/Std.).\n  - Belastung > 2.5 Std.: ca. 60g bis 90g Carbs pro Stunde (2 bis 3 Gels/Std.)."
   },
   slopeClassifier: {
     title: "🧗 Steigungs-Klassifizierer",
@@ -515,6 +524,11 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
     const fatGrams = fatCal / 9.3;
     const carbGrams = carbCal / 4.1;
 
+    const durationHours = totalTimeSec / 3600;
+    const carbGelsTotal = Math.round((carbGrams / 30) * 10) / 10;
+    const carbGelsCount = Math.ceil(carbGrams / 30);
+    const carbGelsPerHour = durationHours > 0 ? Math.round((carbGrams / 30 / durationHours) * 10) / 10 : 0;
+
     return {
       avgPower: Math.round(estimatedAvgPower),
       workKj: Math.round(workKj),
@@ -525,6 +539,10 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       carbGrams: Number(carbGrams.toFixed(1)),
       fatPct: Math.round((fatCal / (totalCal || 1)) * 100),
       carbPct: Math.round((carbCal / (totalCal || 1)) * 100),
+      durationHours: Number(durationHours.toFixed(2)),
+      carbGelsTotal,
+      carbGelsCount,
+      carbGelsPerHour,
     };
   }, [analysisPoints, isRunning, labRiderWeight, labBikeWeight, labWindSpeed, labRollingResistance, labPosition, ftp]);
 
@@ -979,6 +997,22 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   });
 
   const activeTimelineDef = timelineMetricsDef.find(m => m.key === activeTimelineMetric) || timelineMetricsDef[2];
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [onClose]);
 
   return (
     <motion.div
@@ -1851,8 +1885,8 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
               {/* Dynamic Lab Results Grid */}
               {labCalculations && (
                 <div className="space-y-4 font-sans pt-4 border-t border-slate-100 dark:border-slate-800/80">
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
                       <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
                         Ø Sim-Leistung
                         <button 
@@ -1863,9 +1897,9 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                           <HelpCircle size={11} />
                         </button>
                       </span>
-                      <span className="text-base font-black text-slate-800 dark:text-white font-mono">{labCalculations.avgPower} W</span>
+                      <span className="text-sm sm:text-base font-black text-slate-800 dark:text-white font-mono">{labCalculations.avgPower} W</span>
                     </div>
-                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative animate-pulse" style={{ animationDuration: '4s' }}>
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative animate-pulse" style={{ animationDuration: '4s' }}>
                       <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
                         Phys. Arbeit
                         <button 
@@ -1876,9 +1910,9 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                           <HelpCircle size={11} />
                         </button>
                       </span>
-                      <span className="text-base font-black text-indigo-650 dark:text-indigo-400 font-mono">{labCalculations.workKj} kJ</span>
+                      <span className="text-sm sm:text-base font-black text-indigo-650 dark:text-indigo-400 font-mono">{labCalculations.workKj} kJ</span>
                     </div>
-                    <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 text-center relative">
                       <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-center gap-1">
                         Metabol. Energie
                         <button 
@@ -1889,7 +1923,23 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                           <HelpCircle size={11} />
                         </button>
                       </span>
-                      <span className="text-base font-black text-rose-500 font-mono">{labCalculations.calories} kcal</span>
+                      <span className="text-sm sm:text-base font-black text-rose-500 font-mono">{labCalculations.calories} kcal</span>
+                    </div>
+                    <div className="bg-slate-50 dark:bg-slate-950/50 p-2.5 rounded-xl border border-amber-200/60 dark:border-amber-900/40 text-center relative">
+                      <span className="text-[9px] uppercase font-bold text-amber-600 dark:text-amber-400 tracking-wider flex items-center justify-center gap-1">
+                        Gels (30g Carbs)
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('carbGels')}
+                          className="text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition cursor-pointer"
+                          title="Gel-Verpflegungsformel anzeigen"
+                        >
+                          <HelpCircle size={11} />
+                        </button>
+                      </span>
+                      <span className="text-sm sm:text-base font-black text-amber-600 dark:text-amber-400 font-mono">
+                        {labCalculations.carbGelsCount} Stk.
+                      </span>
+                      <span className="text-[8.5px] text-slate-400 block font-semibold">({labCalculations.carbGelsPerHour}/h)</span>
                     </div>
                   </div>
 
@@ -1929,6 +1979,56 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                       <span>{labCalculations.fatPct}% ({labCalculations.fatGrams}g Fett)</span>
                       <span>{labCalculations.carbPct}% ({labCalculations.carbGrams}g Carbs)</span>
                     </div>
+                  </div>
+
+                  {/* Gel & Nutrition Estimation Card */}
+                  <div className="p-4 bg-gradient-to-br from-amber-500/10 via-rose-500/5 to-indigo-500/10 dark:from-amber-950/30 dark:via-rose-950/20 dark:to-indigo-950/30 rounded-xl border border-amber-200/60 dark:border-amber-800/40 space-y-3">
+                    <div className="flex items-center justify-between text-xs font-black text-slate-800 dark:text-slate-100">
+                      <span className="flex items-center gap-1.5">
+                        <Zap size={14} className="text-amber-500 animate-bounce" style={{ animationDuration: '3s' }} />
+                        ⚡ Verpflegungs-Rechner & Energy Gels
+                        <button 
+                          onClick={() => setSelectedTheoryMetric('carbGels')}
+                          className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                          title="Gel- & Kohlenhydrat-Formel erklären"
+                        >
+                          <HelpCircle size={12} />
+                        </button>
+                      </span>
+                      <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                        30g Carbs / Gel
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-center">
+                      <div className="bg-white/80 dark:bg-slate-900/80 p-2.5 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block mb-0.5">Gesamt-Energie</span>
+                        <span className="text-sm font-black text-rose-500 font-mono">{labCalculations.calories} kcal</span>
+                        <span className="text-[9px] text-slate-400 block font-medium">({labCalculations.carbCal} kcal aus Carbs)</span>
+                      </div>
+                      <div className="bg-white/80 dark:bg-slate-900/80 p-2.5 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block mb-0.5">Gel-Bedarf (30g Carbs)</span>
+                        <span className="text-sm font-black text-amber-600 dark:text-amber-400 font-mono">
+                          {labCalculations.carbGelsCount} Gels <span className="text-[10px] font-semibold text-slate-500">({labCalculations.carbGelsTotal} Stk.)</span>
+                        </span>
+                        <span className="text-[9px] text-slate-400 block font-medium">({labCalculations.carbGrams}g Kohlenhydrate)</span>
+                      </div>
+                      <div className="col-span-2 sm:col-span-1 bg-white/80 dark:bg-slate-900/80 p-2.5 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block mb-0.5">Zufuhrrate / Std.</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                          {labCalculations.carbGelsPerHour} Gels / Std.
+                        </span>
+                        <span className="text-[9px] text-slate-400 block font-medium">
+                          (~{Math.round(labCalculations.carbGelsPerHour * 30)}g Carbs / h)
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[10.5px] text-slate-600 dark:text-slate-400 font-medium leading-normal bg-white/50 dark:bg-slate-900/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800/60 italic">
+                      💡 {labCalculations.carbGelsCount === 0 || labCalculations.durationHours < 0.8
+                        ? 'Bei kürzeren Einheiten unter 50 Minuten reicht deine normale Glykogenreserve meist aus.'
+                        : `Empfehlung: Bei dieser Tour ca. alle ${Math.round(60 / Math.max(0.5, labCalculations.carbGelsPerHour))} Minuten 1 Gel (30g Kohlenhydrate) mit ausreichend Wasser einnehmen.`}
+                    </p>
                   </div>
                 </div>
               )}
@@ -2538,7 +2638,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                           // Auto Switch Tab corresponding to metric types
                           if (selectedTheoryMetric === 'avgPower') setActiveHandbookTab('aero');
                           else if (selectedTheoryMetric === 'workKj' || selectedTheoryMetric === 'calories') setActiveHandbookTab('energy');
-                          else if (selectedTheoryMetric === 'fatOx' || selectedTheoryMetric === 'carbOx') setActiveHandbookTab('substrate');
+                          else if (selectedTheoryMetric === 'fatOx' || selectedTheoryMetric === 'carbOx' || selectedTheoryMetric === 'carbGels') setActiveHandbookTab('substrate');
                           else if (selectedTheoryMetric.includes('slope')) setActiveHandbookTab('slope');
                         }}
                         className="text-xs text-indigo-650 dark:text-indigo-400 hover:underline font-bold transition flex items-center gap-1.5"

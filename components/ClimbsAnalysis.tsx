@@ -69,7 +69,16 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
       if (p.lng > maxLng) maxLng = p.lng;
     }
     if (minLat === Infinity) return null;
-    return { minLat, maxLat, minLng, maxLng };
+    const latSpan = maxLat - minLat;
+    const lngSpan = maxLng - minLng;
+    const latBuf = Math.max(latSpan * 0.1, 0.002);
+    const lngBuf = Math.max(lngSpan * 0.1, 0.002);
+    return {
+      minLat: minLat - latBuf,
+      maxLat: maxLat + latBuf,
+      minLng: minLng - lngBuf,
+      maxLng: maxLng + lngBuf
+    };
   };
 
   const isClimbSelected = (segmentPoints: typeof track.points) => {
@@ -268,7 +277,11 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
                         }`}
                       >
                         {/* Map Crop at top */}
-                        <div className="h-44 shrink-0 relative bg-slate-100 dark:bg-slate-950">
+                        <div 
+                          onClick={() => handleSelectClimb(climb.points, true)}
+                          className="h-44 shrink-0 relative bg-slate-100 dark:bg-slate-950 cursor-pointer group/crop hover:opacity-95 transition-opacity"
+                          title="Auf der Hauptkarte anzoomen & Schließen"
+                        >
                           <ClimbMiniMap 
                             points={climb.points} 
                             color={track.color} 

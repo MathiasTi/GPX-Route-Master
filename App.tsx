@@ -1,12 +1,14 @@
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff } from 'lucide-react';
-import { GPXTrack, GPXPoint, MapLayer, TextMarker } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, generateMockSurfaceStats } from './utils/gpxUtils';
+import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X } from 'lucide-react';
+import { GPXTrack, GPXPoint, MapLayer, TextMarker, TimeGap } from './types';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack } from './utils/gpxUtils';
+import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -26,22 +28,22 @@ import { getApiUrl } from './utils/api';
 import { triggerHaptic } from './utils/haptics';
 
 const App: React.FC = () => {
-  const [unhydratedTracks, setTracks] = useState<GPXTrack[]>([]);
+  // --- Core State Declarations ---
+  const [unhydratedTracks, setTracks] = useState<GPXTrack[]>(() => {
+    try {
+      const saved = localStorage.getItem('velo_workspace_tracks');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Fehler beim Laden des gespeicherten Workspaces aus localStorage:', e);
+    }
+    return [];
+  });
 
-  const tracks = React.useMemo(() => {
-    return unhydratedTracks.map(t => {
-      const needsPointsHydration = t.points && t.points.some(p => p.time && typeof p.time === 'string');
-      const needsDateHydration = (t as any).date && typeof (t as any).date === 'string';
-      
-      if (!needsPointsHydration && !needsDateHydration) return t;
-      
-      return {
-        ...t,
-        date: (t as any).date ? new Date((t as any).date) : (t as any).date,
-        points: t.points.map(p => p.time && typeof p.time === 'string' ? { ...p, time: new Date(p.time) } : p)
-      };
-    });
-  }, [unhydratedTracks]);
   const [history, setHistory] = useState<GPXTrack[][]>([]);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>(() => {
     try {
@@ -54,44 +56,21 @@ const App: React.FC = () => {
 
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
+  const [activeLayer, setActiveLayer] = useState<MapLayer>(() => {
+    try {
+      const saved = localStorage.getItem('velo_workspace_active_layer');
+      if (saved && Object.values(MapLayer).includes(saved as MapLayer)) {
+        return saved as MapLayer;
+      }
+    } catch (e) {}
+    return MapLayer.OSM;
+  });
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Sync with localStorage
-  useEffect(() => {
-    localStorage.setItem('velo_text_markers', JSON.stringify(textMarkers));
-  }, [textMarkers]);
-
-  const handleAddTextMarker = useCallback((newMarker: Omit<TextMarker, 'id'>) => {
-    const marker: TextMarker = {
-      ...newMarker,
-      id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 11)
-    };
-    setTextMarkers(prev => [...prev, marker]);
-  }, []);
-
-  const handleDeleteTextMarker = useCallback((id: string) => {
-    setTextMarkers(prev => prev.filter(m => m.id !== id));
-  }, []);
-
-  const handleUpdateTextMarker = useCallback((id: string, updates: Partial<TextMarker>) => {
-    setTextMarkers(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
-  }, []);
-  const [activeLayer, setActiveLayer] = useState<MapLayer>(MapLayer.OSM);
   const [showCyclingHeatmap, setShowCyclingHeatmap] = useState(false);
   const [showRunningHeatmap, setShowRunningHeatmap] = useState(false);
   const [showDbCyclingHeatmap, setShowDbCyclingHeatmap] = useState(false);
   const [showDbRunningHeatmap, setShowDbRunningHeatmap] = useState(false);
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       const saved = localStorage.getItem('gpx_theme');
@@ -100,18 +79,15 @@ const App: React.FC = () => {
     return 'light';
   });
 
-  useEffect(() => {
-    const root = window.document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-    localStorage.setItem('gpx_theme', theme);
-  }, [theme]);
-
   const [selectionBounds, setSelectionBounds] = useState<{minLat: number, maxLat: number, minLng: number, maxLng: number} | null>(null);
-  const [markedTrackId, setMarkedTrackId] = useState<string | null>(null);
+  const [markedTrackId, setMarkedTrackId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('velo_workspace_marked_track') || null;
+    } catch (e) {
+      return null;
+    }
+  });
+
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -125,6 +101,10 @@ const App: React.FC = () => {
   const [weatherOpen, setWeatherOpen] = useState(false);
   const [rawDataOpen, setRawDataOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [timeGapModalOpen, setTimeGapModalOpen] = useState(false);
+  const [timeGapTrackId, setTimeGapTrackId] = useState<string | null>(null);
+  const [selectedGapId, setSelectedGapId] = useState<string | null>(null);
+
   const [mapView, setMapView] = useState({
     lat: 51.1657,
     lng: 10.4515,
@@ -143,18 +123,10 @@ const App: React.FC = () => {
     statusText: string;
   } | null>(null);
 
-  useEffect(() => {
-    if (successMessage) {
-      const timer = setTimeout(() => {
-        setSuccessMessage(null);
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [successMessage]);
-
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
+  const [showHint, setShowHint] = useState(false);
   const [userWeight, setUserWeight] = useState(75);
   const [userAge, setUserAge] = useState(35);
   const [userMaxHr, setUserMaxHr] = useState<number>(() => {
@@ -165,13 +137,176 @@ const App: React.FC = () => {
     return 220 - 35; // default 185
   });
 
-  const handleMaxHrChange = (newMaxHr: number) => {
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const today = new Date();
+    return today.toISOString().split('T')[0];
+  });
+  const [selectedTime, setSelectedTime] = useState<string>(() => {
+    const today = new Date();
+    const hours = String(today.getHours()).padStart(2, '0');
+    const minutes = String(today.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  });
+  const [isFlying, setIsFlying] = useState(false);
+  const [flyProgress, setFlyProgress] = useState(0); // 0 to 1
+  const [flySpeed, setFlySpeed] = useState(1); // multiplier
+
+  const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
+  const [surfaceAnalysisStatuses, setSurfaceAnalysisStatuses] = useState<Record<string, { status: 'idle' | 'loading' | 'success' | 'error' | 'simulated'; message?: string; source?: 'osm' | 'terrain' | 'manual'; timestamp?: number }>>({});
+
+  // --- Refs ---
+  const analysisAttempted = useRef<Set<string>>(new Set());
+
+  // --- Memoized Values ---
+  const tracks = React.useMemo(() => {
+    return unhydratedTracks.map(t => {
+      const needsPointsHydration = t.points && t.points.some(p => p.time && typeof p.time === 'string');
+      const needsDateHydration = (t as any).date && typeof (t as any).date === 'string';
+      
+      if (!needsPointsHydration && !needsDateHydration) return t;
+      
+      return {
+        ...t,
+        date: (t as any).date ? new Date((t as any).date) : (t as any).date,
+        points: t.points.map(p => p.time && typeof p.time === 'string' ? { ...p, time: new Date(p.time) } : p)
+      };
+    });
+  }, [unhydratedTracks]);
+
+  const tracksRef = useRef(tracks);
+  useEffect(() => {
+    tracksRef.current = tracks;
+  }, [tracks]);
+
+  const activeTimeGaps = React.useMemo(() => {
+    const list: TimeGap[] = [];
+    for (const track of tracks) {
+      if (track.visible) {
+        const gaps = detectTimeGaps(track, 30);
+        list.push(...gaps);
+      }
+    }
+    return list;
+  }, [tracks]);
+
+  // --- Helper Handlers ---
+  const handleMaxHrChange = useCallback((newMaxHr: number) => {
     setUserMaxHr(newMaxHr);
     try {
       localStorage.setItem('velo_user_max_hr', String(newMaxHr));
     } catch (e) {}
-  };
+  }, []);
 
+  const handleAddTextMarker = useCallback((newMarker: Omit<TextMarker, 'id'>) => {
+    const marker: TextMarker = {
+      ...newMarker,
+      id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 11)
+    };
+    setTextMarkers(prev => [...prev, marker]);
+  }, []);
+
+  const handleDeleteTextMarker = useCallback((id: string) => {
+    setTextMarkers(prev => prev.filter(m => m.id !== id));
+  }, []);
+
+  const handleUpdateTextMarker = useCallback((id: string, updates: Partial<TextMarker>) => {
+    setTextMarkers(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
+  }, []);
+
+  const handleToggle3D = useCallback((mode: boolean) => {
+    setIs3D(mode);
+    if (mode) {
+      setMapView(prev => ({ ...prev, pitch: 60 }));
+    } else {
+      setMapView(prev => ({ ...prev, pitch: 0, bearing: 0 }));
+    }
+  }, []);
+
+  // --- Lifecycle Effects ---
+  // Auto-save workspace tracks to localStorage
+  useEffect(() => {
+    try {
+      if (unhydratedTracks && unhydratedTracks.length > 0) {
+        const jsonString = JSON.stringify(unhydratedTracks);
+        localStorage.setItem('velo_workspace_tracks', jsonString);
+      } else {
+        localStorage.removeItem('velo_workspace_tracks');
+      }
+    } catch (err) {
+      console.warn('LocalStorage Quota überschritten oder Fehler beim Speichern des Workspaces:', err);
+      try {
+        const lightweight = unhydratedTracks.map(t => {
+          const { rawRecord, ...rest } = t as any;
+          return rest;
+        });
+        localStorage.setItem('velo_workspace_tracks', JSON.stringify(lightweight));
+      } catch (fallbackErr) {
+        console.error('Konnte Workspace-Cache nicht im LocalStorage speichern:', fallbackErr);
+      }
+    }
+  }, [unhydratedTracks]);
+
+  // Online / Offline tracking
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Sync text markers with localStorage
+  useEffect(() => {
+    localStorage.setItem('velo_text_markers', JSON.stringify(textMarkers));
+  }, [textMarkers]);
+
+  // Sync active layer with localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('velo_workspace_active_layer', activeLayer);
+    } catch (e) {}
+  }, [activeLayer]);
+
+  // Sync theme with document & localStorage
+  useEffect(() => {
+    const root = window.document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    localStorage.setItem('gpx_theme', theme);
+  }, [theme]);
+
+  // Sync marked track ID with localStorage
+  useEffect(() => {
+    try {
+      if (markedTrackId) {
+        localStorage.setItem('velo_workspace_marked_track', markedTrackId);
+      } else {
+        localStorage.removeItem('velo_workspace_marked_track');
+      }
+    } catch (e) {}
+  }, [markedTrackId]);
+
+  // Auto-dismiss success messages
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  // Update max HR if userAge changes and no custom max HR saved
   useEffect(() => {
     try {
       const saved = localStorage.getItem('velo_user_max_hr');
@@ -180,8 +315,6 @@ const App: React.FC = () => {
       }
     } catch (e) {}
   }, [userAge]);
-
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   // Load settings on startup from SQLite database via API
   useEffect(() => {
@@ -239,26 +372,10 @@ const App: React.FC = () => {
       }
     };
     
-    // Simple debounce to avoid hammering the DB
     const timeout = setTimeout(saveSettings, 1000);
     return () => clearTimeout(timeout);
   }, [ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
 
-  const [estimatedSpeed, setEstimatedSpeed] = useState(15); // km/h
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const today = new Date();
-    return today.toISOString().split('T')[0];
-  });
-  const [selectedTime, setSelectedTime] = useState<string>(() => {
-    const today = new Date();
-    const hours = String(today.getHours()).padStart(2, '0');
-    const minutes = String(today.getMinutes()).padStart(2, '0');
-    return `${hours}:${minutes}`;
-  });
-  const [isFlying, setIsFlying] = useState(false);
-  const [flyProgress, setFlyProgress] = useState(0); // 0 to 1
-  const [flySpeed, setFlySpeed] = useState(1); // multiplier
- 
   // Recalculate power stats when FTP, weight, or estimated Speed changes
   useEffect(() => {
     setTracks(prev => prev.map(track => {
@@ -267,48 +384,71 @@ const App: React.FC = () => {
     }));
   }, [ftp, userWeight, estimatedSpeed]);
 
-  const handleToggle3D = useCallback((mode: boolean) => {
-    setIs3D(mode);
-    if (mode) {
-      setMapView(prev => ({ ...prev, pitch: 60 }));
-    } else {
-      setMapView(prev => ({ ...prev, pitch: 0, bearing: 0 }));
-    }
-  }, []);
-
-  const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
-
-  const analyzeTrackSurface = useCallback(async (trackId: string) => {
+  const analyzeTrackSurface = useCallback(async (trackId: string, force = false) => {
     if (analyzingSurfaces[trackId]) return;
+    if (!force && analysisAttempted.current.has(trackId)) return;
+    
+    analysisAttempted.current.add(trackId);
 
-    let pointsToAnalyze: any[] = [];
-    setTracks(currentTracks => {
-      const track = currentTracks.find(t => t.id === trackId);
-      if (track) {
-        pointsToAnalyze = track.points.map(p => ({ lat: p.lat, lng: p.lng, ele: p.ele }));
-      }
-      return currentTracks;
-    });
+    const track = tracksRef.current.find(t => t.id === trackId);
+    if (!track || !track.points || track.points.length === 0) {
+      setSurfaceAnalysisStatuses(prev => ({
+        ...prev,
+        [trackId]: { status: 'error', message: 'Keine Punkte im Track vorhanden.' }
+      }));
+      return;
+    }
 
-    if (pointsToAnalyze.length === 0) return;
+    const pointsToAnalyze = track.points.map(p => ({ 
+      lat: Number(p.lat), 
+      lng: Number(p.lng), 
+      ele: p.ele !== undefined ? Number(p.ele) : undefined, 
+      surface: p.surface 
+    })).filter(p => !isNaN(p.lat) && !isNaN(p.lng));
+
+    const trackName = track.name;
+    const activityType = track.activityType;
 
     setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
+    setSurfaceAnalysisStatuses(prev => ({
+      ...prev,
+      [trackId]: { status: 'loading', message: 'Strecke wird mit OpenStreetMap abgeglichen...' }
+    }));
+
     try {
       const apiUrl = getApiUrl("/api/analyze-surface");
-      const trackToAnalyze = tracks.find(t => t.id === trackId);
-
-      const result = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          points: pointsToAnalyze,
-          name: trackToAnalyze?.name
-        })
+      let result: Response;
+      
+      const requestPayload = JSON.stringify({
+        points: pointsToAnalyze,
+        name: trackName,
+        activityType: activityType
       });
 
-      if (!result.ok) throw new Error("Surface analyzer API error");
+      const requestHeaders = {
+        "Content-Type": "application/json"
+      };
+
+      try {
+        result = await fetch(apiUrl, {
+          method: "POST",
+          headers: requestHeaders,
+          body: requestPayload
+        });
+      } catch (firstErr) {
+        // Fall back to relative URL if absolute constructed URL threw a DOMException/network error
+        if (apiUrl !== "/api/analyze-surface") {
+          result = await fetch("/api/analyze-surface", {
+            method: "POST",
+            headers: requestHeaders,
+            body: requestPayload
+          });
+        } else {
+          throw firstErr;
+        }
+      }
+
+      if (!result.ok) throw new Error(`Server lieferte Status-Code ${result.status}`);
       const data = await result.json();
 
       if (data.surfaces && data.surfaceStats) {
@@ -326,9 +466,32 @@ const App: React.FC = () => {
           }
           return t;
         }));
+
+        const isSimulated = data.isFallback === true;
+        setSurfaceAnalysisStatuses(prev => ({
+          ...prev,
+          [trackId]: {
+            status: isSimulated ? 'simulated' : 'success',
+            source: isSimulated ? 'terrain' : 'osm',
+            message: isSimulated
+              ? (data.fallbackNotice || 'Geländebeschaffenheit anhand von Steigung & Höhe berechnet.')
+              : `Erfolgreich von OpenStreetMap ermittelt (${data.surfaceStats.length} Belagsarten)`,
+            timestamp: Date.now()
+          }
+        }));
+      } else {
+        throw new Error("Daten von OpenStreetMap sind unvollständig.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("[Surface Analyzer] Error for track", trackId, err);
+      setSurfaceAnalysisStatuses(prev => ({
+        ...prev,
+        [trackId]: {
+          status: 'error',
+          message: err.message || 'Verbindung zu OpenStreetMap fehlgeschlagen.',
+          timestamp: Date.now()
+        }
+      }));
     } finally {
       setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: false }));
     }
@@ -350,19 +513,28 @@ const App: React.FC = () => {
       }
       return t;
     }));
+    setSurfaceAnalysisStatuses(prev => ({
+      ...prev,
+      [trackId]: {
+        status: 'success',
+        source: 'manual',
+        message: `Oberfläche manuell auf ${surfaceType} gesetzt.`,
+        timestamp: Date.now()
+      }
+    }));
   }, []);
 
+  // Automatically analyze tracks that don't have surface data
   useEffect(() => {
-    if (markedTrackId) {
-      const track = tracks.find(t => t.id === markedTrackId);
-      if (track && track.points.length > 0) {
+    tracks.forEach(track => {
+      if (track.points.length > 0) {
         const hasSurfaces = track.points.some(p => p.surface !== undefined && p.surface !== null && p.surface !== "");
-        if (!hasSurfaces && !analyzingSurfaces[markedTrackId]) {
-          analyzeTrackSurface(markedTrackId);
+        if (!hasSurfaces && !analyzingSurfaces[track.id]) {
+          analyzeTrackSurface(track.id);
         }
       }
-    }
-  }, [markedTrackId, tracks, analyzeTrackSurface, analyzingSurfaces]);
+    });
+  }, [tracks, analyzeTrackSurface, analyzingSurfaces]);
  
   // Auto-select first track if none is selected and tracks exist
   useEffect(() => {
@@ -383,6 +555,103 @@ const App: React.FC = () => {
     setTracks(previousState);
     setHistory(prev => prev.slice(0, -1));
   }, [history]);
+
+  const handleOpenTimeGapAnalysis = useCallback((trackId?: string) => {
+    setTimeGapTrackId(trackId || markedTrackId || tracks[0]?.id || null);
+    setTimeGapModalOpen(true);
+  }, [markedTrackId, tracks]);
+
+  const handleFocusGapOnMap = useCallback((gap: TimeGap) => {
+    setSelectedGapId(gap.id);
+    setMapView(prev => ({
+      ...prev,
+      lat: gap.startPoint.lat,
+      lng: gap.startPoint.lng,
+      zoom: 16
+    }));
+  }, []);
+
+  const handleSplitTrack = useCallback((originalTrackId: string, splitIndex: number) => {
+    const track = tracks.find(t => t.id === originalTrackId);
+    if (!track) return;
+
+    saveToHistory();
+
+    const result = splitTrackAtIndex(track, splitIndex, ftp, userWeight, estimatedSpeed);
+    if (!result) return;
+
+    setTracks(prev => {
+      const idx = prev.findIndex(t => t.id === originalTrackId);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next.splice(idx, 1, result.track1, result.track2);
+      return next;
+    });
+
+    setMarkedTrackId(result.track1.id);
+    setSuccessMessage(`Track in 2 Abschnitte getrennt: "${result.track1.name}" & "${result.track2.name}"`);
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleCloseGap = useCallback((originalTrackId: string, gap: TimeGap) => {
+    const track = tracks.find(t => t.id === originalTrackId);
+    if (!track) return;
+
+    saveToHistory();
+
+    const updatedTrack = closeTimeGapInTrack(track, gap, 0, ftp, userWeight, estimatedSpeed);
+
+    setTracks(prev => prev.map(t => t.id === originalTrackId ? updatedTrack : t));
+    setSuccessMessage('Zeitlücke erfolgreich entfernt und Punkte zusammengeführt');
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleBatchSplit = useCallback((originalTrackId: string, minSeconds: number) => {
+    const track = tracks.find(t => t.id === originalTrackId);
+    if (!track) return;
+
+    const gaps = detectTimeGaps(track, minSeconds);
+    if (gaps.length === 0) return;
+
+    saveToHistory();
+
+    let currentTracks: GPXTrack[] = [track];
+
+    for (let i = gaps.length - 1; i >= 0; i--) {
+      const gap = gaps[i];
+      const targetTrack = currentTracks[0];
+      const res = splitTrackAtIndex(targetTrack, gap.startIndex, ftp, userWeight, estimatedSpeed);
+      if (res) {
+        currentTracks = [res.track1, res.track2, ...currentTracks.slice(1)];
+      }
+    }
+
+    setTracks(prev => {
+      const idx = prev.findIndex(t => t.id === originalTrackId);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next.splice(idx, 1, ...currentTracks);
+      return next;
+    });
+
+    setSuccessMessage(`Track an allen ${gaps.length} Zeitlücken in ${currentTracks.length} Abschnitte getrennt`);
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleBatchCloseGaps = useCallback((originalTrackId: string, minSeconds: number) => {
+    const track = tracks.find(t => t.id === originalTrackId);
+    if (!track) return;
+
+    const gaps = detectTimeGaps(track, minSeconds);
+    if (gaps.length === 0) return;
+
+    saveToHistory();
+
+    let updatedTrack = track;
+    for (let i = gaps.length - 1; i >= 0; i--) {
+      updatedTrack = closeTimeGapInTrack(updatedTrack, gaps[i], 0, ftp, userWeight, estimatedSpeed);
+    }
+
+    setTracks(prev => prev.map(t => t.id === originalTrackId ? updatedTrack : t));
+    setSuccessMessage(`Alle ${gaps.length} Zeitlücken erfolgreich aus dem Track entfernt`);
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
  
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -572,32 +841,22 @@ const App: React.FC = () => {
     }
  
     if (newTracks.length > 0) {
-      const duplicates: string[] = [];
+      const duplicateReasons: string[] = [];
       const uniqueNewTracks: GPXTrack[] = [];
 
       for (const nt of newTracks) {
-        const isDuplicate = tracks.some(t => {
-          const samePointsCount = t.points.length === nt.points.length;
-          const veryCloseDistance = Math.abs(t.distance - nt.distance) < 0.01;
-          const sameName = t.name.toLowerCase() === nt.name.toLowerCase();
-          return (samePointsCount && veryCloseDistance) || (sameName && veryCloseDistance);
-        }) || uniqueNewTracks.some(t => {
-          const samePointsCount = t.points.length === nt.points.length;
-          const veryCloseDistance = Math.abs(t.distance - nt.distance) < 0.01;
-          const sameName = t.name.toLowerCase() === nt.name.toLowerCase();
-          return (samePointsCount && veryCloseDistance) || (sameName && veryCloseDistance);
-        });
+        const dupCheck = checkTrackDuplicateGPS(nt, [...tracks, ...uniqueNewTracks]);
 
-        if (isDuplicate) {
-          duplicates.push(nt.name);
+        if (dupCheck.isDuplicate) {
+          duplicateReasons.push(`• "${nt.name}": ${dupCheck.reason || 'Identischer GPX-Verlauf'}`);
         } else {
           uniqueNewTracks.push(nt);
         }
       }
 
-      if (duplicates.length > 0) {
-        setErrorMessage(`Hinweis: ${duplicates.length} Aktivität(en) wurden ignoriert, da sie bereits geladen sind: ${duplicates.join(", ")}`);
-        setTimeout(() => setErrorMessage(null), 8000);
+      if (duplicateReasons.length > 0) {
+        setErrorMessage(`Hinweis: ${duplicateReasons.length} Aktivität(en) ignoriert (GPS-Musterduplikat):\n${duplicateReasons.join("\n")}`);
+        setTimeout(() => setErrorMessage(null), 10000);
       }
 
       if (uniqueNewTracks.length > 0) {
@@ -656,29 +915,38 @@ const App: React.FC = () => {
   }, [saveToHistory, ftp, userWeight, estimatedSpeed]);
 
   const handleLoadLibraryTrack = useCallback((track: GPXTrack) => {
-    let alreadyExists = false;
-
     if (track && track.points && track.points.length > 0) {
       const calcStats = calculateSurfaceStatsFromPoints(track.points);
-      const surfaceStats = calcStats.length > 0 ? calcStats : (track.surfaceStats && track.surfaceStats.length > 0 ? track.surfaceStats : generateMockSurfaceStats(track.distance, track.name, track.activityType));
+      const surfaceStats = calcStats.length > 0 ? calcStats : (track.surfaceStats && track.surfaceStats.length > 0 ? track.surfaceStats : []);
       track.surfaceStats = surfaceStats;
       hydratePointsWithSurface(track.points, surfaceStats, track.distance);
     }
 
+    const dupCheck = checkTrackDuplicateGPS(track, tracks);
+    const alreadyExists = dupCheck.isDuplicate;
+
     setTracks(prev => {
       if (prev.some(t => t.id === track.id)) {
-        alreadyExists = true;
         return prev.map(t => t.id === track.id ? { ...t, visible: true } : t);
+      }
+      if (dupCheck.isDuplicate && dupCheck.matchedTrackId) {
+        return prev.map(t => t.id === dupCheck.matchedTrackId ? { ...t, visible: true } : t);
       }
       return [...prev, { ...track, visible: true }];
     });
-    setMarkedTrackId(track.id);
+
+    if (dupCheck.matchedTrackId) {
+      setMarkedTrackId(dupCheck.matchedTrackId);
+    } else {
+      setMarkedTrackId(track.id);
+    }
+
     if (alreadyExists) {
-      setSuccessMessage(`Aktivität "${track.name}" ist bereits im Workspace geladen.`);
+      setSuccessMessage(`Hinweis: "${track.name}" ist bereits im Workspace geladen (${dupCheck.reason || 'Identischer GPX-Verlauf'}).`);
     } else {
       setSuccessMessage(`Aktivität "${track.name}" wurde erfolgreich in den Workspace geladen.`);
     }
-  }, []);
+  }, [tracks]);
 
   const handleSaveTrackToLibrary = useCallback(async (id: string) => {
     const track = tracks.find(t => t.id === id);
@@ -698,20 +966,17 @@ const App: React.FC = () => {
         );
       }
 
-      // 2. Check if a duplicate exists in the workspace
-      const isDuplicateInWorkspace = tracks.some(t => 
-        t.id !== track.id && 
-        t.name === track.name &&
-        Math.abs(t.distance - track.distance) < 0.05
-      );
+      // 2. Check if a duplicate exists in the workspace (excluding self)
+      const workspaceOthers = tracks.filter(t => t.id !== track.id);
+      const dupCheck = checkTrackDuplicateGPS(track, workspaceOthers);
 
       if (isAlreadyInLibrary) {
         setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits in der Bibliothek.`);
         return;
       }
 
-      if (isDuplicateInWorkspace) {
-        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits im Workspace.`);
+      if (dupCheck.isDuplicate) {
+        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits als Duplikat im Workspace (${dupCheck.reason}).`);
         return;
       }
 
@@ -732,7 +997,7 @@ const App: React.FC = () => {
     }
   }, [tracks]);
 
-  const markedTrack = tracks.find(t => t.id === markedTrackId);
+  const markedTrack = tracks.find(t => t.id === markedTrackId) || tracks[0];
   const suggestedFtp = markedTrack?.powerStats?.best20m ? Math.round(markedTrack.powerStats.best20m * 0.95) : null;
  
   // Flyover Animation Logic
@@ -798,6 +1063,25 @@ const App: React.FC = () => {
         return;
       }
 
+      // Escape key: close any open modal or clear active selection/flight
+      if (e.key === 'Escape') {
+        if (analyticsOpen) { setAnalyticsOpen(false); return; }
+        if (garminHealthOpen) { setGarminHealthOpen(false); return; }
+        if (garminActivitiesAnalysisOpen) { setGarminActivitiesAnalysisOpen(false); return; }
+        if (performanceAnalysisOpen) { setPerformanceAnalysisOpen(false); return; }
+        if (climbsOpen) { setClimbsOpen(false); return; }
+        if (comparisonOpen) { setComparisonOpen(false); return; }
+        if (trainingZonesOpen) { setTrainingZonesOpen(false); return; }
+        if (summaryReportOpen) { setSummaryReportOpen(false); return; }
+        if (weatherOpen) { setWeatherOpen(false); return; }
+        if (rawDataOpen) { setRawDataOpen(false); return; }
+        if (timeGapModalOpen) { setTimeGapModalOpen(false); return; }
+        if (isExportModalOpen) { setIsExportModalOpen(false); return; }
+        if (isFlying) { setIsFlying(false); return; }
+        if (selectionBounds) { setSelectionBounds(null); return; }
+        return;
+      }
+
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
 
       // Ctrl + Z: Undo
@@ -815,6 +1099,24 @@ const App: React.FC = () => {
           e.preventDefault();
           handleSaveTrackToLibrary(markedTrackId);
         }
+        return;
+      }
+
+      // Zoom shortcuts: + / = to zoom in, - to zoom out (when not typing in inputs)
+      if (e.key === '+' || e.key === '=' || e.key === 'Add') {
+        e.preventDefault();
+        setMapView(prev => ({
+          ...prev,
+          zoom: Math.min(19, prev.zoom + 1)
+        }));
+        return;
+      }
+      if (e.key === '-' || e.key === '_' || e.key === 'Subtract') {
+        e.preventDefault();
+        setMapView(prev => ({
+          ...prev,
+          zoom: Math.max(3, prev.zoom - 1)
+        }));
         return;
       }
 
@@ -900,10 +1202,22 @@ const App: React.FC = () => {
     hoveredPoint,
     mapView.zoom,
     setHoveredPoint,
-    setMapView
+    setMapView,
+    analyticsOpen,
+    garminHealthOpen,
+    garminActivitiesAnalysisOpen,
+    performanceAnalysisOpen,
+    climbsOpen,
+    comparisonOpen,
+    trainingZonesOpen,
+    summaryReportOpen,
+    weatherOpen,
+    rawDataOpen,
+    timeGapModalOpen,
+    isExportModalOpen,
+    isFlying,
+    selectionBounds
   ]);
-
-  const [showHint, setShowHint] = useState(false);
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-slate-105 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50">
@@ -1042,11 +1356,22 @@ const App: React.FC = () => {
           setClimbsOpen(true);
           setIsMobileMenuOpen(false);
         }}
+        onOpenWeather={() => {
+          setWeatherOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenRawData={(id) => {
           if (id) {
             setMarkedTrackId(id);
           }
           setRawDataOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
+        onOpenTimeGapAnalysis={(id) => {
+          if (id) {
+            setMarkedTrackId(id);
+          }
+          handleOpenTimeGapAnalysis(id);
           setIsMobileMenuOpen(false);
         }}
         textMarkers={textMarkers}
@@ -1066,7 +1391,9 @@ const App: React.FC = () => {
         onAnalyzeSurface={analyzeTrackSurface}
         onSetTrackSurface={handleSetTrackSurface}
         analyzingSurfaces={analyzingSurfaces}
+        surfaceAnalysisStatuses={surfaceAnalysisStatuses}
         selectionBounds={selectionBounds}
+        onSelection={setSelectionBounds}
         onClearSelection={() => setSelectionBounds(null)}
         isDark={theme === 'dark'}
         onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
@@ -1108,48 +1435,74 @@ const App: React.FC = () => {
           </button>
         </div>
         <div className="flex-1 relative">
-          {is3D ? (
-            <Map3D 
-              tracks={tracks} 
-              activeLayer={activeLayer}
-              markedTrackId={markedTrackId}
-              onMarkTrack={setMarkedTrackId}
-              hoveredPoint={hoveredPoint}
-              onHoverPoint={setHoveredPoint}
-              selectionBounds={selectionBounds}
-              onSelection={setSelectionBounds}
-              mapView={mapView}
-              onMapViewChange={setMapView}
-              estimatedSpeed={estimatedSpeed}
-              flySpeed={flySpeed}
-              isFlying={isFlying}
-            />
-          ) : (
-            <Map 
-              tracks={tracks} 
-              activeLayer={activeLayer}
-              markedTrackId={markedTrackId}
-              onMarkTrack={setMarkedTrackId}
-              hoveredPoint={hoveredPoint}
-              onHoverPoint={setHoveredPoint}
-              selectionBounds={selectionBounds}
-              onSelection={setSelectionBounds}
-              mapView={mapView}
-              onMapViewChange={setMapView}
-              estimatedSpeed={estimatedSpeed}
-              isFlying={isFlying}
-              ftp={ftp}
-              textMarkers={textMarkers}
-              onAddTextMarker={handleAddTextMarker}
-              onDeleteTextMarker={handleDeleteTextMarker}
-              hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || comparisonOpen}
-              isDark={theme === 'dark'}
-              showCyclingHeatmap={showCyclingHeatmap}
-              showRunningHeatmap={showRunningHeatmap}
-              showDbCyclingHeatmap={showDbCyclingHeatmap}
-              showDbRunningHeatmap={showDbRunningHeatmap}
-            />
-          )}
+          <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
+            {is3D ? (
+              <Map3D 
+                tracks={tracks} 
+                activeLayer={activeLayer}
+                markedTrackId={markedTrackId}
+                onMarkTrack={setMarkedTrackId}
+                hoveredPoint={hoveredPoint}
+                onHoverPoint={setHoveredPoint}
+                selectionBounds={selectionBounds}
+                onSelection={setSelectionBounds}
+                mapView={mapView}
+                onMapViewChange={setMapView}
+                estimatedSpeed={estimatedSpeed}
+                flySpeed={flySpeed}
+                isFlying={isFlying}
+              />
+            ) : (
+              <Map 
+                tracks={tracks} 
+                activeLayer={activeLayer}
+                markedTrackId={markedTrackId}
+                onMarkTrack={setMarkedTrackId}
+                hoveredPoint={hoveredPoint}
+                onHoverPoint={setHoveredPoint}
+                selectionBounds={selectionBounds}
+                onSelection={setSelectionBounds}
+                mapView={mapView}
+                onMapViewChange={setMapView}
+                estimatedSpeed={estimatedSpeed}
+                isFlying={isFlying}
+                ftp={ftp}
+                textMarkers={textMarkers}
+                onAddTextMarker={handleAddTextMarker}
+                onDeleteTextMarker={handleDeleteTextMarker}
+                hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || comparisonOpen}
+                isDark={theme === 'dark'}
+                showCyclingHeatmap={showCyclingHeatmap}
+                showRunningHeatmap={showRunningHeatmap}
+                showDbCyclingHeatmap={showDbCyclingHeatmap}
+                showDbRunningHeatmap={showDbRunningHeatmap}
+                onAnalyzeSurface={analyzeTrackSurface}
+                analyzingSurfaces={analyzingSurfaces}
+                surfaceAnalysisStatuses={surfaceAnalysisStatuses}
+                timeGaps={activeTimeGaps}
+                selectedGapId={selectedGapId}
+                onSelectGap={handleFocusGapOnMap}
+                onSplitGap={handleSplitTrack}
+                onCloseGap={handleCloseGap}
+              />
+            )}
+          </ErrorBoundary>
+
+          <AnimatePresence>
+            {timeGapModalOpen && (
+              <TimeGapAnalysisModal
+                isOpen={timeGapModalOpen}
+                tracks={tracks}
+                selectedTrackId={timeGapTrackId}
+                onClose={() => setTimeGapModalOpen(false)}
+                onSplitTrack={handleSplitTrack}
+                onCloseGap={handleCloseGap}
+                onBatchSplit={handleBatchSplit}
+                onBatchCloseGaps={handleBatchCloseGaps}
+                onFocusGapOnMap={handleFocusGapOnMap}
+              />
+            )}
+          </AnimatePresence>
 
           <AnimatePresence>
             {analyticsOpen && markedTrack && (
@@ -1179,6 +1532,47 @@ const App: React.FC = () => {
 
 
           
+          <AnimatePresence>
+            {weatherOpen && (
+              <div className="fixed inset-0 z-[1000] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden max-h-[90vh] flex flex-col"
+                >
+                  <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">🌤️</span>
+                      <div>
+                        <h2 className="text-sm font-black text-slate-800 dark:text-slate-100">Wetter & Routen-Prognose</h2>
+                        <p className="text-[10px] text-slate-400 font-medium">Meteorologische Bedingungen & Empfehlungen</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setWeatherOpen(false)}
+                      className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-4 overflow-y-auto max-h-[calc(90vh-70px)]">
+                    <WeatherOverlay
+                      track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                      allTracks={tracks}
+                      onSelectTrack={(id) => setMarkedTrackId(id)}
+                      selectedDate={selectedDate}
+                      setSelectedDate={setSelectedDate}
+                      selectedTime={selectedTime}
+                      setSelectedTime={setSelectedTime}
+                      onClose={() => setWeatherOpen(false)}
+                    />
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
           <AnimatePresence>
             {comparisonOpen && (
               <TrackComparison 
@@ -1251,6 +1645,9 @@ const App: React.FC = () => {
                 track={markedTrack}
                 onClose={() => setSummaryReportOpen(false)}
                 ftp={ftp}
+                onAnalyzeSurface={analyzeTrackSurface}
+                isAnalyzing={analyzingSurfaces[markedTrack.id] || false}
+                onSelection={setSelectionBounds}
               />
             )}
           </AnimatePresence>
@@ -1331,32 +1728,37 @@ const App: React.FC = () => {
         </div>
 
         {markedTrack && (
-          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-52 md:h-56'} bg-white border-t border-slate-200 px-3 md:px-6 py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
-            <ElevationProfile 
-              track={markedTrack} 
-              onHoverPoint={setHoveredPoint} 
-              hoveredPoint={hoveredPoint}
-              selectionBounds={selectionBounds}
-              onSelection={setSelectionBounds}
-              estimatedSpeed={estimatedSpeed}
-              selectedDate={selectedDate}
-              selectedTime={selectedTime}
-              isFlying={isFlying}
-              flySpeed={flySpeed}
-              onFlySpeedChange={setFlySpeed}
-              onOpenAnalytics={() => setAnalyticsOpen(true)}
-              onOpenVideoExport={() => setIsExportModalOpen(true)}
-              ftp={ftp}
-              onToggleFlyover={() => {
-                if (isFlying) {
-                  setIsFlying(false);
-                } else {
-                  setFlyProgress(0);
-                  setIsFlying(true);
-                }
-              }}
-              onCollapse={() => setIsProfileCollapsed(true)}
-            />
+          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-44 sm:h-48 md:h-56'} bg-white border-t border-slate-200 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+            <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
+              <ElevationProfile 
+                track={markedTrack} 
+                onHoverPoint={setHoveredPoint} 
+                hoveredPoint={hoveredPoint}
+                selectionBounds={selectionBounds}
+                onSelection={setSelectionBounds}
+                estimatedSpeed={estimatedSpeed}
+                selectedDate={selectedDate}
+                selectedTime={selectedTime}
+                isFlying={isFlying}
+                flySpeed={flySpeed}
+                onFlySpeedChange={setFlySpeed}
+                onOpenAnalytics={() => setAnalyticsOpen(true)}
+                onOpenVideoExport={() => setIsExportModalOpen(true)}
+                ftp={ftp}
+                textMarkers={textMarkers}
+                onAddTextMarker={handleAddTextMarker}
+                onDeleteTextMarker={handleDeleteTextMarker}
+                onToggleFlyover={() => {
+                  if (isFlying) {
+                    setIsFlying(false);
+                  } else {
+                    setFlyProgress(0);
+                    setIsFlying(true);
+                  }
+                }}
+                onCollapse={() => setIsProfileCollapsed(true)}
+              />
+            </ErrorBoundary>
           </div>
         )}
 

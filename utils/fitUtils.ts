@@ -1,5 +1,5 @@
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, generateMockSurfaceStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
 
 const HIGH_CONTRAST_COLORS = [
   '#2563eb', // Velo Royal Blue
@@ -2414,9 +2414,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     const activityType = detectActivityType(sanitizedPoints, name, fileName);
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
     const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
-    const surfaceStats = realSurfaceStats.length > 0 
-      ? realSurfaceStats 
-      : generateMockSurfaceStats(totalDist, name, activityType);
+    const surfaceStats = realSurfaceStats;
     hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
     const climbs = findClimbs(sanitizedPoints);
     

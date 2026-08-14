@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateMockSurfaceStats } from './gpxUtils';
+import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
 
 // Store the SQLite database file in a data directory for clean docker volume persistence
 const dbDir = path.join(process.cwd(), 'data');
@@ -215,14 +215,19 @@ function runInitDbStatements() {
       insertStmt.run('1.3.2', new Date().toISOString(), 'Performance-Optimierung: Automatische adaptive GPS-Punkt-Downsampling-Technik für extrem große SQLite-Datenbanken integriert, um V8-Limitierungen ("Invalid string length") vollständig zu verhindern und RAM-Auslastung um bis zu 90% zu reduzieren.');
     }
     
-    const hasV133 = (checkStmt.get('1.3.3') as { count: number }).count > 0;
-    if (!hasV133) {
+    const hasV244 = (checkStmt.get('2.4.4') as { count: number }).count > 0;
+    if (!hasV244) {
       const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
-      insertStmt.run('1.3.3', new Date().toISOString(), 'Upgrade: 4-Wochen-Trainingsleistungs-Entwicklungschart hinzugefügt; On-Demand-Vollpfad-Nachladen für Garmin-Tracks implementiert; GPS-Vollpfade serverseitig downgesampelt, um Client-Abstürze ("Invalid string length") endgültig zu beheben.');
+      insertStmt.run('2.4.4', '2026-08-14T00:00:00.000Z', 'Startup Track Framing & Weather Engine: Added automatic camera focus to first workspace track on app startup; built multi-point route weather forecasting (Start, Summit, End) with Open-Meteo live API integration, quick date presets, and offline climate simulation fallback.');
+    }
+
+    const hasV250 = (checkStmt.get('2.5.0') as { count: number }).count > 0;
+    if (!hasV250) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.5.0', new Date().toISOString(), 'Architecture & Responsiveness Overhaul: Modular state management, debounced localStorage persistence, memoized elevation profile rendering, responsive multi-device layouts with touch-friendly 44px targets, seamless Leaflet container resizing with ResizeObserver, and comprehensive ADR documentation.');
     } else {
-      // Keep updating the timestamp of the current active development build (1.3.3) on server start to act as a real dynamic build-time indicator!
       const updateStmt = db.prepare('UPDATE app_version SET updated_at = ? WHERE version = ?');
-      updateStmt.run(new Date().toISOString(), '1.3.3');
+      updateStmt.run(new Date().toISOString(), '2.5.0');
     }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
@@ -293,14 +298,11 @@ function runInitDbStatements() {
           surfaceStats = calculated;
           needsUpdate = true;
         }
-      } else if (!surfaceStats || surfaceStats.length === 0) {
-        surfaceStats = generateMockSurfaceStats(rt.distance, rt.name, rt.activity_type);
-        needsUpdate = true;
       }
 
       // Check if any point lacks surface property
       const missingPointSurface = pts.some((p: any) => !p.surface);
-      if (missingPointSurface) {
+      if (missingPointSurface && surfaceStats && surfaceStats.length > 0) {
         hydratePointsWithSurface(pts, surfaceStats, rt.distance);
         needsUpdate = true;
       }

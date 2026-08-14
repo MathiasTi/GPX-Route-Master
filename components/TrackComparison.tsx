@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { X, Trophy, Zap, Heart, Clock, TrendingUp, TrendingDown, ArrowLeftRight, Activity, Percent, Compass, Navigation, Dumbbell, Flame } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
@@ -369,14 +369,31 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
   const activeCompareDef = chartMetricsDef.find(m => m.key === compareChartMetric) || chartMetricsDef[0];
   const activeOverlayDef = chartMetricsDef.find(m => m.key === overlayChartMetric) || chartMetricsDef[0];
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [onClose]);
+
   return (
     <motion.div 
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6 md:p-10 flex items-center justify-center overflow-hidden"
+      className="fixed inset-0 z-[2000] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6 md:p-10 flex items-center justify-center overflow-hidden"
+      onClick={onClose}
     >
-      <div className="bg-white dark:bg-slate-900 w-full max-w-6xl h-full rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-900 dark:text-zinc-100">
+      <div className="bg-white dark:bg-slate-900 w-full max-w-6xl h-full rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-900 dark:text-zinc-100" onClick={(e) => e.stopPropagation()}>
         
         {/* Header Section */}
         <div className="p-6 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center shrink-0">

@@ -1,5 +1,5 @@
 
-import { GPXPoint, GPXTrack, PowerStats, ClimbSegment } from '../types';
+import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap } from '../types';
 
 export const toDate = (timeVal: any): Date | undefined => {
   if (!timeVal) return undefined;
@@ -766,40 +766,6 @@ export const hydratePointsWithSurface = (points: GPXPoint[], surfaceStats: { typ
   });
 };
 
-export const generateMockSurfaceStats = (totalDist: number, trackName?: string, activityType?: string) => {
-  if (totalDist === 0) return [];
-
-  const nameLower = (trackName || '').toLowerCase();
-  const actLower = (activityType || '').toLowerCase();
-
-  const isExplicitOffroad = 
-    nameLower.includes('gravel') ||
-    nameLower.includes('mtb') ||
-    nameLower.includes('mountain') ||
-    nameLower.includes('trail') ||
-    nameLower.includes('cross') ||
-    nameLower.includes('schotter') ||
-    nameLower.includes('wald') ||
-    nameLower.includes('offroad') ||
-    nameLower.includes('dirt') ||
-    nameLower.includes('unpaved') ||
-    nameLower.includes('singletrack') ||
-    actLower.includes('mtb') ||
-    actLower.includes('gravel');
-
-  // Road cycling, alpine pass tours (Stelvio, Alpentour, etc.), and default routes are 100% Asphalt
-  if (!isExplicitOffroad) {
-    return [{ type: 'Asphalt', distance: totalDist }];
-  }
-
-  // Explicit offroad tracks
-  return [
-    { type: 'Schotter', distance: Math.round(totalDist * 0.6 * 10) / 10 },
-    { type: 'Waldweg', distance: Math.round(totalDist * 0.3 * 10) / 10 },
-    { type: 'Asphalt', distance: Math.round(totalDist * 0.1 * 10) / 10 }
-  ].filter(s => s.distance > 0);
-};
-
 const HIGH_CONTRAST_COLORS = [
   '#2563eb', // Velo Royal Blue
   '#0284c7', // Ocean Sky Blue
@@ -1101,9 +1067,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     
     const realSurfaceStats = calculateSurfaceStatsFromPoints(points);
-    const surfaceStats = realSurfaceStats.length > 0 
-      ? realSurfaceStats 
-      : generateMockSurfaceStats(totalDist, activityName, activityType);
+    const surfaceStats = realSurfaceStats;
     hydratePointsWithSurface(points, surfaceStats, totalDist);
 
     const climbs = findClimbs(points);
@@ -1224,9 +1188,7 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
   const powerStats = calculatePowerStats(combinedPoints, 250, 75, 15, activityType);
   
   const realSurfaceStats = calculateSurfaceStatsFromPoints(combinedPoints);
-  const surfaceStats = realSurfaceStats.length > 0 
-    ? realSurfaceStats 
-    : generateMockSurfaceStats(totalDist, names, activityType);
+  const surfaceStats = realSurfaceStats;
   hydratePointsWithSurface(combinedPoints, surfaceStats, totalDist);
 
   const climbs = findClimbs(combinedPoints);
@@ -1505,9 +1467,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
     
     const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
-    const surfaceStats = realSurfaceStats.length > 0 
-      ? realSurfaceStats 
-      : generateMockSurfaceStats(totalDist, activityName, activityType);
+    const surfaceStats = realSurfaceStats;
     hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
 
     const climbs = findClimbs(sanitizedPoints);
@@ -1711,4 +1671,484 @@ export const generateVirtualRoute = (
   
   return points;
 };
+
+export interface DuplicateCheckResult {
+  isDuplicate: boolean;
+  confidence: number; // 0 to 100
+  similarityPercentage: number; // 0 to 100
+  matchedTrackName?: string;
+  matchedTrackId?: string;
+  reason?: string;
+  matchType?: 'exact_coords' | 'pattern_overlap' | 'timestamp_and_start' | 'name_and_distance';
+}
+
+/**
+ * Checks if a track (candidate) is a duplicate of any existing track by comparing
+ * exact GPS coordinates, spatial path patterns, timestamps, start/end locations, and distance.
+ */
+export const checkTrackDuplicateGPS = (
+  candidate: GPXTrack,
+  existingTracks: GPXTrack[]
+): DuplicateCheckResult => {
+  if (!existingTracks || existingTracks.length === 0 || !candidate) {
+    return { isDuplicate: false, confidence: 0, similarityPercentage: 0 };
+  }
+
+  const candPts = candidate.points || [];
+  const candNameLower = candidate.name ? candidate.name.toLowerCase().trim() : '';
+
+  if (candPts.length === 0) {
+    const nameMatch = existingTracks.find(t => 
+      t.id !== candidate.id &&
+      t.name.toLowerCase().trim() === candNameLower &&
+      Math.abs(t.distance - candidate.distance) < 0.05
+    );
+    if (nameMatch) {
+      return {
+        isDuplicate: true,
+        confidence: 90,
+        similarityPercentage: 100,
+        matchedTrackName: nameMatch.name,
+        matchedTrackId: nameMatch.id,
+        reason: `Exakter Name "${nameMatch.name}" und identische Distanz (${nameMatch.distance.toFixed(2)} km)`,
+        matchType: 'name_and_distance'
+      };
+    }
+    return { isDuplicate: false, confidence: 0, similarityPercentage: 0 };
+  }
+
+  let bestMatch: DuplicateCheckResult = { isDuplicate: false, confidence: 0, similarityPercentage: 0 };
+
+  const candStart = candPts[0];
+  const candEnd = candPts[candPts.length - 1];
+
+  for (const existing of existingTracks) {
+    if (candidate.id && existing.id && candidate.id === existing.id) {
+      return {
+        isDuplicate: true,
+        confidence: 100,
+        similarityPercentage: 100,
+        matchedTrackName: existing.name,
+        matchedTrackId: existing.id,
+        reason: `Identische ID (${existing.id}) bereits im Workspace geladen`,
+        matchType: 'exact_coords'
+      };
+    }
+
+    const exPts = existing.points || [];
+    if (exPts.length === 0) continue;
+
+    const exNameLower = existing.name ? existing.name.toLowerCase().trim() : '';
+
+    // 1. Distance difference check
+    const distDiffKm = Math.abs(candidate.distance - existing.distance);
+    const maxDist = Math.max(0.1, candidate.distance, existing.distance);
+    const distDiffRatio = distDiffKm / maxDist;
+
+    // Fast skip: if total distances differ by more than 25% AND more than 2.5 km, skip heavy spatial check
+    if (distDiffRatio > 0.25 && distDiffKm > 2.5) {
+      continue;
+    }
+
+    // 2. Start & End Proximity (in meters)
+    const exStart = exPts[0];
+    const exEnd = exPts[exPts.length - 1];
+
+    const startDistM = calculateDistance(candStart, exStart) * 1000;
+    const endDistM = calculateDistance(candEnd, exEnd) * 1000;
+
+    // Reverse direction check
+    const startEndDistM = calculateDistance(candStart, exEnd) * 1000;
+    const endStartDistM = calculateDistance(candEnd, exStart) * 1000;
+    const isReversed = (startEndDistM < 50 && endStartDistM < 50) && (startDistM > 200 || endDistM > 200);
+
+    const effStartDistM = isReversed ? startEndDistM : startDistM;
+    const effEndDistM = isReversed ? endStartDistM : endDistM;
+
+    // 3. Exact Point Count & Identical Start/End match
+    const samePointCount = candPts.length === exPts.length;
+    if (samePointCount && effStartDistM < 30 && effEndDistM < 30 && distDiffKm < 0.05) {
+      // Check sampled points for exact coordinate match
+      let exactMatches = 0;
+      const sampleSize = Math.min(15, candPts.length);
+      const step = Math.max(1, Math.floor(candPts.length / sampleSize));
+      let evaluatedCount = 0;
+
+      for (let i = 0; i < candPts.length; i += step) {
+        evaluatedCount++;
+        const targetIdx = isReversed ? (exPts.length - 1 - i) : i;
+        if (targetIdx >= 0 && targetIdx < exPts.length) {
+          const d = calculateDistance(candPts[i], exPts[targetIdx]) * 1000;
+          if (d < 15) exactMatches++;
+        }
+      }
+
+      if (evaluatedCount > 0 && (exactMatches / evaluatedCount) >= 0.8) {
+        return {
+          isDuplicate: true,
+          confidence: 100,
+          similarityPercentage: 100,
+          matchedTrackName: existing.name,
+          matchedTrackId: existing.id,
+          reason: `Exakte GPS-Koordinaten und Punktanzahl (${candPts.length} Punkte)`,
+          matchType: 'exact_coords'
+        };
+      }
+    }
+
+    // 4. Timestamp & Start Location check (if both recorded with timestamps)
+    const candTime = candPts.find(p => p.time)?.time ? toDate(candPts.find(p => p.time)?.time) : undefined;
+    const exTime = exPts.find(p => p.time)?.time ? toDate(exPts.find(p => p.time)?.time) : undefined;
+    if (candTime && exTime) {
+      const timeDiffSec = Math.abs((candTime.getTime() - exTime.getTime()) / 1000);
+      if (timeDiffSec < 120 && effStartDistM < 100 && distDiffKm < 0.3) {
+        return {
+          isDuplicate: true,
+          confidence: 99,
+          similarityPercentage: 99,
+          matchedTrackName: existing.name,
+          matchedTrackId: existing.id,
+          reason: `Gleicher Aufzeichnungszeitpunkt (${candTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}) und Startort`,
+          matchType: 'timestamp_and_start'
+        };
+      }
+    }
+
+    // 5. GPS Coordinate Pattern & Spatial Overlap Analysis
+    // Sample up to 35 equidistant points along candidate track
+    const SAMPLE_COUNT = Math.min(35, candPts.length);
+    const candStep = Math.max(1, Math.floor(candPts.length / SAMPLE_COUNT));
+    
+    let matchedSamplesCount = 0;
+    let totalSampleDistM = 0;
+    let sampledPointsEvaluated = 0;
+
+    for (let i = 0; i < candPts.length; i += candStep) {
+      const pCand = candPts[i];
+      sampledPointsEvaluated++;
+
+      // Fast windowed search around expected relative position
+      const relPos = i / candPts.length;
+      const targetCenterIdx = Math.floor((isReversed ? (1 - relPos) : relPos) * exPts.length);
+      const windowSize = Math.max(60, Math.floor(exPts.length * 0.15));
+      const startIdx = Math.max(0, targetCenterIdx - windowSize);
+      const endIdx = Math.min(exPts.length - 1, targetCenterIdx + windowSize);
+
+      let minDistM = Infinity;
+      for (let j = startIdx; j <= endIdx; j++) {
+        const d = calculateDistance(pCand, exPts[j]) * 1000;
+        if (d < minDistM) {
+          minDistM = d;
+        }
+      }
+
+      // If local window didn't find a close point, check coarse global step
+      if (minDistM > 80) {
+        const globalStep = Math.max(1, Math.floor(exPts.length / 40));
+        for (let j = 0; j < exPts.length; j += globalStep) {
+          const d = calculateDistance(pCand, exPts[j]) * 1000;
+          if (d < minDistM) {
+            minDistM = d;
+          }
+        }
+      }
+
+      if (minDistM <= 40) { // Point is within 40m of existing track
+        matchedSamplesCount++;
+      }
+      totalSampleDistM += Math.min(minDistM, 800);
+    }
+
+    const overlapRatio = sampledPointsEvaluated > 0 ? (matchedSamplesCount / sampledPointsEvaluated) : 0;
+    const avgSampleDistM = sampledPointsEvaluated > 0 ? (totalSampleDistM / sampledPointsEvaluated) : Infinity;
+    const similarityPct = Math.round(overlapRatio * 100);
+
+    const isHighGPSMatch = (overlapRatio >= 0.80 && avgSampleDistM < 35 && (distDiffRatio < 0.15 || distDiffKm < 0.5)) ||
+                           (overlapRatio >= 0.90 && avgSampleDistM < 50);
+
+    const sameName = candNameLower.length > 0 && candNameLower === exNameLower;
+
+    if (isHighGPSMatch || (sameName && overlapRatio >= 0.55 && distDiffKm < 0.3)) {
+      const confidence = isHighGPSMatch ? Math.min(99, Math.round(similarityPct + Math.max(0, 20 - avgSampleDistM))) : 88;
+
+      if (confidence > bestMatch.confidence) {
+        bestMatch = {
+          isDuplicate: true,
+          confidence,
+          similarityPercentage: similarityPct,
+          matchedTrackName: existing.name,
+          matchedTrackId: existing.id,
+          reason: `${similarityPct}% GPS-Musterübereinstimmung mit "${existing.name}" (Ø Abweichung: ${Math.round(avgSampleDistM)}m)`,
+          matchType: 'pattern_overlap'
+        };
+      }
+    }
+  }
+
+  return bestMatch;
+};
+
+/**
+ * Detects time gaps larger than minSeconds (default 30s) within a GPXTrack's points.
+ */
+export const detectTimeGaps = (track: GPXTrack, minSeconds: number = 30): TimeGap[] => {
+  if (!track || !track.points || track.points.length < 2) return [];
+
+  const gaps: TimeGap[] = [];
+  let cumDistKm = 0;
+
+  for (let i = 0; i < track.points.length - 1; i++) {
+    const p1 = track.points[i];
+    const p2 = track.points[i + 1];
+
+    if (i > 0) {
+      cumDistKm += calculateDistance(track.points[i - 1], p1);
+    }
+
+    if (!p1.time || !p2.time) continue;
+
+    const t1 = toDate(p1.time);
+    const t2 = toDate(p2.time);
+
+    if (!t1 || !t2) continue;
+
+    const diffSec = (t2.getTime() - t1.getTime()) / 1000;
+
+    if (diffSec >= minSeconds) {
+      const distM = calculateDistance(p1, p2) * 1000;
+      gaps.push({
+        id: `${track.id}-gap-${i}`,
+        trackId: track.id,
+        trackName: track.name,
+        startIndex: i,
+        endIndex: i + 1,
+        startTime: t1,
+        endTime: t2,
+        gapSeconds: Math.round(diffSec),
+        distanceMeters: Math.round(distM),
+        distanceFromStartKm: parseFloat(cumDistKm.toFixed(2)),
+        startPoint: p1,
+        endPoint: p2,
+      });
+    }
+  }
+
+  return gaps;
+};
+
+/**
+ * Splits a track into two separate tracks at a given point index (gap.startIndex).
+ */
+export const splitTrackAtIndex = (
+  track: GPXTrack,
+  splitIndex: number,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): { track1: GPXTrack; track2: GPXTrack } | null => {
+  if (!track || !track.points || splitIndex < 0 || splitIndex >= track.points.length - 1) {
+    return null;
+  }
+
+  const points1 = track.points.slice(0, splitIndex + 1);
+  const points2 = track.points.slice(splitIndex + 1);
+
+  if (points1.length === 0 || points2.length === 0) return null;
+
+  const buildSubTrack = (pts: GPXPoint[], partName: string, idSuffix: string): GPXTrack => {
+    let dist = 0;
+    for (let j = 0; j < pts.length - 1; j++) {
+      dist += calculateDistance(pts[j], pts[j + 1]);
+    }
+
+    const eleStats = calculateElevationStats(pts);
+    const surfaceStats = calculateSurfaceStatsFromPoints(pts);
+    hydratePointsWithSurface(pts, surfaceStats, dist);
+
+    let duration: number | undefined = undefined;
+    const startTime = pts[0]?.time ? toDate(pts[0].time) : undefined;
+    const endTime = pts[pts.length - 1]?.time ? toDate(pts[pts.length - 1].time) : undefined;
+    if (startTime && endTime) {
+      duration = Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
+    }
+
+    const powerStats = calculatePowerStats(pts, ftp, userWeight, estimatedSpeed, track.activityType);
+
+    return {
+      id: crypto.randomUUID ? crypto.randomUUID() : `${track.id}-${idSuffix}-${Date.now()}`,
+      name: `${track.name} (${partName})`,
+      points: pts,
+      color: track.color,
+      distance: parseFloat(dist.toFixed(2)),
+      ascent: eleStats.ascent,
+      descent: eleStats.descent,
+      maxSlope: eleStats.maxSlope,
+      duration,
+      visible: true,
+      activityType: track.activityType,
+      powerStats,
+      surfaceStats,
+      hasTimestamps: pts.some(p => p.time !== undefined)
+    };
+  };
+
+  const track1 = buildSubTrack(points1, "Teil 1", "part1");
+  const track2 = buildSubTrack(points2, "Teil 2", "part2");
+
+  return { track1, track2 };
+};
+
+/**
+ * Adjusts timestamps in a track to close or reduce a time gap without splitting the track.
+ */
+export const closeTimeGapInTrack = (
+  track: GPXTrack,
+  gap: TimeGap,
+  targetPauseSeconds: number = 0,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): GPXTrack => {
+  if (!track || !track.points || gap.endIndex >= track.points.length) return track;
+
+  const originalGapSec = gap.gapSeconds;
+  const shiftSec = originalGapSec - targetPauseSeconds;
+
+  if (shiftSec <= 0) return track;
+
+  const shiftMs = shiftSec * 1000;
+  const newPoints = track.points.map((p, idx) => {
+    if (idx >= gap.endIndex && p.time) {
+      const pDate = toDate(p.time);
+      if (pDate) {
+        return {
+          ...p,
+          time: new Date(pDate.getTime() - shiftMs)
+        };
+      }
+    }
+    return p;
+  });
+
+  const startTime = newPoints[0]?.time ? toDate(newPoints[0].time) : undefined;
+  const endTime = newPoints[newPoints.length - 1]?.time ? toDate(newPoints[newPoints.length - 1].time) : undefined;
+  const duration = (startTime && endTime) ? Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000)) : track.duration;
+
+  const powerStats = calculatePowerStats(newPoints, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  return {
+    ...track,
+    points: newPoints,
+    duration,
+    powerStats
+  };
+};
+
+/**
+ * Helper to format gap seconds into human readable German string
+ */
+export const formatGapDuration = (seconds: number): string => {
+  if (seconds < 60) return `${seconds} Sek`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) {
+    return s > 0 ? `${m} Min ${s} Sek` : `${m} Min`;
+  }
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM > 0 ? `${h} Std ${remM} Min` : `${h} Std`;
+};
+
+/**
+ * Perpendicular distance squared from point p to line segment (p1, p2) in lat/lng space.
+ */
+function getPerpendicularDistanceSq(p: GPXPoint, p1: GPXPoint, p2: GPXPoint): number {
+  let x = p1.lng, y = p1.lat;
+  let dx = p2.lng - x, dy = p2.lat - y;
+
+  if (dx !== 0 || dy !== 0) {
+    const t = ((p.lng - x) * dx + (p.lat - y) * dy) / (dx * dx + dy * dy);
+    if (t > 1) {
+      x = p2.lng;
+      y = p2.lat;
+    } else if (t > 0) {
+      x += dx * t;
+      y += dy * t;
+    }
+  }
+
+  dx = p.lng - x;
+  dy = p.lat - y;
+  return dx * dx + dy * dy;
+}
+
+/**
+ * Simplifies a sequence of GPXTrack points using the Ramer-Douglas-Peucker (RDP) algorithm.
+ * Reduces point counts by up to 90% while maintaining visual fidelity for 60 FPS Leaflet rendering.
+ */
+export const simplifyTrackPoints = (points: GPXPoint[], toleranceSq: number = 0.0000002): GPXPoint[] => {
+  if (!points || points.length <= 2) return points || [];
+
+  const last = points.length - 1;
+  const simplified: GPXPoint[] = [points[0]];
+
+  function simplifySection(start: number, end: number) {
+    if (end <= start + 1) return;
+
+    let maxDistSq = toleranceSq;
+    let index = -1;
+
+    for (let i = start + 1; i < end; i++) {
+      const distSq = getPerpendicularDistanceSq(points[i], points[start], points[end]);
+      if (distSq > maxDistSq) {
+        maxDistSq = distSq;
+        index = i;
+      }
+    }
+
+    if (index !== -1) {
+      simplifySection(start, index);
+      simplified.push(points[index]);
+      simplifySection(index, end);
+    }
+  }
+
+  simplifySection(0, last);
+  simplified.push(points[last]);
+
+  return simplified;
+};
+
+// Internal cache for simplified track point coordinates
+const simplifiedPointCache = new Map<string, { count: number; simplified: GPXPoint[] }>();
+
+/**
+ * Retrieves simplified track points using LRU/Map memoization cache.
+ */
+export const getCachedSimplifiedPoints = (trackId: string, points: GPXPoint[], targetMaxPoints: number = 1500): GPXPoint[] => {
+  if (!points || points.length <= targetMaxPoints) return points || [];
+
+  const cacheKey = `${trackId}-${points.length}`;
+  const cached = simplifiedPointCache.get(cacheKey);
+  if (cached && cached.count === points.length) {
+    return cached.simplified;
+  }
+
+  // Calculate tolerance based on point count ratio
+  const ratio = points.length / targetMaxPoints;
+  const toleranceSq = Math.min(0.000005, 0.0000001 * ratio * ratio);
+
+  const simplified = simplifyTrackPoints(points, toleranceSq);
+  
+  // Keep cache small
+  if (simplifiedPointCache.size > 50) {
+    const firstKey = simplifiedPointCache.keys().next().value;
+    if (firstKey) simplifiedPointCache.delete(firstKey);
+  }
+  
+  simplifiedPointCache.set(cacheKey, { count: points.length, simplified });
+  return simplified;
+};
+
+
 

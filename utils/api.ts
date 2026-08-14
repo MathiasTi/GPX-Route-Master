@@ -78,20 +78,37 @@ export function getApiUrl(path: string): string {
     } catch (e) {}
   }
 
-  // 6. Native URL fallback if everything else failed
+  // 6. Try document.referrer
+  if (!origin && typeof document !== 'undefined' && document.referrer) {
+    try {
+      if (document.referrer.startsWith('http')) {
+        origin = getOriginFromString(document.referrer);
+      }
+    } catch (e) {}
+  }
+
+  // 7. Native URL fallback if everything else failed
   if (!origin && typeof window !== 'undefined' && window.location) {
-    if (window.location.origin && window.location.origin !== 'null') {
+    if (window.location.origin && window.location.origin !== 'null' && window.location.origin !== 'about:blank') {
       origin = window.location.origin;
     } else if (window.location.host) {
-      const protocol = window.location.protocol && window.location.protocol !== 'about:' ? window.location.protocol : 'https:';
+      const protocol = window.location.protocol && window.location.protocol !== 'about:' && window.location.protocol !== 'blob:' ? window.location.protocol : 'https:';
       origin = `${protocol}//${window.location.host}`;
     }
   }
 
-  if (!origin || origin === 'null') {
+  if (!origin || origin === 'null' || origin === 'about:blank') {
     return path;
   }
 
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return `${origin}${cleanPath}`;
+  const fullUrl = `${origin}${cleanPath}`;
+
+  // Validate constructed URL format
+  try {
+    new URL(fullUrl);
+    return fullUrl;
+  } catch (e) {
+    return path;
+  }
 }

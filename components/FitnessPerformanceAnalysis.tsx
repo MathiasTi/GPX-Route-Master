@@ -2641,7 +2641,7 @@ export default function FitnessPerformanceAnalysis({
                               </h6>
                               <ol className="list-decimal list-inside space-y-1 pl-1">
                                 <li>Lade das Workout über die <strong className="text-amber-500 font-bold">Garmin Export</strong> Buttons als <strong className="font-bold">.TCX</strong> herunter.</li>
-                                <li>Gehe auf <a href="https://connect.garmin.com" target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline font-bold">connect.garmin.com</a> im Browser.</li>
+                                <li>Gehe auf <a href="https://connect.garmin.com" target="_blank" rel="noopener noreferrer" className="text-indigo-500 hover:underline font-bold">connect.garmin.com</a> im Browser.</li>
                                 <li>Öffne im Menü links <strong className="font-semibold">"Training & Planung" &gt; "Trainings"</strong>.</li>
                                 <li>Klicke ganz oben rechts auf <strong className="font-semibold">"Training importieren"</strong> und wähle die heruntergeladene Datei aus.</li>
                                 <li>Das Training erscheint jetzt in deiner Garmin Connect Bibliothek und kann an dein Garmin Gerät (Fenix, Forerunner, Edge etc.) übertragen werden!</li>
@@ -2920,17 +2920,35 @@ export default function FitnessPerformanceAnalysis({
     </div>
   );
 
+  useEffect(() => {
+    if (isEmbedded) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [onClose, isEmbedded]);
+
   if (isEmbedded) {
     return mainContent;
   }
 
   return (
-    <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 overflow-hidden">
+    <div className="fixed inset-0 z-[2000] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 overflow-hidden" onClick={onClose}>
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
         className="w-full h-full md:max-w-7xl md:h-[92vh] bg-white dark:bg-slate-900 md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800"
+        onClick={(e) => e.stopPropagation()}
       >
         {mainContent}
       </motion.div>

@@ -1,6 +1,6 @@
 {
   "name": "GPX Route Master",
-  "description": "A professional GPX and FIT file visualizer, editor, and multi-track analysis tool with 2D/3D elevation profiling, surface analysis, temporal gap splitting, and performance telemetry.",
+  "description": "A professional GPX and FIT file visualizer, editor, and multi-track analysis tool with pre-import GPS validation, outlier detection, 2D/3D elevation profiling, surface analysis, temporal gap splitting, and performance telemetry.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

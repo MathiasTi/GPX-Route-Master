@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
+import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import fs from "fs";
 import os from "os";
@@ -2123,6 +2123,18 @@ async function startServer() {
     }
   });
 
+  // Global API error handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Unhandled API error:", err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(500).json({
+      success: false,
+      error: err.message || "Interner Serverfehler aufgetreten."
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
@@ -2139,9 +2151,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Graceful shutdown handling for container stops and restarts
+  const handleShutdown = () => {
+    console.log("Shutting down server gracefully...");
+    server.close(() => {
+      closeDb();
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGTERM", handleShutdown);
+  process.on("SIGINT", handleShutdown);
 }
 
 startServer();

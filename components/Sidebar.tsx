@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
@@ -46,6 +46,8 @@ interface TrackItemProps {
   onSaveTrackToLibrary?: (id: string) => void;
   onOpenRawData?: (id: string) => void;
   onOpenTimeGapAnalysis?: (id: string) => void;
+  onReverseTrack?: (id: string) => void;
+  onOpenValidation?: (id: string) => void;
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
@@ -69,6 +71,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onSaveTrackToLibrary,
   onOpenRawData,
   onOpenTimeGapAnalysis,
+  onReverseTrack,
+  onOpenValidation,
   onSelection
 }) => {
   const [localExpanded, setLocalExpanded] = useState(false);
@@ -316,6 +320,30 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   >
                     <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                     <span>Zeitlücken</span>
+                  </button>
+                )}
+
+                {onReverseTrack && (
+                  <button 
+                    type="button"
+                    onClick={() => onReverseTrack(track.id)} 
+                    className="p-1.5 bg-violet-50/80 hover:bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 rounded-lg border border-violet-250/20 dark:border-violet-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Streckenverlauf umkehren (Start/Ziel & Höhendaten tauschen)"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                    <span>Umkehren</span>
+                  </button>
+                )}
+
+                {onOpenValidation && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenValidation(track.id)} 
+                    className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 rounded-lg border border-indigo-200/40 dark:border-indigo-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="GPS-Validierung & Plausibilitätsprüfung (Ausreißer, Null-Island, Höhenprofil)"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>Prüfen</span>
                   </button>
                 )}
 
@@ -740,6 +768,8 @@ interface SidebarProps {
   onOpenWeather?: () => void;
   onOpenRawData?: (id: string) => void;
   onOpenTimeGapAnalysis?: (id?: string) => void;
+  onReverseTrack?: (id: string) => void;
+  onOpenValidation?: (id: string) => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
@@ -813,6 +843,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenWeather,
   onOpenRawData,
   onOpenTimeGapAnalysis,
+  onReverseTrack,
+  onOpenValidation,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
@@ -841,6 +873,22 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
+  const [expandedTrackMap, setExpandedTrackMap] = useState<Record<string, boolean>>({});
+
+  const allTracksExpanded = useMemo(() => {
+    if (tracks.length === 0) return false;
+    return tracks.every(t => expandedTrackMap[t.id] === true);
+  }, [tracks, expandedTrackMap]);
+
+  const handleToggleExpandAll = () => {
+    if (allTracksExpanded) {
+      setExpandedTrackMap({});
+    } else {
+      const nextMap: Record<string, boolean> = {};
+      tracks.forEach(t => { nextMap[t.id] = true; });
+      setExpandedTrackMap(nextMap);
+    }
+  };
   const [isWeatherExpanded, setIsWeatherExpanded] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [latestVersion, setLatestVersion] = useState('1.3.0');
@@ -1448,6 +1496,32 @@ const Sidebar: React.FC<SidebarProps> = ({
 
               {activeTab === 'active' && (
                 <div className="space-y-2 pb-6">
+                  {tracks.length > 0 && (
+                    <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-900/50 rounded-lg border border-slate-200/60 dark:border-slate-800/60">
+                      <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
+                        Workspace ({tracks.length})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleToggleExpandAll}
+                        className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-3xs transition-all cursor-pointer select-none"
+                        title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
+                      >
+                        {allTracksExpanded ? (
+                          <>
+                            <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
+                            <span>Alle einklappen</span>
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
+                            <span>Alle ausklappen</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
                   {tracks.length === 0 && (
                     <p className="text-xs text-slate-400 italic text-center py-8 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Noch keine Routen geladen.</p>
                   )}
@@ -1466,6 +1540,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                             key={track.id} 
                             track={track} 
                             isMarked={markedTrackId === track.id}
+                            isExpanded={expandedTrackMap[track.id] || false}
+                            onToggleExpand={(id) => setExpandedTrackMap(prev => ({ ...prev, [id]: !prev[id] }))}
                             onMark={onMarkTrack}
                             onToggleVisibility={onToggleVisibility} 
                             onRemoveTrack={onRemoveTrack} 
@@ -1481,6 +1557,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onSaveTrackToLibrary={onSaveTrackToLibrary}
                             onOpenRawData={onOpenRawData}
                             onOpenTimeGapAnalysis={onOpenTimeGapAnalysis}
+                            onReverseTrack={onReverseTrack}
+                            onOpenValidation={onOpenValidation}
                             onSelection={onSelection}
                           />
                         ))}

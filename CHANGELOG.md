@@ -6,6 +6,27 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [2.5.4] - 2026-08-14
+
+### Full-Stack Architecture Hardening & System Stability
+- **SQLite Performance & Concurrency Pragmas**: Configured `WAL` (Write-Ahead Logging), `synchronous = NORMAL`, `busy_timeout = 5000ms`, `temp_store = MEMORY`, and dedicated cache buffers for fast, corruption-immune database read/write operations.
+- **Graceful Process Shutdown**: Implemented `SIGTERM` and `SIGINT` signal listeners on the Express backend ensuring SQLite database handles close cleanly during container restarts, updates, or scaling events.
+- **Global Backend Exception Shielding**: Added top-level API error handling middleware preventing uncaught async rejections from terminating server processes and ensuring standard structured JSON responses.
+- **Top-Level React Error Boundary & Rescue Flow**: Wrapped application root in `ErrorBoundary` with instant state recovery and one-click JSON rescue data export.
+- **Storage Quota & Payload Sanitization Architecture**: Created `/utils/storage.ts` with progressive payload optimization and quota exceeded handling to prevent browser localStorage exceptions on large multi-track imports.
+- **Automated Stability Test Suite**: Added dedicated unit tests in `tests/storageAndArchitecture.test.ts` validating sanitization, storage fallbacks, and schema protection.
+
+---
+
+## [2.5.3] - 2026-08-14
+
+### Master Fold/Unfold Toggle & One-Click Route Reversal
+- **Master Fold / Unfold All**: Added global header toggle button in the Workspace sidebar tab allowing instant expansion or collapse of all loaded activities simultaneously.
+- **Route Direction Reversal Tool**: Integrated a one-click route inversion feature that flips track direction, preserves forward chronological time sequences, recalculates ascent/descent, and updates power/climb metrics.
+- **Enhanced Test Coverage**: Added automated unit tests verifying track reversal mechanics, coordinates inversion, and name suffix handling.
+
+---
+
 ## [2.5.2] - 2026-08-14
 
 ### Foldable Workspace Activity Cards

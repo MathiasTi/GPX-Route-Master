@@ -181,4 +181,45 @@ export interface Segment {
   isCustom?: boolean;
 }
 
+export type ValidationIssueType =
+  | 'coord_out_of_bounds'
+  | 'null_island'
+  | 'coord_extreme_jump'
+  | 'missing_elevation'
+  | 'elevation_spike'
+  | 'missing_time';
+
+export type ValidationSeverity = 'clean' | 'info' | 'warning' | 'error';
+
+export interface ValidationIssue {
+  id: string;
+  type: ValidationIssueType;
+  severity: 'info' | 'warning' | 'error';
+  title: string;
+  description: string;
+  affectedCount: number;
+  affectedIndices?: number[];
+  autoFixable: boolean;
+  fixDescription?: string;
+}
+
+export interface TrackValidationReport {
+  trackId: string;
+  trackName: string;
+  status: ValidationSeverity;
+  issues: ValidationIssue[];
+  stats: {
+    totalPoints: number;
+    pointsWithElevation: number;
+    missingElevationCount: number;
+    outlierCoordinateCount: number;
+    nullIslandCount: number;
+    extremeJumpCount: number;
+    elevationSpikeCount: number;
+    minElevation?: number;
+    maxElevation?: number;
+    maxSpeedJumpKmh?: number;
+  };
+}
+
 

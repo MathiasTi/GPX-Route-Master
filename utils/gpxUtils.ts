@@ -1,5 +1,5 @@
 
-import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap } from '../types';
+import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue } from '../types';
 
 export const toDate = (timeVal: any): Date | undefined => {
   if (!timeVal) return undefined;
@@ -1210,6 +1210,78 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
   };
 };
 
+/**
+ * Reverses the directional flow of a GPX track, recalculating ascent, descent, max slope,
+ * power statistics, climbs, and maintaining forward chronological timestamps if present.
+ */
+export const reverseTrack = (
+  track: GPXTrack, 
+  ftp: number = 250, 
+  userWeight: number = 75, 
+  speed: number = 25
+): GPXTrack => {
+  if (!track || !track.points || track.points.length === 0) return track;
+
+  // 1. Reverse the points array
+  const reversedPoints = [...track.points].reverse().map(p => ({ ...p }));
+
+  // 2. Re-sequence timestamps forward in time if original track had time data
+  if (track.hasTimestamps && track.points.some(p => p.time !== undefined)) {
+    const validTimes = track.points
+      .map(p => p.time)
+      .filter((t): t is Date => t instanceof Date && !isNaN(t.getTime()));
+    
+    if (validTimes.length > 0) {
+      const startTime = validTimes[0].getTime();
+      // Measure inter-point deltas from original points
+      const deltas: number[] = [0];
+      for (let i = 1; i < track.points.length; i++) {
+        const t1 = track.points[i - 1].time?.getTime();
+        const t2 = track.points[i].time?.getTime();
+        if (t1 !== undefined && t2 !== undefined && t2 >= t1) {
+          deltas.push(t2 - t1);
+        } else {
+          deltas.push(1000); // Default 1-second step
+        }
+      }
+      
+      const reversedDeltas = [...deltas].reverse();
+      let currentMs = startTime;
+      reversedPoints[0].time = new Date(currentMs);
+      for (let i = 1; i < reversedPoints.length; i++) {
+        currentMs += reversedDeltas[i - 1] || 1000;
+        reversedPoints[i].time = new Date(currentMs);
+      }
+    }
+  }
+
+  // 3. Recalculate elevation statistics, power stats, and climbs
+  const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(reversedPoints);
+  const powerStats = calculatePowerStats(reversedPoints, ftp, userWeight, speed, track.activityType);
+  const climbs = findClimbs(reversedPoints);
+
+  // 4. Update surface stats if available
+  const realSurfaceStats = calculateSurfaceStatsFromPoints(reversedPoints);
+  hydratePointsWithSurface(reversedPoints, realSurfaceStats, totalDist);
+
+  const newName = track.name.includes('(Umgekehrt)') 
+    ? track.name 
+    : `${track.name} (Umgekehrt)`;
+
+  return {
+    ...track,
+    name: newName,
+    points: reversedPoints,
+    distance: Number(totalDist.toFixed(2)),
+    ascent,
+    descent,
+    maxSlope,
+    powerStats,
+    surfaceStats: realSurfaceStats,
+    climbs
+  };
+};
+
 export const exportToGPX = (track: GPXTrack): string => {
   const escapeXml = (unsafe: string): string => {
     return (unsafe || '')
@@ -2148,6 +2220,353 @@ export const getCachedSimplifiedPoints = (trackId: string, points: GPXPoint[], t
   
   simplifiedPointCache.set(cacheKey, { count: points.length, simplified });
   return simplified;
+};
+
+/**
+ * Performs a comprehensive validation pre-check on a track to identify coordinate errors,
+ * extreme outliers, Null Island drops, missing elevations, and sensor spikes.
+ */
+export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport => {
+  const points = track.points || [];
+  const totalPoints = points.length;
+  const issues: ValidationIssue[] = [];
+
+  let outOfBoundsCount = 0;
+  const outOfBoundsIndices: number[] = [];
+
+  let nullIslandCount = 0;
+  const nullIslandIndices: number[] = [];
+
+  let missingEleCount = 0;
+  const missingEleIndices: number[] = [];
+
+  let eleSpikeCount = 0;
+  const eleSpikeIndices: number[] = [];
+
+  let extremeJumpCount = 0;
+  const extremeJumpIndices: number[] = [];
+
+  let minElevation: number | undefined = undefined;
+  let maxElevation: number | undefined = undefined;
+  let maxSpeedJumpKmh: number | null = null;
+
+  for (let i = 0; i < totalPoints; i++) {
+    const p = points[i];
+
+    // 1. Check coordinates out of valid geographic ranges
+    if (isNaN(p.lat) || isNaN(p.lng) || p.lat < -90 || p.lat > 90 || p.lng < -180 || p.lng > 180) {
+      outOfBoundsCount++;
+      outOfBoundsIndices.push(i);
+    } else if (Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001) {
+      // 2. Check "Null Island" (0,0) GPS dropoff
+      nullIslandCount++;
+      nullIslandIndices.push(i);
+    }
+
+    // 3. Check elevation
+    if (p.ele === undefined || p.ele === null || isNaN(p.ele)) {
+      missingEleCount++;
+      missingEleIndices.push(i);
+    } else {
+      if (minElevation === undefined || p.ele < minElevation) minElevation = p.ele;
+      if (maxElevation === undefined || p.ele > maxElevation) maxElevation = p.ele;
+
+      // Impossible elevation limits (< -430m or > 8900m)
+      if (p.ele < -430 || p.ele > 8900) {
+        eleSpikeCount++;
+        eleSpikeIndices.push(i);
+      }
+    }
+
+    // 4. Consecutive jump checks
+    if (i > 0) {
+      const prev = points[i - 1];
+      const isValidCoord = (pt: GPXPoint) => !isNaN(pt.lat) && !isNaN(pt.lng) && Math.abs(pt.lat) <= 90 && Math.abs(pt.lng) <= 180 && !(Math.abs(pt.lat) < 0.0001 && Math.abs(pt.lng) < 0.0001);
+      
+      if (isValidCoord(p) && isValidCoord(prev)) {
+        const stepDistKm = calculateDistance(prev, p);
+        
+        // Jump > 25 km in a single step
+        if (stepDistKm > 25) {
+          extremeJumpCount++;
+          extremeJumpIndices.push(i);
+        }
+
+        // Speed check if timestamps exist
+        if (p.time && prev.time) {
+          const t1 = toDate(prev.time);
+          const t2 = toDate(p.time);
+          if (t1 && t2) {
+            const dtSec = (t2.getTime() - t1.getTime()) / 1000;
+            if (dtSec > 0 && dtSec < 3600) {
+              const speedKmh = stepDistKm / (dtSec / 3600);
+              if (maxSpeedJumpKmh === null || speedKmh > maxSpeedJumpKmh) {
+                maxSpeedJumpKmh = Math.round(speedKmh);
+              }
+              if (speedKmh > 300 && stepDistKm > 2) {
+                if (!extremeJumpIndices.includes(i)) {
+                  extremeJumpCount++;
+                  extremeJumpIndices.push(i);
+                }
+              }
+            }
+          }
+        }
+
+        // Sudden extreme vertical cliff (> 300m height difference in < 50m distance)
+        if (p.ele !== undefined && prev.ele !== undefined && !isNaN(p.ele) && !isNaN(prev.ele)) {
+          const eleDiff = Math.abs(p.ele - prev.ele);
+          if (eleDiff > 300 && stepDistKm < 0.05) {
+            if (!eleSpikeIndices.includes(i)) {
+              eleSpikeCount++;
+              eleSpikeIndices.push(i);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 5. Isolated outlier coordinate spike check (p[i] jumping away while p[i-1] and p[i+1] are close)
+  for (let i = 1; i < totalPoints - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+    
+    if (!extremeJumpIndices.includes(i)) {
+      const d1 = calculateDistance(prev, curr);
+      const d2 = calculateDistance(curr, next);
+      const dDirect = calculateDistance(prev, next);
+
+      if (d1 > 15 && d2 > 15 && dDirect < 2) {
+        extremeJumpCount++;
+        extremeJumpIndices.push(i);
+      }
+    }
+  }
+
+  // Construct structured issues
+  if (outOfBoundsCount > 0) {
+    issues.push({
+      id: 'issue-coord-oob',
+      type: 'coord_out_of_bounds',
+      severity: 'error',
+      title: 'Geografisch ungültige Koordinaten',
+      description: `${outOfBoundsCount} Punkt(e) liegen außerhalb der gültigen Erdkoordinaten (-90°..+90° Lat, -180°..+180° Lng).`,
+      affectedCount: outOfBoundsCount,
+      affectedIndices: outOfBoundsIndices,
+      autoFixable: true,
+      fixDescription: 'Ungültige Punkte werden automatisch aus dem Streckenverlauf entfernt.'
+    });
+  }
+
+  if (nullIslandCount > 0) {
+    issues.push({
+      id: 'issue-null-island',
+      type: 'null_island',
+      severity: 'warning',
+      title: 'GPS-Abbruch / Null-Island (0.0°, 0.0°)',
+      description: `${nullIslandCount} Punkt(e) weisen Koordinaten am Äquator/Nullmeridian auf (typischer GPS-Fix-Verlust).`,
+      affectedCount: nullIslandCount,
+      affectedIndices: nullIslandIndices,
+      autoFixable: true,
+      fixDescription: 'Null-Island-Ausreißer werden restlos herausgefiltert.'
+    });
+  }
+
+  if (extremeJumpCount > 0) {
+    issues.push({
+      id: 'issue-extreme-jumps',
+      type: 'coord_extreme_jump',
+      severity: 'warning',
+      title: 'Extreme GPS-Distanzsprünge / Ausreißer',
+      description: `${extremeJumpCount} Punkt(e) weisen extreme Koordinatensprünge (> 25 km oder > 300 km/h) auf.`,
+      affectedCount: extremeJumpCount,
+      affectedIndices: extremeJumpIndices,
+      autoFixable: true,
+      fixDescription: 'Teleportations-Ausreißer werden isoliert und bereinigt.'
+    });
+  }
+
+  if (missingEleCount === totalPoints && totalPoints > 0) {
+    issues.push({
+      id: 'issue-missing-ele-all',
+      type: 'missing_elevation',
+      severity: 'warning',
+      title: 'Vollständig fehlende Höhendaten',
+      description: `Alle ${totalPoints} Punkte besitzen keine Höhenangaben (ele).`,
+      affectedCount: missingEleCount,
+      affectedIndices: missingEleIndices,
+      autoFixable: true,
+      fixDescription: 'Wird mit einer flachen Baseline (0m) initialisiert oder über Höhenmodelle geglättet.'
+    });
+  } else if (missingEleCount > 0) {
+    const percent = Math.round((missingEleCount / totalPoints) * 100);
+    issues.push({
+      id: 'issue-missing-ele-partial',
+      type: 'missing_elevation',
+      severity: percent > 20 ? 'warning' : 'info',
+      title: 'Lückenhafte Höhendaten',
+      description: `${missingEleCount} von ${totalPoints} Punkten (${percent}%) haben keine Höhendaten.`,
+      affectedCount: missingEleCount,
+      affectedIndices: missingEleIndices,
+      autoFixable: true,
+      fixDescription: 'Fehlende Höhenwerte werden nahtlos linear zwischen benachbarten Höhenpunkten interpoliert.'
+    });
+  }
+
+  if (eleSpikeCount > 0) {
+    issues.push({
+      id: 'issue-ele-spikes',
+      type: 'elevation_spike',
+      severity: 'warning',
+      title: 'Unrealistische Höhenausreißer / Sensor-Spitzen',
+      description: `${eleSpikeCount} Punkt(e) weisen physikalisch unplausible Höhen (< -430m, > 8900m) oder vertikale Klippen auf.`,
+      affectedCount: eleSpikeCount,
+      affectedIndices: eleSpikeIndices,
+      autoFixable: true,
+      fixDescription: 'Unrealistische Höhenspitzen werden geglättet und durch realistische Näherungswerte ersetzt.'
+    });
+  }
+
+  let overallStatus: 'clean' | 'info' | 'warning' | 'error' = 'clean';
+  if (issues.some(i => i.severity === 'error')) {
+    overallStatus = 'error';
+  } else if (issues.some(i => i.severity === 'warning')) {
+    overallStatus = 'warning';
+  } else if (issues.length > 0) {
+    overallStatus = 'info';
+  }
+
+  return {
+    trackId: track.id,
+    trackName: track.name,
+    status: overallStatus,
+    issues,
+    stats: {
+      totalPoints,
+      pointsWithElevation: totalPoints - missingEleCount,
+      missingElevationCount: missingEleCount,
+      outlierCoordinateCount: outOfBoundsCount + nullIslandCount + extremeJumpCount,
+      nullIslandCount,
+      extremeJumpCount,
+      elevationSpikeCount: eleSpikeCount,
+      minElevation,
+      maxElevation,
+      maxSpeedJumpKmh
+    }
+  };
+};
+
+/**
+ * Automatically repairs detected validation anomalies: removes out-of-bounds and null island points,
+ * filters isolated teleportation outliers, interpolates missing elevation values, and recalculates track statistics.
+ */
+export const autoFixTrackValidation = (
+  track: GPXTrack,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 25
+): GPXTrack => {
+  if (!track.points || track.points.length === 0) return track;
+
+  // 1. Filter out invalid coords and Null Island
+  const isValidCoord = (p: GPXPoint) => {
+    if (isNaN(p.lat) || isNaN(p.lng)) return false;
+    if (p.lat < -90 || p.lat > 90 || p.lng < -180 || p.lng > 180) return false;
+    if (Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001) return false;
+    return true;
+  };
+
+  let validPoints: GPXPoint[] = track.points.filter(isValidCoord).map(p => ({ ...p }));
+
+  if (validPoints.length === 0) {
+    // If all were invalid, fallback to original to prevent empty track
+    validPoints = track.points.map(p => ({ ...p }));
+  }
+
+  // 2. Remove isolated outlier coordinate spikes
+  if (validPoints.length > 3) {
+    const filteredPoints: GPXPoint[] = [];
+    filteredPoints.push(validPoints[0]);
+
+    for (let i = 1; i < validPoints.length - 1; i++) {
+      const prev = filteredPoints[filteredPoints.length - 1];
+      const curr = validPoints[i];
+      const next = validPoints[i + 1];
+
+      const d1 = calculateDistance(prev, curr);
+      const d2 = calculateDistance(curr, next);
+      const dDirect = calculateDistance(prev, next);
+
+      // If current point jumps far away while neighbors are close, skip it
+      if (d1 > 15 && d2 > 15 && dDirect < 3) {
+        continue; // skip outlier
+      }
+      filteredPoints.push(curr);
+    }
+    filteredPoints.push(validPoints[validPoints.length - 1]);
+    validPoints = filteredPoints;
+  }
+
+  // 3. Clean and clamp extreme elevation spikes (< -430 or > 8900)
+  for (const p of validPoints) {
+    if (p.ele !== undefined && p.ele !== null) {
+      if (p.ele < -430 || p.ele > 8900) {
+        p.ele = undefined;
+      }
+    }
+  }
+
+  // 4. Linearly interpolate missing elevations
+  interpolateMissingElevations(validPoints);
+
+  // 5. Recalculate track distance, ascent, descent, maxSlope
+  let distance = 0;
+  let ascent = 0;
+  let descent = 0;
+  let maxSlope = 0;
+
+  for (let i = 1; i < validPoints.length; i++) {
+    const prev = validPoints[i - 1];
+    const curr = validPoints[i];
+    const d = calculateDistance(prev, curr);
+    distance += d;
+
+    if (curr.ele !== undefined && prev.ele !== undefined) {
+      const eleDiff = curr.ele - prev.ele;
+      if (eleDiff > 0) {
+        ascent += eleDiff;
+      } else {
+        descent += Math.abs(eleDiff);
+      }
+
+      if (d > 0.01) {
+        const slope = Math.abs((eleDiff / (d * 1000)) * 100);
+        if (slope > maxSlope && slope < 40) {
+          maxSlope = slope;
+        }
+      }
+    }
+  }
+
+  // Calculate climbs and power stats
+  const climbs = findClimbs(validPoints);
+  const powerStats = calculatePowerStats(validPoints, ftp, userWeight, estimatedSpeed);
+
+  const cleanName = track.name.includes('(Bereinigt)') ? track.name : `${track.name} (Bereinigt)`;
+
+  return {
+    ...track,
+    name: cleanName,
+    points: validPoints,
+    distance: Number(distance.toFixed(2)),
+    ascent: Math.round(ascent),
+    descent: Math.round(descent),
+    maxSlope: Number(maxSlope.toFixed(1)),
+    climbs,
+    powerStats
+  };
 };
 
 

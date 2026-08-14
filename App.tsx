@@ -6,8 +6,9 @@ import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker, TimeGap } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack, reverseTrack, analyzeTrackValidation, autoFixTrackValidation } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
+import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
@@ -26,28 +27,18 @@ import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis'
 import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
 import { getApiUrl } from './utils/api';
 import { triggerHaptic } from './utils/haptics';
+import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem } from './utils/storage';
 
 const App: React.FC = () => {
   // --- Core State Declarations ---
   const [unhydratedTracks, setTracks] = useState<GPXTrack[]>(() => {
-    try {
-      const saved = localStorage.getItem('velo_workspace_tracks');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.warn('Fehler beim Laden des gespeicherten Workspaces aus localStorage:', e);
-    }
-    return [];
+    return loadWorkspaceTracks();
   });
 
   const [history, setHistory] = useState<GPXTrack[][]>([]);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>(() => {
     try {
-      const saved = localStorage.getItem('velo_text_markers');
+      const saved = safeGetItem('velo_text_markers');
       return saved ? JSON.parse(saved) : [];
     } catch (e) {
       return [];
@@ -58,7 +49,7 @@ const App: React.FC = () => {
 
   const [activeLayer, setActiveLayer] = useState<MapLayer>(() => {
     try {
-      const saved = localStorage.getItem('velo_workspace_active_layer');
+      const saved = safeGetItem('velo_workspace_active_layer');
       if (saved && Object.values(MapLayer).includes(saved as MapLayer)) {
         return saved as MapLayer;
       }
@@ -73,7 +64,7 @@ const App: React.FC = () => {
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
-      const saved = localStorage.getItem('gpx_theme');
+      const saved = safeGetItem('gpx_theme');
       if (saved === 'dark' || saved === 'light') return saved;
     } catch (e) {}
     return 'light';
@@ -81,11 +72,7 @@ const App: React.FC = () => {
 
   const [selectionBounds, setSelectionBounds] = useState<{minLat: number, maxLat: number, minLng: number, maxLng: number} | null>(null);
   const [markedTrackId, setMarkedTrackId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('velo_workspace_marked_track') || null;
-    } catch (e) {
-      return null;
-    }
+    return safeGetItem('velo_workspace_marked_track');
   });
 
   const [is3D, setIs3D] = useState(false);
@@ -104,6 +91,9 @@ const App: React.FC = () => {
   const [timeGapModalOpen, setTimeGapModalOpen] = useState(false);
   const [timeGapTrackId, setTimeGapTrackId] = useState<string | null>(null);
   const [selectedGapId, setSelectedGapId] = useState<string | null>(null);
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [pendingValidationTracks, setPendingValidationTracks] = useState<GPXTrack[]>([]);
+  const [isValidationPreCheck, setIsValidationPreCheck] = useState(true);
 
   const [mapView, setMapView] = useState({
     lat: 51.1657,
@@ -225,27 +215,9 @@ const App: React.FC = () => {
   }, []);
 
   // --- Lifecycle Effects ---
-  // Auto-save workspace tracks to localStorage
+  // Auto-save workspace tracks with safe storage and quota management
   useEffect(() => {
-    try {
-      if (unhydratedTracks && unhydratedTracks.length > 0) {
-        const jsonString = JSON.stringify(unhydratedTracks);
-        localStorage.setItem('velo_workspace_tracks', jsonString);
-      } else {
-        localStorage.removeItem('velo_workspace_tracks');
-      }
-    } catch (err) {
-      console.warn('LocalStorage Quota überschritten oder Fehler beim Speichern des Workspaces:', err);
-      try {
-        const lightweight = unhydratedTracks.map(t => {
-          const { rawRecord, ...rest } = t as any;
-          return rest;
-        });
-        localStorage.setItem('velo_workspace_tracks', JSON.stringify(lightweight));
-      } catch (fallbackErr) {
-        console.error('Konnte Workspace-Cache nicht im LocalStorage speichern:', fallbackErr);
-      }
-    }
+    saveWorkspaceTracks(unhydratedTracks);
   }, [unhydratedTracks]);
 
   // Online / Offline tracking
@@ -524,30 +496,21 @@ const App: React.FC = () => {
     }));
   }, []);
 
-  // Automatically analyze tracks that don't have surface data
-  useEffect(() => {
-    tracks.forEach(track => {
-      if (track.points.length > 0) {
-        const hasSurfaces = track.points.some(p => p.surface !== undefined && p.surface !== null && p.surface !== "");
-        if (!hasSurfaces && !analyzingSurfaces[track.id]) {
-          analyzeTrackSurface(track.id);
-        }
-      }
-    });
-  }, [tracks, analyzeTrackSurface, analyzingSurfaces]);
- 
-  // Auto-select first track if none is selected and tracks exist
-  useEffect(() => {
-    if (tracks.length > 0 && !markedTrackId) {
-      setMarkedTrackId(tracks[0].id);
-    } else if (tracks.length === 0) {
-      setMarkedTrackId(null);
-    }
-  }, [tracks, markedTrackId]);
- 
   const saveToHistory = useCallback(() => {
     setHistory(prev => [...prev, [...tracks]].slice(-10));
   }, [tracks]);
+
+  const handleReverseTrack = useCallback((trackId: string) => {
+    saveToHistory();
+    setTracks(prev => prev.map(t => {
+      if (t.id === trackId) {
+        return reverseTrack(t, ftp, userWeight, estimatedSpeed);
+      }
+      return t;
+    }));
+    setSuccessMessage('Streckenverlauf erfolgreich umgekehrt!');
+    triggerHaptic('medium');
+  }, [ftp, userWeight, estimatedSpeed, saveToHistory]);
  
   const handleUndo = useCallback(() => {
     if (history.length === 0) return;
@@ -860,25 +823,75 @@ const App: React.FC = () => {
       }
 
       if (uniqueNewTracks.length > 0) {
-        saveToHistory();
-        setTracks(prev => [...prev, ...uniqueNewTracks]);
-        
-        if (hasAddedFit && fitDate && fitTime) {
-          setSelectedDate(fitDate);
-          setSelectedTime(fitTime);
+        // Run validation pre-check on newly uploaded tracks
+        const tracksWithAnomalies = uniqueNewTracks.filter(nt => {
+          const rep = analyzeTrackValidation(nt);
+          return rep.status === 'warning' || rep.status === 'error';
+        });
+
+        if (tracksWithAnomalies.length > 0) {
+          // Trigger Validation Pre-Check Modal before processing into workspace
+          setPendingValidationTracks(uniqueNewTracks);
+          setIsValidationPreCheck(true);
+          setValidationModalOpen(true);
         } else {
-          const today = new Date();
-          const formattedDate = today.toISOString().split('T')[0];
-          const hours = String(today.getHours()).padStart(2, '0');
-          const minutes = String(today.getMinutes()).padStart(2, '0');
-          setSelectedDate(formattedDate);
-          setSelectedTime(`${hours}:${minutes}`);
+          // Seamlessly commit clean tracks directly into workspace
+          commitApprovedTracks(uniqueNewTracks, hasAddedFit ? { fitDate, fitTime } : undefined);
         }
       }
     }
     setTrackUploadProgress(null);
     e.target.value = '';
   }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
+
+  const commitApprovedTracks = useCallback((approvedTracks: GPXTrack[], fitMeta?: { fitDate: string | null; fitTime: string | null }) => {
+    if (approvedTracks.length === 0) return;
+    saveToHistory();
+    setTracks(prev => [...prev, ...approvedTracks]);
+    
+    if (fitMeta && fitMeta.fitDate && fitMeta.fitTime) {
+      setSelectedDate(fitMeta.fitDate);
+      setSelectedTime(fitMeta.fitTime);
+    } else {
+      const today = new Date();
+      const formattedDate = today.toISOString().split('T')[0];
+      const hours = String(today.getHours()).padStart(2, '0');
+      const minutes = String(today.getMinutes()).padStart(2, '0');
+      setSelectedDate(formattedDate);
+      setSelectedTime(`${hours}:${minutes}`);
+    }
+
+    setSuccessMessage(`${approvedTracks.length} Aktivität(en) erfolgreich in den Workspace übernommen`);
+    setTimeout(() => setSuccessMessage(null), 4000);
+  }, [saveToHistory, setSelectedDate, setSelectedTime]);
+
+  const handleOpenValidation = useCallback((trackId: string) => {
+    const target = tracks.find(t => t.id === trackId);
+    if (target) {
+      setPendingValidationTracks([target]);
+      setIsValidationPreCheck(false);
+      setValidationModalOpen(true);
+    }
+  }, [tracks]);
+
+  const handleConfirmValidationTracks = useCallback((confirmedTracks: GPXTrack[]) => {
+    if (isValidationPreCheck) {
+      commitApprovedTracks(confirmedTracks);
+    } else {
+      saveToHistory();
+      setTracks(prev => {
+        let updated = [...prev];
+        for (const ct of confirmedTracks) {
+          updated = updated.map(t => t.id === ct.id ? ct : t);
+        }
+        return updated;
+      });
+      setSuccessMessage(`Validierung abgeschlossen: ${confirmedTracks.length} Track(s) aktualisiert`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    }
+    setValidationModalOpen(false);
+    setPendingValidationTracks([]);
+  }, [isValidationPreCheck, commitApprovedTracks, saveToHistory]);
  
   const toggleVisibility = useCallback((id: string) => {
     setTracks(prev => prev.map(t => t.id === id ? { ...t, visible: !t.visible } : t));
@@ -1076,6 +1089,7 @@ const App: React.FC = () => {
         if (weatherOpen) { setWeatherOpen(false); return; }
         if (rawDataOpen) { setRawDataOpen(false); return; }
         if (timeGapModalOpen) { setTimeGapModalOpen(false); return; }
+        if (validationModalOpen) { setValidationModalOpen(false); return; }
         if (isExportModalOpen) { setIsExportModalOpen(false); return; }
         if (isFlying) { setIsFlying(false); return; }
         if (selectionBounds) { setSelectionBounds(null); return; }
@@ -1374,6 +1388,7 @@ const App: React.FC = () => {
           handleOpenTimeGapAnalysis(id);
           setIsMobileMenuOpen(false);
         }}
+        onOpenValidation={handleOpenValidation}
         textMarkers={textMarkers}
         onAddTextMarker={handleAddTextMarker}
         onDeleteTextMarker={handleDeleteTextMarker}
@@ -1390,6 +1405,7 @@ const App: React.FC = () => {
         }}
         onAnalyzeSurface={analyzeTrackSurface}
         onSetTrackSurface={handleSetTrackSurface}
+        onReverseTrack={handleReverseTrack}
         analyzingSurfaces={analyzingSurfaces}
         surfaceAnalysisStatuses={surfaceAnalysisStatuses}
         selectionBounds={selectionBounds}
@@ -1500,6 +1516,28 @@ const App: React.FC = () => {
                 onBatchSplit={handleBatchSplit}
                 onBatchCloseGaps={handleBatchCloseGaps}
                 onFocusGapOnMap={handleFocusGapOnMap}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {validationModalOpen && pendingValidationTracks.length > 0 && (
+              <TrackValidationModal
+                isOpen={validationModalOpen}
+                pendingTracks={pendingValidationTracks}
+                onClose={() => {
+                  setValidationModalOpen(false);
+                  setPendingValidationTracks([]);
+                }}
+                onConfirmTracks={handleConfirmValidationTracks}
+                onCancel={() => {
+                  setValidationModalOpen(false);
+                  setPendingValidationTracks([]);
+                }}
+                isPreCheck={isValidationPreCheck}
+                ftp={ftp}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
               />
             )}
           </AnimatePresence>

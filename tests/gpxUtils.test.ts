@@ -5,7 +5,10 @@ import {
   closeTimeGapInTrack, 
   simplifyTrackPoints, 
   formatGapDuration,
-  calculatePowerStats
+  calculatePowerStats,
+  reverseTrack,
+  analyzeTrackValidation,
+  autoFixTrackValidation
 } from '../utils/gpxUtils';
 import { GPXTrack, GPXPoint } from '../types';
 
@@ -148,6 +151,58 @@ export function runGpxUtilsTests() {
   const formatHm = (a: number) => Math.round(a) + ' hm';
   assert(formatKm(mountainTrack.distance) === '18.2 km', 'Track summary distance format matches 18.2 km');
   assert(formatHm(mountainTrack.ascent) === '1404 hm', 'Track summary elevation gain format matches 1404 hm');
+
+  // Test 12: Reverse Track Direction Utility
+  const reversedTrack = reverseTrack(mountainTrack);
+  assert(reversedTrack.name.includes('(Umgekehrt)'), 'Reversed track includes (Umgekehrt) in name');
+  assert(reversedTrack.points[0].lat === mountainTrack.points[mountainTrack.points.length - 1].lat, 'First point of reversed track matches last point of original');
+  assert(reversedTrack.points[reversedTrack.points.length - 1].lat === mountainTrack.points[0].lat, 'Last point of reversed track matches first point of original');
+  assert(reversedTrack.ascent > 0, 'Reversed track has valid recalculated ascent');
+
+  // Test 13: Track Validation Pre-Check on Clean Track
+  const cleanReport = analyzeTrackValidation(mountainTrack);
+  assert(cleanReport.status === 'clean', 'Clean track produces "clean" validation report');
+  assert(cleanReport.issues.length === 0, 'Clean track has 0 validation issues');
+  assert(cleanReport.stats.missingElevationCount === 0, 'Clean track has 0 missing elevation points');
+
+  // Test 14: Track Validation Pre-Check with Anomalies (Null Island, Missing Elevation, Outlier Jump)
+  const corruptedTrack: GPXTrack = {
+    id: 'corrupted-track-1',
+    name: 'Corrupted GPS Track',
+    points: [
+      { lat: 47.1000, lng: 12.8000, ele: 1100 },
+      { lat: 0.0, lng: 0.0, ele: 0 }, // Null Island drop
+      { lat: 47.1002, lng: 12.8005 }, // Missing elevation
+      { lat: 47.1003, lng: 12.8008, ele: undefined }, // Missing elevation
+      { lat: 48.9500, lng: 15.2000, ele: 200 }, // 200km teleportation spike
+      { lat: 47.1005, lng: 12.8010, ele: 1105 },
+      { lat: 95.0000, lng: 12.8012, ele: 1106 }, // Out of bounds lat
+    ],
+    color: '#ef4444',
+    distance: 250,
+    ascent: 0,
+    descent: 0,
+    maxSlope: 0,
+    visible: true
+  };
+
+  const corruptReport = analyzeTrackValidation(corruptedTrack);
+  assert(corruptReport.status === 'error', 'Corrupted track with out-of-bounds latitude reports "error" status');
+  assert(corruptReport.issues.some(i => i.type === 'null_island'), 'Correctly identifies Null Island anomaly');
+  assert(corruptReport.issues.some(i => i.type === 'missing_elevation'), 'Correctly identifies missing elevation anomalies');
+  assert(corruptReport.issues.some(i => i.type === 'coord_extreme_jump'), 'Correctly identifies extreme coordinate outlier jump');
+  assert(corruptReport.issues.some(i => i.type === 'coord_out_of_bounds'), 'Correctly identifies out of bounds coordinates');
+
+  // Test 15: Auto-Fix Validation Anomalies
+  const repairedTrack = autoFixTrackValidation(corruptedTrack);
+  assert(repairedTrack.name.includes('(Bereinigt)'), 'Repaired track name contains (Bereinigt)');
+  assert(!repairedTrack.points.some(p => Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001), 'Auto-fix eliminates Null Island points');
+  assert(!repairedTrack.points.some(p => p.lat > 90 || p.lat < -90), 'Auto-fix eliminates out-of-bounds latitude points');
+  assert(!repairedTrack.points.some(p => p.lat > 48.0), 'Auto-fix eliminates isolated teleportation spike');
+  assert(repairedTrack.points.every(p => p.ele !== undefined && !isNaN(p.ele)), 'Auto-fix interpolates all missing elevation points');
+
+  const postRepairReport = analyzeTrackValidation(repairedTrack);
+  assert(postRepairReport.status === 'clean', 'Post-repair track passes validation pre-check as "clean"');
 
   console.log(`\n📊 Test Summary: ${passed} passed, ${failed} failed.\n`);
   return failed === 0;

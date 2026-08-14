@@ -12,10 +12,23 @@ const dbPath = path.join(dbDir, 'gpx_library.db');
 
 export let db: Database.Database;
 
+function configureDbPragmas(database: Database.Database): void {
+  try {
+    database.pragma('journal_mode = WAL');
+    database.pragma('synchronous = NORMAL');
+    database.pragma('busy_timeout = 5000');
+    database.pragma('temp_store = MEMORY');
+    database.pragma('cache_size = -20000');
+  } catch (err: any) {
+    console.warn('[SQLite PRAGMA] Warning configuring performance pragmas:', err.message);
+  }
+}
+
 function openAndVerifyDb(): Database.Database {
   let tempDb: Database.Database | null = null;
   try {
     tempDb = new Database(dbPath);
+    configureDbPragmas(tempDb);
     // Simple verification query to make sure the db file and sqlite_master are healthy
     tempDb.prepare("SELECT name FROM sqlite_master LIMIT 1").all();
     return tempDb;
@@ -45,11 +58,24 @@ function openAndVerifyDb(): Database.Database {
       }
     }
 
-    return new Database(dbPath);
+    const fallbackDb = new Database(dbPath);
+    configureDbPragmas(fallbackDb);
+    return fallbackDb;
   }
 }
 
 db = openAndVerifyDb();
+
+export function closeDb(): void {
+  try {
+    if (db && db.open) {
+      db.close();
+      console.log('[SQLite] Connection cleanly closed.');
+    }
+  } catch (e: any) {
+    console.error('[SQLite] Error during closeDb:', e.message);
+  }
+}
 
 export interface DbTrackRecord {
   id: string;
@@ -102,6 +128,7 @@ export function initDb() {
 
     // Re-initialize a clean database
     db = new Database(dbPath);
+    configureDbPragmas(db);
     console.log("[Self-Healing] Retrying database initialization with a fresh file...");
     runInitDbStatements();
   }

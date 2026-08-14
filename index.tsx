@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { registerServiceWorker } from './utils/serviceWorker';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 registerServiceWorker();
 
@@ -15,6 +16,11 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary 
+      fallbackTitle="GPX Route Master konnte nicht gestartet werden" 
+      fallbackMessage="Ein unerwarteter Systemfehler ist aufgetreten. Sie können die Anwendung neu laden oder Ihren Workspace als JSON-Rettungsdatei herunterladen."
+    >
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 );

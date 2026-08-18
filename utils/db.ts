@@ -248,13 +248,61 @@ function runInitDbStatements() {
       insertStmt.run('2.4.4', '2026-08-14T00:00:00.000Z', 'Startup Track Framing & Weather Engine: Added automatic camera focus to first workspace track on app startup; built multi-point route weather forecasting (Start, Summit, End) with Open-Meteo live API integration, quick date presets, and offline climate simulation fallback.');
     }
 
-    const hasV250 = (checkStmt.get('2.5.0') as { count: number }).count > 0;
-    if (!hasV250) {
+    const hasV261 = (checkStmt.get('2.6.1') as { count: number }).count > 0;
+    if (!hasV261) {
       const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
-      insertStmt.run('2.5.0', new Date().toISOString(), 'Architecture & Responsiveness Overhaul: Modular state management, debounced localStorage persistence, memoized elevation profile rendering, responsive multi-device layouts with touch-friendly 44px targets, seamless Leaflet container resizing with ResizeObserver, and comprehensive ADR documentation.');
+      insertStmt.run('2.6.1', '2026-08-16T00:00:00.000Z', 'Intensive Analysis Modal Lifecycle & AnimatePresence Fix: Standardized motion container animation, resolved React 19 dispatcher hook issue, added Escape shortcut and body scroll locking, and corrected marker label schema.');
+    }
+
+    const hasV271 = (checkStmt.get('2.7.1') as { count: number }).count > 0;
+    if (!hasV271) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.1', '2026-08-17T00:00:00.000Z', 'Steigungs- & Gipfel-Anomalieerkennung: Visuelle Warnungen und Diagnose-Overlays für physikalisch unmögliche Steigungssprünge, barometrische Höhenfehler und fehlerhafte Gipfelkraxler direkt im Höhenprofil.');
+    }
+
+    const hasV272 = (checkStmt.get('2.7.2') as { count: number }).count > 0;
+    if (!hasV272) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.2', '2026-08-18T00:00:00.000Z', 'Elevation Anomaly Auto-Repair & Savitzky-Golay Filtering: 1-Click-Korrektur für Steigungsklippen und falsche Gipfelnadeln sowie konfigurierbare gipfelerhaltende Höhenfilterung (Leicht/Mittel/Alpin).');
+    }
+
+    const hasV273 = (checkStmt.get('2.7.3') as { count: number }).count > 0;
+    if (!hasV273) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.3', '2026-08-18T00:00:00.000Z', 'Intensive Streckenanalyse: Vollständige Anstiegs- & Bergwertungs-Integration (Kategorien, VAM, Watt- & Zeitprognosen, interaktiver Kartenzentrierung) und Behebung des Z-Index-Overlays.');
+    }
+
+    const hasV274 = (checkStmt.get('2.7.4') as { count: number }).count > 0;
+    if (!hasV274) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.4', '2026-08-18T00:00:00.000Z', 'Farbige Anstiegsmarkierung im Höhenprofil: Visuelle Hervorhebung identifizierter Bergwertungen mittels farbkodierter ReferenceAreas (HC/Kat 1-4), synchronisiertem Hover-Tooltip, Schnellwahl-Chips und interaktivem Climb-Highlighting.');
+    }
+
+    const hasV275 = (checkStmt.get('2.7.5') as { count: number }).count > 0;
+    if (!hasV275) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.5', '2026-08-18T00:00:00.000Z', 'Real-World Reference Benchmark Test Suite & Scientific Validation: Umfassende automatisierte Testabdeckung für weltbekannte Monumentalanstiege (Alpe d\'Huez, Passo dello Stelvio, Col de la Madeleine), standardisierte Bergpass-Kategorisierungen (HC / Kat 1–4), geodätische Haversine-Distanzen und aerodynamische Leistungsmodelle.');
+    }
+
+    const hasV276 = (checkStmt.get('2.7.6') as { count: number }).count > 0;
+    if (!hasV276) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.6', '2026-08-18T00:00:00.000Z', 'Security Hardening & Comprehensive Vulnerability Audit: Umfassende Absicherung aller REST-Endpunkte, Dateipfad-Validierung (Path Traversal & Whitelist), Prototype Pollution Schutz in Settings & SQLite-Queries, bereinigte CORS- und Security-Header (X-Content-Type-Options, Referrer-Policy, Permissions-Policy), JSON-Fehler-Handler und dedizierte Sicherheits-Regressionstests.');
+    }
+
+    const hasV277 = (checkStmt.get('2.7.7') as { count: number }).count > 0;
+    if (!hasV277) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.7', '2026-08-18T00:00:00.000Z', '3D-Terrain Hover-Preview & Instantaneous Slope HUD: Nahtlos in die Seitenleiste integrierte 3D-Relief-Vorschau mit MapLibre GL Raster-DEM, die synchron beim Überfahren des Höhenprofils mit der Maus aktualisiert wird, inklusive Echtzeit-Anzeige von momentaner Steigung (farbkodiert), Höhe ü.NN, Kompass-Richtung, Distanz und Sensor-Telemetrie.');
+    }
+
+    const hasV278 = (checkStmt.get('2.7.8') as { count: number }).count > 0;
+    if (!hasV278) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.8', new Date().toISOString(), 'Sport-Metriken & Trainingswissenschaftliches Glossar: Umfassendes Nachschlagewerk für Leistungs- und Physiologiemetriken (VAM, TSS, FTP, NP, IF, VI, CTL/ATL/TSB, VO2max, EF, Pw:HR Decoupling, Climb Categories HC-4, kJ/kcal) mit mathematischen Formeln, Referenz-Skalen, Praxistipps und 4 interaktiven Simulatoren (VAM-, TSS-, Pacing- und Bergwertungs-Rechner).');
     } else {
       const updateStmt = db.prepare('UPDATE app_version SET updated_at = ? WHERE version = ?');
-      updateStmt.run(new Date().toISOString(), '2.5.0');
+      updateStmt.run(new Date().toISOString(), '2.7.8');
     }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
@@ -430,13 +478,15 @@ export function searchTracks(queryText: string = '', activityType?: string): DbT
   const conditions: string[] = [];
   const params: any[] = [];
 
-  if (activityType && activityType !== 'all') {
+  const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
+  if (cleanActivity && cleanActivity !== 'all') {
     conditions.push(`activity_type = ?`);
-    params.push(activityType);
+    params.push(cleanActivity);
   }
 
-  if (queryText.trim()) {
-    const term = `%${queryText.trim()}%`;
+  const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
+  if (cleanQuery) {
+    const term = `%${cleanQuery}%`;
     conditions.push(`(name LIKE ? OR description LIKE ? OR tags LIKE ? OR original_filename LIKE ?)`);
     params.push(term, term, term, term);
   }
@@ -623,19 +673,21 @@ export function searchGarminActivities(queryText: string = '', activityType?: st
   const conditions: string[] = [];
   const params: any[] = [];
 
-  if (activityType && activityType !== 'all') {
-    if (activityType === 'cycling') {
+  const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
+  if (cleanActivity && cleanActivity !== 'all') {
+    if (cleanActivity === 'cycling') {
       conditions.push(`(type LIKE '%cycle%' OR type LIKE '%bike%' OR type = 'cycling')`);
-    } else if (activityType === 'running') {
+    } else if (cleanActivity === 'running') {
       conditions.push(`(type LIKE '%run%' OR type = 'running')`);
     } else {
       conditions.push(`type = ?`);
-      params.push(activityType);
+      params.push(cleanActivity);
     }
   }
 
-  if (queryText.trim()) {
-    const term = `%${queryText.trim()}%`;
+  const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
+  if (cleanQuery) {
+    const term = `%${cleanQuery}%`;
     conditions.push(`(name LIKE ? OR description LIKE ? OR location LIKE ?)`);
     params.push(term, term, term);
   }
@@ -652,7 +704,8 @@ export function searchGarminActivities(queryText: string = '', activityType?: st
 
 export function getGarminActivityById(id: string): DbGarminActivityRecord | null {
   try {
-    return db.prepare('SELECT * FROM garmin_activities WHERE id = ?').get(id) as DbGarminActivityRecord;
+    const cleanId = typeof id === 'string' ? id.slice(0, 128) : '';
+    return db.prepare('SELECT * FROM garmin_activities WHERE id = ?').get(cleanId) as DbGarminActivityRecord;
   } catch (e) {
     console.error('Failed to get Garmin activity by ID:', e);
     return null;
@@ -702,8 +755,10 @@ export function getAppVersions(): AppVersionRecord[] {
 
 export function addAppVersion(version: string, changelog: string): boolean {
   try {
+    const safeVer = String(version || '').slice(0, 32);
+    const safeChangelog = String(changelog || '').slice(0, 50000);
     const stmt = db.prepare('INSERT OR REPLACE INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
-    stmt.run(version, new Date().toISOString(), changelog);
+    stmt.run(safeVer, new Date().toISOString(), safeChangelog);
     return true;
   } catch (e) {
     console.error('Failed to add/update app version in DB:', e);
@@ -711,9 +766,15 @@ export function addAppVersion(version: string, changelog: string): boolean {
   }
 }
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function getSetting(key: string, defaultValue: string): string {
   try {
-    const row = db.prepare('SELECT value FROM user_settings WHERE key = ?').get(key) as { value: string } | undefined;
+    if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
+      return defaultValue;
+    }
+    const cleanKey = key.slice(0, 128);
+    const row = db.prepare('SELECT value FROM user_settings WHERE key = ?').get(cleanKey) as { value: string } | undefined;
     return row ? row.value : defaultValue;
   } catch (e) {
     return defaultValue;
@@ -722,8 +783,13 @@ export function getSetting(key: string, defaultValue: string): string {
 
 export function saveSetting(key: string, value: string): boolean {
   try {
+    if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
+      return false;
+    }
+    const cleanKey = key.slice(0, 128);
+    const cleanValue = typeof value === 'string' ? value.slice(0, 50000) : String(value ?? '').slice(0, 50000);
     const stmt = db.prepare('INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)');
-    stmt.run(key, value);
+    stmt.run(cleanKey, cleanValue);
     return true;
   } catch (e) {
     console.error(`Failed to save setting ${key}:`, e);
@@ -734,13 +800,15 @@ export function saveSetting(key: string, value: string): boolean {
 export function getAllSettings(): Record<string, string> {
   try {
     const rows = db.prepare('SELECT key, value FROM user_settings').all() as { key: string; value: string }[];
-    const settings: Record<string, string> = {};
+    const settings: Record<string, string> = Object.create(null);
     for (const row of rows) {
-      settings[row.key] = row.value;
+      if (row.key && typeof row.key === 'string' && !FORBIDDEN_KEYS.has(row.key)) {
+        settings[row.key] = row.value;
+      }
     }
     return settings;
   } catch (e) {
-    return {};
+    return Object.create(null);
   }
 }
 

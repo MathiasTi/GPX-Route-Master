@@ -8,12 +8,24 @@ export interface SWCacheStats {
 }
 
 export function registerServiceWorker(onUpdate?: () => void) {
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return;
+  }
+
+  const isLocalOrHttps = window.location.protocol === 'https:' || 
+    window.location.hostname === 'localhost' || 
+    window.location.hostname === '127.0.0.1';
+
+  if (!isLocalOrHttps) {
+    return;
+  }
+
+  const register = () => {
+    try {
       navigator.serviceWorker
-        .register('/sw.js')
+        .register('/sw.js', { scope: '/' })
         .then((registration) => {
-          console.log('[SW] ServiceWorker registered successfully with scope:', registration.scope);
+          console.info('[SW] ServiceWorker registered successfully with scope:', registration.scope);
 
           registration.onupdatefound = () => {
             const installingWorker = registration.installing;
@@ -21,20 +33,29 @@ export function registerServiceWorker(onUpdate?: () => void) {
               installingWorker.onstatechange = () => {
                 if (installingWorker.state === 'installed') {
                   if (navigator.serviceWorker.controller) {
-                    console.log('[SW] New content is available; please refresh.');
+                    console.info('[SW] New content is available; please refresh.');
                     if (onUpdate) onUpdate();
                   } else {
-                    console.log('[SW] Content is cached for offline use.');
+                    console.info('[SW] Content is cached for offline use.');
                   }
                 }
               };
             }
           };
         })
-        .catch((error) => {
-          console.error('[SW] ServiceWorker registration failed:', error);
+        .catch((error: any) => {
+          // Gracefully handle iframe / sandboxed preview restrictions without fatal console errors
+          console.warn('[SW] ServiceWorker registration unavailable or restricted in current frame context:', error?.message || error);
         });
-    });
+    } catch (err: any) {
+      console.warn('[SW] ServiceWorker initialization skipped:', err?.message || err);
+    }
+  };
+
+  if (document.readyState === 'complete') {
+    register();
+  } else {
+    window.addEventListener('load', register, { once: true });
   }
 }
 

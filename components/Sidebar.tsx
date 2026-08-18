@@ -4,11 +4,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck } from 'lucide-react';
-import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX } from '../utils/gpxUtils';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX } from '../utils/gpxUtils';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
+import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
 import { 
   DndContext, 
   closestCenter, 
@@ -37,6 +38,7 @@ interface TrackItemProps {
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   estimatedSpeed: number;
   onOpenAnalytics?: (id: string) => void;
+  onOpenIntensiveAnalysis?: (id: string) => void;
   onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
   onAnalyzeSurface?: (id: string, force?: boolean) => void;
@@ -62,6 +64,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onChangeActivityType, 
   estimatedSpeed, 
   onOpenAnalytics, 
+  onOpenIntensiveAnalysis,
   onOpenTrainingZones,
   onOpenClimbs, 
   onAnalyzeSurface,
@@ -104,17 +107,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
 
   const handleExportGPX = () => {
     try {
-      const xml = exportToGPX(track);
-      const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const safeName = track.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'track';
-      link.href = url;
-      link.setAttribute('download', `${safeName}.gpx`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      triggerHaptic('light');
+      downloadTrackAsGPX(track);
     } catch (e) {
       console.error("Error exporting GPX:", e);
     }
@@ -263,6 +257,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
                 </button>
                 
+                {onOpenIntensiveAnalysis && (
+                  <button 
+                    type="button"
+                    onClick={() => onOpenIntensiveAnalysis(track.id)} 
+                    className="p-1.5 bg-purple-50/80 hover:bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 rounded-lg border border-purple-250/20 dark:border-purple-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                    <span>Intensiv</span>
+                  </button>
+                )}
+
                 {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
                   <button 
                     type="button"
@@ -763,6 +769,8 @@ interface SidebarProps {
   onOpenPerformanceAnalysis?: () => void;
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
+  onOpenIntensiveAnalysis?: (id?: string) => void;
+  onOpenGlossary?: (metricId?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
   onOpenWeather?: () => void;
@@ -838,6 +846,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenPerformanceAnalysis,
   onOpenTrainingZones,
   onOpenSummaryReport,
+  onOpenIntensiveAnalysis,
+  onOpenGlossary,
   onOpenAnalytics,
   onOpenClimbs,
   onOpenWeather,
@@ -891,7 +901,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
   const [isWeatherExpanded, setIsWeatherExpanded] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
-  const [latestVersion, setLatestVersion] = useState('1.3.0');
+  const [latestVersion, setLatestVersion] = useState('2.7.7');
   const [latestBuildDate, setLatestBuildDate] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
@@ -1049,9 +1059,22 @@ const Sidebar: React.FC<SidebarProps> = ({
               </label>
             </section>
 
+            {/* 3D Terrain Hover Preview & Instantaneous Slope/Altitude HUD */}
+            {tracks.length > 0 && (
+              <TerrainHoverPreview3D
+                hoveredPoint={hoveredPoint}
+                track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                allTracks={tracks}
+                isDark={isDark}
+                onFocusCoordinates={(lat, lng) => {
+                  onMapViewChange({ lat, lng, zoom: 16, pitch: 65, bearing: 0 });
+                }}
+              />
+            )}
+
             <section className="space-y-3">
               <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Werkzeuge</h2>
+                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Werkzeuge & Analyse</h2>
                 {canUndo && (
                   <button 
                     onClick={onUndo}
@@ -1061,6 +1084,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                   </button>
                 )}
               </div>
+
+              {onOpenIntensiveAnalysis && (
+                <button 
+                  onClick={() => onOpenIntensiveAnalysis(markedTrackId || undefined)}
+                  disabled={tracks.length === 0}
+                  className="w-full flex items-center justify-center gap-2 p-3.5 rounded-xl text-sm font-black bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-purple-200/50 dark:shadow-none transition-all cursor-pointer ring-2 ring-purple-400/30"
+                  title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
+                >
+                  <Sparkles className="w-4 h-4 text-purple-200" />
+                  Intensive Track & Pacing Analyse
+                </button>
+              )}
+
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={onMergeSelected}
@@ -1097,6 +1133,20 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <Scissors className="w-4 h-4 text-amber-200" />
                 Zeitlücken & Trennen
               </button>
+
+              {markedTrack && (
+                <button 
+                  onClick={() => {
+                    triggerHaptic('medium');
+                    downloadTrackAsGPX(markedTrack, { textMarkers });
+                  }}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white shadow-md shadow-sky-100 dark:shadow-none transition-all cursor-pointer"
+                  title="Markierten Track mit allen Metadaten, Oberflächen-Tags & Bereinigungen als .gpx herunterladen"
+                >
+                  <Download className="w-4 h-4 text-sky-200" />
+                  Markierten Track als GPX exportieren
+                </button>
+              )}
 
               {markedTrack && (
                 <button 
@@ -1148,6 +1198,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <TrendingUp className="w-4 h-4" />
                 Leistungs- & Fitness-Analyse
               </button>
+
+              {onOpenGlossary && (
+                <button 
+                  onClick={() => onOpenGlossary()}
+                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-100 dark:shadow-none transition-all cursor-pointer"
+                  title="Wissenschaftliches Sport-Glossar (VAM, TSS, FTP, EF, VO2max, VI, Pacing) & Interaktive Rechner"
+                >
+                  <BookOpen className="w-4 h-4 text-emerald-200" />
+                  Sport-Metriken & Glossar (VAM, TSS...)
+                </button>
+              )}
             </section>
 
             <section className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
@@ -1548,6 +1609,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onChangeActivityType={onChangeActivityType}
                             estimatedSpeed={estimatedSpeed}
                             onOpenAnalytics={onOpenAnalytics}
+                            onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
                             onOpenTrainingZones={onOpenTrainingZones}
                             onOpenClimbs={onOpenClimbs}
                             onAnalyzeSurface={onAnalyzeSurface}

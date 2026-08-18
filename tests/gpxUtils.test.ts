@@ -8,9 +8,11 @@ import {
   calculatePowerStats,
   reverseTrack,
   analyzeTrackValidation,
-  autoFixTrackValidation
+  autoFixTrackValidation,
+  exportToGPX,
+  downloadTrackAsGPX
 } from '../utils/gpxUtils';
-import { GPXTrack, GPXPoint } from '../types';
+import { GPXTrack, GPXPoint, TextMarker } from '../types';
 
 export function runGpxUtilsTests() {
   console.log('🧪 Starting GPX Utils & Performance Unit Tests...\n');
@@ -203,6 +205,57 @@ export function runGpxUtilsTests() {
 
   const postRepairReport = analyzeTrackValidation(repairedTrack);
   assert(postRepairReport.status === 'clean', 'Post-repair track passes validation pre-check as "clean"');
+
+  // Test 16: Export to GPX preserving metadata, surfaces, segments, waypoints, and telemetry
+  const enrichedTrack: GPXTrack = {
+    id: 'enriched-track-1',
+    name: 'Alpen Pass Tour',
+    description: 'Scenic pass with gravel segments and waypoint',
+    points: [
+      { lat: 47.123456, lng: 12.345678, ele: 1200.5, time: new Date('2026-06-01T10:00:00Z'), hr: 145, cadence: 85, power: 220, speed: 6.5, temp: 18.5, surface: 'Asphalt' },
+      { lat: 47.123800, lng: 12.346000, ele: 1215.0, time: new Date('2026-06-01T10:01:00Z'), hr: 152, cadence: 88, power: 245, speed: 6.2, temp: 18.5, surface: 'Gravel' },
+      // 20 minute gap triggering a clean segment break
+      { lat: 47.128000, lng: 12.350000, ele: 1350.0, time: new Date('2026-06-01T10:21:00Z'), hr: 130, cadence: 75, power: 180, speed: 5.0, temp: 17.0, surface: 'Paved' }
+    ],
+    surfaceStats: [
+      { type: 'Asphalt', distance: 0.5 },
+      { type: 'Gravel', distance: 0.8 },
+      { type: 'Paved', distance: 1.2 }
+    ],
+    powerStats: {
+      avgPower: 215,
+      maxPower: 450,
+      normalizedPower: 225,
+      work: 150,
+      tss: 65,
+      best20s: 380,
+      best1m: 320,
+      best20m: 230
+    },
+    color: '#0284c7',
+    distance: 2.5,
+    ascent: 150,
+    descent: 0,
+    maxSlope: 8.5,
+    visible: true,
+    activityType: 'cycling'
+  };
+
+  const sampleMarkers: TextMarker[] = [
+    { id: 'm1', label: 'Wasserstelle Passhöhe', lat: 47.125000, lng: 12.348000, color: '#10b981' }
+  ];
+
+  const exportedXml = exportToGPX(enrichedTrack, { textMarkers: sampleMarkers, segmentBreakSeconds: 900 });
+  assert(exportedXml.includes('<?xml version="1.0" encoding="UTF-8"?>'), 'GPX export contains valid XML header');
+  assert(exportedXml.includes('<name>Alpen Pass Tour</name>'), 'GPX export preserves track name');
+  assert(exportedXml.includes('<surface>Gravel</surface>'), 'GPX export preserves point-level surface tags');
+  assert(exportedXml.includes('<surfaceSegment type="Gravel"'), 'GPX export preserves surface statistics extension');
+  assert(exportedXml.includes('<gpxtpx:hr>145</gpxtpx:hr>'), 'GPX export preserves heart rate telemetry');
+  assert(exportedXml.includes('<gpxtpx:cad>85</gpxtpx:cad>'), 'GPX export preserves cadence telemetry');
+  assert(exportedXml.includes('<power>220</power>'), 'GPX export preserves power telemetry');
+  assert(exportedXml.includes('<gpxtpx:atemp>18.5</gpxtpx:atemp>'), 'GPX export preserves temperature telemetry');
+  assert(exportedXml.includes('<name>Wasserstelle Passhöhe</name>'), 'GPX export preserves waypoints / text markers');
+  assert((exportedXml.match(/<trkseg>/g) || []).length === 2, 'GPX export segments track into 2 clean segments across time gap');
 
   console.log(`\n📊 Test Summary: ${passed} passed, ${failed} failed.\n`);
   return failed === 0;

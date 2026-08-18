@@ -378,22 +378,394 @@ graph TD
 
 ---
 
-## 14. Automated Testing
+## 14. Intensive Route Physics & Nutrition Engine Architecture
 
-All core calculation engines, downsampling algorithms, time-gap detectors, track manipulators, and responsive performance metrics are covered by unit tests:
+```mermaid
+graph TD
+    GPXTrack[Input GPX Track / Points] --> Engine[Intensive Analysis Physics Engine]
+    
+    UserInput[Rider Parameters: FTP, Weight, Subtype, Temp] --> Engine
+    
+    Engine --> GradeSegmenter[Elevation & Gradient Segmenter]
+    GradeSegmenter --> AeroGravityModel[Aerodynamic & Gravitational Power Model]
+    
+    AeroGravityModel --> TimePredictor[Netto Moving & Brutto Elapsed Time]
+    AeroGravityModel --> EnergyCalculator[Calorie, Carbohydrate & Fat Partitioning]
+    AeroGravityModel --> HydrationEngine[Temperature-Adjusted Sweat & Sodium Rate]
+    
+    GradeSegmenter --> SplitGenerator[Dynamic 2km/5km/10km Stage Splits Table]
+    GradeSegmenter --> POIFinder[Summit, Halfway & Caution Point Extractor]
+    
+    TimePredictor --> UIModal[IntensiveTrackAnalysisModal UI]
+    EnergyCalculator --> UIModal
+    HydrationEngine --> UIModal
+    SplitGenerator --> UIModal
+    POIFinder --> MapMarkers[1-Click Live Text Markers on Leaflet Map]
+```
+
+### Architectural Decision Record (ADR 013): Deterministic Physical Route Modeling & Nutritional Planning
+- **Context**: Athletes and route planners need accurate pre-ride/pre-run predictions for duration, energy expenditure, nutritional requirements, and stage breakdowns before attempting new outdoor challenges.
+- **Decision**:
+  1. Implement a client-side deterministic physics engine evaluating gradient resistance, rolling resistance by surface subtype (road vs gravel vs MTB), and aero drag modeled against user FTP or pace profile.
+  2. Implement an energetic metabolism calculation separating carbohydrate and fat oxidation ratios, computing hourly g/h carb targets, fluid requirements adjusted for ambient temperature, and sodium replacement guidelines.
+  3. Extract key stage splits and high-value waypoints (highest summit, halfway nutrition checkpoint) with a 1-click bridge directly into the interactive Leaflet text marker system.
+- **Consequences**:
+  - Provides instant, offline-capable route planning without sending user telemetry to third-party servers.
+  - Generates actionable, mathematically grounded pacing advice and stage splits for any loaded GPS route.
+
+---
+
+## 15. Pan-To Keyboard Navigation & Multi-Track Centering Architecture
+
+```mermaid
+graph TD
+    UserKey[User Keypress Event: M / C] --> GuardCheck{Target Is Form Input?}
+    GuardCheck -- Yes --> Ignore[Standard Input Typing Behavior]
+    GuardCheck -- No --> Router{Key Code Router}
+    
+    Router -- 'M' Key --> PanHover[Pan To Hovered Point]
+    PanHover --> CheckHover{Hovered Point Exists?}
+    CheckHover -- Yes --> UpdateMapM[Update Map Lat/Lng Center + Haptic Pulse]
+    CheckHover -- No --> NoOpM[No-Op]
+    
+    Router -- 'C' Key --> CycleTracks[Cycle Visible Tracks]
+    CycleTracks --> FilterVis[Filter Visible Tracks With Points]
+    FilterVis --> CalcNext[Calculate Next Track Index (Modulo)]
+    CalcNext --> BoundsCalc[Calculate Bounding Box & Optimal Zoom]
+    BoundsCalc --> UpdateMapC[Update Map Lat/Lng + Zoom + Set Marked Track + Haptic Pulse]
+```
+
+### Architectural Decision Record (ADR 014): Keyboard-Driven Pan-To and Multi-Track Focus Navigation
+- **Context**: Power users, route designers, and navigators inspecting complex GPX trails with multiple active or compared tracks need quick, hands-on-keyboard navigation to focus on specific points of interest or switch context between multiple visible trails without reaching for mouse drag-and-zoom controls.
+- **Decision**:
+  1. Register 'M' shortcut to pan the map directly to the current hovered track point (`hoveredPoint.lat`, `hoveredPoint.lng`), preserving current zoom level.
+  2. Register 'C' shortcut to smoothly cycle through visible tracks in sequence, calculating bounding boxes (`calculateTrackCenterAndBounds`) and automatically framing each track with an optimal Mercator zoom calculation.
+  3. Ensure all shortcut listeners are safely guarded against form fields (`<input>`, `<textarea>`, `contenteditable`) and provide haptic feedback and toast notifications for accessibility.
+- **Consequences**:
+  - Provides instantaneous, single-stroke spatial navigation.
+  - Improves usability when comparing parallel or overlapping routes.
+
+---
+
+---
+
+## 17. Climb Culmination Point & True Summit Determination Architecture
+
+```mermaid
+graph TD
+    Points[Raw & Smoothed Track Elevation Profile] --> ClimbScanner[Climb Candidate Search Window]
+    ClimbScanner --> MinStartOpt[Start Valley Optimization<br>Local elevation minimum]
+    
+    MinStartOpt --> PeakTracker[Dynamic Summit Peak Tracker<br>Continuous positive elevation progression]
+    
+    PeakTracker --> PeakExitCheck{Descent Threshold Met?<br>1. Drop > 10m below peak<br>2. Dist > 150m with net drop<br>3. Gradient < -2.5%}
+    
+    PeakExitCheck -- No --> PeakTracker
+    PeakExitCheck -- Yes --> PeakWindowRefine[Raw Elevation Window Refinement<br>Exact Pass Cross / Col Altitude]
+    
+    PeakWindowRefine --> ClimbSegment[Final Climb Segment<br>endIndex = Exact True Summit<br>Climb Distance & Gain exact to Summit]
+    
+    ClimbSegment --> ProfileMarkers[Elevation Profile & Map Summit Markers<br>Gipfel #N red marker placed precisely at peak]
+```
+
+### Architectural Decision Record (ADR 015): High-Precision Climb Culmination & Summit Point Determination
+- **Context**: On long mountain stages (e.g. Alpine passes), users reported that climbs were terminating too late—several hundred meters into the subsequent descent or along rolling plateaus. Furthermore, summit markers were misaligned with the actual physical pass culmination point due to lag in broad moving-average filters.
+- **Decision**:
+  1. Refine the climb boundary algorithm to strictly cap climb segments at the **culmination peak index** (`climb.endIndex = exactSummitIndex`).
+  2. Implement a local elevation window refinement that inspects high-resolution raw point elevations around the smoothed peak to capture the true mountain pass sign/cross altitude without moving-average attenuation.
+  3. Terminate the climb scan as soon as the rider enters a sustained descent (drop > 10m from peak, distance > 150m past peak with net descent, or local gradient < -2.5%).
+  4. Ensure climb statistics (distance, elevation gain, average gradient) and UI markers ("Gipfel #N") calculate and render strictly to this culmination point.
+- **Consequences**:
+  - Eliminates false climb extension into downhill sections.
+  - Aligns map markers, elevation profile peaks, and climb analysis summaries exactly with geographic pass summits.
+
+---
+
+## 18. Impossible Gradient & Bad Summit Elevation Anomaly Detection Pipeline
+
+```mermaid
+graph TD
+    RawPoints[GPX Track Points & Elevation Sequence] --> FillMissing[Missing Elevation Interpolation]
+    FillMissing --> CumDist[Cumulative High-Precision Distance Computation]
+    
+    CumDist --> SummitScan[1. Needle Summit & Inversion Scanner<br>Window backward / forward search]
+    SummitScan --> NeedleCheck{Needle Condition Met?<br>1. gradUp > +20% & gradDown < -20%<br>2. eleDrop >= 12m each side<br>3. Gradient delta > 55% over <= 200m}
+    
+    NeedleCheck -- Yes --> ExpandNeedle[Expand to base boundaries<br>Mark as summit_anomaly]
+    NeedleCheck -- No --> StepScan
+    ExpandNeedle --> StepScan[2. Short-Segment Slope & Cliff Scanner<br>Single & multi-step gradient check]
+    
+    StepScan --> CliffCheck{Severe Gradient Cliff?<br>1. abs(Grad) > 40% & eleDiff >= 12m<br>2. eleDiff >= 25m in <= 40m<br>3. eleDiff >= 70m in < 150m}
+    
+    CliffCheck -- Yes --> MarkCliff[Mark impossible_slope / gradient_spike]
+    CliffCheck -- No --> AnomalyFilter[Sort & Filter Non-Overlapping Anomalies]
+    MarkCliff --> AnomalyFilter
+    
+    AnomalyFilter --> SvgRender[ElevationProfile SVG Engine]
+    SvgRender --> StripeZone[SVG Striped Shaded Zone #warning-stripe]
+    SvgRender --> PulseDot[Pulsing Anomaly Peak Indicators]
+    SvgRender --> AnomalyPill[Top-Margin Anomaly Jump Pills]
+    SvgRender --> PopoverCard[Diagnostic Anomaly Detail Popover]
+```
+
+### Architectural Decision Record (ADR 016): Real-Time Impossible Gradient & Culmination Anomaly Detection
+- **Context**: Real-world GPS activity files frequently suffer from sensor dropouts, barometric pressure fluctuations, bad DEM (Digital Elevation Model) interpolation artifacts, or device glitches that insert vertical cliffs (e.g. +80m over 10m) or false needle peaks (e.g. +40% climb immediately followed by -40% descent over 50m). These anomalies distort total ascent calculations, max slope statistics, and climb profiling.
+- **Decision**:
+  1. Introduce a dedicated algorithm `detectImpossibleGradientAnomalies(points, maxRealisticSlope, maxGradientDelta)` that scans for:
+     - **Needle Summit Spikes**: Acute summit reversals where ascent gradient is >20% and descent gradient is <-20% with significant vertical gain/loss over a tight distance window (≤200m).
+     - **Impossible Slopes & Cliffs**: Step or short-span elevation jumps exceeding 40% slope with ≥12m vertical shift or extreme single-step cliffs.
+  2. Overlay interactive visual warnings directly onto the SVG elevation profile graph:
+     - Warning striped vertical columns (`#warning-stripe`) highlighting the full extent of the affected segment.
+     - Pulsing rose indicators on the peak anomaly point.
+     - Top-margin pill badges displaying the gradient delta (`Δ +XX%`) with click-to-focus behavior.
+     - Rich diagnostic popover cards detailing exact kilometer span, calculated gradient, and vertical shift.
+  3. Provide non-intrusive UI controls ("Warnungen" toggle with count badge) allowing users to inspect or dismiss warnings without blocking route playback.
+- **Consequences**:
+  - Immediately reveals corrupted GPS segments and barometric sensor errors without manual raw data inspection.
+  - Keeps elevation profile analysis transparent, reliable, and user-friendly.
+
+---
+
+## 19. Elevation Anomaly Auto-Repair & Peak-Preserving Filtering Engine
+
+```mermaid
+flowchart TD
+    RawTrack[Raw Track Points with Barometric Noise / Cliff Spikes] --> Choice{User Workflow Action}
+    
+    Choice -->|One-Click Auto-Repair| AnomalyRepair[repairGradientAnomalies]
+    Choice -->|Configurable Filter Slider| FilterEngine[filterElevationProfile]
+    
+    subgraph AnomalyRepairFlow [Distance-Weighted Monotonic Repair]
+        AnomalyRepair --> DetectAnomalies[detectImpossibleGradientAnomalies]
+        DetectAnomalies --> ExpandWindow[Identify Base Anchors sIdx & eIdx]
+        ExpandWindow --> SmoothStep[Smoothstep Interpolation: t*t* 3-2t]
+        SmoothStep --> SlopeClamp[Safety Clamp: Slope <= 35%]
+    end
+    
+    subgraph FilterEngineFlow [Peak-Preserving Multi-Stage Filter]
+        FilterEngine --> PeakScan[Prominence Summit Scanner: >= 2.0m]
+        PeakScan --> LockPeaks[Lock True Summit Crests]
+        LockPeaks --> MedianFilter[Moving Median Filter: 30-160m window]
+        MedianFilter --> GaussianSavit[Savitzky-Golay / Gaussian Weighting]
+    end
+    
+    SlopeClamp --> TrackRebuild[Recalculate Ascent, Max Slope, Climbs, Power Stats]
+    GaussianSavit --> TrackRebuild
+    TrackRebuild --> StateUpdate[Update React Track State & Render Clean Profile]
+```
+
+### Architectural Decision Record (ADR 017): One-Click Anomaly Repair & Prominence-Preserving Savitzky-Golay Filtering
+- **Context**: While anomaly detection highlights barometric glitches and GPS teleportation cliffs, users require automated, high-precision tools to clean their tracks without losing valid mountain summits or distorting athletic performance metrics (e.g. Normalized Power, TSS, Ascent hm).
+- **Decision**:
+  1. **One-Click Auto-Repair (`repairTrackGradientAnomalies`)**:
+     - Automatically repairs all detected needle spikes and impossible cliffs using distance-weighted smoothstep interpolation (`3t² - 2t³`).
+     - Performs a safety pass clamping remaining slope transitions to physical thresholds (≤35%).
+     - Automatically recalculates total elevation gain, maximum slope, climb categories, and power telemetry.
+  2. **Prominence-Preserving Savitzky-Golay Filtering (`filterElevationProfile`)**:
+     - Implements a two-phase noise reduction pipeline (Moving-Median followed by distance-weighted Gaussian / Savitzky-Golay filtering).
+     - Protects natural peaks by detecting local summits with prominence ≥2.0m and exempting them from attenuation.
+     - Offers 4 selectable filter modes: `off`, `light` (30m window), `medium` (80m window), and `alpine_aggressive` (160m window).
+  3. **Non-Destructive In-Memory Preview & Permanent Save**:
+     - Elevation filters can be previewed dynamically in the SVG graph without altering track data.
+     - Users can persist the filtered elevation data into the track state with one click (*"Filter dauerhaft in Track sichern"*).
+- **Consequences**:
+  - Eliminates inflated elevation gain and unrealistic max slope metrics caused by barometric jitter.
+  - Guarantees that mountain peaks and true elevation summits remain intact.
+  - Delivers a 100% test-backed, mathematically sound elevation data cleanup suite.
+
+---
+
+## 20. Intensive Track Analysis & Climb Integration Pipeline
+
+```mermaid
+flowchart TD
+    RawTrack[Raw Track Points with Lat/Lng/Elevation] --> FindClimbsEngine[findClimbs Algorithm]
+    RawTrack --> PhysicsEngine[Physical Power & Aero-Resistance Engine]
+    
+    subgraph ClimbAnalysis [Intensive Climb Engine]
+        FindClimbsEngine --> Categorize[Climb Categorization: HC, Cat 1-4, Uncategorized]
+        Categorize --> ColorAssign[Hex Color Assignment: HC=#9333ea, Cat1=#e11d48, Cat2=#f97316, Cat3=#f59e0b, Cat4=#3b82f6]
+        Categorize --> VAMCalc[VAM Calculation: hm * 3600 / seconds]
+        Categorize --> PowerPace[Target Power & Pace Estimation]
+        Categorize --> GeoStats[Start/End Elevation, Distance & Max Gradient]
+    end
+    
+    subgraph UIModule [Intensive Track Analysis Modal z-[2000]]
+        ClimbAnalysis --> ProfileChart[IntensiveElevationChart: Recharts AreaChart with ReferenceArea & ReferenceLine Overlays]
+        ProfileChart --> TooltipSync[CustomElevationTooltip: Live VAM, Gradient, Ascent & Range Inspection]
+        ProfileChart --> QuickChips[Quick-Select Climb Chips: 1-Click Interactive Elevation Profile Highlighting]
+        ClimbAnalysis --> OverviewTab[Overview Tab: Highlight Banner & Quick Cards]
+        ClimbAnalysis --> ClimbsTab[Dedicated Climbs Tab: KPI Ribbon, Profile Chart & Full Climb Cards]
+        ClimbsTab --> CardSync[Bidirectional Card & Profile Highlighting Sync]
+        ClimbsTab --> MapFocus[1-Click Focus on Map with Dynamic Zoom]
+        ClimbsTab --> POIMarkers[1-Click POI Marker Injection: Start & Summit]
+    end
+```
+
+---
+
+## 21. Automated Testing & Real-World Reference Benchmarking
+
+All core calculation engines, downsampling algorithms, time-gap detectors, track manipulators, keyboard navigation, gradient anomaly detectors, intensive climb integration, real-world monuments, and responsive performance metrics are covered by a comprehensive automated test suite (184+ unit and benchmark tests):
+
+```mermaid
+graph TD
+    subgraph TestRunner ["scripts/runTests.ts (npm test)"]
+        T1["1. GPX Core Unit Tests<br>(gpxUtils.test.ts)"]
+        T2["2. Responsive & Perf Tests<br>(responsivePerf.test.ts)"]
+        T3["3. Storage & Sanitization Tests<br>(storageSanitization.test.ts)"]
+        T4["4. Intensive Analysis Tests<br>(intensiveAnalysis.test.ts)"]
+        T5["5. Navigation & Shortcuts Tests<br>(navigationShortcuts.test.ts)"]
+        T6["6. Gradient Anomaly & Repair Tests<br>(gradientAnomaly.test.ts)"]
+        T7["7. Real-World Reference Benchmarks<br>(realWorldBenchmarks.test.ts)"]
+    end
+
+    subgraph Benchmarks ["Real-World Scientific Verification Suite"]
+        T7 --> B1["Geodetic Distance Benchmarks<br>• Munich to Garmisch: 80.20 km<br>• Berlin to Potsdam: 26.14 km<br>• 1° Meridian Arc: 111.19 km"]
+        T7 --> B2["Monumental HC Passes<br>• Alpe d'Huez: 13.8km, +1110m, 8.0%<br>• Passo dello Stelvio: 24.3km, +1808m, 7.4%<br>• Col de la Madeleine: 19.2km, +1520m, 7.9%"]
+        T7 --> B3["Graded Category Climbs<br>• Cat 1 Pass (Score >= 120)<br>• Cat 2 Ascent (Score >= 50)<br>• Cat 3 Hill (Score >= 20)<br>• Cat 4 Ramp (Score < 20)"]
+        T7 --> B4["Multi-Pass Alpine Stages<br>• Dual Summit Isolation & Valley Separator"]
+        T7 --> B5["Physical Aerodynamic & Metabolic Models<br>• 40 km/h Flat TT (~340W / 1286 kJ)<br>• 10K Running Caloric Burn (~730 kcal)"]
+    end
+
+    B1 --> Validation["100% Green Assertion Suite<br>(184 tests passing)"]
+    B2 --> Validation
+    B3 --> Validation
+    B4 --> Validation
+    B5 --> Validation
+```
 
 ```bash
-# Run unit tests
+# Run the complete test suite
 npm test
 ```
 
 Unit tests check:
-- `calculateDistance()` precision and boundary conditions
+- `calculateDistance()` precision and boundary conditions against real-world geodesic landmarks (Munich-Garmisch, Berlin-Potsdam, 1° Meridian)
 - `simplifyTrackPoints()` start/end preservation and >75% point reduction on dense trails
 - `getCachedSimplifiedPoints()` LRU memory cache reference identity and lookup speed
 - `detectTimeGaps()` temporal gap detection and duration formatting
 - `splitTrackAtIndex()` and `closeTimeGapInTrack()` track manipulation integrity
-- `calculatePowerStats()` aerodynamic and rolling resistance physics calculations
-- `findClimbs()` climb categorization and slope accuracy
+- `calculatePowerStats()` aerodynamic and rolling resistance physics calculations for flat time trials and climbing stages
+- `findClimbs()` climb categorization, culmination point, multi-pass detection, and plateau summit accuracy across HC, Cat 1, Cat 2, Cat 3, and Cat 4 climbs
+- Real-world alpine climb accuracy: Alpe d'Huez, Passo dello Stelvio, and Col de la Madeleine elevation gain, average gradients, and VAM climbing speeds
+- `detectImpossibleGradientAnomalies()` clean track immunity, cliff detection, needle summit identification, and edge cases
+- `repairGradientAnomalies()` cliff jump smoothing, needle summit attenuation, and point array consistency
+- `repairTrackGradientAnomalies()` complete track metric recalculation and slope normalization
+- `filterElevationProfile()` prominence-based true summit preservation and noise jitter reduction
+- `calculateTrackCenterAndBounds()` geographic bounding boxes and centroid determination
+- `performLocalIntensiveAnalysis()` physics modeling, calorie burn, fluid needs, stage splits, and categorized climbs integration
+- Keyboard cycling forward indexing, loop-around, and pan-to coordinate updates
 - Responsive viewport bounding box expansion math
+- Local SQLite database concurrency, storage sanitization, and quota defense mechanisms
+
+---
+
+## 22. Security Architecture & Defense-in-Depth
+
+The application implements a multi-layered defense-in-depth model protecting client, server, and persistent SQLite layers:
+
+```mermaid
+graph TD
+    subgraph ClientProtection ["Client & Iframe Security Layer"]
+        CSP["HTTP Security Headers<br>• X-Content-Type-Options: nosniff<br>• X-XSS-Protection: 1; mode=block<br>• Referrer-Policy: strict-origin-when-cross-origin<br>• Permissions-Policy: camera=(), microphone=()"]
+        CORS["Safe CORS Middleware<br>• Header-Splitting / CRLF Stripping<br>• Dynamic Origin Reflection for Sandboxed Iframes"]
+        URLVal["Safe External Link Sanitizer<br>• Strict https:// URL validation"]
+    end
+
+    subgraph ServerProtection ["Server Gateway & API Security (server.ts)"]
+        JSONGuard["JSON Body Parser Protection<br>• 15MB bounded payload limit<br>• Graceful SyntaxError catch (no stack trace leak)"]
+        PathGuard["Path Traversal & System File Defense<br>(validateWorkspaceFilePath)<br>• Extension Whitelist: .db, .sqlite, .sqlite3, .fit, .gpx, .json, .csv<br>• Sensitive File Blacklist: .env, package.json, server.ts, .git/<br>• Realpath canonical check strictly within workspace root<br>• Null-byte injection filter (\0)"]
+        ParamBounds["Strict Parameter & Input Bounds<br>• Max 100,000 points per track upload<br>• Track ID, Name & Tag length limits<br>• AI Prompt sanitization against prompt injections"]
+    end
+
+    subgraph DatabaseProtection ["SQLite & Persistence Hardening (utils/db.ts)"]
+        ProtoGuard["Prototype Pollution Defense<br>• Rejection of __proto__, constructor, prototype<br>• Null-prototype dictionary storage Object.create(null)"]
+        SQLSafe["SQL Injection Immunity<br>• Parameterized queries across all reads/writes<br>• Parameter length clamping & escapeSqlIdentifier"]
+    end
+
+    ClientProtection --> ServerProtection
+    ServerProtection --> DatabaseProtection
+```
+
+---
+
+## 23. 3D Terrain Hover-Preview & Instantaneous Slope HUD Pipeline
+
+The 3D Terrain Hover Preview integrates MapLibre GL 3D Raster-DEM elevation mesh rendering directly into the sidebar, synchronized in real-time with cursor interactions on the elevation profile and 2D/3D map viewport:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant EP as Elevation Profile (ElevationProfile.tsx)
+    participant AppState as Global State (App.tsx)
+    participant HUD as TerrainHoverPreview3D (Sidebar.tsx)
+    participant MapLibre as MapLibre GL 3D Mesh Engine
+
+    User->>EP: Move mouse / touch cursor across elevation profile
+    EP->>EP: Calculate instantaneous slope: ((ele2 - ele1) / distance) * 100
+    EP->>EP: Calculate distance along track (dist)
+    EP->>AppState: onHoverPoint(pointWithSlopeAndDist)
+    AppState->>HUD: Pass updated hoveredPoint prop
+    HUD->>HUD: Extract altitude, slope, bearing, power, HR, surface
+    HUD->>MapLibre: easeTo / jumpTo({ center: [lng, lat], zoom: 15.5, pitch: 65, bearing })
+    MapLibre-->>HUD: Render 3D terrain relief tiles with dynamic sun shading
+    HUD-->>User: Display telemetry HUD & camera crosshair in real-time (<16ms)
+```
+
+### Telemetry HUD Metrics
+- **Instantaneous Slope**: Color-coded gradient badge (Emerald: Flat, Amber: Moderate, Orange: Steep, Rose/Purple: Extreme ramp, Blue: Descent).
+- **Altitude**: Precise elevation above sea level (m ü.NN).
+- **Camera Orientation**: Directional compass bearing computed from preceding track vertex.
+- **Sensor Telemetry**: Dynamic readouts for heart rate (bpm), power output (W), cadence (rpm), speed (km/h), and OSM surface classification.
+- **Interactive Controls**: Toggle pitch angle (30°/60°/75°), vertical exaggeration factor (1.0x/1.8x/2.5x), and map style layers (Satellite vs. Outdoor Terrain).
+
+---
+
+## 24. Sport Metrics Glossary & Interactive Scientific Calculators
+
+The Sport Metrics Glossary (`components/SportMetricsGlossaryModal.tsx`) provides an integrated sports science reference handbook and simulation suite for cycling, trail running, and endurance athletics.
+
+```mermaid
+graph TD
+    subgraph GlossaryDataEngine ["Glossary Knowledge Base (19 Structured Metrics)"]
+        Climbing["Climbing & Elevation<br>• VAM (m/h)<br>• Grade / Steigung (%)<br>• UCI Climb Categories (HC, 1-4)"]
+        Power["Power & Cycling Dynamics<br>• FTP (W & W/kg)<br>• Normalized Power (NP)<br>• Max / Avg Wattage"]
+        TrainingLoad["PMC & Training Load<br>• TSS (Training Stress Score)<br>• Intensity Factor (IF)<br>• Variability Index (VI)<br>• CTL (Fitness) / ATL (Fatigue)<br>• TSB (Form / Freshness)"]
+        Cardio["Cardio & Metabolism<br>• VO2max (ml/kg/min)<br>• Efficiency Factor (EF)<br>• Pw:HR Decoupling (%)<br>• Max & Resting HR"]
+        Nutrition["Energetics & Fueling<br>• Work (kJ) vs Energy (kcal)<br>• Carbohydrate Intake (g/h)<br>• Hydration & Sodium Balance"]
+    end
+
+    subgraph InteractiveSimulators ["Interactive Sports Calculators"]
+        VAMCalc["VAM Calculator<br>• Altitude & Duration inputs<br>• Real-time rate (m/h) & benchmarks"]
+        TSSCalc["TSS & IF Simulator<br>• Time, FTP & NP inputs<br>• Training strain & recovery forecasts"]
+        VICalc["Pacing & VI Analyzer<br>• NP vs Avg Power ratio<br>• Pacing smoothness evaluation"]
+        ClimbCalc["UCI Category Classifier<br>• Elevation, distance & grade<br>• Automatic HC/1/2/3/4 score"]
+    end
+
+    subgraph IntegrationLayer ["UI Integration & Quick Access"]
+        SidebarBtn["Sidebar Tools: Sport-Metriken & Glossar"]
+        AnalysisModalBtn["Intensive Analysis Modal Quick Help"]
+        SearchFilter["Live Search & Category Filtering"]
+    end
+
+    GlossaryDataEngine --> SearchFilter
+    InteractiveSimulators --> SearchFilter
+    SidebarBtn --> GlossaryDataEngine
+    AnalysisModalBtn --> GlossaryDataEngine
+```
+
+### Mathematical Formeln & Benchmarks
+- **VAM**: $\text{VAM} = \frac{\Delta\text{Höhenmeter (m)}}{\text{Fahrzeit (s)}} \times 3600$
+- **Intensity Factor (IF)**: $\text{IF} = \frac{\text{Normalized Power (NP)}}{\text{FTP}}$
+- **Training Stress Score (TSS)**: $\text{TSS} = \frac{t \times \text{NP} \times \text{IF}}{\text{FTP} \times 3600} \times 100$
+- **Variability Index (VI)**: $\text{VI} = \frac{\text{Normalized Power (NP)}}{\text{Average Power}}$
+- **Efficiency Factor (EF)**: $\text{EF} = \frac{\text{Normalized Power (NP)}}{\text{Average Heart Rate (bpm)}}$
+- **Aerobic Decoupling (Pw:HR)**: $\text{Decoupling} = \frac{\text{EF}_{\text{Hälfte 1}} - \text{EF}_{\text{Hälfte 2}}}{\text{EF}_{\text{Hälfte 1}}} \times 100$
+- **UCI Climb Score**: $\text{Score} = \text{Ascent (m)} \times \left(\frac{\text{Grade (\%)}}{100}\right) \times \sqrt{\text{Distance (km)}}$
+
+
+
+
 

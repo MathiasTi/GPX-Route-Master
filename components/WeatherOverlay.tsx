@@ -534,7 +534,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                 <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-2 rounded-lg border border-amber-200/50 dark:border-amber-900/50 font-medium">
                   ℹ️ {weather.fallbackNotice || 'Echtzeit-Schätzung basierend auf topographischen Klimadaten.'}
                 </div>
-              ) : weather.sourceUrl && (
+              ) : (weather.sourceUrl && typeof weather.sourceUrl === 'string' && weather.sourceUrl.startsWith('https://')) && (
                 <div className="flex items-center justify-between text-[9px] text-slate-400 px-1">
                   <span>Datenquelle: Open-Meteo & OSM</span>
                   <a 

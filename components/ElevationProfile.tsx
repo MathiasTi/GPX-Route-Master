@@ -1,7 +1,17 @@
 
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useMemo, useState, useRef, useCallback } from 'react';
 import { GPXTrack, GPXPoint, TextMarker } from '../types';
-import { calculateDistance, getPaceString } from '../utils/gpxUtils';
+import { 
+  calculateDistance, 
+  getPaceString, 
+  downloadTrackAsGPX, 
+  detectImpossibleGradientAnomalies, 
+  GradientAnomaly,
+  filterElevationProfile,
+  ElevationFilterStrength
+} from '../utils/gpxUtils';
+import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check } from 'lucide-react';
+import { triggerHaptic } from '../utils/haptics';
 
 interface ElevationProfileProps {
   track: GPXTrack;
@@ -17,12 +27,17 @@ interface ElevationProfileProps {
   onFlySpeedChange?: (speed: number) => void;
   onToggleFlyover?: () => void;
   onOpenAnalytics?: () => void;
+  onOpenIntensiveAnalysis?: () => void;
   onOpenVideoExport?: () => void;
   ftp: number;
   onCollapse?: () => void;
   textMarkers?: TextMarker[];
   onAddTextMarker?: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker?: (id: string) => void;
+  onRepairAnomalies?: (trackId: string) => void;
+  onApplyElevationFilter?: (trackId: string, strength: ElevationFilterStrength) => void;
+  onAnalyzeSurface?: (trackId: string) => void;
+  isAnalyzingSurface?: boolean;
 }
 
 export interface ProfileMarkerItem {
@@ -70,18 +85,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onFlySpeedChange,
   onToggleFlyover,
   onOpenAnalytics,
+  onOpenIntensiveAnalysis,
   onOpenVideoExport,
   ftp,
   onCollapse,
   textMarkers = [],
   onAddTextMarker,
-  onDeleteTextMarker
+  onDeleteTextMarker,
+  onRepairAnomalies,
+  onApplyElevationFilter,
+  onAnalyzeSurface,
+  isAnalyzingSurface = false
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 1000, height: 140 });
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [isSmoothed, setIsSmoothed] = useState(false);
+  const [elevationFilter, setElevationFilter] = useState<ElevationFilterStrength>('light');
   const [showSettingsPopover, setShowSettingsPopover] = useState(false);
   const [showElevation, setShowElevation] = useState(true);
   const [showPower, setShowPower] = useState(true);
@@ -91,10 +112,26 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [showCadence, setShowCadence] = useState(false);
   const [showPoiMarkers, setShowPoiMarkers] = useState(true);
   const [showSegmentMarkers, setShowSegmentMarkers] = useState(true);
+  const [showGradientWarnings, setShowGradientWarnings] = useState(true);
   const [activeMarkerId, setActiveMarkerId] = useState<string | null>(null);
+  const [activeAnomalyId, setActiveAnomalyId] = useState<string | null>(null);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragCurrentX, setDragCurrentX] = useState<number | null>(null);
   const [showSelectedSurfaceStats, setShowSelectedSurfaceStats] = useState(true);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
+
+  const handleDownloadGPX = useCallback(() => {
+    try {
+      triggerHaptic('medium');
+      downloadTrackAsGPX(track, { textMarkers });
+      setDownloadSuccess(true);
+      setTimeout(() => {
+        setDownloadSuccess(false);
+      }, 2500);
+    } catch (err) {
+      console.error('Failed to export track as GPX:', err);
+    }
+  }, [track, textMarkers]);
 
   const baseDate = useMemo(() => {
     if (!selectedDate || !selectedTime) return null;
@@ -163,7 +200,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const hasElevationData = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)) && p.ele !== 0);
 
     // Ensure every point has a valid elevation, fallback to sinusoidal hill using track.ascent or gentle undulating profile if no ascent/elevation
-    const pointsToUse = track.points.map((p, idx) => {
+    let rawPointsToUse = track.points.map((p, idx) => {
       let ele = p.ele;
       if (!hasElevationData || ele === undefined || ele === null || isNaN(Number(ele))) {
         const denominator = track.points.length > 1 ? track.points.length - 1 : 1;
@@ -179,6 +216,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
       return { ...p, ele: Number(ele) };
     });
+
+    const pointsToUse = elevationFilter !== 'off' 
+      ? filterElevationProfile(rawPointsToUse, elevationFilter) 
+      : rawPointsToUse;
 
     let totalDist = 0;
     const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
@@ -417,7 +458,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       slopeMaxLimit,
       slopeRange
     };
-  }, [track, isSmoothed, estimatedSpeed]);
+  }, [track, isSmoothed, estimatedSpeed, elevationFilter]);
 
   const profileMarkers = useMemo(() => {
     if (!profileData || !profileData.data || profileData.data.length === 0) return [];
@@ -519,6 +560,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return markers;
   }, [profileData, showSegmentMarkers, showPoiMarkers, track.climbs, track.id, textMarkers]);
 
+  // Detect impossible gradient anomalies (bad summits / sensor cliff spikes)
+  const gradientAnomalies = useMemo(() => {
+    if (!track.points || track.points.length < 2) return [];
+    return detectImpossibleGradientAnomalies(track.points);
+  }, [track.points]);
+
   const padding = { top: 25, bottom: 25, left: 52, right: 16 };
   const width = dimensions.width;
   const height = dimensions.height;
@@ -582,7 +629,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
     if (onHoverPoint && !isFlying) {
       const originalPoint = track.points[closestIdx];
-      onHoverPoint(originalPoint);
+      onHoverPoint({
+        ...originalPoint,
+        slope: point.slope,
+        dist: point.dist
+      });
     }
   };
 
@@ -650,7 +701,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
     if (onHoverPoint && !isFlying) {
       const originalPoint = track.points[closestIdx];
-      onHoverPoint(originalPoint);
+      onHoverPoint({
+        ...originalPoint,
+        slope: point.slope,
+        dist: point.dist
+      });
     }
   };
 
@@ -862,6 +917,39 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </h3>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={handleDownloadGPX}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer shadow-xs ${
+              downloadSuccess
+                ? 'bg-emerald-600 text-white shadow-emerald-200'
+                : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 hover:bg-sky-100 hover:text-sky-800'
+            }`}
+            title="Markierten Track mit allen Metadaten, Oberflächen-Tags & Bereinigungen als .gpx herunterladen"
+          >
+            {downloadSuccess ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-100 animate-bounce" />
+                <span>Exportiert!</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                <span>GPX Download</span>
+              </>
+            )}
+          </button>
+
+          {onOpenIntensiveAnalysis && (
+            <button
+              onClick={onOpenIntensiveAnalysis}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-200 dark:shadow-none hover:from-purple-700 hover:to-indigo-700 transition-all cursor-pointer"
+              title="Intensive Track Analysis & Physical Pacing Engine"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+              <span>Intensiv-Analyse</span>
+            </button>
+          )}
+
           {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
             <button
               onClick={onOpenAnalytics}
@@ -952,6 +1040,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               />
               Anstiege
             </label>
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-rose-600 dark:text-rose-400 hover:text-rose-700 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={showGradientWarnings} 
+                onChange={(e) => setShowGradientWarnings(e.target.checked)}
+                className="w-3.5 h-3.5 text-rose-600 rounded bg-slate-100 border-slate-300 focus:ring-rose-500 cursor-pointer"
+              />
+              <span className="flex items-center gap-1">
+                Warnungen
+                {gradientAnomalies.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-rose-500 text-white">
+                    {gradientAnomalies.length}
+                  </span>
+                )}
+              </span>
+            </label>
           </div>
 
           <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-505 hover:text-slate-700 transition-colors">
@@ -995,6 +1099,23 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* GPX Download */}
+          <button
+            onClick={handleDownloadGPX}
+            className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+              downloadSuccess
+                ? 'bg-emerald-600 text-white'
+                : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60'
+            }`}
+            title="Markierten Track als GPX herunterladen"
+          >
+            {downloadSuccess ? (
+              <CheckCircle2 className="w-3 h-3 text-white animate-pulse" />
+            ) : (
+              <Download className="w-3 h-3" />
+            )}
+          </button>
+
           {/* Settings trigger */}
           <button
             onClick={() => setShowSettingsPopover(!showSettingsPopover)}
@@ -1144,13 +1265,85 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               />
               Anstiege
             </label>
+            <label className="flex items-center gap-1.5 cursor-pointer hover:text-rose-600">
+              <input 
+                type="checkbox" 
+                checked={showGradientWarnings} 
+                onChange={(e) => setShowGradientWarnings(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-rose-600"
+              />
+              <span className="flex items-center gap-1">
+                Warnungen
+                {gradientAnomalies.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-rose-500 text-white">
+                    {gradientAnomalies.length}
+                  </span>
+                )}
+              </span>
+            </label>
           </div>
 
           <div className="border-t border-dashed my-0.5" />
 
+          {/* Elevation Filter Level Selection */}
+          <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-100 dark:border-slate-700">
+            <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 dark:text-slate-300">
+              <span className="flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-indigo-500" />
+                <span>Höhenfilter (Savitzky-Golay):</span>
+              </span>
+              <span className="font-mono text-indigo-600 dark:text-indigo-400 font-bold uppercase text-[9px]">
+                {elevationFilter === 'off' ? 'Aus' : elevationFilter === 'light' ? 'Leicht' : elevationFilter === 'medium' ? 'Mittel' : 'Alpin'}
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 text-[9px] font-bold">
+              {(['off', 'light', 'medium', 'alpine_aggressive'] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => setElevationFilter(lvl)}
+                  className={`py-1 rounded text-center transition-all cursor-pointer ${
+                    elevationFilter === lvl 
+                      ? 'bg-indigo-600 text-white shadow-sm font-black' 
+                      : 'bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600'
+                  }`}
+                >
+                  {lvl === 'off' ? 'Aus' : lvl === 'light' ? 'Leicht' : lvl === 'medium' ? 'Mittel' : 'Alpin'}
+                </button>
+              ))}
+            </div>
+            {onApplyElevationFilter && elevationFilter !== 'off' && (
+              <button
+                onClick={() => {
+                  onApplyElevationFilter(track.id, elevationFilter);
+                  setShowSettingsPopover(false);
+                }}
+                className="mt-0.5 w-full py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 font-bold text-[9.5px] transition-colors border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <Check className="w-3 h-3" />
+                Filter dauerhaft in Track sichern
+              </button>
+            )}
+          </div>
+
+          {/* OSM Surface Analysis Action */}
+          {onAnalyzeSurface && (
+            <button
+              onClick={() => onAnalyzeSurface(track.id)}
+              disabled={isAnalyzingSurface}
+              className="w-full py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[10px] transition-colors border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+            >
+              {isAnalyzingSurface ? (
+                <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />
+              ) : (
+                <Layers className="w-3 h-3 text-indigo-500" />
+              )}
+              <span>{isAnalyzingSurface ? 'OSM-Analyse läuft...' : 'OSM-Oberflächen analysieren'}</span>
+            </button>
+          )}
+
           {/* Smooth Toggle */}
           <label className="flex items-center justify-between cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-700">
-            <span>Datenwerte glätten:</span>
+            <span>Zusätzliche Datenkurvenglättung:</span>
             <div className="flex items-center gap-2">
               <input 
                 type="checkbox" 
@@ -1261,6 +1454,34 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold font-sans">Max. Steigung:</span>
                   <span>{(track.maxSlope ?? 0).toFixed(1)}%</span>
                 </span>
+                {gradientAnomalies.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        setShowGradientWarnings(true);
+                        setActiveAnomalyId(gradientAnomalies[0].id);
+                      }}
+                      className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 px-2 py-0.5 rounded-lg border border-rose-300/80 dark:border-rose-800/60 font-medium hover:bg-rose-100 transition-colors cursor-pointer"
+                      title="Klicken, um die erste Steigungsanomalie hervorzuheben"
+                    >
+                      <AlertTriangle className="w-3 h-3 text-rose-500 shrink-0" />
+                      <span>{gradientAnomalies.length} Daten-Anomalie{gradientAnomalies.length > 1 ? 'n' : ''}</span>
+                    </button>
+                    {onRepairAnomalies && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRepairAnomalies(track.id);
+                        }}
+                        className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded-lg font-bold text-[10px] shadow-sm transition-colors cursor-pointer"
+                        title="Alle Steigungsanomalien und GPS-Höhensprünge automatisch korrigieren"
+                      >
+                        <Wrench className="w-2.5 h-2.5" />
+                        <span>Auto-Reparieren</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1295,6 +1516,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <filter id="shadow">
               <feDropShadow dx="0" dy="1" stdDeviation="1" floodOpacity="0.2"/>
             </filter>
+            {/* Warning stripe pattern for impossible gradients / bad elevation anomalies */}
+            <pattern id="warning-stripe" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="4" height="8" fill="#f43f5e" opacity="0.35" />
+              <rect x="4" width="4" height="8" fill="#fda4af" opacity="0.1" />
+            </pattern>
           </defs>
           
           {/* Horizontal Grid & Y-Axis Elevation Labels */}
@@ -1351,6 +1577,48 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               opacity="0.15"
             />
           ))}
+
+          {/* Visual Warning Overlay for Impossible Gradient / Bad Summit Segments */}
+          {showGradientWarnings && gradientAnomalies.map((anomaly) => {
+            const startX = padding.left + (anomaly.startDistKm / profileData.distRange) * graphWidth;
+            const endX = padding.left + (anomaly.endDistKm / profileData.distRange) * graphWidth;
+            const segWidth = Math.max(8, endX - startX);
+            const isSelected = activeAnomalyId === anomaly.id;
+
+            return (
+              <g key={`overlay-${anomaly.id}`} className="transition-opacity">
+                {/* Background warning shaded zone */}
+                <rect 
+                  x={startX}
+                  y={padding.top}
+                  width={segWidth}
+                  height={graphHeight}
+                  fill="url(#warning-stripe)"
+                  className="cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveAnomalyId(isSelected ? null : anomaly.id);
+                    if (onHoverPoint && track.points[anomaly.peakIndex]) {
+                      onHoverPoint(track.points[anomaly.peakIndex]);
+                    }
+                  }}
+                />
+                {/* Border highlight around anomalous column */}
+                <rect 
+                  x={startX}
+                  y={padding.top}
+                  width={segWidth}
+                  height={graphHeight}
+                  fill="none"
+                  stroke={isSelected ? "#e11d48" : "#f43f5e"}
+                  strokeWidth={isSelected ? "2" : "1"}
+                  strokeDasharray="4 2"
+                  opacity={isSelected ? "1" : "0.75"}
+                  className="pointer-events-none"
+                />
+              </g>
+            );
+          })}
 
           {/* Filled Path */}
           {showElevation && <path d={areaPath} fill={`url(#grad-${track.id})`} />}
@@ -1550,6 +1818,53 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               />
             </g>
           )}
+
+          {/* Anomaly Indicator Markers on the Elevation Profile */}
+          {showGradientWarnings && gradientAnomalies.map((anomaly) => {
+            const peakPoint = profileData.data[anomaly.peakIndex] || profileData.data[anomaly.startIndex];
+            const peakDist = peakPoint ? peakPoint.dist : anomaly.startDistKm;
+            const x = padding.left + (peakDist / profileData.distRange) * graphWidth;
+            const y = height - padding.bottom - ((anomaly.peakEle - minEle) / eleRange) * graphHeight;
+            const isSelected = activeAnomalyId === anomaly.id;
+
+            return (
+              <g 
+                key={`anomaly-marker-${anomaly.id}`}
+                className="cursor-pointer group select-none"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveAnomalyId(isSelected ? null : anomaly.id);
+                  if (onHoverPoint && track.points[anomaly.peakIndex]) {
+                    onHoverPoint(track.points[anomaly.peakIndex]);
+                  }
+                }}
+              >
+                {/* Vertical dash line pointing to the anomaly */}
+                <line 
+                  x1={x} 
+                  y1={padding.top + 2} 
+                  x2={x} 
+                  y2={y} 
+                  stroke="#e11d48" 
+                  strokeWidth={isSelected ? "2" : "1.2"} 
+                  strokeDasharray="2 2"
+                  opacity={isSelected ? "1" : "0.7"}
+                />
+
+                {/* Glowing warning circle on the peak anomaly point */}
+                <circle 
+                  cx={x} 
+                  cy={y} 
+                  r={isSelected ? "6.5" : "5"} 
+                  fill="#f43f5e" 
+                  stroke="#ffffff" 
+                  strokeWidth="2"
+                  className="animate-pulse"
+                  style={{ filter: 'drop-shadow(0px 0px 4px rgba(244,63,94,0.8))' }}
+                />
+              </g>
+            );
+          })}
 
           {/* Segment Starts & POI Markers on SVG Profile (Guidelines & Dots) */}
           {profileMarkers.map((m, idx) => {
@@ -1975,6 +2290,43 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             );
           })}
 
+          {/* Anomaly Badges/Pills along top margin */}
+          {showGradientWarnings && gradientAnomalies.map((anomaly, idx) => {
+            const peakPoint = profileData.data[anomaly.peakIndex] || profileData.data[anomaly.startIndex];
+            const peakDist = peakPoint ? peakPoint.dist : anomaly.startDistKm;
+            const x = padding.left + (peakDist / profileData.distRange) * graphWidth;
+            const isSelected = activeAnomalyId === anomaly.id;
+
+            return (
+              <button
+                key={`pill-${anomaly.id}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveAnomalyId(isSelected ? null : anomaly.id);
+                  if (onHoverPoint && track.points[anomaly.peakIndex]) {
+                    onHoverPoint(track.points[anomaly.peakIndex]);
+                  }
+                }}
+                onMouseEnter={() => {
+                  if (onHoverPoint && track.points[anomaly.peakIndex]) {
+                    onHoverPoint(track.points[anomaly.peakIndex]);
+                  }
+                }}
+                className={`absolute pointer-events-auto -translate-x-1/2 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-sans font-black text-white shadow-md border border-white cursor-pointer transition-all ${
+                  isSelected ? 'scale-110 ring-2 ring-rose-400 z-30 bg-rose-700' : 'bg-rose-500 hover:scale-105 active:scale-95'
+                }`}
+                style={{
+                  left: `${x}px`,
+                  top: `${padding.top - 20}px`
+                }}
+                title={anomaly.description}
+              >
+                <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                <span>Δ {anomaly.gradient > 0 ? '+' : ''}{Math.round(anomaly.gradient)}%</span>
+              </button>
+            );
+          })}
+
           {/* Active Marker Popover Card */}
           {activeMarkerId && (() => {
             const m = profileMarkers.find(item => item.id === activeMarkerId);
@@ -2029,6 +2381,74 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                     className="mt-1 w-full py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white font-bold text-[9.5px] transition-colors flex items-center justify-center gap-1 cursor-pointer"
                   >
                     Marker löschen 🗑️
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Active Anomaly Popover Card */}
+          {activeAnomalyId && (() => {
+            const anomaly = gradientAnomalies.find(a => a.id === activeAnomalyId);
+            if (!anomaly) return null;
+
+            const peakPoint = profileData.data[anomaly.peakIndex] || profileData.data[anomaly.startIndex];
+            const peakDist = peakPoint ? peakPoint.dist : anomaly.startDistKm;
+            const x = padding.left + (peakDist / profileData.distRange) * graphWidth;
+            const y = height - padding.bottom - ((anomaly.peakEle - minEle) / eleRange) * graphHeight;
+            const boxWidth = 230;
+            const tooltipX = Math.max(8, Math.min(width - boxWidth - 8, x - boxWidth / 2));
+            const tooltipY = Math.max(8, Math.min(height - 110, y - 105));
+
+            return (
+              <div 
+                className="absolute pointer-events-auto bg-slate-900/95 text-white p-2.5 rounded-xl border border-rose-500 shadow-2xl z-40 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-1.5 text-left font-sans"
+                style={{
+                  left: `${tooltipX}px`,
+                  top: `${tooltipY}px`,
+                  width: `${boxWidth}px`
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                  <div className="flex items-center gap-1.5 font-black text-xs text-rose-400">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                    <span>Steigungs-Anomalie</span>
+                  </div>
+                  <button 
+                    onClick={() => setActiveAnomalyId(null)}
+                    className="text-slate-400 hover:text-white text-xs font-bold p-0.5 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <p className="text-[10.5px] text-rose-200 font-medium leading-tight">
+                  {anomaly.description}
+                </p>
+                <div className="bg-slate-800/80 rounded-lg p-1.5 text-[9.5px] font-mono flex flex-col gap-0.5 text-slate-300">
+                  <div className="flex justify-between">
+                    <span>Position:</span>
+                    <span className="font-bold text-white">{anomaly.startDistKm.toFixed(2)} – {anomaly.endDistKm.toFixed(2)} km</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Höhensprung:</span>
+                    <span className="font-bold text-rose-300">{anomaly.eleChangeMeters > 0 ? '+' : ''}{anomaly.eleChangeMeters}m / {anomaly.distanceMeters}m</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Berechnete Steigung:</span>
+                    <span className="font-bold text-rose-400">{anomaly.gradient > 0 ? '+' : ''}{anomaly.gradient}%</span>
+                  </div>
+                </div>
+                {onRepairAnomalies && (
+                  <button
+                    onClick={() => {
+                      onRepairAnomalies(track.id);
+                      setActiveAnomalyId(null);
+                    }}
+                    className="mt-1 w-full py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] shadow-md transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Wrench className="w-3 h-3" />
+                    <span>Anomalie-Spitzen reparieren</span>
                   </button>
                 )}
               </div>

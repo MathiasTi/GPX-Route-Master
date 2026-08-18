@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal, Wifi, WifiOff, HardDrive, Trash2 } from 'lucide-react';
+import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal, Wifi, WifiOff, HardDrive, Trash2, Command } from 'lucide-react';
 import { getApiUrl } from '../utils/api';
 import { getSWCacheStats, clearSWTileCache, SWCacheStats } from '../utils/serviceWorker';
 
@@ -265,6 +265,62 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
                 </button>
               </div>
             )}
+          </div>
+
+          {/* Keyboard Shortcuts Reference */}
+          <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-900/40">
+                <Command className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                  Tastaturkürzel & Schnelle Navigation
+                </h4>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Effiziente Steuerung für Kartenansichten, Streckenwechsel und Analyse.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-xs">
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">Punkt fokussieren (Pan-to)</span>
+                <kbd className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">M</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">Sichtbare Strecken durchschalten</span>
+                <kbd className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">C</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">Karten-Zoom vergrößern / verkleinern</span>
+                <div className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">+</kbd>
+                  <span className="text-slate-400 text-[10px]">/</span>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">-</kbd>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">Trackpunkte abfahren</span>
+                <div className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">←</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">→</kbd>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">Rückgängig (Undo)</span>
+                <kbd className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">Ctrl + Z</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800">
+                <span className="text-slate-600 dark:text-slate-300 text-[11px] font-medium">In Bibliothek speichern</span>
+                <kbd className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded font-mono text-[10px] font-bold shadow-2xs">Ctrl + S</kbd>
+              </div>
+            </div>
           </div>
 
           {/* New version registration button / form */}

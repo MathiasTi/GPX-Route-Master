@@ -6,7 +6,7 @@ import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X } from 'lucide-react';
 import { GPXTrack, GPXPoint, MapLayer, TextMarker, TimeGap } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack, reverseTrack, analyzeTrackValidation, autoFixTrackValidation } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack, reverseTrack, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -22,6 +22,8 @@ import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
+import { IntensiveTrackAnalysisModal } from './components/IntensiveTrackAnalysisModal';
+import { SportMetricsGlossaryModal } from './components/SportMetricsGlossaryModal';
 import { GarminDashboard } from './components/GarminDashboard';
 import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
 import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
@@ -85,6 +87,9 @@ const App: React.FC = () => {
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
   const [summaryReportOpen, setSummaryReportOpen] = useState(false);
+  const [intensiveAnalysisOpen, setIntensiveAnalysisOpen] = useState(false);
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
+  const [initialGlossaryMetricId, setInitialGlossaryMetricId] = useState<string | undefined>(undefined);
   const [weatherOpen, setWeatherOpen] = useState(false);
   const [rawDataOpen, setRawDataOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -510,6 +515,30 @@ const App: React.FC = () => {
     }));
     setSuccessMessage('Streckenverlauf erfolgreich umgekehrt!');
     triggerHaptic('medium');
+  }, [ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleRepairTrackAnomalies = useCallback((trackId: string) => {
+    saveToHistory();
+    setTracks(prev => prev.map(t => {
+      if (t.id === trackId) {
+        return repairTrackGradientAnomalies(t, ftp, userWeight, estimatedSpeed);
+      }
+      return t;
+    }));
+    triggerHaptic('medium');
+    setSuccessMessage('Steigungsanomalien und GPS-Sprünge erfolgreich korrigiert!');
+  }, [ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleApplyElevationFilter = useCallback((trackId: string, strength: ElevationFilterStrength) => {
+    saveToHistory();
+    setTracks(prev => prev.map(t => {
+      if (t.id === trackId) {
+        return applyElevationFilterToTrack(t, strength, ftp, userWeight, estimatedSpeed);
+      }
+      return t;
+    }));
+    triggerHaptic('light');
+    setSuccessMessage(`Höhendaten-Filter (${strength}) erfolgreich im Streckenprofil gesichert!`);
   }, [ftp, userWeight, estimatedSpeed, saveToHistory]);
  
   const handleUndo = useCallback(() => {
@@ -1078,6 +1107,7 @@ const App: React.FC = () => {
 
       // Escape key: close any open modal or clear active selection/flight
       if (e.key === 'Escape') {
+        if (intensiveAnalysisOpen) { setIntensiveAnalysisOpen(false); return; }
         if (analyticsOpen) { setAnalyticsOpen(false); return; }
         if (garminHealthOpen) { setGarminHealthOpen(false); return; }
         if (garminActivitiesAnalysisOpen) { setGarminActivitiesAnalysisOpen(false); return; }
@@ -1112,6 +1142,63 @@ const App: React.FC = () => {
         if (markedTrackId) {
           e.preventDefault();
           handleSaveTrackToLibrary(markedTrackId);
+        }
+        return;
+      }
+
+      // 'M' shortcut: Pan to current hovered track point
+      if (e.key === 'm' || e.key === 'M') {
+        if (hoveredPoint && typeof hoveredPoint.lat === 'number' && typeof hoveredPoint.lng === 'number') {
+          e.preventDefault();
+          setMapView(prev => ({
+            ...prev,
+            lat: hoveredPoint.lat,
+            lng: hoveredPoint.lng
+          }));
+          triggerHaptic('light');
+          setSuccessMessage('Kartenansicht auf aktuellen Trackpunkt fokussiert (Taste M)');
+        }
+        return;
+      }
+
+      // 'C' shortcut: Cycle through all visible tracks to center them
+      if (e.key === 'c' || e.key === 'C') {
+        const visibleTracks = tracks.filter(t => t.visible && t.points && t.points.length > 0);
+        if (visibleTracks.length > 0) {
+          e.preventDefault();
+          
+          let nextTrackIndex = 0;
+          if (markedTrackId) {
+            const currentIdx = visibleTracks.findIndex(t => t.id === markedTrackId);
+            if (currentIdx !== -1) {
+              nextTrackIndex = (currentIdx + 1) % visibleTracks.length;
+            }
+          }
+          
+          const targetTrack = visibleTracks[nextTrackIndex];
+          setMarkedTrackId(targetTrack.id);
+
+          const trackBounds = calculateTrackCenterAndBounds(targetTrack);
+          if (trackBounds) {
+            // Compute an appropriate zoom level that comfortably frames the track bounding box
+            const latDiff = Math.max(0.002, trackBounds.maxLat - trackBounds.minLat);
+            const lngDiff = Math.max(0.002, trackBounds.maxLng - trackBounds.minLng);
+            const maxDelta = Math.max(latDiff, lngDiff);
+            
+            // Approximate Web Mercator zoom from bounding box delta (in degrees)
+            let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
+            estimatedZoom = Math.min(17, Math.max(6, estimatedZoom - 1));
+
+            setMapView(prev => ({
+              ...prev,
+              lat: trackBounds.centerLat,
+              lng: trackBounds.centerLng,
+              zoom: estimatedZoom
+            }));
+          }
+
+          triggerHaptic('light');
+          setSuccessMessage(`Fokus auf Strecke gewechselt (${nextTrackIndex + 1}/${visibleTracks.length}): "${targetTrack.name}"`);
         }
         return;
       }
@@ -1362,6 +1449,18 @@ const App: React.FC = () => {
           setSummaryReportOpen(true);
           setIsMobileMenuOpen(false);
         }}
+        onOpenIntensiveAnalysis={(id) => {
+          if (id) {
+            setMarkedTrackId(id);
+          }
+          setIntensiveAnalysisOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
+        onOpenGlossary={(metricId) => {
+          setInitialGlossaryMetricId(metricId);
+          setGlossaryOpen(true);
+          setIsMobileMenuOpen(false);
+        }}
         onOpenAnalytics={() => {
           setAnalyticsOpen(true);
           setIsMobileMenuOpen(false);
@@ -1493,6 +1592,10 @@ const App: React.FC = () => {
                 showDbCyclingHeatmap={showDbCyclingHeatmap}
                 showDbRunningHeatmap={showDbRunningHeatmap}
                 onAnalyzeSurface={analyzeTrackSurface}
+                onOpenIntensiveAnalysis={(id) => {
+                  setMarkedTrackId(id);
+                  setIntensiveAnalysisOpen(true);
+                }}
                 analyzingSurfaces={analyzingSurfaces}
                 surfaceAnalysisStatuses={surfaceAnalysisStatuses}
                 timeGaps={activeTimeGaps}
@@ -1680,12 +1783,49 @@ const App: React.FC = () => {
           <AnimatePresence>
             {summaryReportOpen && markedTrack && (
               <SummaryReportModal 
-                track={markedTrack}
+                track={markedTrack} 
                 onClose={() => setSummaryReportOpen(false)}
                 ftp={ftp}
                 onAnalyzeSurface={analyzeTrackSurface}
                 isAnalyzing={analyzingSurfaces[markedTrack.id] || false}
                 onSelection={setSelectionBounds}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {intensiveAnalysisOpen && (markedTrack || tracks.find(t => t.visible) || tracks[0]) && (
+              <IntensiveTrackAnalysisModal
+                key="intensive-analysis-modal"
+                track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                onClose={() => setIntensiveAnalysisOpen(false)}
+                ftp={ftp}
+                userWeight={userWeight}
+                userAge={userAge}
+                userMaxHr={userMaxHr}
+                estimatedSpeed={estimatedSpeed}
+                textMarkers={textMarkers}
+                onAddTextMarker={handleAddTextMarker}
+                onSelectTrackPoint={(lat, lng) => {
+                  setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
+                }}
+                onOpenGlossary={(metricId) => {
+                  setInitialGlossaryMetricId(metricId);
+                  setGlossaryOpen(true);
+                }}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {glossaryOpen && (
+              <SportMetricsGlossaryModal
+                onClose={() => {
+                  setGlossaryOpen(false);
+                  setInitialGlossaryMetricId(undefined);
+                }}
+                initialMetricId={initialGlossaryMetricId}
+                isDark={theme === 'dark'}
               />
             )}
           </AnimatePresence>
@@ -1781,11 +1921,16 @@ const App: React.FC = () => {
                 flySpeed={flySpeed}
                 onFlySpeedChange={setFlySpeed}
                 onOpenAnalytics={() => setAnalyticsOpen(true)}
+                onOpenIntensiveAnalysis={() => setIntensiveAnalysisOpen(true)}
                 onOpenVideoExport={() => setIsExportModalOpen(true)}
                 ftp={ftp}
                 textMarkers={textMarkers}
                 onAddTextMarker={handleAddTextMarker}
                 onDeleteTextMarker={handleDeleteTextMarker}
+                onRepairAnomalies={handleRepairTrackAnomalies}
+                onApplyElevationFilter={handleApplyElevationFilter}
+                onAnalyzeSurface={analyzeTrackSurface}
+                isAnalyzingSurface={markedTrack ? !!analyzingSurfaces[markedTrack.id] : false}
                 onToggleFlyover={() => {
                   if (isFlying) {
                     setIsFlying(false);

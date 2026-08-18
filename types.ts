@@ -10,6 +10,8 @@ export interface GPXPoint {
   surface?: string;
   temp?: number;
   speed?: number;
+  slope?: number;
+  dist?: number;
 }
 
 export interface PowerStats {
@@ -221,5 +223,116 @@ export interface TrackValidationReport {
     maxSpeedJumpKmh?: number;
   };
 }
+
+export interface TrackSplit {
+  km: number;
+  splitDistanceKm: number;
+  ascentMeters: number;
+  avgGradient: number;
+  estimatedTimeSeconds: number;
+  estimatedCalories: number;
+  description?: string;
+}
+
+export type POICategory = 'water' | 'food' | 'bakery' | 'supermarket' | 'cafe' | 'hut' | 'gas_station' | 'shelter' | 'viewpoint';
+
+export interface RoutePOI {
+  id: string;
+  name: string;
+  category: POICategory;
+  lat: number;
+  lng: number;
+  distanceAlongTrackKm: number;
+  distanceOffTrackMeters: number;
+  description: string;
+  openingHours?: string;
+  address?: string;
+}
+
+export interface RouteEventAlert {
+  id: string;
+  type: 'problem' | 'event' | 'info';
+  title: string;
+  description: string;
+  category: 'road_closure' | 'construction' | 'traffic' | 'sport_event' | 'festival' | 'market' | 'weather_hazard' | 'local_tip';
+  severity: 'high' | 'medium' | 'low';
+  locationName?: string;
+  approxDistanceKm?: number;
+  sourceUrl?: string;
+}
+
+export interface RouteTacticalTip {
+  id: string;
+  category: 'pacing' | 'climb' | 'descent' | 'equipment' | 'hydration' | 'safety' | 'surface';
+  title: string;
+  content: string;
+  importance: 'essential' | 'recommended' | 'tip';
+  kmMarker?: number;
+}
+
+export interface IntensiveAnalysisOptions {
+  date?: string;
+  activityType?: 'cycling' | 'running' | 'hiking';
+  subType?: 'road' | 'gravel' | 'mtb' | 'ebike' | 'trail' | 'hike';
+  fitnessLevel?: 'recreational' | 'moderate' | 'advanced' | 'elite';
+  userWeightKg?: number;
+  bikeWeightKg?: number;
+  targetFtp?: number;
+  customPaceMinKm?: number;
+  includeEvents?: boolean;
+  includePOIs?: boolean;
+}
+
+export interface IntensiveTrackAnalysisResult {
+  trackId: string;
+  trackName: string;
+  date: string;
+  activityType: 'cycling' | 'running' | 'hiking';
+  subType: string;
+  fitnessLevel: 'recreational' | 'moderate' | 'advanced' | 'elite';
+  userWeightKg: number;
+  totalDistanceKm: number;
+  totalAscentMeters: number;
+  totalDescentMeters: number;
+  maxSlopePercent: number;
+  minElevationMeters: number;
+  maxElevationMeters: number;
+  
+  // Time & Pacing
+  estimatedMovingTimeSeconds: number;
+  estimatedElapsedTimeSeconds: number;
+  estimatedAvgSpeedKmh: number;
+  recommendedRestMinutes: number;
+  difficultyScore: number; // 1 to 10
+  difficultyLabel: string;
+  
+  // Energy & Nutrition
+  totalCaloriesKcal: number;
+  caloriesPerHour: number;
+  carbsBurnedGrams: number;
+  fatBurnedGrams: number;
+  recommendedCarbsPerHourGrams: number;
+  recommendedFluidMlPerHour: number;
+  totalFluidRecommendedLiters: number;
+  electrolyteRecommendation: string;
+  
+  // Tactical Tips & Route Breakdown
+  tacticalTips: RouteTacticalTip[];
+  splits: TrackSplit[];
+  
+  // Food & Water along the route
+  foodAndWaterPOIs: RoutePOI[];
+  
+  // Date-Specific Events & Road Alerts
+  dateEventsAndAlerts: RouteEventAlert[];
+  
+  locationStart?: string;
+  locationSummit?: string;
+  locationEnd?: string;
+  aiSummary: string;
+  aiGroundingSources?: { title: string; url: string }[];
+  isAiEnhanced: boolean;
+}
+
 
 

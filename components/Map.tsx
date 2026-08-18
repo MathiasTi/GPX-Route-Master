@@ -3,10 +3,10 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
-import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs } from '../utils/gpxUtils';
+import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX } from '../utils/gpxUtils';
 import { getApiUrl } from '../utils/api';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -95,6 +95,7 @@ interface MapProps {
   showDbCyclingHeatmap?: boolean;
   showDbRunningHeatmap?: boolean;
   onAnalyzeSurface?: (id: string, force?: boolean) => void;
+  onOpenIntensiveAnalysis?: (id: string) => void;
   analyzingSurfaces?: Record<string, boolean>;
   surfaceAnalysisStatuses?: Record<string, any>;
   timeGaps?: TimeGap[];
@@ -698,6 +699,7 @@ const Map: React.FC<MapProps> = ({
   showDbCyclingHeatmap = false,
   showDbRunningHeatmap = false,
   onAnalyzeSurface,
+  onOpenIntensiveAnalysis,
   analyzingSurfaces,
   surfaceAnalysisStatuses,
   timeGaps = [],
@@ -2548,6 +2550,22 @@ const Map: React.FC<MapProps> = ({
                   )}
                 </span>
               </div>
+
+              {/* Direct Quick Analysis Button on Map Card */}
+              {onOpenIntensiveAnalysis && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenIntensiveAnalysis(activeTrack.id);
+                  }}
+                  className="mt-2.5 w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[11px] font-bold text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 shadow-sm cursor-pointer transition-all"
+                  title="Intensive Track Analysis & Physical Pacing Engine öffnen"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+                  <span>Intensive Track & Pacing Analyse</span>
+                </button>
+              )}
             </div>
           )}
         </div>

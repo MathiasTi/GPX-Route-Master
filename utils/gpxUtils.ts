@@ -1,5 +1,5 @@
 
-import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue } from '../types';
+import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue, TextMarker } from '../types';
 
 export const toDate = (timeVal: any): Date | undefined => {
   if (!timeVal) return undefined;
@@ -145,6 +145,430 @@ export const sanitizeGPXPoints = (points: GPXPoint[]): GPXPoint[] => {
   return sanitized;
 };
 
+export interface GradientAnomaly {
+  id: string;
+  startIndex: number;
+  endIndex: number;
+  startDistKm: number;
+  endDistKm: number;
+  startEle: number;
+  endEle: number;
+  peakEle: number;
+  peakIndex: number;
+  gradient: number; // in percent
+  gradientDelta: number; // gradient change in percent
+  distanceMeters: number;
+  eleChangeMeters: number;
+  type: 'impossible_slope' | 'gradient_spike' | 'summit_anomaly';
+  severity: 'warning' | 'error';
+  description: string;
+}
+
+/**
+ * Detects segments with physically impossible gradient changes or extreme elevation cliffs,
+ * typically caused by barometric sensor failures, DEM interpolation artifacts, or corrupted summit data.
+ */
+export const detectImpossibleGradientAnomalies = (
+  points: GPXPoint[],
+  maxRealisticSlope: number = 40, // Slopes > 40% (e.g. 50%+) on non-rockclimbing roads/trails are almost certainly bad data
+  maxGradientDelta: number = 55 // Instantaneous gradient reversals/shifts > 55% over short distances
+): GradientAnomaly[] => {
+  if (!points || points.length < 2) return [];
+
+  const anomalies: GradientAnomaly[] = [];
+  const cumDistKm = new Float64Array(points.length);
+  const filledEle = new Float64Array(points.length);
+  const tempPoints = points.map(p => ({ ...p }));
+  interpolateMissingElevations(tempPoints);
+
+  cumDistKm[0] = 0;
+  filledEle[0] = tempPoints[0].ele ?? 0;
+
+  for (let i = 1; i < points.length; i++) {
+    filledEle[i] = tempPoints[i].ele ?? 0;
+    cumDistKm[i] = cumDistKm[i - 1] + calculateDistance(points[i - 1], points[i]);
+  }
+
+  // 1. First, check for sharp summit needle spikes / culmination reversal anomalies
+  for (let c = 1; c < points.length - 1; c++) {
+    // Find window backwards
+    let prevIdx = Math.max(0, c - 1);
+    let d1 = (cumDistKm[c] - cumDistKm[prevIdx]) * 1000;
+    while (prevIdx > 0 && d1 < 15 && c - prevIdx < 4) {
+      prevIdx--;
+      d1 = (cumDistKm[c] - cumDistKm[prevIdx]) * 1000;
+    }
+
+    // Find window forwards
+    let nextIdx = Math.min(points.length - 1, c + 1);
+    let d2 = (cumDistKm[nextIdx] - cumDistKm[c]) * 1000;
+    while (nextIdx < points.length - 1 && d2 < 15 && nextIdx - c < 4) {
+      nextIdx++;
+      d2 = (cumDistKm[nextIdx] - cumDistKm[c]) * 1000;
+    }
+
+    if (d1 >= 5 && d1 <= 200 && d2 >= 5 && d2 <= 200) {
+      const gradUp = ((filledEle[c] - filledEle[prevIdx]) / d1) * 100;
+      const gradDown = ((filledEle[nextIdx] - filledEle[c]) / d2) * 100;
+      const gradientDelta = gradUp - gradDown; // e.g. +35% then -35% -> delta = 70%
+
+      const isNeedleSummit = gradUp > 20 && gradDown < -20 && (filledEle[c] - filledEle[prevIdx] >= 12) && (filledEle[c] - filledEle[nextIdx] >= 12);
+      const isNeedleAbyss = gradUp < -20 && gradDown > 20 && (filledEle[prevIdx] - filledEle[c] >= 12) && (filledEle[nextIdx] - filledEle[c] >= 12);
+
+      if ((isNeedleSummit || isNeedleAbyss || gradientDelta > maxGradientDelta) && (gradUp > 20 && gradDown < -20)) {
+        // Expand backwards to base of the climb if continuous ascent
+        while (prevIdx > 0 && filledEle[prevIdx - 1] < filledEle[prevIdx] && (cumDistKm[c] - cumDistKm[prevIdx - 1]) * 1000 <= 250) {
+          prevIdx--;
+        }
+        // Expand forwards to base of descent if continuous descent
+        while (nextIdx < points.length - 1 && filledEle[nextIdx + 1] < filledEle[nextIdx] && (cumDistKm[nextIdx + 1] - cumDistKm[c]) * 1000 <= 250) {
+          nextIdx++;
+        }
+
+        const totalDistMeters = Math.round((cumDistKm[nextIdx] - cumDistKm[prevIdx]) * 1000);
+        const alreadyCovered = anomalies.some(a => (c >= a.startIndex && c <= a.endIndex) || (prevIdx <= a.endIndex && nextIdx >= a.startIndex));
+        if (!alreadyCovered) {
+          anomalies.push({
+            id: `summit-anomaly-${prevIdx}-${nextIdx}`,
+            startIndex: prevIdx,
+            endIndex: nextIdx,
+            startDistKm: parseFloat(cumDistKm[prevIdx].toFixed(3)),
+            endDistKm: parseFloat(cumDistKm[nextIdx].toFixed(3)),
+            startEle: Math.round(filledEle[prevIdx]),
+            endEle: Math.round(filledEle[nextIdx]),
+            peakEle: Math.round(filledEle[c]),
+            peakIndex: c,
+            gradient: parseFloat(gradUp.toFixed(1)),
+            gradientDelta: parseFloat(gradientDelta.toFixed(1)),
+            distanceMeters: totalDistMeters,
+            eleChangeMeters: Math.round(filledEle[c] - Math.min(filledEle[prevIdx], filledEle[nextIdx])),
+            type: 'summit_anomaly',
+            severity: 'error',
+            description: `Fehlerhafte Gipfelspitze: Extreme Richtungsänderung der Steigung (Δ ${gradientDelta.toFixed(0)}%, +${Math.round(gradUp)}% ➔ ${Math.round(gradDown)}%) auf nur ${totalDistMeters}m`
+          });
+        }
+      }
+    }
+  }
+
+  // 2. Check point-to-point and short-segment extreme gradients (e.g. vertical cliff / barometric spike)
+  let i = 0;
+  while (i < points.length - 1) {
+    let j = i + 1;
+    let distMeters = (cumDistKm[j] - cumDistKm[i]) * 1000;
+
+    // Expand search window up to 100m or 5 points if step distance is tiny (< 10m) to calculate meaningful gradient
+    while (j < points.length - 1 && distMeters < 15 && j - i < 5) {
+      j++;
+      distMeters = (cumDistKm[j] - cumDistKm[i]) * 1000;
+    }
+
+    const eleDiff = filledEle[j] - filledEle[i];
+    const absEleDiff = Math.abs(eleDiff);
+
+    // Calculate segment gradient
+    let grad = 0;
+    if (distMeters > 0.5) {
+      grad = (eleDiff / distMeters) * 100;
+    }
+
+    const absGrad = Math.abs(grad);
+
+    // Skip if already inside or overlapping a detected summit anomaly
+    const alreadyCovered = anomalies.some(a => (i <= a.endIndex && j >= a.startIndex));
+
+    if (!alreadyCovered && ((absGrad > maxRealisticSlope && absEleDiff >= 12 && distMeters < 250) || (absEleDiff >= 25 && distMeters <= 40) || (absEleDiff >= 70 && distMeters < 150))) {
+      // Find peak/extreme within the segment
+      let peakIdx = i;
+      let extremeEle = filledEle[i];
+      for (let k = i; k <= j; k++) {
+        if (absEleDiff > 0 && (eleDiff > 0 ? filledEle[k] > extremeEle : filledEle[k] < extremeEle)) {
+          extremeEle = filledEle[k];
+          peakIdx = k;
+        }
+      }
+
+      const isSevere = absGrad > 65 || absEleDiff > 50;
+
+      anomalies.push({
+        id: `grad-anomaly-${i}-${j}`,
+        startIndex: i,
+        endIndex: j,
+        startDistKm: parseFloat(cumDistKm[i].toFixed(3)),
+        endDistKm: parseFloat(cumDistKm[j].toFixed(3)),
+        startEle: Math.round(filledEle[i]),
+        endEle: Math.round(filledEle[j]),
+        peakEle: Math.round(extremeEle),
+        peakIndex: peakIdx,
+        gradient: parseFloat(grad.toFixed(1)),
+        gradientDelta: parseFloat(absGrad.toFixed(1)),
+        distanceMeters: Math.round(distMeters),
+        eleChangeMeters: Math.round(eleDiff),
+        type: absEleDiff >= 30 && distMeters <= 50 ? 'gradient_spike' : 'impossible_slope',
+        severity: isSevere ? 'error' : 'warning',
+        description: `Unmögliche Steigung: ${grad > 0 ? '+' : ''}${grad.toFixed(1)}% (${eleDiff > 0 ? '+' : ''}${Math.round(eleDiff)}m auf ${Math.round(distMeters)}m) – Wahrscheinlicher Höhenausreißer / fehlerhafte Gipfelhöhe`
+      });
+
+      i = j; // Skip past anomaly
+      continue;
+    }
+
+    i++;
+  }
+
+  // Sort anomalies by start distance
+  anomalies.sort((a, b) => a.startDistKm - b.startDistKm);
+
+  return anomalies;
+};
+
+/**
+ * One-Click Auto-Repair for Gradient & Elevation Anomalies:
+ * Repairs impossible gradient cliffs and sharp false summit needle spikes.
+ * Uses distance-weighted monotonic smooth interpolation between the clean base points.
+ */
+export const repairGradientAnomalies = (
+  points: GPXPoint[],
+  anomalies?: GradientAnomaly[]
+): { repairedPoints: GPXPoint[]; fixedCount: number } => {
+  if (!points || points.length < 3) {
+    return { repairedPoints: points.map(p => ({ ...p })), fixedCount: 0 };
+  }
+
+  const detected = anomalies && anomalies.length > 0 ? anomalies : detectImpossibleGradientAnomalies(points);
+  if (detected.length === 0) {
+    return { repairedPoints: points.map(p => ({ ...p })), fixedCount: 0 };
+  }
+
+  const repairedPoints = points.map(p => ({ ...p }));
+  interpolateMissingElevations(repairedPoints);
+
+  // Cumulative distance array for distance-weighted interpolation
+  const cumDistMeters = new Float64Array(points.length);
+  cumDistMeters[0] = 0;
+  for (let i = 1; i < points.length; i++) {
+    cumDistMeters[i] = cumDistMeters[i - 1] + calculateDistance(points[i - 1], points[i]) * 1000;
+  }
+
+  let fixedCount = 0;
+
+  for (const anomaly of detected) {
+    let sIdx = Math.max(0, anomaly.startIndex);
+    let eIdx = Math.min(points.length - 1, anomaly.endIndex);
+    if (eIdx <= sIdx) continue;
+
+    // If anomaly is a direct adjacent jump (e.g. 1-step cliff), expand window so the spike point is interpolated
+    if (eIdx - sIdx === 1) {
+      if (eIdx < points.length - 1) {
+        eIdx = Math.min(points.length - 1, eIdx + 1);
+      } else if (sIdx > 0) {
+        sIdx = Math.max(0, sIdx - 1);
+      }
+    }
+
+    const startEle = repairedPoints[sIdx].ele ?? 0;
+    const endEle = repairedPoints[eIdx].ele ?? 0;
+    const totalSpanDist = cumDistMeters[eIdx] - cumDistMeters[sIdx];
+
+    if (totalSpanDist <= 0) {
+      for (let k = sIdx + 1; k < eIdx; k++) {
+        repairedPoints[k].ele = startEle;
+      }
+    } else {
+      // Smoothstep interpolation for natural curvature without sharp kinks
+      for (let k = sIdx + 1; k < eIdx; k++) {
+        const segDist = cumDistMeters[k] - cumDistMeters[sIdx];
+        const t = Math.max(0, Math.min(1, segDist / totalSpanDist));
+        const smoothT = t * t * (3 - 2 * t);
+        repairedPoints[k].ele = Number((startEle + (endEle - startEle) * smoothT).toFixed(1));
+      }
+    }
+
+    // Safety pass: clamp any remaining excessive gradient jump on repaired points to realistic slope
+    for (let k = sIdx; k < eIdx; k++) {
+      const stepMeters = cumDistMeters[k + 1] - cumDistMeters[k];
+      if (stepMeters > 0) {
+        const maxDelta = stepMeters * 0.35; // 35% max realistic slope
+        const curDelta = (repairedPoints[k + 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+        if (Math.abs(curDelta) > maxDelta && Math.abs(curDelta) > 5) {
+          repairedPoints[k + 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+        }
+      }
+    }
+
+    fixedCount++;
+  }
+
+  return { repairedPoints, fixedCount };
+};
+
+/**
+ * Repairs all gradient anomalies on a full GPXTrack and recalculates elevation/power/climb statistics.
+ */
+export const repairTrackGradientAnomalies = (
+  track: GPXTrack,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): GPXTrack => {
+  if (!track || !track.points || track.points.length < 3) return track;
+
+  const { repairedPoints, fixedCount } = repairGradientAnomalies(track.points);
+  if (fixedCount === 0) return track;
+
+  const eleStats = calculateElevationStats(repairedPoints);
+  const climbs = findClimbs(repairedPoints);
+  const powerStats = calculatePowerStats(repairedPoints, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  return {
+    ...track,
+    points: repairedPoints,
+    ascent: eleStats.ascent,
+    descent: eleStats.descent,
+    maxSlope: eleStats.maxSlope,
+    climbs,
+    powerStats
+  };
+};
+
+export type ElevationFilterStrength = 'off' | 'light' | 'medium' | 'alpine_aggressive';
+
+/**
+ * Smart Elevation Noise Filter:
+ * Implements moving-median and Savitzky-Golay / Gaussian weighted smoothing filters
+ * that eliminate sensor jitter and barometric noise without shaving real peaks/summits.
+ */
+export const filterElevationProfile = (
+  points: GPXPoint[],
+  strength: ElevationFilterStrength = 'light'
+): GPXPoint[] => {
+  if (!points || points.length < 3 || strength === 'off') {
+    return points.map(p => ({ ...p }));
+  }
+
+  const result = points.map(p => ({ ...p }));
+  interpolateMissingElevations(result);
+
+  const n = result.length;
+  const rawEles = new Float64Array(n);
+  const cumDistMeters = new Float64Array(n);
+  cumDistMeters[0] = 0;
+
+  for (let i = 0; i < n; i++) {
+    rawEles[i] = result[i].ele ?? 0;
+    if (i > 0) {
+      cumDistMeters[i] = cumDistMeters[i - 1] + calculateDistance(result[i - 1], result[i]) * 1000;
+    }
+  }
+
+  // Identify true local summits / crests so we never shave true peak heights
+  const isLocalPeak = new Uint8Array(n);
+  for (let i = 2; i < n - 2; i++) {
+    const e = rawEles[i];
+    if (e >= rawEles[i - 1] && e >= rawEles[i - 2] && e >= rawEles[i + 1] && e >= rawEles[i + 2]) {
+      const prominence = e - Math.min(rawEles[i - 2], rawEles[i + 2]);
+      if (prominence >= 2.0) {
+        isLocalPeak[i] = 1; // Significant peak summit
+      }
+    }
+  }
+
+  // Window configurations (distance-based in meters)
+  const windowDistance = strength === 'light' ? 30 : strength === 'medium' ? 80 : 160;
+
+  // Step 1: Moving median filter (suppresses single-point spikes & sensor dropouts)
+  const medianEles = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    if (isLocalPeak[i]) {
+      medianEles[i] = rawEles[i];
+      continue;
+    }
+
+    const windowVals: number[] = [];
+    let left = i;
+    while (left >= 0 && (cumDistMeters[i] - cumDistMeters[left]) <= windowDistance / 2) {
+      windowVals.push(rawEles[left]);
+      left--;
+    }
+    let right = i + 1;
+    while (right < n && (cumDistMeters[right] - cumDistMeters[i]) <= windowDistance / 2) {
+      windowVals.push(rawEles[right]);
+      right++;
+    }
+
+    if (windowVals.length <= 2) {
+      medianEles[i] = rawEles[i];
+    } else {
+      windowVals.sort((a, b) => a - b);
+      const mid = Math.floor(windowVals.length / 2);
+      medianEles[i] = windowVals.length % 2 !== 0 ? windowVals[mid] : (windowVals[mid - 1] + windowVals[mid]) / 2;
+    }
+  }
+
+  // Step 2: Savitzky-Golay / Gaussian weighted smoothing with peak preservation
+  for (let i = 0; i < n; i++) {
+    if (i === 0 || i === n - 1 || isLocalPeak[i]) {
+      result[i].ele = Number(rawEles[i].toFixed(1));
+      continue;
+    }
+
+    let weightedSum = 0;
+    let totalWeight = 0;
+    const sigma = windowDistance / 3;
+
+    let left = i;
+    while (left >= 0 && (cumDistMeters[i] - cumDistMeters[left]) <= windowDistance) {
+      const d = cumDistMeters[i] - cumDistMeters[left];
+      const weight = Math.exp(-(d * d) / (2 * sigma * sigma));
+      weightedSum += medianEles[left] * weight;
+      totalWeight += weight;
+      left--;
+    }
+
+    let right = i + 1;
+    while (right < n && (cumDistMeters[right] - cumDistMeters[i]) <= windowDistance) {
+      const d = cumDistMeters[right] - cumDistMeters[i];
+      const weight = Math.exp(-(d * d) / (2 * sigma * sigma));
+      weightedSum += medianEles[right] * weight;
+      totalWeight += weight;
+      right++;
+    }
+
+    const smoothedVal = totalWeight > 0 ? weightedSum / totalWeight : medianEles[i];
+    result[i].ele = Number(smoothedVal.toFixed(1));
+  }
+
+  return result;
+};
+
+/**
+ * Applies elevation filtering directly to a track and updates its metrics.
+ */
+export const applyElevationFilterToTrack = (
+  track: GPXTrack,
+  strength: ElevationFilterStrength = 'medium',
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): GPXTrack => {
+  if (!track || !track.points || track.points.length < 3 || strength === 'off') return track;
+
+  const filteredPoints = filterElevationProfile(track.points, strength);
+  const eleStats = calculateElevationStats(filteredPoints);
+  const climbs = findClimbs(filteredPoints);
+  const powerStats = calculatePowerStats(filteredPoints, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  return {
+    ...track,
+    points: filteredPoints,
+    ascent: eleStats.ascent,
+    descent: eleStats.descent,
+    maxSlope: eleStats.maxSlope,
+    climbs,
+    powerStats
+  };
+};
+
 export interface ClimbCriteria {
   type: 'standard' | 'strava' | 'garmin' | 'custom';
   minDistance: number;
@@ -226,41 +650,89 @@ export const findClimbs = (
       const avgGrad = (eleDiff / dist) * 100;
       
       if (avgGrad >= minAvgGradient) {
-        // Potential climb found, now try to extend it point-by-point
+        // Potential climb found. First, optimize start point to lowest valley floor before climb
+        let optStart = i;
+        let minEleInStartWindow = smoothedEle[i];
+        for (let k = Math.max(0, i - 10); k <= i; k++) {
+          if (smoothedEle[k] < minEleInStartWindow) {
+            minEleInStartWindow = smoothedEle[k];
+            optStart = k;
+          }
+        }
+
+        // Now extend forward to find the true summit (highest culmination point)
         let currentEnd = j;
         let runningMaxGrad = avgGrad;
         
-        while (currentEnd < points.length - 1) {
-          const nextDist = cumDist[currentEnd + 1] - cumDist[currentEnd];
-          const nextEle = smoothedEle[currentEnd + 1] - smoothedEle[currentEnd];
-          const segmentGrad = nextDist > 0 ? (nextEle / nextDist) * 105 : 0; // slight scaling factor for short intervals
-          
-          // Allow minor flats or downhills (up to -2.0%) as part of a climb
-          // as long as the overall average gradient remains above the minimum average gradient
-          const overallAvgGrad = ((smoothedEle[currentEnd + 1] - smoothedEle[i]) / (cumDist[currentEnd + 1] - cumDist[i])) * 100;
-          if (segmentGrad > -2.0 || overallAvgGrad > minAvgGradient) {
-            currentEnd += 1;
-            if (segmentGrad > runningMaxGrad) runningMaxGrad = segmentGrad;
-          } else {
-            break;
+        let summitIndex = optStart;
+        let summitEle = smoothedEle[optStart];
+
+        for (let k = optStart; k <= j; k++) {
+          if (smoothedEle[k] >= summitEle) {
+            summitEle = smoothedEle[k];
+            summitIndex = k;
           }
         }
-        
-        const finalDist = cumDist[currentEnd] - cumDist[i];
-        const finalAscent = smoothedEle[currentEnd] - smoothedEle[i];
-        const finalAvgGrad = (finalAscent / finalDist) * 100;
+
+        let k = j;
+        while (k < points.length - 1) {
+          const nextIdx = k + 1;
+          const nextDist = cumDist[nextIdx] - cumDist[k];
+          const nextEleDiff = smoothedEle[nextIdx] - smoothedEle[k];
+          const segmentGrad = nextDist > 0 ? (nextEleDiff / nextDist) * 100 : 0;
+          
+          if (smoothedEle[nextIdx] > summitEle) {
+            summitEle = smoothedEle[nextIdx];
+            summitIndex = nextIdx;
+          }
+
+          const dropFromSummit = summitEle - smoothedEle[nextIdx];
+          const distFromSummit = cumDist[nextIdx] - cumDist[summitIndex];
+
+          // True summit reached criteria:
+          // 1. Elevation dropped > 10m below summit peak
+          // 2. Traveled > 150m past summit while continuing to descend
+          // 3. Encountered steep downhill descent (segment gradient < -2.5%)
+          if (dropFromSummit > 10 || (distFromSummit > 150 && dropFromSummit > 3) || segmentGrad < -2.5) {
+            break;
+          }
+
+          const currentOverallGrad = ((smoothedEle[nextIdx] - smoothedEle[optStart]) / (cumDist[nextIdx] - cumDist[optStart])) * 100;
+          if (currentOverallGrad < minAvgGradient && dropFromSummit > 2) {
+            break;
+          }
+
+          if (segmentGrad > runningMaxGrad) runningMaxGrad = segmentGrad;
+          k = nextIdx;
+        }
+
+        // Refine summit index to exact raw point peak in a small window around summitIndex
+        let exactSummitIndex = summitIndex;
+        let maxRawEle = filledEle[summitIndex];
+        const searchMin = Math.max(optStart, summitIndex - 8);
+        const searchMax = Math.min(points.length - 1, summitIndex + 8);
+        for (let r = searchMin; r <= searchMax; r++) {
+          if (filledEle[r] > maxRawEle) {
+            maxRawEle = filledEle[r];
+            exactSummitIndex = r;
+          }
+        }
+
+        const finalDist = cumDist[exactSummitIndex] - cumDist[optStart];
+        const finalAscent = Math.max(0, filledEle[exactSummitIndex] - filledEle[optStart]);
+        const finalAvgGrad = finalDist > 0 ? (finalAscent / finalDist) * 100 : 0;
         const finalScore = finalDist * finalAvgGrad;
         
-        if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient && finalScore >= minScore) {
+        if (finalDist >= minClimbDistance && finalAvgGrad >= minAvgGradient && finalScore >= minScore && exactSummitIndex > optStart) {
           climbs.push({
-            startIndex: i,
-            endIndex: currentEnd,
+            startIndex: optStart,
+            endIndex: exactSummitIndex,
             distance: finalDist,
             ascent: finalAscent,
             avgGradient: finalAvgGrad,
             maxGradient: runningMaxGrad
           });
-          i = currentEnd; // Skip processed points
+          i = exactSummitIndex; // Jump past the summit to continue searching
           break;
         }
       } else if (avgGrad < -3) {
@@ -691,6 +1163,38 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
   }
 
   return { ascent, descent, maxSlope, totalDist };
+};
+
+export const calculateTrackCenterAndBounds = (track: GPXTrack): { centerLat: number; centerLng: number; minLat: number; maxLat: number; minLng: number; maxLng: number } | null => {
+  if (!track || !track.points || track.points.length === 0) return null;
+  const validPoints = track.points.filter(p => {
+    const lat = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+    const lng = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+    return !isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  });
+  if (validPoints.length === 0) return null;
+
+  let minLat = validPoints[0].lat;
+  let maxLat = validPoints[0].lat;
+  let minLng = validPoints[0].lng;
+  let maxLng = validPoints[0].lng;
+
+  for (let i = 1; i < validPoints.length; i++) {
+    const p = validPoints[i];
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+
+  return {
+    centerLat: (minLat + maxLat) / 2,
+    centerLng: (minLng + maxLng) / 2,
+    minLat,
+    maxLat,
+    minLng,
+    maxLng
+  };
 };
 
 export const normalizeSurfaceName = (rawSurface?: string): string => {
@@ -1282,7 +1786,14 @@ export const reverseTrack = (
   };
 };
 
-export const exportToGPX = (track: GPXTrack): string => {
+export interface ExportGPXOptions {
+  textMarkers?: TextMarker[];
+  creator?: string;
+  filenamePrefix?: string;
+  segmentBreakSeconds?: number;
+}
+
+export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string => {
   const escapeXml = (unsafe: string): string => {
     return (unsafe || '')
       .replace(/&/g, '&amp;')
@@ -1292,8 +1803,37 @@ export const exportToGPX = (track: GPXTrack): string => {
       .replace(/'/g, '&apos;');
   };
 
+  const points = track.points || [];
+  
+  // Compute geographic bounds
+  let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  let firstTime: string | null = null;
+
+  points.forEach(p => {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+    if (!firstTime && p.time) {
+      try {
+        const d = p.time instanceof Date ? p.time : new Date(p.time);
+        if (!isNaN(d.getTime())) {
+          firstTime = d.toISOString();
+        }
+      } catch (e) {}
+    }
+  });
+
+  if (minLat > maxLat) {
+    minLat = 0; maxLat = 0; minLng = 0; maxLng = 0;
+  }
+
+  const creator = options?.creator || track.rawFileDetails?.metadata?.creator || 'GPX Route Master (https://ai.studio)';
+  const authorName = track.rawFileDetails?.metadata?.deviceManufacturer || 'GPX Route Master';
+  const creationTime = firstTime || new Date().toISOString();
+
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="GPX Route Master" 
+<gpx version="1.1" creator="${escapeXml(creator)}" 
   xmlns="http://www.topografix.com/GPX/1/1"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/GpxExtensions/v3 http://www.garmin.com/xmlschemas/GpxExtensionsv3.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd"
@@ -1301,10 +1841,53 @@ export const exportToGPX = (track: GPXTrack): string => {
   xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3">
   <metadata>
     <name>${escapeXml(track.name)}</name>
-    <desc>${escapeXml(track.description || '')}</desc>
-    ${track.rawFileDetails?.metadata?.creator ? `<creator>${escapeXml(String(track.rawFileDetails.metadata.creator))}</creator>` : '<creator>GPX Route Master</creator>'}
-  </metadata>
-  <trk>
+    <desc>${escapeXml(track.description || `GPX Route Master Export: ${track.name} - ${track.distance.toFixed(2)} km, +${Math.round(track.ascent)} m`)}</desc>
+    <author>
+      <name>${escapeXml(authorName)}</name>
+    </author>
+    <time>${creationTime}</time>
+    <bounds minlat="${minLat.toFixed(6)}" minlon="${minLng.toFixed(6)}" maxlat="${maxLat.toFixed(6)}" maxlon="${maxLng.toFixed(6)}" />
+    <extensions>
+      <gpxx:TrackStatsExtension>
+        <gpxx:DistanceMeters>${Math.round(track.distance * 1000)}</gpxx:DistanceMeters>
+        <gpxx:TotalAscentMeters>${Math.round(track.ascent)}</gpxx:TotalAscentMeters>
+        <gpxx:TotalDescentMeters>${Math.round(track.descent)}</gpxx:TotalDescentMeters>
+        <gpxx:MaxSlopePercent>${track.maxSlope?.toFixed(1) || '0.0'}</gpxx:MaxSlopePercent>
+        <gpxx:ActivityType>${escapeXml(track.activityType || 'cycling')}</gpxx:ActivityType>
+      </gpxx:TrackStatsExtension>`;
+
+  if (track.surfaceStats && track.surfaceStats.length > 0) {
+    xml += `\n      <surfaceStats>`;
+    track.surfaceStats.forEach(s => {
+      xml += `\n        <surfaceSegment type="${escapeXml(s.type)}" distanceKm="${s.distance.toFixed(2)}" />`;
+    });
+    xml += `\n      </surfaceStats>`;
+  }
+
+  if (track.powerStats) {
+    xml += `\n      <powerStats avgPower="${Math.round(track.powerStats.avgPower)}" maxPower="${Math.round(track.powerStats.maxPower)}"`;
+    if (track.powerStats.normalizedPower) xml += ` normalizedPower="${Math.round(track.powerStats.normalizedPower)}"`;
+    if (track.powerStats.work) xml += ` workKj="${Math.round(track.powerStats.work)}"`;
+    if (track.powerStats.tss) xml += ` tss="${Math.round(track.powerStats.tss)}"`;
+    xml += ` />`;
+  }
+
+  xml += `\n    </extensions>
+  </metadata>`;
+
+  // Export Waypoints (Text Markers / POIs)
+  if (options?.textMarkers && options.textMarkers.length > 0) {
+    options.textMarkers.forEach(m => {
+      const markerName = m.label || (m as any).text || 'Waypoint';
+      xml += `\n  <wpt lat="${m.lat.toFixed(6)}" lon="${m.lng.toFixed(6)}">`;
+      xml += `\n    <name>${escapeXml(markerName)}</name>`;
+      xml += `\n    <sym>Waypoint</sym>`;
+      xml += `\n  </wpt>`;
+    });
+  }
+
+  // Export Track and Segments
+  xml += `\n  <trk>
     <name>${escapeXml(track.name)}</name>
     <desc>${escapeXml(track.description || '')}</desc>
     <type>${escapeXml(track.activityType || 'cycling')}</type>
@@ -1312,43 +1895,74 @@ export const exportToGPX = (track: GPXTrack): string => {
       <gpxx:TrackExtension>
         <gpxx:DisplayColor>${escapeXml(track.color || 'Cyan')}</gpxx:DisplayColor>
       </gpxx:TrackExtension>
-    </extensions>
-    <trkseg>`;
+    </extensions>`;
 
-  track.points.forEach(p => {
-    const lat = p.lat;
-    const lon = p.lng;
-    const eleStr = p.ele !== undefined && p.ele !== null && !isNaN(p.ele) ? `\n        <ele>${p.ele}</ele>` : '';
-    
-    let timeStr = '';
+  // Break into clean segments if time gap exceeds threshold (default: 15 minutes = 900s)
+  const gapThresholdSeconds = options?.segmentBreakSeconds || 900;
+  let inSegment = false;
+  let lastTime: number | null = null;
+
+  points.forEach((p, idx) => {
+    let pTimeMs: number | null = null;
     if (p.time) {
       try {
         const d = p.time instanceof Date ? p.time : new Date(p.time);
         if (!isNaN(d.getTime())) {
-          timeStr = `\n        <time>${d.toISOString()}</time>`;
+          pTimeMs = d.getTime();
         }
       } catch (e) {}
     }
 
-    const powerStr = p.power !== undefined && p.power !== null && !isNaN(p.power) ? `\n        <power>${p.power}</power>` : '';
+    const isNewSegment = idx === 0 || (lastTime !== null && pTimeMs !== null && (pTimeMs - lastTime) / 1000 > gapThresholdSeconds);
+
+    if (isNewSegment) {
+      if (inSegment) {
+        xml += `\n    </trkseg>`;
+      }
+      xml += `\n    <trkseg>`;
+      inSegment = true;
+    }
+
+    if (pTimeMs !== null) {
+      lastTime = pTimeMs;
+    }
+
+    const lat = p.lat.toFixed(6);
+    const lon = p.lng.toFixed(6);
+    const eleStr = p.ele !== undefined && p.ele !== null && !isNaN(p.ele) ? `\n        <ele>${p.ele.toFixed(2)}</ele>` : '';
+    
+    let timeStr = '';
+    if (pTimeMs !== null) {
+      timeStr = `\n        <time>${new Date(pTimeMs).toISOString()}</time>`;
+    }
+
+    const powerStr = p.power !== undefined && p.power !== null && !isNaN(p.power) ? `\n        <power>${Math.round(p.power)}</power>` : '';
     
     let extensionStr = '';
     const hasHr = p.hr !== undefined && p.hr !== null && !isNaN(p.hr);
     const hasCad = p.cadence !== undefined && p.cadence !== null && !isNaN(p.cadence);
+    const hasSpeed = p.speed !== undefined && p.speed !== null && !isNaN(p.speed);
+    const hasTemp = p.temp !== undefined && p.temp !== null && !isNaN(p.temp);
     const hasSurface = !!p.surface;
     
-    if (hasHr || hasCad || hasSurface) {
+    if (hasHr || hasCad || hasSpeed || hasTemp || hasSurface) {
       extensionStr = `\n        <extensions>`;
       if (hasSurface) {
         extensionStr += `\n          <surface>${escapeXml(p.surface!)}</surface>`;
       }
-      if (hasHr || hasCad) {
+      if (hasHr || hasCad || hasSpeed || hasTemp) {
         extensionStr += `\n          <gpxtpx:TrackPointExtension>`;
         if (hasHr) {
-          extensionStr += `\n            <gpxtpx:hr>${p.hr}</gpxtpx:hr>`;
+          extensionStr += `\n            <gpxtpx:hr>${Math.round(p.hr!)}</gpxtpx:hr>`;
         }
         if (hasCad) {
-          extensionStr += `\n            <gpxtpx:cad>${p.cadence}</gpxtpx:cad>`;
+          extensionStr += `\n            <gpxtpx:cad>${Math.round(p.cadence!)}</gpxtpx:cad>`;
+        }
+        if (hasSpeed) {
+          extensionStr += `\n            <gpxtpx:speed>${p.speed!.toFixed(2)}</gpxtpx:speed>`;
+        }
+        if (hasTemp) {
+          extensionStr += `\n            <gpxtpx:atemp>${p.temp!.toFixed(1)}</gpxtpx:atemp>`;
         }
         extensionStr += `\n          </gpxtpx:TrackPointExtension>`;
       }
@@ -1358,8 +1972,42 @@ export const exportToGPX = (track: GPXTrack): string => {
     xml += `\n      <trkpt lat="${lat}" lon="${lon}">${eleStr}${timeStr}${powerStr}${extensionStr}\n      </trkpt>`;
   });
 
-  xml += `\n    </trkseg>\n  </trk>\n</gpx>`;
+  if (inSegment) {
+    xml += `\n    </trkseg>`;
+  } else if (points.length === 0) {
+    xml += `\n    <trkseg></trkseg>`;
+  }
+
+  xml += `\n  </trk>\n</gpx>`;
   return xml;
+};
+
+export const downloadTrackAsGPX = (
+  track: GPXTrack,
+  options?: ExportGPXOptions
+): { success: boolean; fileName: string; byteSize: number } => {
+  try {
+    const xml = exportToGPX(track, options);
+    const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeName = (track.name || 'track')
+      .trim()
+      .replace(/[/\\?%*:|"<>]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    const fileName = `${options?.filenamePrefix || ''}${safeName || 'track'}.gpx`;
+    link.href = url;
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return { success: true, fileName, byteSize: blob.size };
+  } catch (e) {
+    console.error('Error downloading GPX track:', e);
+    throw e;
+  }
 };
 
 export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXTrack | null> => {

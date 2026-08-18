@@ -3,6 +3,7 @@ import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
+import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
 import fs from "fs";
 import os from "os";
 
@@ -18,17 +19,20 @@ async function startServer() {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-XSS-Protection", "1; mode=block");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=()");
 
-    // Support sandboxed iframes (which send Origin: null)
+    // Support sandboxed iframes safely with origin validation
     const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
+    if (origin && typeof origin === "string") {
+      // Sanitize against CRLF injection in origin header
+      const sanitizedOrigin = origin.replace(/[\r\n]/g, "");
+      res.setHeader("Access-Control-Allow-Origin", sanitizedOrigin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
     } else {
       res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-requested-with");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
 
     if (req.method === "OPTIONS") {
       res.sendStatus(200);
@@ -39,6 +43,40 @@ async function startServer() {
 
   // Middleware to parse JSON payloads with strict limit
   app.use(express.json({ limit: "15mb" }));
+
+  // Gracefully handle malformed JSON bodies without exposing internal stack traces
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof SyntaxError && "body" in err) {
+      return res.status(400).json({ success: false, error: "Ungültiges JSON-Format in der Anfrage." });
+    }
+    next(err);
+  });
+
+  // Explicit Service Worker endpoint with proper ServiceWorker-Allowed and MIME headers
+  app.get("/sw.js", (req, res) => {
+    const swPath = path.join(process.cwd(), "public", "sw.js");
+    if (fs.existsSync(swPath)) {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("ServiceWorker-Allowed", "/");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      return res.sendFile(swPath);
+    }
+    res.status(404).send("// Service worker not found");
+  });
+
+  // Explicit Web App Manifest endpoint
+  app.get("/manifest.json", (req, res) => {
+    const manifestPath = path.join(process.cwd(), "public", "manifest.json");
+    if (fs.existsSync(manifestPath)) {
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.sendFile(manifestPath);
+    }
+    res.status(404).json({ error: "Manifest not found" });
+  });
+
+  // Serve static assets from public directory
+  app.use(express.static(path.join(process.cwd(), "public")));
 
   // API route to resolve weather using Open-Meteo and OpenStreetMap Nominatim (High limits - completely free, no API key required)
   app.post("/api/weather", async (req, res) => {
@@ -434,6 +472,10 @@ async function startServer() {
     const { points, name, activityType } = req.body;
     if (!points || !Array.isArray(points) || points.length === 0) {
       return res.status(400).json({ error: "Missing or invalid points array" });
+    }
+
+    if (points.length > 50000) {
+      return res.status(400).json({ error: "Points array exceeds maximum allowed length of 50,000 points." });
     }
 
     const totalPts = points.length;
@@ -930,6 +972,356 @@ async function startServer() {
     }
   });
 
+  // POST /api/intensive-analysis: Deep intensive GPS track analysis with time, calories, route tips, events & food/water discovery
+  app.post("/api/intensive-analysis", async (req, res) => {
+    try {
+      const { track, options } = req.body;
+      if (!track || !track.points || !Array.isArray(track.points) || track.points.length === 0) {
+        return res.status(400).json({ error: "Missing or invalid track data with points." });
+      }
+
+      const points = track.points;
+      const totalPts = points.length;
+      const opts = options || {};
+      const targetDate = opts.date || (track.points[0]?.time ? new Date(track.points[0].time).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+      
+      // 1. Run local deterministic physics & metabolic engine first
+      const baseResult = performLocalIntensiveAnalysis(track, { ...opts, date: targetDate });
+
+      // 2. Resolve bounding box and sample key points
+      let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+      let summitPt = points[0];
+      let maxEle = -9999;
+
+      for (const p of points) {
+        if (p && p.lat != null && p.lng != null) {
+          const lat = Number(p.lat);
+          const lng = Number(p.lng);
+          if (!isNaN(lat) && !isNaN(lng)) {
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lng < minLng) minLng = lng;
+            if (lng > maxLng) maxLng = lng;
+            if (p.ele !== undefined && p.ele > maxEle) {
+              maxEle = p.ele;
+              summitPt = p;
+            }
+          }
+        }
+      }
+
+      const startPt = points[0] || { lat: 51.0, lng: 10.0 };
+      const endPt = points[totalPts - 1] || startPt;
+
+      // 3. Geocode Start & End location names with Nominatim
+      const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
+        try {
+          const geoUrl = new URL("https://nominatim.openstreetmap.org/reverse");
+          geoUrl.searchParams.set("lat", String(lat));
+          geoUrl.searchParams.set("lon", String(lng));
+          geoUrl.searchParams.set("format", "json");
+          geoUrl.searchParams.set("accept-language", "de");
+
+          const response = await fetch(geoUrl.toString(), {
+            headers: { "User-Agent": "GPXRouteMasterIntensiveAnalysis/1.0" },
+            signal: AbortSignal.timeout(1800)
+          });
+          if (response.ok) {
+            const data: any = await response.json();
+            if (data && data.address) {
+              const town = data.address.city || data.address.town || data.address.village || data.address.municipality || data.address.county;
+              const country = data.address.country;
+              return town ? (country ? `${town} (${country})` : town) : data.display_name?.split(",")[0] || "";
+            }
+          }
+        } catch (e) {}
+        return `GPS ${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+      };
+
+      const [startLoc, summitLoc, endLoc] = await Promise.all([
+        reverseGeocode(startPt.lat, startPt.lng),
+        summitPt ? reverseGeocode(summitPt.lat, summitPt.lng) : Promise.resolve(""),
+        reverseGeocode(endPt.lat, endPt.lng)
+      ]);
+
+      baseResult.locationStart = startLoc;
+      baseResult.locationSummit = summitLoc;
+      baseResult.locationEnd = endLoc;
+
+      // 4. Query OpenStreetMap Overpass for real-world Food & Water POIs along the track
+      try {
+        // Expand bounding box by 0.006 deg (~600m)
+        const pMinLat = Math.max(-90, minLat - 0.006);
+        const pMaxLat = Math.min(90, maxLat + 0.006);
+        const pMinLng = Math.max(-180, minLng - 0.006);
+        const pMaxLng = Math.min(180, maxLng + 0.006);
+        const bboxStr = `${pMinLat.toFixed(5)},${pMinLng.toFixed(5)},${pMaxLat.toFixed(5)},${pMaxLng.toFixed(5)}`;
+
+        const overpassPOIQuery = `[out:json][timeout:8];(
+          node["amenity"="drinking_water"](${bboxStr});
+          node["man_made"="water_tap"](${bboxStr});
+          node["natural"="spring"](${bboxStr});
+          node["shop"~"bakery|supermarket|convenience"](${bboxStr});
+          node["amenity"~"cafe|restaurant|fuel|fast_food"](${bboxStr});
+          node["tourism"~"alpine_hut|wilderness_hut|shelter"](${bboxStr});
+        );out 60;`;
+
+        const OVERPASS_SERVERS = [
+          "https://overpass.private.coffee/api/interpreter",
+          "https://overpass.kumi.systems/api/interpreter",
+          "https://overpass-api.de/api/interpreter"
+        ];
+
+        let poiData: any = null;
+        for (const srv of OVERPASS_SERVERS) {
+          try {
+            const resp = await fetch(srv, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: `data=${encodeURIComponent(overpassPOIQuery)}`,
+              signal: AbortSignal.timeout(6000)
+            });
+            if (resp.ok) {
+              poiData = await resp.json();
+              break;
+            }
+          } catch (err) {}
+        }
+
+        if (poiData && poiData.elements && Array.isArray(poiData.elements) && poiData.elements.length > 0) {
+          const stepDistances = calculateCumulativeDistances(points);
+          const foundPOIs: any[] = [];
+
+          // Helper to calculate distance in meters
+          const distM = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+            const R = 6371000;
+            const p1 = (lat1 * Math.PI) / 180;
+            const p2 = (lat2 * Math.PI) / 180;
+            const dP = ((lat2 - lat1) * Math.PI) / 180;
+            const dL = ((lon2 - lon1) * Math.PI) / 180;
+            const a = Math.sin(dP / 2) * Math.sin(dP / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dL / 2) * Math.sin(dL / 2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          };
+
+          for (const node of poiData.elements) {
+            if (!node.lat || !node.lon || !node.tags) continue;
+            
+            // Find closest track point
+            let minDist = Infinity;
+            let closestIdx = 0;
+            
+            // Downsample search if track is huge
+            const stride = Math.max(1, Math.floor(points.length / 500));
+            for (let i = 0; i < points.length; i += stride) {
+              const d = distM(node.lat, node.lon, points[i].lat, points[i].lng);
+              if (d < minDist) {
+                minDist = d;
+                closestIdx = i;
+              }
+            }
+
+            // Only consider POIs within 600m of the track
+            if (minDist <= 600) {
+              const tags = node.tags;
+              let category: any = 'water';
+              let name = tags.name || tags.operator || tags.description || "";
+              let desc = "";
+
+              if (tags.amenity === 'drinking_water' || tags.man_made === 'water_tap' || tags.natural === 'spring') {
+                category = 'water';
+                name = name || 'Trinkwasser-Brunnen / Quelle';
+                desc = 'Öffentliche Trinkwasserstelle zum Auffüllen der Trinkflaschen.';
+              } else if (tags.shop === 'bakery') {
+                category = 'bakery';
+                name = name || 'Bäckerei / Konditorei';
+                desc = 'Frische Backwaren, Snacks und Heißgetränke.';
+              } else if (tags.shop === 'supermarket' || tags.shop === 'convenience') {
+                category = 'supermarket';
+                name = name || 'Supermarkt / Lebensmittel';
+                desc = 'Große Auswahl an Verpflegung, Riegeln, Wasser und Elektrolyten.';
+              } else if (tags.tourism === 'alpine_hut' || tags.tourism === 'wilderness_hut') {
+                category = 'hut';
+                name = name || 'Berghütte / Schutzhütte';
+                desc = 'Einkehr- und Schutzmöglichkeit in den Bergen.';
+              } else if (tags.amenity === 'cafe') {
+                category = 'cafe';
+                name = name || 'Café / Bistro';
+                desc = 'Kaffee, Kuchen und Pause.';
+              } else if (tags.amenity === 'fuel') {
+                category = 'gas_station';
+                name = name || 'Tankstelle (Shop)';
+                desc = 'Gekühlte Getränke, Snacks und Notfall-Verpflegung.';
+              } else {
+                category = 'food';
+                name = name || 'Gaststätte / Restaurant';
+                desc = 'Warme Mahlzeiten und Einkehr.';
+              }
+
+              const kmAlong = stepDistances[closestIdx] || 0;
+              const address = tags['addr:street'] ? `${tags['addr:street']} ${tags['addr:housenumber'] || ''}`.trim() : undefined;
+
+              foundPOIs.push({
+                id: `poi-${node.id}`,
+                name,
+                category,
+                lat: node.lat,
+                lng: node.lon,
+                distanceAlongTrackKm: parseFloat(kmAlong.toFixed(1)),
+                distanceOffTrackMeters: Math.round(minDist),
+                description: desc,
+                openingHours: tags.opening_hours || undefined,
+                address
+              });
+            }
+          }
+
+          if (foundPOIs.length > 0) {
+            // Sort by distance along track and deduplicate very close duplicates
+            foundPOIs.sort((a, b) => a.distanceAlongTrackKm - b.distanceAlongTrackKm);
+            const filteredPOIs: any[] = [];
+            for (const p of foundPOIs) {
+              const duplicate = filteredPOIs.find(
+                f => f.category === p.category && Math.abs(f.distanceAlongTrackKm - p.distanceAlongTrackKm) < 0.4
+              );
+              if (!duplicate) {
+                filteredPOIs.push(p);
+              }
+            }
+            if (filteredPOIs.length > 0) {
+              baseResult.foodAndWaterPOIs = filteredPOIs.slice(0, 18);
+            }
+          }
+        }
+      } catch (poiErr) {
+        console.log("[Intensive Analysis] Overpass POI lookup deferred:", poiErr);
+      }
+
+      // 5. Gemini AI Search Grounding & Date-Specific Event / Road Closure Discovery
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          // Sanitize text inputs for prompt safety
+          const safeTrackName = String(track.name || 'GPS-Route').slice(0, 150).replace(/[^\w\s\-\.,ÄÖÜäöüß]/g, ' ');
+          const safeStartLoc = String(startLoc || '').slice(0, 100).replace(/[^\w\s\-\.,ÄÖÜäöüß]/g, ' ');
+          const safeSummitLoc = String(summitLoc || '').slice(0, 100).replace(/[^\w\s\-\.,ÄÖÜäöüß]/g, ' ');
+          const safeEndLoc = String(endLoc || '').slice(0, 100).replace(/[^\w\s\-\.,ÄÖÜäöüß]/g, ' ');
+          const safeDate = String(targetDate || '').slice(0, 30).replace(/[^\d\-]/g, '');
+
+          const prompt = `Du bist ein hochpräziser Sport- und Tourenanalyse-Experte für Radfahren, Laufen und Wandern.
+Analysiere die folgende GPS-Strecke intensiv:
+Streckenname: "${safeTrackName}"
+Distanz: ${baseResult.totalDistanceKm} km
+Höhenmeter: ${baseResult.totalAscentMeters} Hm Anstieg, ${baseResult.totalDescentMeters} Hm Abstieg, Max. Steigung: ${baseResult.maxSlopePercent}%
+Startort/Region: ${safeStartLoc}
+Gipfel/Höchster Punkt: ${safeSummitLoc}
+Zielort: ${safeEndLoc}
+Gewähltes Datum der Aktivität: ${safeDate}
+Sportart: ${baseResult.activityType} (${baseResult.subType})
+Fitnesslevel: ${baseResult.fitnessLevel}
+
+Aufgaben:
+1. Prüfe mit Google Search nach potentiellen Ereignissen, Sperrungen oder Besonderheiten in der Region für das Datum ${targetDate}:
+   - Gibt es Straßenbauarbeiten, Passsperren, Großveranstaltungen (Marathon, Radrennen, Triathlons, Stadtfeste), Baustellen oder Verkehrsbehinderungen entlang der Route (z.B. zwischen ${startLoc} und ${endLoc})?
+   - Gibt es lohnenswerte Events, Wochenmärkte oder regionale Highlights an diesem Datum?
+2. Gib fundierte, konkrete taktische Tipps für diese spezifische Strecke (Pacing an Schlüsselanstiegen, Übersetzung, Reifen-/Ausrüstungsempfehlung, Verhalten auf steilen Abfahrten, Wind-/Wetter-Besonderheiten).
+3. Verfasse eine prägnante, professionelle Zusammenfassung (2-3 Sätze).
+
+Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Blocks):
+{
+  "eventsAndAlerts": [
+    {
+      "type": "problem" | "event" | "info",
+      "title": "Titel der Meldung",
+      "description": "Kurze, präzise Beschreibung",
+      "category": "road_closure" | "construction" | "sport_event" | "festival" | "market" | "weather_hazard" | "local_tip",
+      "severity": "high" | "medium" | "low",
+      "locationName": "Ortsangabe",
+      "approxDistanceKm": 15.0
+    }
+  ],
+  "tacticalTips": [
+    {
+      "category": "pacing" | "climb" | "descent" | "equipment" | "hydration" | "safety",
+      "title": "Titel des Tipps",
+      "content": "Ausführliche Erklärung",
+      "importance": "essential" | "recommended" | "tip"
+    }
+  ],
+  "aiSummary": "Prägnante 2-3 Sätze Zusammenfassung."
+}`;
+
+          const response = await ai.models.generateContent({
+            model: "gemini-3.7-flash",
+            contents: prompt,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
+
+          const rawText = response.text || "";
+          let jsonMatch = rawText.match(/```json\s*([\s\S]*?)\s*```/);
+          let parsedData: any = null;
+
+          if (jsonMatch && jsonMatch[1]) {
+            try {
+              parsedData = JSON.parse(jsonMatch[1]);
+            } catch (e) {}
+          } else {
+            try {
+              parsedData = JSON.parse(rawText);
+            } catch (e) {}
+          }
+
+          if (parsedData) {
+            if (Array.isArray(parsedData.eventsAndAlerts) && parsedData.eventsAndAlerts.length > 0) {
+              baseResult.dateEventsAndAlerts = parsedData.eventsAndAlerts.map((evt: any, i: number) => ({
+                id: `ai-event-${i}`,
+                type: evt.type || 'info',
+                title: evt.title || 'Meldung',
+                description: evt.description || '',
+                category: evt.category || 'local_tip',
+                severity: evt.severity || 'medium',
+                locationName: evt.locationName || undefined,
+                approxDistanceKm: typeof evt.approxDistanceKm === 'number' ? evt.approxDistanceKm : undefined
+              }));
+            }
+
+            if (Array.isArray(parsedData.tacticalTips) && parsedData.tacticalTips.length > 0) {
+              baseResult.tacticalTips = [
+                ...baseResult.tacticalTips,
+                ...parsedData.tacticalTips.map((tip: any, i: number) => ({
+                  id: `ai-tip-${i}`,
+                  category: tip.category || 'pacing',
+                  title: tip.title || 'Taktischer Tipp',
+                  content: tip.content || '',
+                  importance: tip.importance || 'recommended'
+                }))
+              ];
+            }
+
+            if (parsedData.aiSummary && typeof parsedData.aiSummary === 'string') {
+              baseResult.aiSummary = parsedData.aiSummary;
+            }
+
+            baseResult.isAiEnhanced = true;
+          }
+        } catch (aiErr: any) {
+          console.log("[Intensive Analysis] Gemini AI enrichment deferred:", aiErr.message || aiErr);
+        }
+      }
+
+      res.json({
+        success: true,
+        analysis: baseResult
+      });
+
+    } catch (err: any) {
+      console.error("Intensive analysis error:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to analyze GPS track." });
+    }
+  });
+
+
   // Library API: Search tracks passing through map bounds
   app.get("/api/library/search-by-bounds", (req, res) => {
     try {
@@ -1112,30 +1504,40 @@ async function startServer() {
         hasTimestamps
       } = req.body;
 
-      if (!id || !name || !points || !Array.isArray(points)) {
-        return res.status(400).json({ success: false, error: "Incomplete track data. Missing id, name, or points array." });
+      if (!id || typeof id !== "string" || !name || typeof name !== "string" || !points || !Array.isArray(points)) {
+        return res.status(400).json({ success: false, error: "Incomplete track data. Missing or invalid id, name, or points array." });
       }
 
-      const tagsStr = Array.isArray(tags) ? tags.join(",") : (tags || "");
+      if (id.length > 128 || name.length > 500) {
+        return res.status(400).json({ success: false, error: "Track id or name exceeds maximum allowed length." });
+      }
+
+      if (points.length > 100000) {
+        return res.status(400).json({ success: false, error: "Points array exceeds maximum allowed length of 100,000 points." });
+      }
+
+      const tagsStr = Array.isArray(tags) ? tags.slice(0, 50).join(",").slice(0, 1000) : String(tags || "").slice(0, 1000);
+      const safeDesc = String(description || "").slice(0, 5000);
+      const safeActivityType = String(activityType || "cycling").slice(0, 50);
 
       saveTrack({
-        id,
-        name,
+        id: id.trim(),
+        name: name.trim(),
         distance: parseFloat(String(distance)) || 0,
         ascent: parseFloat(String(ascent)) || 0,
         descent: parseFloat(String(descent)) || 0,
         duration: duration ? parseInt(String(duration), 10) : undefined,
-        activityType,
-        description,
+        activityType: safeActivityType,
+        description: safeDesc,
         tags: tagsStr,
-        dateCreated,
-        originalFilename,
+        dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined,
+        originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : undefined,
         points,
         powerStats,
         surfaceStats,
         climbs,
         maxSlope: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : undefined,
-        color,
+        color: color ? String(color).slice(0, 30) : undefined,
         hasTimestamps: hasTimestamps === true || hasTimestamps === 1
       });
 
@@ -1150,20 +1552,27 @@ async function startServer() {
   app.put("/api/library/:id", (req, res) => {
     try {
       const { id } = req.params;
+      if (!id || typeof id !== "string" || id.length > 128) {
+        return res.status(400).json({ success: false, error: "Invalid track ID." });
+      }
+
       const { name, description, tags, activityType, dateCreated } = req.body;
 
-      if (!name) {
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
         return res.status(400).json({ success: false, error: "Name is a required field." });
       }
 
-      const tagsStr = Array.isArray(tags) ? tags.join(",") : (tags || "");
+      const safeName = name.trim().slice(0, 500);
+      const tagsStr = Array.isArray(tags) ? tags.slice(0, 50).join(",").slice(0, 1000) : String(tags || "").slice(0, 1000);
+      const safeDesc = String(description || "").slice(0, 5000);
+      const safeActivityType = String(activityType || "cycling").slice(0, 50);
 
       updateTrackMetadata(id, {
-        name,
-        description,
+        name: safeName,
+        description: safeDesc,
         tags: tagsStr,
-        activityType,
-        dateCreated
+        activityType: safeActivityType,
+        dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined
       });
 
       res.json({ success: true });
@@ -1177,6 +1586,9 @@ async function startServer() {
   app.delete("/api/library/:id", (req, res) => {
     try {
       const { id } = req.params;
+      if (!id || typeof id !== "string" || id.length > 128) {
+        return res.status(400).json({ success: false, error: "Invalid track ID." });
+      }
       deleteTrack(id);
       res.json({ success: true });
     } catch (err: any) {
@@ -1284,8 +1696,11 @@ async function startServer() {
       try {
         const files = fs.readdirSync(dir);
         for (const file of files) {
-          if (file.endsWith('.db') || file.endsWith('.sqlite')) {
-            if (file === 'gpx_library.db') continue; // skip app database
+          // Skip hidden files, system files, and internal project configurations
+          if (file.startsWith('.') || file.startsWith('_') || file === 'node_modules' || file === 'dist') continue;
+          
+          if (file.endsWith('.db') || file.endsWith('.sqlite') || file.endsWith('.sqlite3') || file.endsWith('.fit')) {
+            if (file === 'gpx_library.db') continue; // skip internal app database
             const fullPath = path.join(dir, file);
             const stats = fs.statSync(fullPath);
             if (stats.isFile()) {
@@ -1718,8 +2133,34 @@ async function startServer() {
     if (!filepath || typeof filepath !== "string") {
       return { valid: false, absolutePath: "", error: "Ungültiger Dateipfad angegeben." };
     }
+
+    // Reject null byte injection or suspicious control characters
+    if (filepath.includes('\0') || filepath.length > 512) {
+      return { valid: false, absolutePath: "", error: "Ungültige Zeichen im Dateipfad." };
+    }
+
     const absolutePath = path.resolve(filepath);
     const workspaceRoot = path.resolve(process.cwd());
+
+    // Whitelist allowed extensions for database inspection and parsing
+    const ext = path.extname(absolutePath).toLowerCase();
+    const allowedExtensions = [".db", ".sqlite", ".sqlite3", ".fit", ".gpx", ".json", ".csv"];
+    if (!allowedExtensions.includes(ext)) {
+      return { valid: false, absolutePath, error: "Dateiformat nicht zulässig. Erlaubt sind nur: .db, .sqlite, .sqlite3, .fit, .gpx, .json, .csv" };
+    }
+
+    // Blacklist sensitive configuration or system files
+    const basename = path.basename(absolutePath).toLowerCase();
+    const sensitiveFiles = [".env", ".env.example", ".gitignore", "package.json", "package-lock.json", "server.ts", "tsconfig.json", "vite.config.ts"];
+    if (sensitiveFiles.includes(basename) || basename.startsWith(".git") || basename.startsWith(".aistudio")) {
+      return { valid: false, absolutePath, error: "Zugriff auf diese Systemdatei ist aus Sicherheitsgründen verweigert." };
+    }
+
+    // Disallow targeting the main application database directly for ad-hoc diagnosis
+    const appDbPath = path.resolve(path.join(workspaceRoot, 'data', 'gpx_library.db'));
+    if (absolutePath === appDbPath) {
+      return { valid: false, absolutePath, error: "Zugriff auf die interne Systemdatenbank verweigert." };
+    }
 
     if (!fs.existsSync(absolutePath)) {
       return { valid: false, absolutePath, error: "Datei wurde auf dem Server nicht gefunden." };
@@ -1730,11 +2171,11 @@ async function startServer() {
       const realWorkspace = fs.realpathSync(workspaceRoot);
       const relativePath = path.relative(realWorkspace, realPath);
       if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-        return { valid: false, absolutePath, error: "Zugriff verweigert. Es dürfen nur Dateien innerhalb des Workspace geladen werden." };
+        return { valid: false, absolutePath: "", error: "Zugriff verweigert. Es dürfen nur Dateien innerhalb des Workspace geladen werden." };
       }
       return { valid: true, absolutePath: realPath };
     } catch (e: any) {
-      return { valid: false, absolutePath, error: `Pfadüberprüfung fehlgeschlagen: ${e.message}` };
+      return { valid: false, absolutePath: "", error: `Pfadüberprüfung fehlgeschlagen: ${e.message}` };
     }
   }
 
@@ -2036,10 +2477,10 @@ async function startServer() {
   app.get("/api/activity-track-full", (req, res) => {
     try {
       const id = req.query.id as string;
-      if (!id) {
-        return res.status(400).json({ success: false, error: "Missing activity ID" });
+      if (!id || typeof id !== "string" || id.length > 128) {
+        return res.status(400).json({ success: false, error: "Missing or invalid activity ID" });
       }
-      const record = getGarminActivityById(id);
+      const record = getGarminActivityById(id.trim());
       if (!record) {
         return res.status(404).json({ success: false, error: "Activity not found" });
       }
@@ -2074,10 +2515,13 @@ async function startServer() {
   app.post("/api/versions", (req, res) => {
     try {
       const { version, changelog } = req.body;
-      if (!version || !changelog) {
-        return res.status(400).json({ success: false, error: "Missing required parameters: version and changelog." });
+      if (!version || !changelog || typeof version !== "string" || typeof changelog !== "string") {
+        return res.status(400).json({ success: false, error: "Missing or invalid required parameters: version and changelog." });
       }
-      const success = addAppVersion(String(version), String(changelog));
+      if (version.length > 32 || changelog.length > 50000) {
+        return res.status(400).json({ success: false, error: "Version or changelog exceeds maximum allowed length." });
+      }
+      const success = addAppVersion(version.trim(), changelog.trim());
       if (success) {
         res.json({ success: true, message: "Version persisted successfully." });
       } else {
@@ -2104,19 +2548,23 @@ async function startServer() {
   app.post("/api/settings", (req, res) => {
     try {
       const { key, value, settings } = req.body;
-      if (settings && typeof settings === "object") {
+      const forbiddenKeys = ["__proto__", "constructor", "prototype"];
+
+      if (settings && typeof settings === "object" && !Array.isArray(settings)) {
         for (const [k, v] of Object.entries(settings)) {
-          saveSetting(k, String(v));
+          if (!forbiddenKeys.includes(k) && typeof k === "string" && k.length <= 128) {
+            saveSetting(k, String(v).slice(0, 50000));
+          }
         }
         return res.json({ success: true, message: "Settings saved successfully." });
       }
 
-      if (key !== undefined) {
-        saveSetting(String(key), String(value ?? ""));
+      if (key !== undefined && typeof key === "string" && !forbiddenKeys.includes(key) && key.length <= 128) {
+        saveSetting(key, String(value ?? "").slice(0, 50000));
         return res.json({ success: true, message: `Setting '${key}' saved successfully.` });
       }
 
-      return res.status(400).json({ success: false, error: "Invalid request payload. Must supply 'key' & 'value' or 'settings' object." });
+      return res.status(400).json({ success: false, error: "Invalid request payload. Must supply valid 'key' & 'value' or 'settings' object." });
     } catch (err: any) {
       console.error("Failed to save settings:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to save settings" });

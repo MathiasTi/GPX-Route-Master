@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, RefreshCw, Compass, ArrowLeftRight, Navigation, MapPin } from 'lucide-react';
+import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, RefreshCw, Compass, ArrowLeftRight, Navigation, MapPin, ArrowUpDown, Plus } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl } from '../utils/api';
 import { calculateElevationStats, parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
@@ -10,6 +10,8 @@ interface TrackLibraryProps {
   onActiveTrackId?: string | null;
   selectionBounds?: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null;
   onClearSelection?: () => void;
+  workspaceTracks?: GPXTrack[];
+  onSaveWorkspaceToLibrary?: () => Promise<void>;
 }
 
 interface LibraryTrackThin {
@@ -205,14 +207,25 @@ function isCyclingType(type: string | undefined, name?: string): boolean {
 }
 
 
-export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiveTrackId, selectionBounds, onClearSelection }) => {
+export const TrackLibrary: React.FC<TrackLibraryProps> = ({ 
+  onLoadTrack, 
+  onActiveTrackId, 
+  selectionBounds, 
+  onClearSelection,
+  workspaceTracks,
+  onSaveWorkspaceToLibrary
+}) => {
   const [tracks, setTracks] = useState<LibraryTrackThin[]>([]);
   const [boundsTracks, setBoundsTracks] = useState<LibraryTrackThin[]>([]);
   const [isBoundsLoading, setIsBoundsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'gpx' | 'garmin'>('all');
+  const [sortBy, setSortBy] = useState<'stage' | 'date-desc' | 'date-asc' | 'dist-desc' | 'ascent-desc'>('stage');
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingAll, setIsLoadingAll] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [isSavingBatch, setIsSavingBatch] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
@@ -259,6 +272,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
   // Local message and deletion prompt state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState<boolean>(false);
+  const [isClearingAll, setIsClearingAll] = useState<boolean>(false);
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -306,8 +321,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             id: `garmin-act-${act.id}`,
             name: act.name || 'Garmin Aktivität',
             distance: act.distance || 0,
-            ascent: act.ascent || 0,
-            descent: act.descent || 0,
+            ascent: Math.round(act.ascent || 0),
+            descent: Math.round(act.descent || 0),
             duration: act.duration,
             activityType: type as 'cycling' | 'running',
             description: act.description || act.location || "",
@@ -335,6 +350,74 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       setIsLoading(false);
     }
   }, [searchQuery, activityFilter]);
+
+  // Seed GPX reference tours from /gpx folder
+  const handleSeedCuratedTours = async (force = false) => {
+    setIsSeeding(true);
+    try {
+      const res = await fetch(getApiUrl('/api/library/seed-tours'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`${data.seeded ?? 7} GPX-Touren aus /gpx erfolgreich in der Bibliothek bereitgestellt!`, 'success');
+        await fetchUnifiedLibrary();
+      } else {
+        showToast(data.error || 'Fehler beim Laden der GPX-Dateien.', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to seed GPX tours:', err);
+      showToast('GPX-Dateien aus /gpx konnten nicht geladen werden.', 'error');
+    } finally {
+      setIsSeeding(false);
+    }
+  };
+
+  // Save current workspace tracks to library
+  const handleSaveWorkspaceTracks = async () => {
+    if (!workspaceTracks || workspaceTracks.length === 0) {
+      showToast('Keine Aktivitäten im Workspace vorhanden.', 'error');
+      return;
+    }
+
+    if (onSaveWorkspaceToLibrary) {
+      setIsSavingBatch(true);
+      try {
+        await onSaveWorkspaceToLibrary();
+        showToast(`${workspaceTracks.length} Workspace-Touren erfolgreich gesichert!`, 'success');
+        await fetchUnifiedLibrary();
+      } catch (err) {
+        console.error('Batch save error:', err);
+        showToast('Fehler beim Speichern der Workspace-Touren.', 'error');
+      } finally {
+        setIsSavingBatch(false);
+      }
+      return;
+    }
+
+    setIsSavingBatch(true);
+    try {
+      const res = await fetch(getApiUrl('/api/library/save-batch'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: workspaceTracks })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`${data.savedCount} Workspace-Touren in der Bibliothek gesichert!`, 'success');
+        await fetchUnifiedLibrary();
+      } else {
+        showToast(data.error || 'Fehler beim Speichern der Touren.', 'error');
+      }
+    } catch (err) {
+      console.error('Batch save fetch error:', err);
+      showToast('Speichern fehlgeschlagen.', 'error');
+    } finally {
+      setIsSavingBatch(false);
+    }
+  };
 
   // Initial and reactive fetch
   useEffect(() => {
@@ -367,7 +450,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             track.points.forEach((p, idx) => {
               const angle = (idx / (ptsCount - 1)) * Math.PI;
               const elevationPhase = Math.sin(angle);
-              p.ele = parseFloat((baseElevation + elevationPhase * finalAscent).toFixed(1));
+              p.ele = Math.round(baseElevation + elevationPhase * finalAscent);
             });
             if (finalAscent === 0) {
               // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
@@ -375,7 +458,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
               track.points.forEach((p, idx) => {
                 const angle1 = (idx / (ptsCount - 1)) * Math.PI * 4; // 2 waves
                 const angle2 = (idx / (ptsCount - 1)) * Math.PI * 10; // 5 high frequency waves
-                p.ele = parseFloat((baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4).toFixed(1));
+                p.ele = Math.round(baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4);
               });
             }
           }
@@ -424,8 +507,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       
       const durationSec = act.duration || 3600;
       const distanceKm = act.distance || 10;
-      const ascent = act.ascent || 0;
-      const descent = act.descent || 0;
+      const ascent = Math.round(act.ascent || 0);
+      const descent = Math.round(act.descent || 0);
       const avgHr = act.avg_hr || undefined;
       const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
       
@@ -473,7 +556,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         points.forEach((p: any, idx: number) => {
           const angle = (idx / (ptsCount - 1)) * Math.PI;
           const elevationPhase = Math.sin(angle);
-          p.ele = parseFloat((baseElevation + elevationPhase * (finalAscent || 0)).toFixed(1));
+          p.ele = Math.round(baseElevation + elevationPhase * (finalAscent || 0));
         });
         if (!finalAscent && !finalDescent) {
           // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
@@ -481,7 +564,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
           points.forEach((p: any, idx: number) => {
             const angle1 = (idx / (ptsCount - 1)) * Math.PI * 4; // 2 waves
             const angle2 = (idx / (ptsCount - 1)) * Math.PI * 10; // 5 high frequency waves
-            p.ele = parseFloat((baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4).toFixed(1));
+            p.ele = Math.round(baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4);
           });
         }
       }
@@ -500,15 +583,19 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
         );
       }
       
+      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
+        ? calculateElevationStats(points)
+        : { maxSlope: 0 };
+
       const track: GPXTrack = {
         id: `garmin-act-${act.id || Date.now()}`,
         name: act.name || 'Garmin Aktivität',
         points,
         color: '#f97316', // Orange Garmin-branding
         distance: distanceKm,
-        ascent: finalAscent,
-        descent: finalDescent,
-        maxSlope: 0,
+        ascent: Math.round(finalAscent),
+        descent: Math.round(finalDescent),
+        maxSlope: calculatedMaxSlope,
         visible: true,
         activityType,
         duration: durationSec,
@@ -541,6 +628,28 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
       showToast('Löschvorgang fehlgeschlagen.', 'error');
     } finally {
       setConfirmDelete(null);
+    }
+  };
+
+  // Delete all GPX tracks from DB
+  const executeClearAllTracks = async () => {
+    setIsClearingAll(true);
+    try {
+      const response = await fetch(getApiUrl('/api/library/clear-all'), { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        setTracks(prev => prev.filter(t => t.isGarminActivity));
+        showToast('Alle GPX-Dateien wurden aus der Bibliothek gelöscht!');
+        await fetchUnifiedLibrary();
+      } else {
+        showToast(data.error || 'Fehler beim Löschen der Bibliothek.', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to clear library:', err);
+      showToast('Löschvorgang fehlgeschlagen.', 'error');
+    } finally {
+      setIsClearingAll(false);
+      setConfirmClearAll(false);
     }
   };
 
@@ -609,12 +718,83 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
     }
   };
 
-  // Filter combined list by source filter locally
-  const filteredTracks = tracks.filter(t => {
-    if (sourceFilter === 'gpx') return !t.isGarminActivity;
-    if (sourceFilter === 'garmin') return t.isGarminActivity;
-    return true;
-  });
+  // Helper to extract stage number from track name or filename
+  const extractStageNumber = (name?: string, filename?: string): number => {
+    const combined = `${name || ''} ${filename || ''}`;
+    const match = combined.match(/Tag\s*(\d+)/i) || combined.match(/Etappe\s*(\d+)/i) || combined.match(/Stage\s*(\d+)/i);
+    return match ? parseInt(match[1], 10) : 999;
+  };
+
+  // Filter and sort combined list by active source and sort criteria
+  const filteredTracks = useMemo(() => {
+    const list = tracks.filter(t => {
+      if (sourceFilter === 'gpx') return !t.isGarminActivity;
+      if (sourceFilter === 'garmin') return t.isGarminActivity;
+      return true;
+    });
+
+    return list.sort((a, b) => {
+      if (sortBy === 'stage') {
+        const stageA = extractStageNumber(a.name, a.originalFilename);
+        const stageB = extractStageNumber(b.name, b.originalFilename);
+        if (stageA !== stageB) return stageA - stageB;
+        return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'date-desc') {
+        const dateA = new Date(a.dateCreated || 0).getTime();
+        const dateB = new Date(b.dateCreated || 0).getTime();
+        if (dateB !== dateA) return dateB - dateA;
+        return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'date-asc') {
+        const dateA = new Date(a.dateCreated || 0).getTime();
+        const dateB = new Date(b.dateCreated || 0).getTime();
+        if (dateB !== dateA) return dateA - dateB;
+        return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'dist-desc') {
+        return (b.distance || 0) - (a.distance || 0);
+      }
+      if (sortBy === 'ascent-desc') {
+        return (b.ascent || 0) - (a.ascent || 0);
+      }
+      return 0;
+    });
+  }, [tracks, sourceFilter, sortBy]);
+
+  // Load all currently filtered GPX tracks into workspace
+  const handleLoadAllToWorkspace = async () => {
+    const gpxTracksToLoad = filteredTracks.filter(t => !t.isGarminActivity);
+    if (gpxTracksToLoad.length === 0) {
+      showToast('Keine GPX-Routen zum Laden vorhanden.', 'error');
+      return;
+    }
+    setIsLoadingAll(true);
+    try {
+      let loaded = 0;
+      for (const t of gpxTracksToLoad) {
+        const response = await fetch(getApiUrl(`/api/library/${t.id}`));
+        const data = await response.json();
+        if (data.success && data.track) {
+          const track = data.track as GPXTrack;
+          if (track.points) {
+            track.points = track.points.map(p => ({
+              ...p,
+              time: p.time ? new Date(p.time) : undefined
+            }));
+          }
+          onLoadTrack(track);
+          loaded++;
+        }
+      }
+      showToast(`${loaded} Touren erfolgreich in den Workspace geladen!`, 'success');
+    } catch (e) {
+      console.error('Error loading all tracks:', e);
+      showToast('Fehler beim Laden aller Touren.', 'error');
+    } finally {
+      setIsLoadingAll(false);
+    }
+  };
 
   return (
     <div className="space-y-4 h-full flex flex-col">
@@ -787,6 +967,77 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             🏃 Lauf
           </button>
         </div>
+
+        {/* Sort Controls Bar */}
+        <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 dark:text-slate-400 px-0.5 pt-0.5">
+          <span className="font-semibold flex items-center gap-1 shrink-0">
+            <ArrowUpDown size={11} className="text-slate-400" />
+            Sortierung:
+          </span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as any)}
+            className="text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-md px-2 py-0.5 border border-slate-200 dark:border-slate-700 outline-none cursor-pointer focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="stage">Etappe / Name (1 → 7)</option>
+            <option value="date-desc">Datum (Neueste zuerst)</option>
+            <option value="date-asc">Datum (Älteste / Start)</option>
+            <option value="dist-desc">Distanz (Längste)</option>
+            <option value="ascent-desc">Höhenmeter (Meiste)</option>
+          </select>
+        </div>
+
+        {/* Quick Tour & Workspace Actions */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          <button
+            type="button"
+            disabled={isSeeding}
+            onClick={() => handleSeedCuratedTours(false)}
+            className="flex items-center gap-1 text-[9.5px] font-black bg-indigo-50 hover:bg-indigo-100 text-indigo-750 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 border border-indigo-200/60 dark:border-indigo-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+            title="GPX-Dateien aus dem Ordner /gpx zur Bibliothek hinzufügen"
+          >
+            <RefreshCw size={11} className={isSeeding ? "animate-spin text-indigo-600" : "text-indigo-600 dark:text-indigo-400"} />
+            <span>{isSeeding ? "Lade /gpx..." : "📁 GPX aus /gpx laden"}</span>
+          </button>
+
+          {filteredTracks.some(t => !t.isGarminActivity) && (
+            <button
+              type="button"
+              disabled={isLoadingAll}
+              onClick={handleLoadAllToWorkspace}
+              className="flex items-center gap-1 text-[9.5px] font-black bg-blue-50 hover:bg-blue-100 text-blue-750 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50 border border-blue-200/60 dark:border-blue-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+              title="Alle gefilterten GPX-Touren gleichzeitig in den Workspace laden"
+            >
+              <Plus size={11} className={isLoadingAll ? "animate-spin text-blue-600" : "text-blue-600 dark:text-blue-400"} />
+              <span>{isLoadingAll ? "Lade alle..." : `➕ Alle in Workspace (${filteredTracks.filter(t => !t.isGarminActivity).length})`}</span>
+            </button>
+          )}
+
+          {workspaceTracks && workspaceTracks.length > 0 && (
+            <button
+              type="button"
+              disabled={isSavingBatch}
+              onClick={handleSaveWorkspaceTracks}
+              className="flex items-center gap-1 text-[9.5px] font-black bg-emerald-50 hover:bg-emerald-100 text-emerald-750 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/50 border border-emerald-200/60 dark:border-emerald-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+              title="Alle aktuell im Workspace geöffneten Touren dauerhaft in die SQLite-Bibliothek sichern"
+            >
+              <Check size={11} className={isSavingBatch ? "animate-spin text-emerald-600" : "text-emerald-600 dark:text-emerald-400"} />
+              <span>{isSavingBatch ? "Sichere..." : `📥 Workspace sichern (${workspaceTracks.length})`}</span>
+            </button>
+          )}
+
+          {tracks.some(t => !t.isGarminActivity) && (
+            <button
+              type="button"
+              onClick={() => setConfirmClearAll(true)}
+              className="flex items-center gap-1 text-[9.5px] font-black bg-rose-50 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200/60 dark:border-rose-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs"
+              title="Alle GPX-Dateien und Strecken aus der Bibliothek löschen"
+            >
+              <Trash2 size={11} className="text-rose-600 dark:text-rose-400" />
+              <span>Bibliothek leeren</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Library Tracks Listing Container */}
@@ -802,12 +1053,37 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
             <p className="text-[10px] text-slate-500">{error}</p>
           </div>
         ) : filteredTracks.length === 0 ? (
-          <div className="text-center py-16 px-4 bg-slate-50/50 dark:bg-slate-950/35 border border-dashed border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5">
-            <Compass className="w-6 h-6 text-slate-300 mx-auto" />
-            <p className="text-xs font-semibold text-slate-505 dark:text-slate-400">Keine Routen oder Aktivitäten gefunden</p>
-            <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed">
-              Lade GPX-Routen hoch oder importiere Deine Garmin SQLite-Datenbank, um Deine persönliche Aktivitätsbibliothek anzulegen.
-            </p>
+          <div className="text-center py-12 px-4 bg-slate-50/50 dark:bg-slate-950/35 border border-dashed border-slate-200 dark:border-slate-800/80 rounded-xl space-y-3">
+            <Compass className="w-7 h-7 text-indigo-400 mx-auto" />
+            <div className="space-y-1">
+              <p className="text-xs font-bold text-slate-700 dark:text-slate-200">Keine Routen oder Aktivitäten gefunden</p>
+              <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed">
+                Lade GPX-Dateien aus dem Ordner /gpx oder speichere Deine geladenen Workspace-Aktivitäten dauerhaft in der Bibliothek.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 pt-1 max-w-xs mx-auto">
+              <button
+                type="button"
+                disabled={isSeeding}
+                onClick={() => handleSeedCuratedTours(true)}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={isSeeding ? "animate-spin" : ""} />
+                <span>GPX-Dateien aus /gpx laden</span>
+              </button>
+
+              {workspaceTracks && workspaceTracks.length > 0 && (
+                <button
+                  type="button"
+                  disabled={isSavingBatch}
+                  onClick={handleSaveWorkspaceTracks}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Check size={13} className={isSavingBatch ? "animate-spin" : ""} />
+                  <span>Alle {workspaceTracks.length} Workspace-Touren sichern</span>
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           filteredTracks.map((track) => {
@@ -1261,6 +1537,53 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({ onLoadTrack, onActiv
                   className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-700 rounded-lg text-[11px] font-extrabold text-white hover:shadow-md cursor-pointer"
                 >
                   Ja, Löschen
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirm Clear All dialog */}
+      <AnimatePresence>
+        {confirmClearAll && (
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 z-[150]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 rounded-2xl p-4 w-full shadow-2xl space-y-3.5 relative text-center"
+            >
+              <h3 className="text-xs font-black text-rose-600 dark:text-rose-400 flex items-center justify-center gap-1.5 uppercase tracking-wider">
+                <Trash2 className="w-4 h-4" />
+                Alle GPX-Dateien löschen?
+              </h3>
+              <p className="text-[11px] font-semibold text-slate-655 dark:text-slate-300 leading-normal">
+                Möchtest Du wirklich <span className="font-extrabold text-rose-600 dark:text-rose-400">alle GPX-Dateien und Strecken</span> unwiderruflich aus der Bibliothek löschen?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={isClearingAll}
+                  onClick={() => setConfirmClearAll(false)}
+                  className="flex-1 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 rounded-lg text-[11px] font-extrabold text-slate-500 hover:text-slate-700 dark:text-slate-400 cursor-pointer disabled:opacity-50"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingAll}
+                  onClick={executeClearAllTracks}
+                  className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-700 rounded-lg text-[11px] font-extrabold text-white hover:shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  {isClearingAll ? (
+                    <>
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      Löschen...
+                    </>
+                  ) : (
+                    'Ja, alle löschen'
+                  )}
                 </button>
               </div>
             </motion.div>

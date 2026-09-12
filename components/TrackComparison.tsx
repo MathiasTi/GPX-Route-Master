@@ -390,28 +390,32 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="fixed inset-0 z-[2000] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6 md:p-10 flex items-center justify-center overflow-hidden"
+      className="fixed inset-0 z-[2000] bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 md:p-10 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center justify-center overflow-hidden cursor-pointer"
       onClick={onClose}
     >
-      <div className="bg-white dark:bg-slate-900 w-full max-w-6xl h-full rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-900 dark:text-zinc-100" onClick={(e) => e.stopPropagation()}>
+      <div 
+        className="bg-white dark:bg-slate-900 w-full max-w-6xl max-h-[calc(100dvh-1rem)] sm:h-full rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-900 dark:text-zinc-100 cursor-default" 
+        onClick={(e) => e.stopPropagation()}
+      >
         
         {/* Header Section */}
-        <div className="p-6 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-100 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-400 rounded-2xl">
-              <ArrowLeftRight size={24} className="stroke-[2.5]" />
+        <div className="p-3 sm:p-6 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex justify-between items-center shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2 sm:p-2.5 bg-indigo-100 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-400 rounded-2xl shrink-0">
+              <ArrowLeftRight size={22} className="stroke-[2.5]" />
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-slate-900 dark:text-white">Aktivitäten-Vergleich</h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest font-extrabold text-indigo-650 dark:text-indigo-400">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base sm:text-xl font-bold text-slate-900 dark:text-white truncate">Aktivitäten-Vergleich</h2>
+              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest font-extrabold text-indigo-650 dark:text-indigo-400 truncate hidden sm:block">
                 {isRunningComp ? '🏃‍♀️ Lauf- & Sportdatenanalyse' : '🚴‍♀️ Radsport Leistungsanalyse'}
               </p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl transition-all"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-xl transition-all shrink-0 cursor-pointer"
             title="Schließen"
+            aria-label="Schließen"
           >
             <X size={20} />
           </button>

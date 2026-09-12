@@ -52,6 +52,8 @@ export const ClimbMiniMap: React.FC<ClimbMiniMapProps> = ({ points, color, activ
         <LeafletTileLayer
           url={layerConfig.url}
           attribution={layerConfig.attribution}
+          maxZoom={20}
+          maxNativeZoom={layerConfig.maxZoom || 19}
         />
         <LeafletPolyline
           positions={points.map(p => [p.lat, p.lng])}

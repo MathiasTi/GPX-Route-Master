@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useRef, useState } from 'react';
+import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import Map, { Source, Layer, MapRef, NavigationControl, Marker, Popup } from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -79,7 +79,26 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         exaggeration: 1.5
       }
     };
-  }, [layerConfig.url, layerConfig.attribution]);
+  }, [layerConfig.url, layerConfig.attribution, layerConfig.maxZoom]);
+
+  const transformRequest = useCallback((url: string, resourceType?: string) => {
+    if (resourceType === 'Tile' && url.includes('tile.opentopomap.org')) {
+      const match = url.match(/tile\.opentopomap\.org\/(\d+)\/(\d+)\/(\d+)\.png/);
+      if (match && parseInt(match[1], 10) > 17) {
+        const [, z, x, y] = match;
+        return { url: `https://a.tile.openstreetmap.org/${z}/${x}/${y}.png` };
+      }
+    }
+    return { url };
+  }, []);
+
+  const handleMapError = useCallback((e: any) => {
+    const errorMsg = e?.error?.message || '';
+    if (errorMsg.includes('tile') || errorMsg.includes('Load failed') || e?.error?.status === 0) {
+      return;
+    }
+    console.warn('Map3D error:', e);
+  }, []);
 
   const visibleTracks = useMemo(() => {
     return tracks.filter(t => t.visible && t.points.length >= 2);
@@ -317,6 +336,8 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         }}
         maxPitch={75}
         mapStyle={mapStyle as any}
+        transformRequest={transformRequest as any}
+        onError={handleMapError}
         onMove={(e) => {
           if (isFlying) return;
           setPitch(e.viewState.pitch);

@@ -180,38 +180,43 @@ export const TrackValidationModal: React.FC<TrackValidationModalProps> = ({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
+      <div 
+        className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-slate-900/70 backdrop-blur-sm overflow-y-auto cursor-pointer"
+        onClick={onClose}
+      >
         <motion.div
           initial={{ opacity: 0, scale: 0.96, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 10 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
-          className="relative w-full max-w-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-1rem)] sm:max-h-[90vh] cursor-default"
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850/50">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 rounded-xl">
-                <ShieldCheck className="w-6 h-6" />
+          <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850/50 gap-2 shrink-0">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+              <div className="p-2 bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 rounded-xl shrink-0">
+                <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                  Track-Validierung & Plausibilitätsprüfung
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm sm:text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2 truncate">
+                  <span className="truncate">Track-Validierung</span>
                   {isPreCheck && (
-                    <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300 rounded">
+                    <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300 rounded shrink-0">
                       Pre-Check
                     </span>
                   )}
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Prüft GPS-Koordinaten, Null-Island-Ausreißer, Teleportationssprünge und Höhenkonsistenz vor dem Workspace-Import.
+                <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
+                  Prüft GPS-Koordinaten, Null-Island-Ausreißer, Teleportationssprünge und Höhenkonsistenz.
                 </p>
               </div>
             </div>
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-xl transition-colors shrink-0 cursor-pointer"
               title="Schließen"
+              aria-label="Schließen"
             >
               <X className="w-5 h-5" />
             </button>
@@ -347,6 +352,106 @@ export const TrackValidationModal: React.FC<TrackValidationModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Start Point & Route Entry Plausibility Card */}
+            {currentReport.startPointValidation && (
+              <div className={`p-4 rounded-xl border transition-all ${
+                currentReport.startPointValidation.isSignificantDeviation
+                  ? 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800/60'
+                  : 'bg-slate-50/80 dark:bg-slate-800/40 border-slate-200 dark:border-slate-800'
+              }`}>
+                <div className="flex items-start justify-between gap-2 mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-1.5 rounded-lg ${
+                      currentReport.startPointValidation.isSignificantDeviation
+                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/60 dark:text-amber-300'
+                        : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300'
+                    }`}>
+                      <MapPin className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                        Startpunkt- & Einstiegsort-Plausibilität
+                        {currentReport.startPointValidation.isSignificantDeviation ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/80 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
+                            Abweichung erkannt
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300">
+                            Plausibel
+                          </span>
+                        )}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Automatisierter Abgleich mit bekannten Ortsmittelpunkten, Pässen und Routeneinstiegen
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div className="p-2.5 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80">
+                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 block mb-0.5">
+                      Erster Trackpunkt
+                    </span>
+                    <span className="font-mono text-slate-800 dark:text-slate-200 font-medium">
+                      {currentReport.startPointValidation.firstPoint.lat.toFixed(5)}°, {currentReport.startPointValidation.firstPoint.lng.toFixed(5)}°
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80">
+                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 block mb-0.5">
+                      Nächster Ortsmittelpunkt / Pass
+                    </span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200">
+                      {currentReport.startPointValidation.nearestCentroidName}
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                      ({currentReport.startPointValidation.distanceToNearestCentroidKm} km entfernt)
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80">
+                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 block mb-0.5">
+                      Erwarteter Einstiegsort
+                    </span>
+                    {currentReport.startPointValidation.expectedLocationName ? (
+                      <div>
+                        <span className="font-medium text-slate-800 dark:text-slate-200">
+                          {currentReport.startPointValidation.expectedLocationName}
+                        </span>
+                        <span className={`text-[11px] block font-semibold ${
+                          currentReport.startPointValidation.isSignificantDeviation
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-emerald-600 dark:text-emerald-400'
+                        }`}>
+                          {currentReport.startPointValidation.distanceToExpectedKm !== undefined
+                            ? `${currentReport.startPointValidation.distanceToExpectedKm} km Abweichung`
+                            : 'Identifiziert'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-500 dark:text-slate-400 italic">
+                        Kein expliziter Ortsname im Titel
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {currentReport.startPointValidation.deviationReason && (
+                  <div className={`mt-2.5 px-3 py-2 rounded-lg text-xs flex items-start gap-2 ${
+                    currentReport.startPointValidation.isSignificantDeviation
+                      ? 'bg-amber-100/70 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200 border border-amber-200/80 dark:border-amber-800/40'
+                      : 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/30'
+                  }`}>
+                    <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      currentReport.startPointValidation.isSignificantDeviation ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'
+                    }`} />
+                    <span>{currentReport.startPointValidation.deviationReason}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Issues Breakdown List */}
             <div className="space-y-3">

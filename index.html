@@ -1,10 +1,36 @@
-
 <!DOCTYPE html>
 <html lang="de">
 <head>
     <meta charset="UTF-8">
+    <script>
+      (function() {
+        try {
+          var origin = '';
+          if (window.location && window.location.href && window.location.href.indexOf('http') === 0) {
+            var m = window.location.href.match(/(https?:\/\/[^\/\s\?#]+)/i);
+            if (m) origin = m[1];
+          }
+          if (!origin && document.referrer && document.referrer.indexOf('http') === 0) {
+            var m2 = document.referrer.match(/(https?:\/\/[^\/\s\?#]+)/i);
+            if (m2) origin = m2[1];
+          }
+          if (!origin) {
+            origin = 'https://ais-dev-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app';
+          }
+          window.__APP_ORIGIN__ = origin;
+          if (!document.querySelector('base')) {
+            var base = document.createElement('base');
+            base.href = origin + '/';
+            document.head.appendChild(base);
+          }
+        } catch (e) {}
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>GPX Route Master</title>
+    <meta name="description" content="A professional GPX and FIT file visualizer, editor, and multi-track analysis tool with pre-import GPS validation, outlier detection, 2D/3D elevation profiling, surface analysis, temporal gap splitting, and performance telemetry.">
+    <meta property="og:title" content="GPX Route Master">
+    <meta property="og:description" content="A professional GPX and FIT file visualizer, editor, and multi-track analysis tool with pre-import GPS validation, outlier detection, 2D/3D elevation profiling, surface analysis, temporal gap splitting, and performance telemetry.">
     <!-- iOS / Android Web App QoL -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12,7 +38,135 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="format-detection" content="telephone=no">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script>
+      (function() {
+        window.__cleanAndReload = function() {
+          try {
+            if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                if (regs && regs.length) {
+                  return Promise.all(regs.map(function(r) { return r.unregister(); }));
+                }
+              }).catch(function() {});
+            }
+            if (typeof caches !== 'undefined') {
+              caches.keys().then(function(keys) {
+                return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+              }).catch(function() {});
+            }
+          } catch (e) {}
+          var target = window.location.pathname + (window.location.search ? window.location.search + '&clean_sw=1' : '?clean_sw=1');
+          window.location.replace(target);
+        };
+
+        function showFatalFallback(title, msg, details) {
+          function render() {
+            var root = document.getElementById('root') || document.body;
+            if (root && (!root.firstElementChild || root.innerHTML.trim() === '')) {
+              root.innerHTML = '<div style="font-family:system-ui,-apple-system,sans-serif;padding:32px;max-width:560px;margin:40px auto;background:#fff;border-radius:24px;box-shadow:0 20px 40px rgba(0,0,0,0.08);color:#0f172a;border:1px solid #fecdd3;">' +
+                '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">' +
+                '<div style="width:40px;height:40px;border-radius:12px;background:#ffe4e6;color:#e11d48;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:20px;">!</div>' +
+                '<h2 style="color:#0f172a;margin:0;font-size:18px;font-weight:700;">' + (title || 'Anwendungs-Initialisierungsfehler') + '</h2>' +
+                '</div>' +
+                '<p style="font-size:13px;color:#64748b;line-height:1.6;margin:0 0 16px 0;">' + (msg || 'Ein Skript konnte nicht geladen oder initialisiert werden:') + '</p>' +
+                '<pre style="background:#f8fafc;padding:14px;border-radius:12px;font-size:12px;overflow:auto;color:#be123c;white-space:pre-wrap;border:1px solid #e2e8f0;">' + (details || '') + '</pre>' +
+                '<div style="margin-top:20px;display:flex;gap:10px;">' +
+                '<button onclick="window.__cleanAndReload()" style="background:#2563eb;color:#fff;border:none;padding:10px 18px;border-radius:10px;cursor:pointer;font-weight:600;font-size:13px;">Service Worker bereinigen &amp; Starten</button>' +
+                '<button onclick="window.location.reload()" style="background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;padding:10px 18px;border-radius:10px;cursor:pointer;font-size:13px;">Neu laden</button>' +
+                '</div></div>';
+            }
+          }
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', render);
+          } else {
+            render();
+          }
+        }
+
+        // Automatic detection of active service worker controller:
+        // When an old service worker is currently controlling this page session, module fetches (Vite/React)
+        // are intercepted and fail on Cloud Run redirects. Unregister immediately and reload with ?clean_sw=1!
+        if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+          var isControlled = Boolean(navigator.serviceWorker.controller);
+          navigator.serviceWorker.getRegistrations().then(function(regs) {
+            if (regs && regs.length > 0) {
+              console.warn('[SW AutoPurge] Unregistering', regs.length, 'active service workers...');
+              var unregisters = regs.map(function(r) { return r.unregister(); });
+              return Promise.all(unregisters).then(function() {
+                if (typeof caches !== 'undefined') {
+                  return caches.keys().then(function(keys) {
+                    return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+                  });
+                }
+              }).then(function() {
+                if (isControlled) {
+                  var reloadKey = '__sw_purged_reload_ts';
+                  var lastReload = sessionStorage.getItem(reloadKey);
+                  var now = Date.now();
+                  if (!lastReload || (now - parseInt(lastReload, 10)) > 6000) {
+                    sessionStorage.setItem(reloadKey, String(now));
+                    console.info('[SW AutoPurge] Reloading frame to detach defunct controller...');
+                    window.__cleanAndReload();
+                  }
+                }
+              });
+            }
+          }).catch(function(e) {
+            console.warn('[SW AutoPurge] Unregister check failed:', e);
+          });
+        }
+
+        // Capture phase listener for script and link loading errors
+        window.addEventListener('error', function(event) {
+          var target = event.target;
+          if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+            var resourceUrl = target.src || target.href || 'Unbekannte Ressource';
+            console.warn('[SW Intercept Catch] Script/resource loading failure on:', resourceUrl);
+            
+            // Auto unregister and reload once if blocked by service worker
+            if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                return Promise.all(regs.map(function(r) { return r.unregister(); }));
+              }).then(function() {
+                if (typeof caches !== 'undefined') {
+                  return caches.keys().then(function(keys) {
+                    return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+                  });
+                }
+              }).then(function() {
+                var autoReloadKey = '__sw_emergency_reload_ts';
+                var last = sessionStorage.getItem(autoReloadKey);
+                var now = Date.now();
+                if (!last || (now - parseInt(last, 10)) > 6000) {
+                  sessionStorage.setItem(autoReloadKey, String(now));
+                  window.__cleanAndReload();
+                  return;
+                }
+              });
+            }
+
+            showFatalFallback(
+              'Browser-Verbindung durch alten Service-Worker blockiert',
+              'Ein im Browser gespeicherter Service-Worker hat die Anfrage nach Modulen abgefangen und blockiert.',
+              'Fehler beim Laden von: ' + resourceUrl + '\n\nKlicke unten auf den blauen Button, um den Worker zu deregistrieren und die Seite neu zu laden.'
+            );
+            return;
+          }
+
+          showFatalFallback(
+            'Laufzeit- oder Skriptfehler',
+            'Ein Fehler ist beim Laden der Anwendung aufgetreten:',
+            (event.message || 'Unbekannter Fehler') + (event.filename ? '\n' + event.filename + ':' + event.lineno : '')
+          );
+        }, true); // true is mandatory for capturing non-bubbling script error events
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var r = event.reason;
+          var msg = r ? (r.stack || r.message || String(r)) : 'Unbekannter Promise-Fehler';
+          showFatalFallback('Unbehandelte Ausnahme (Promise)', 'Ein asynchroner Vorgang ist fehlgeschlagen:', msg);
+        });
+      })();
+    </script>
     <style>
         :root {
           --sat: env(safe-area-inset-top, 0px);
@@ -74,6 +228,6 @@
 </head>
 <body>
     <div id="root"></div>
-<script type="module" src="./index.tsx"></script>
+<script type="module" src="/index.tsx"></script>
 </body>
 </html>

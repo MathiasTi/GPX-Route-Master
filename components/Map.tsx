@@ -6,7 +6,10 @@ import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '.
 import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX } from '../utils/gpxUtils';
 import { getApiUrl } from '../utils/api';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles } from 'lucide-react';
+import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
+import { toValidTimestampMs } from '../domain/telemetry/safeTime';
+import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -103,6 +106,7 @@ interface MapProps {
   onSelectGap?: (gap: TimeGap) => void;
   onSplitGap?: (originalTrackId: string, splitIndex: number) => void;
   onCloseGap?: (originalTrackId: string, gap: TimeGap) => void;
+  onOpenShortcuts?: () => void;
 }
 
 const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) => {
@@ -706,7 +710,8 @@ const Map: React.FC<MapProps> = ({
   selectedGapId,
   onSelectGap,
   onSplitGap,
-  onCloseGap
+  onCloseGap,
+  onOpenShortcuts
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -816,8 +821,15 @@ const Map: React.FC<MapProps> = ({
     }
   }, [showDbRunningHeatmap, dbRunningPaths.length]);
 
-  // Local state for POI options
-  const [showPOIs, setShowPOIs] = useState(true);
+  // Local state for POI options (disabled by default for a clean, distraction-free map)
+  const [showPOIs, setShowPOIs] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('gpx_show_pois');
+      return saved === 'true'; // false by default
+    } catch (e) {
+      return false;
+    }
+  });
   const [poiFilters, setPoiFilters] = useState<Record<'water' | 'supermarket' | 'restaurant' | 'gas_station', boolean>>({
     water: true,
     supermarket: true,
@@ -1124,7 +1136,8 @@ const Map: React.FC<MapProps> = ({
         <LeafletTileLayer
           attribution={layer.attribution}
           url={layer.url}
-          maxZoom={layer.maxZoom || 19}
+          maxZoom={20}
+          maxNativeZoom={layer.maxZoom || 19}
         />
 
         <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
@@ -1330,16 +1343,50 @@ const Map: React.FC<MapProps> = ({
                   },
                   mousemove: (e) => {
                     if (onHoverPoint) {
-                      let closestPoint = validPoints[0];
+                      let closestIndex = 0;
                       let minDiff = Infinity;
-                      for (const pt of validPoints) {
+                      for (let i = 0; i < validPoints.length; i++) {
+                        const pt = validPoints[i];
                         const diff = Math.abs(pt.lat - e.latlng.lat) + Math.abs(pt.lng - e.latlng.lng);
                         if (diff < minDiff) {
                           minDiff = diff;
-                          closestPoint = pt;
+                          closestIndex = i;
                         }
                       }
-                      onHoverPoint(closestPoint);
+                      const closestPoint = validPoints[closestIndex];
+                      let pointSlope = closestPoint.slope;
+                      if (pointSlope === undefined || !Number.isFinite(pointSlope)) {
+                        const prevIdx = Math.max(0, closestIndex - 2);
+                        const nextIdx = Math.min(validPoints.length - 1, closestIndex + 2);
+                        const pPrev = validPoints[prevIdx];
+                        const pNext = validPoints[nextIdx];
+                        if (pPrev && pNext && pPrev.ele !== undefined && pNext.ele !== undefined) {
+                          const distMeters = calculateDistance(pPrev, pNext) * 1000;
+                          if (distMeters >= 4) {
+                            pointSlope = Number((((pNext.ele - pPrev.ele) / distMeters) * 100).toFixed(1));
+                          } else {
+                            pointSlope = 0;
+                          }
+                        } else {
+                          pointSlope = 0;
+                        }
+                      }
+
+                      let pointDist = closestPoint.dist;
+                      if (pointDist === undefined || !Number.isFinite(pointDist)) {
+                        let d = 0;
+                        for (let k = 1; k <= closestIndex; k++) {
+                          d += calculateDistance(validPoints[k - 1], validPoints[k]);
+                        }
+                        pointDist = Number(d.toFixed(2));
+                      }
+
+                      onHoverPoint({
+                        ...closestPoint,
+                        slope: pointSlope,
+                        dist: pointDist,
+                        trackId: track.id
+                      } as GPXPoint);
                     }
                   },
                   mouseout: () => {
@@ -1436,8 +1483,10 @@ const Map: React.FC<MapProps> = ({
                 for (let i = 1; i < track.points.length; i++) {
                   const p = track.points[i];
                   const prevP = track.points[i - 1];
-                  if (p.time && prevP.time) {
-                    const diffMs = p.time.getTime() - prevP.time.getTime();
+                  const pMs = toValidTimestampMs(p.time);
+                  const prevMs = toValidTimestampMs(prevP.time);
+                  if (pMs !== undefined && prevMs !== undefined) {
+                    const diffMs = pMs - prevMs;
                     if (diffMs > 5 * 60 * 1000) {
                       pauses.push({
                         lat: prevP.lat,
@@ -1531,10 +1580,9 @@ const Map: React.FC<MapProps> = ({
               })()}
 
               {/* Start- and Endepunkte für die aktive Route */}
-              {isMarked && track.points.length > 0 && (() => {
-                const pts = track.points;
-                const startPt = pts[0];
-                const endPt = pts[pts.length - 1];
+              {isMarked && validPoints.length > 0 && (() => {
+                const startPt = validPoints[0];
+                const endPt = validPoints[validPoints.length - 1];
                 
                 return (
                   <>
@@ -1557,9 +1605,10 @@ const Map: React.FC<MapProps> = ({
                     >
                       <Popup>
                         <div className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 text-sm">
-                          <span>🏁</span> Startpunkt: {track.name}
+                          <span>🚩</span> Startpunkt: {track.name}
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-300 mt-1.5 font-sans space-y-1">
+                          <div><strong>Koordinaten:</strong> {startPt.lat.toFixed(5)}°, {startPt.lng.toFixed(5)}°</div>
                           <div><strong>Höhe:</strong> {startPt.ele !== undefined ? `${Math.round(startPt.ele)}m` : 'Keine Höhendaten'}</div>
                           {startPt.time && (
                             <div><strong>Zeit:</strong> {new Date(startPt.time).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
@@ -1568,7 +1617,7 @@ const Map: React.FC<MapProps> = ({
                       </Popup>
                     </LeafletMarker>
 
-                    {pts.length > 1 && (
+                    {validPoints.length > 1 && (
                       <LeafletMarker
                         key={`end-${track.id}`}
                         position={[endPt.lat, endPt.lng]}
@@ -1588,9 +1637,10 @@ const Map: React.FC<MapProps> = ({
                       >
                         <Popup>
                           <div className="font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1.5 text-sm">
-                            <span>🏆</span> Zielpunkt: {track.name}
+                            <span>🏁</span> Zielpunkt: {track.name}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-300 mt-1.5 font-sans space-y-1">
+                            <div><strong>Koordinaten:</strong> {endPt.lat.toFixed(5)}°, {endPt.lng.toFixed(5)}°</div>
                             <div><strong>Zielhöhe:</strong> {endPt.ele !== undefined ? `${Math.round(endPt.ele)}m` : 'Keine Höhendaten'}</div>
                             {endPt.time && (
                               <div><strong>Zielzeit:</strong> {new Date(endPt.time).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
@@ -1615,37 +1665,33 @@ const Map: React.FC<MapProps> = ({
         <SyncView mapView={mapView} onMapViewChange={onMapViewChange} isFlying={isFlying} />
         <SelectionTool active={true} onSelection={onSelection} currentBounds={selectionBounds} />
         
-        {hoveredPoint && (
-          <LeafletMarker 
-            position={[hoveredPoint.lat, hoveredPoint.lng]} 
-            interactive={false}
-            icon={new L.DivIcon({
-              className: 'custom-div-icon',
-              html: `
-                <div class="relative">
-                  <div class="bg-emerald-500 w-4 h-4 rounded-full border-2 border-white shadow-md pointer-events-none"></div>
-                  <div class="absolute top-5 left-1/2 -translate-x-1/2 bg-white px-2 py-1 rounded shadow text-xs font-mono whitespace-nowrap pointer-events-none text-slate-700 font-bold border border-slate-200">
-                    ${hoveredPoint.time ? new Date(hoveredPoint.time).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 
-                      markedTrackId && tracks.find(t => t.id === markedTrackId) ? (() => {
-                        const track = tracks.find(t => t.id === markedTrackId)!;
-                        let dist = 0;
-                        for (let i = 1; i < track.points.length; i++) {
-                          dist += calculateDistance(track.points[i-1], track.points[i]);
-                          if (track.points[i].lat === hoveredPoint.lat && track.points[i].lng === hoveredPoint.lng) break;
-                        }
-                        return `+${Math.floor((dist / estimatedSpeed))}h ${Math.floor(((dist / estimatedSpeed) * 60) % 60)}m`;
-                      })() : ''
-                    }
-                    ${hoveredPoint.hr ? `<br><span class="text-red-500">HF: ${hoveredPoint.hr} bpm</span>` : ''}
-                    ${hoveredPoint.power ? `<br><span class="text-amber-600">P: ${Math.round(hoveredPoint.power)} W</span>` : ''}
-                  </div>
-                </div>
-              `,
-              iconSize: [16, 16],
-              iconAnchor: [8, 8]
-            })} 
-          />
-        )}
+        {hoveredPoint && (() => {
+          const hoveredTrackId = (hoveredPoint as any).trackId;
+          const pointTrack = hoveredTrackId
+            ? tracks.find(t => t.id === hoveredTrackId)
+            : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
+            || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
+
+          const telemetryResult = computeHoverPointTelemetry(
+            hoveredPoint,
+            pointTrack?.points,
+            { estimatedSpeedKmh: estimatedSpeed }
+          );
+          if (!telemetryResult.success) return null;
+
+          return (
+            <LeafletMarker 
+              position={[hoveredPoint.lat, hoveredPoint.lng]} 
+              interactive={false}
+              icon={new L.DivIcon({
+                className: 'custom-hover-tooltip-marker',
+                html: buildMapHoverCardHtml(telemetryResult.data),
+                iconSize: [0, 0],
+                iconAnchor: [0, 0]
+              })} 
+            />
+          );
+        })()}
 
 
 
@@ -1970,13 +2016,29 @@ const Map: React.FC<MapProps> = ({
             <span className="hidden xs:inline">Teilen</span>
           </button>
         )}
+
+        {onOpenShortcuts && (
+          <button
+            onClick={() => {
+              triggerHaptic('light');
+              onOpenShortcuts();
+            }}
+            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
+            title="Tastaturkürzel-Hilfe anzeigen (Taste ? oder Shift+/)"
+            id="btn-toolbar-shortcuts"
+          >
+            <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
+            <span className="hidden xs:inline">Shortcuts</span>
+            <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">?</kbd>
+          </button>
+        )}
       </div>
 
       {/* Strecken-Farbmodus & POI-Filter Switcher (oben rechts) */}
       {!isColorMenuOpen ? (
         <button
           onClick={() => setIsColorMenuOpen(true)}
-          className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-1.5 sm:p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex items-center gap-1.5 cursor-pointer pointer-events-auto hover:bg-slate-50 dark:hover:bg-slate-850 active:scale-95 transition-all text-slate-700 dark:text-slate-300 select-none font-bold"
+          className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer pointer-events-auto hover:bg-slate-50 dark:hover:bg-slate-850 active:scale-95 transition-all text-slate-700 dark:text-slate-300 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
           title="Karten-Optionen & Verpflegung einblenden"
           id="btn-color-mode-toggle"
         >
@@ -1992,7 +2054,7 @@ const Map: React.FC<MapProps> = ({
             </span>
             <button
               onClick={() => setIsColorMenuOpen(false)}
-              className="text-slate-400 hover:text-slate-650 dark:hover:text-slate-200 font-extrabold text-[10px] cursor-pointer"
+              className="text-slate-400 hover:text-slate-650 dark:hover:text-slate-200 font-extrabold text-xs cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               title="Minimieren"
               id="btn-color-mode-close"
             >
@@ -2078,7 +2140,11 @@ const Map: React.FC<MapProps> = ({
                 <input 
                   type="checkbox" 
                   checked={showPOIs} 
-                  onChange={() => setShowPOIs(prev => !prev)} 
+                  onChange={() => setShowPOIs(prev => {
+                    const next = !prev;
+                    try { localStorage.setItem('gpx_show_pois', String(next)); } catch (e) {}
+                    return next;
+                  })} 
                   className="sr-only peer"
                 />
                 <div className="w-7 h-4 bg-slate-200 dark:bg-slate-850 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
@@ -2433,7 +2499,7 @@ const Map: React.FC<MapProps> = ({
                 setIsStatsCollapsed(false);
                 setRecenterTrigger(prev => prev + 1);
               }}
-              className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-750 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-750 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer transition-colors min-h-[44px] touch-manipulation"
               title="Statistiken ausklappen und Aktivität zentrieren"
             >
               <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: activeTrack.color || '#3b82f6' }} />

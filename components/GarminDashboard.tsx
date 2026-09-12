@@ -10,8 +10,9 @@ import {
   Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
 import { getApiUrl } from '../utils/api';
-import { parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
+import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
+import { safeStringifyOrFallback } from '../domain/serialization/safeJson';
 
 interface GarminDashboardProps {
   onClose: () => void;
@@ -419,7 +420,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     if (!diagnosticReport) return;
     try {
       const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
-        JSON.stringify(diagnosticReport, null, 2)
+        safeStringifyOrFallback(diagnosticReport, '{}', null, 2)
       )}`;
       const downloadAnchor = document.createElement('a');
       downloadAnchor.setAttribute('href', jsonString);
@@ -667,8 +668,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       
       const durationSec = act.duration || 3600;
       const distanceKm = act.distance || 10;
-      const ascent = act.ascent || 0;
-      const descent = act.descent || 0;
+      const ascent = Math.round(act.ascent || 0);
+      const descent = Math.round(act.descent || 0);
       const avgHr = act.avg_hr || undefined;
       const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
       
@@ -766,6 +767,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         );
       }
       
+      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
+        ? calculateElevationStats(points)
+        : { maxSlope: 0 };
+
       const track = {
         id: `garmin-act-${act.id || Date.now()}`,
         name: act.name || 'Garmin Aktivität',
@@ -774,7 +779,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         distance: distanceKm,
         ascent,
         descent,
-        maxSlope: 0,
+        maxSlope: calculatedMaxSlope,
         visible: true,
         activityType,
         duration: durationSec,
@@ -1129,12 +1134,15 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs" onClick={onClose}>
+    <div 
+      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
+      onClick={onClose}
+    >
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-6xl h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col"
+        className="relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* DB Upload Progress Overlay */}
@@ -1179,26 +1187,28 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           )}
         </AnimatePresence>
         {/* Header */}
-        <div className="flex items-center justify-between p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-orange-100 dark:bg-orange-950/40 rounded-xl text-orange-600 dark:text-orange-400">
-              <Database className="w-6 h-6" />
+        <div className="flex items-center justify-between p-4 sm:p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2 sm:p-2.5 bg-orange-100 dark:bg-orange-950/40 rounded-xl text-orange-600 dark:text-orange-400 shrink-0">
+              <Database className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
-            <div>
-              <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2">
-                Garmin Connect Fitness & Gesundheit
-                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2 truncate">
+                Garmin Fitness &amp; Gesundheit
+                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider hidden sm:inline-block">
                   SQLite Kompatibel
                 </span>
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
                 Importiere und analysiere deine lokalen SQLite-Datenbanken aus <b>garmin-health-data</b> und <b>python-garminconnect</b>.
               </p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
+            title="Schließen"
+            aria-label="Schließen"
           >
             <X className="w-5 h-5" />
           </button>
@@ -2205,7 +2215,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                                   )}
                                                   <div className="flex justify-between">
                                                     <span className="text-slate-400">Höhenmeter:</span>
-                                                    <span className="font-bold text-amber-400">+{pt.ascent} m</span>
+                                                    <span className="font-bold text-amber-400">+{Math.round(pt.ascent)} m</span>
                                                   </div>
                                                 </div>
                                               </div>
@@ -2615,7 +2625,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                                     {row[k] === null || row[k] === undefined ? (
                                                       <span className="text-slate-300 italic">NULL</span>
                                                     ) : typeof row[k] === 'object' ? (
-                                                      JSON.stringify(row[k])
+                                                      safeStringifyOrFallback(row[k], '{}')
                                                     ) : (
                                                       String(row[k])
                                                     )}

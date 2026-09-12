@@ -10,7 +10,7 @@ import {
   Tooltip, CartesianGrid, AreaChart, Area, Legend, ScatterChart, Scatter
 } from 'recharts';
 import { getApiUrl } from '../utils/api';
-import { parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
+import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import { GarminActivitiesCalendar } from './GarminActivitiesCalendar';
 
 interface GarminActivitiesAnalysisProps {
@@ -391,6 +391,10 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
         );
       }
 
+      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
+        ? calculateElevationStats(points)
+        : { maxSlope: 0 };
+
       const track = {
         id: `garmin-act-${act.id}`,
         name: act.name || 'Garmin Aktivität',
@@ -399,7 +403,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
         distance: distanceKm,
         ascent,
         descent,
-        maxSlope: 0,
+        maxSlope: calculatedMaxSlope,
         visible: true,
         activityType,
         duration: durationSec,
@@ -459,32 +463,37 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs" onClick={onClose}>
+    <div 
+      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
+      onClick={onClose}
+    >
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-6xl h-[90vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col font-sans"
+        className="relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[90vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col font-sans cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <header className="px-6 py-4 border-b border-slate-150 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-xl">
-              <GitCompare className="w-6 h-6" />
+        <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-150 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2 sm:p-2.5 bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-xl shrink-0">
+              <GitCompare className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-850 dark:text-slate-100">
-                Garmin Connect Aktivitäten-Analyse & Vergleich
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm sm:text-xl font-bold text-slate-850 dark:text-slate-100 truncate">
+                Garmin Aktivitäten-Analyse
               </h1>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
                 Analysiere deine Läufe, Radtouren und Trainingsdaten aus der SQLite-Datenbank und vergleiche Einheiten direkt.
               </p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="p-2 bg-slate-150 dark:bg-slate-800 text-slate-600 dark:text-slate-350 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all cursor-pointer"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-150 dark:bg-slate-800 text-slate-600 dark:text-slate-350 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all cursor-pointer shrink-0"
+            title="Schließen"
+            aria-label="Schließen"
           >
             <X className="w-5 h-5" />
           </button>
@@ -941,7 +950,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                               <BarChart data={comparedActivities.map(act => ({
                                 name: act.name.length > 15 ? act.name.substring(0, 15) + '...' : act.name,
                                 'Distanz (km)': parseFloat(act.distance.toFixed(1)),
-                                'Höhenmeter (m)': act.ascent || 0
+                                'Höhenmeter (m)': Math.round(act.ascent || 0)
                               }))}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" className="dark:stroke-slate-800" vertical={false} />
                                 <XAxis dataKey="name" stroke="#94a3b8" />

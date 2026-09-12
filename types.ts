@@ -56,7 +56,7 @@ export interface RawFileDetails {
     sessionDuration?: number;
     sessionDistance?: number;
     lapCount?: number;
-    rawRecords?: { type: string; data: Record<string, any> }[];
+    rawRecords?: { type: string; data: Record<string, unknown> }[];
   };
 }
 
@@ -79,6 +79,9 @@ export interface GPXTrack {
   description?: string;
   rawFileDetails?: RawFileDetails;
   isVirtual?: boolean;
+  tags?: string[];
+  dateCreated?: string;
+  originalFilename?: string;
 }
 
 export interface TimeGap {
@@ -189,9 +192,24 @@ export type ValidationIssueType =
   | 'coord_extreme_jump'
   | 'missing_elevation'
   | 'elevation_spike'
-  | 'missing_time';
+  | 'missing_time'
+  | 'start_point_deviation';
 
 export type ValidationSeverity = 'clean' | 'info' | 'warning' | 'error';
+
+export interface StartPointValidationDetail {
+  firstPoint: { lat: number; lng: number; ele?: number };
+  nearestCentroidName: string;
+  distanceToNearestCentroidKm: number;
+  nearestCentroidType?: 'town' | 'pass' | 'trailhead' | 'hub' | 'waypoint';
+  expectedLocationName?: string;
+  expectedLocationCoord?: { lat: number; lng: number };
+  distanceToExpectedKm?: number;
+  isSignificantDeviation: boolean;
+  firstStepJumpKm?: number;
+  deviationReason?: string;
+  suggestedFixStartIndex?: number;
+}
 
 export interface ValidationIssue {
   id: string;
@@ -210,6 +228,7 @@ export interface TrackValidationReport {
   trackName: string;
   status: ValidationSeverity;
   issues: ValidationIssue[];
+  startPointValidation?: StartPointValidationDetail;
   stats: {
     totalPoints: number;
     pointsWithElevation: number;
@@ -218,6 +237,7 @@ export interface TrackValidationReport {
     nullIslandCount: number;
     extremeJumpCount: number;
     elevationSpikeCount: number;
+    startPointDeviationKm?: number;
     minElevation?: number;
     maxElevation?: number;
     maxSpeedJumpKmh?: number;

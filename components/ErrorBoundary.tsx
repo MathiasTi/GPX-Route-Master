@@ -1,5 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, Trash2, Download } from 'lucide-react';
+import { safeRemoveItem, safeGetItem } from '../utils/storage';
 
 interface Props {
   children: ReactNode;
@@ -34,19 +35,15 @@ export class ErrorBoundary extends Component<Props, State> {
   };
 
   private handleResetWorkspace = () => {
-    try {
-      localStorage.removeItem('velo_workspace_tracks');
-      localStorage.removeItem('velo_text_markers');
-      localStorage.removeItem('velo_workspace_marked_track');
-    } catch (e) {
-      console.error('Error clearing localStorage:', e);
-    }
+    safeRemoveItem('velo_workspace_tracks');
+    safeRemoveItem('velo_text_markers');
+    safeRemoveItem('velo_workspace_marked_track');
     window.location.reload();
   };
 
   private handleExportRescueData = () => {
     try {
-      const tracksData = localStorage.getItem('velo_workspace_tracks') || '[]';
+      const tracksData = safeGetItem('velo_workspace_tracks') || '[]';
       const blob = new Blob([tracksData], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

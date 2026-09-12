@@ -1,4 +1,5 @@
 import { GPXTrack } from '../types';
+import { safeJsonStringify, safeJsonParse } from '../domain/serialization/safeJson';
 
 const WORKSPACE_TRACKS_KEY = 'velo_workspace_tracks';
 const TEXT_MARKERS_KEY = 'velo_text_markers';
@@ -7,42 +8,69 @@ const ACTIVE_LAYER_KEY = 'velo_workspace_active_layer';
 const THEME_KEY = 'gpx_theme';
 const MAX_SAFE_LOCALSTORAGE_BYTES = 3.5 * 1024 * 1024; // 3.5 MB threshold
 
+// In-memory fallback map if localStorage is unavailable, blocked, or restricted in sandboxed iframe
+const memoryStorage = new Map<string, string>();
+
+function getStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const storage = window.localStorage;
+    if (!storage) return null;
+    const testKey = '__velo_storage_probe__';
+    storage.setItem(testKey, 'probe');
+    storage.removeItem(testKey);
+    return storage;
+  } catch (e) {
+    // In sandboxed iframes or strict browser privacy contexts, window.localStorage throws DOMException
+    return null;
+  }
+}
+
 /**
- * Safely writes to localStorage with quota protection and fallback handling
+ * Safely writes to localStorage with quota protection, in-memory fallback, and error handling
  */
 export function safeSetItem(key: string, value: string): boolean {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
   try {
-    localStorage.setItem(key, value);
-    return true;
+    const storage = getStorage();
+    if (storage) {
+      storage.setItem(key, value);
+      memoryStorage.set(key, value);
+      return true;
+    }
   } catch (err: any) {
-    console.warn(`[SafeStorage] Failed to save key "${key}":`, err.message || err);
-    return false;
+    console.warn(`[SafeStorage] Failed to save key "${key}" to localStorage:`, err?.message || err);
   }
+  memoryStorage.set(key, value);
+  return true;
 }
 
 /**
- * Safely reads from localStorage
+ * Safely reads from localStorage or memory fallback
  */
 export function safeGetItem(key: string, defaultValue: string | null = null): string | null {
-  if (typeof window === 'undefined' || !window.localStorage) return defaultValue;
   try {
-    const item = localStorage.getItem(key);
-    return item !== null ? item : defaultValue;
+    const storage = getStorage();
+    if (storage) {
+      const item = storage.getItem(key);
+      if (item !== null) return item;
+    }
   } catch (err: any) {
-    console.warn(`[SafeStorage] Failed to read key "${key}":`, err.message || err);
-    return defaultValue;
+    console.warn(`[SafeStorage] Failed to read key "${key}" from localStorage:`, err?.message || err);
   }
+  return memoryStorage.has(key) ? (memoryStorage.get(key) ?? defaultValue) : defaultValue;
 }
 
 /**
- * Safely removes an item from localStorage
+ * Safely removes an item from localStorage and memory fallback
  */
 export function safeRemoveItem(key: string): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    localStorage.removeItem(key);
+    const storage = getStorage();
+    if (storage) {
+      storage.removeItem(key);
+    }
   } catch (e) {}
+  memoryStorage.delete(key);
 }
 
 /**
@@ -72,14 +100,14 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
   }
 
   const cleanTracks = sanitizeTracksForStorage(tracks);
-  let serialized = '';
+  const serializeRes = safeJsonStringify(cleanTracks);
   
-  try {
-    serialized = JSON.stringify(cleanTracks);
-  } catch (err: any) {
-    console.error('[SafeStorage] JSON serialization failed:', err);
+  if (!serializeRes.success) {
+    console.warn('[SafeStorage] Circular or unhandled serialization issue:', serializeRes.error.message);
     return false;
   }
+
+  const serialized = serializeRes.data;
 
   // If within safe quota limit, save directly
   if (serialized.length <= MAX_SAFE_LOCALSTORAGE_BYTES) {
@@ -103,7 +131,7 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
       surfaceStats: t.surfaceStats,
       powerStats: t.powerStats,
       climbs: t.climbs,
-      points: t.points.map((p: any) => ({
+      points: Array.isArray(t.points) ? t.points.map((p: any) => ({
         lat: p.lat,
         lng: p.lng,
         ele: p.ele,
@@ -112,10 +140,14 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
         power: p.power,
         cadence: p.cadence,
         surface: p.surface
-      }))
+      })) : []
     }));
 
-    return safeSetItem(WORKSPACE_TRACKS_KEY, JSON.stringify(lightweightTracks));
+    const lightweightRes = safeJsonStringify(lightweightTracks);
+    if (lightweightRes.success) {
+      return safeSetItem(WORKSPACE_TRACKS_KEY, lightweightRes.data);
+    }
+    return false;
   } catch (fallbackErr: any) {
     console.error('[SafeStorage] Progressive optimization fallback failed:', fallbackErr);
     return false;
@@ -123,19 +155,36 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
 }
 
 /**
- * Loads and validates workspace tracks from localStorage
+ * Checks if a track is one of the default curated reference tours (e.g. Alpentour stages)
+ */
+export function isDefaultCuratedTrack(track: { id?: string; name?: string; tags?: string[] } | null | undefined): boolean {
+  if (!track) return false;
+  if (track.id && track.id.startsWith('gpx-alpentour-tag-')) return true;
+  if (typeof track.name === 'string' && track.name.startsWith('Alpentour Tag')) return true;
+  if (Array.isArray(track.tags) && track.tags.includes('Alpentour')) return true;
+  return false;
+}
+
+/**
+ * Loads and validates workspace tracks from localStorage.
+ * Default reference tours are segregated into the library, keeping the active workspace clean.
  */
 export function loadWorkspaceTracks(): GPXTrack[] {
+  const defaultsMoved = safeGetItem('velo_defaults_moved_to_library_v1') === 'true';
   const raw = safeGetItem(WORKSPACE_TRACKS_KEY);
   if (!raw) return [];
 
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed.filter(t => t && t.id && Array.isArray(t.points));
+  const parsedRes = safeJsonParse<GPXTrack[]>(raw, []);
+  if (parsedRes.success && Array.isArray(parsedRes.data) && parsedRes.data.length > 0) {
+    const valid = parsedRes.data.filter(t => t && t.id && Array.isArray(t.points));
+    if (!defaultsMoved) {
+      // One-time migration: filter out default reference tracks from workspace so they reside solely in the Library
+      const userTracksOnly = valid.filter(t => !isDefaultCuratedTrack(t));
+      safeSetItem('velo_defaults_moved_to_library_v1', 'true');
+      saveWorkspaceTracks(userTracksOnly);
+      return userTracksOnly;
     }
-  } catch (e: any) {
-    console.warn('[SafeStorage] Failed to parse workspace tracks from localStorage:', e.message);
+    return valid;
   }
   return [];
 }

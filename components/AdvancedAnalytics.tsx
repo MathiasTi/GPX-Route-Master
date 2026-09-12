@@ -1022,35 +1022,37 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
       className="fixed inset-0 z-[2000] bg-slate-50 dark:bg-slate-950 flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-8 py-3 sm:py-5 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-8 py-3 sm:py-5 pt-[max(0.75rem,env(safe-area-inset-top))] flex items-center justify-between shadow-sm gap-2 shrink-0">
+        <div className="flex items-center gap-2.5 sm:gap-4 min-w-0 flex-1">
           <div className="p-2 sm:p-3 bg-indigo-600 rounded-xl text-white shadow-lg shrink-0">
             <Activity className="w-5 h-5 sm:w-7 sm:h-7" />
           </div>
-          <div className="min-w-0">
-            <h1 className="text-base sm:text-2xl font-bold text-slate-900 dark:text-white flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 truncate">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-sm sm:text-2xl font-bold text-slate-900 dark:text-white flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 truncate">
               <span className="truncate">{track.name}</span>
               <div className="flex flex-wrap gap-1 items-center">
-                <span className={`text-[9px] sm:text-[11px] font-black uppercase px-2 py-0.5 rounded-full ${isRunning ? 'bg-orange-100 text-orange-700 border border-orange-200 shadow-2xs' : 'bg-blue-100 text-blue-700 border border-blue-200 shadow-2xs'}`}>
+                <span className={`text-[9px] sm:text-[11px] font-black uppercase px-2 py-0.5 rounded-full shrink-0 ${isRunning ? 'bg-orange-100 text-orange-700 border border-orange-200 shadow-2xs' : 'bg-blue-100 text-blue-700 border border-blue-200 shadow-2xs'}`}>
                   {isRunning ? '🏃 Laufen' : '🚴 Rad'}
                 </span>
                 {selectionBounds && (
-                  <span className="text-[9px] sm:text-xs bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-350 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                  <span className="text-[9px] sm:text-xs bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-350 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0">
                     Auswahl
                   </span>
                 )}
               </div>
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-[10px] sm:text-sm font-medium">
+            <p className="text-slate-500 dark:text-slate-400 text-[10px] sm:text-sm font-medium truncate">
               Performance- & {isRunning ? 'Pace-Analyse' : 'Leistungsdaten'}
             </p>
           </div>
         </div>
         <button 
           onClick={onClose}
-          className="p-1.5 sm:p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 shrink-0 cursor-pointer"
+          className="p-2 sm:p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-full transition-colors text-slate-500 hover:text-slate-800 dark:text-slate-300 dark:hover:text-white shrink-0 cursor-pointer shadow-2xs"
+          title="Schließen"
+          aria-label="Schließen"
         >
-          <X className="w-6 h-6 sm:w-8 sm:h-8" />
+          <X className="w-5 h-5 sm:w-7 sm:h-7" />
         </button>
       </header>
 
@@ -1338,7 +1340,7 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
                                   <div className="space-y-1.5 font-medium text-slate-600 dark:text-slate-450">
                                     <div className="flex justify-between items-center gap-4">
                                       <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Höhe:</span>
-                                      <span className="font-bold text-slate-805 dark:text-slate-200 font-mono">{data.elevation} m</span>
+                                      <span className="font-bold text-slate-805 dark:text-slate-200 font-mono">{typeof data.elevation === 'number' ? Math.round(data.elevation) : data.elevation} m</span>
                                     </div>
                                     <div className="flex justify-between items-center gap-4">
                                       <span className="text-slate-400 dark:text-slate-505 font-semibold uppercase text-[9px] tracking-wider">Steigung:</span>

@@ -18,6 +18,7 @@ import {
   Zap
 } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
+import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { 
   ResponsiveContainer, 
   BarChart, 
@@ -89,7 +90,11 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
         maxRecordedHr,
         color: track.color || '#6366f1'
       };
-    }).sort((a, b) => b.date.getTime() - a.date.getTime());
+    }).sort((a, b) => {
+      const msA = toValidTimestampMs(a.date) ?? 0;
+      const msB = toValidTimestampMs(b.date) ?? 0;
+      return msB - msA;
+    });
   }, [tracks]);
 
   // Handle select / deselect all
@@ -265,8 +270,10 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
         const pNext = ptsToProcess[i + 1];
         let itemDuration = stepDuration;
 
-        if (p.time && pNext?.time) {
-          const diff = (pNext.time.getTime() - p.time.getTime()) / 1000;
+        const nextMs = toValidTimestampMs(pNext?.time);
+        const currMs = toValidTimestampMs(p.time);
+        if (nextMs !== undefined && currMs !== undefined) {
+          const diff = (nextMs - currMs) / 1000;
           if (diff > 0 && diff < 120) {
             itemDuration = diff;
           }

@@ -2,11 +2,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import 'leaflet/dist/leaflet.css';
 import './index.css';
-import { registerServiceWorker } from './utils/serviceWorker';
 import { ErrorBoundary } from './components/ErrorBoundary';
-
-registerServiceWorker();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -24,3 +22,15 @@ root.render(
     </ErrorBoundary>
   </React.StrictMode>
 );
+
+// Non-blocking cleanup of stale workers/caches safely after mount
+if (typeof window !== 'undefined') {
+  const deferTask = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 250));
+  deferTask(() => {
+    try {
+      import('./utils/serviceWorker').then((sw) => {
+        sw.registerServiceWorker();
+      }).catch(() => {});
+    } catch (e) {}
+  });
+}

@@ -6,6 +6,8 @@ import {
   Info, Activity, Heart, Eye, ShieldAlert, BadgeInfo, HelpCircle, Radio, MapPin, Minimize2, Clock, Shield, Expand, Zap
 } from 'lucide-react';
 import { GPXTrack } from '../types';
+import { VirtualizedPointsTable } from './analysis/VirtualizedPointsTable';
+import { safeStringifyOrFallback } from '../domain/serialization/safeJson';
 
 // Übersetzungs- und Erklärungslexikon für FIT & GPX Message-Typen
 const FIT_MESSAGE_EXPLANATIONS: Record<string, { title: string; desc: string; category: string }> = {
@@ -548,7 +550,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
   // Download raw representation as formatted JSON
   const downloadJSON = () => {
     if (!currentTrack) return;
-    const dataStr = JSON.stringify({
+    const dataStr = safeStringifyOrFallback({
       track_id: currentTrack.id,
       name: currentTrack.name,
       statistics: {
@@ -560,7 +562,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
       },
       raw_source: rawDetails,
       points: currentTrack.points
-    }, null, 2);
+    }, '{}', null, 2);
     const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
     
     const exportFileDefaultName = `${currentTrack.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_raw_analysis.json`;
@@ -605,45 +607,45 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-slate-950/65 backdrop-blur-md z-[2000] flex items-center justify-center p-3 md:p-6"
+      className="fixed inset-0 bg-slate-950/65 backdrop-blur-md z-[2000] flex items-center justify-center p-2 sm:p-4 md:p-6 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] cursor-pointer"
       onClick={onClose}
     >
       <motion.div 
         initial={{ scale: 0.98, y: 10 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.98, y: 10 }}
-        className="bg-slate-50 dark:bg-slate-950 w-full max-w-[1400px] h-[92vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-205 dark:border-slate-850/80 flex flex-col"
+        className="bg-slate-50 dark:bg-slate-950 w-full max-w-[1400px] h-[calc(100dvh-1rem)] sm:h-[92vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-205 dark:border-slate-850/80 flex flex-col cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Banner Header */}
-        <div className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex flex-col md:flex-row md:items-center md:justify-between gap-4 shrink-0 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 rounded-2xl">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4 shrink-0 shadow-sm">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2.5 sm:p-3 bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 rounded-2xl shrink-0">
               <FileCode size={22} className="animate-pulse" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-black text-slate-800 dark:text-slate-100 leading-none">
+                <h2 className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 leading-none truncate">
                   Rohdaten- & Telemetrie-Inspektor
                 </h2>
-                <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono font-black uppercase px-2 py-0.5 rounded">
+                <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono font-black uppercase px-2 py-0.5 rounded shrink-0 hidden sm:inline-block">
                   FIT & GPX Parser
                 </span>
               </div>
-              <p className="text-xs text-slate-400 font-bold mt-1 max-w-lg truncate leading-relaxed">
+              <p className="text-[10px] sm:text-xs text-slate-400 font-bold mt-1 max-w-lg truncate leading-relaxed hidden sm:block">
                 Interaktive Zerlegung der Header-Schlüssel, Metadaten-Nodes und des Trackpoint-Streams.
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between md:justify-end gap-2 sm:gap-3 shrink-0">
             {/* Track Selector */}
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] font-black uppercase tracking-wider text-slate-400">Aktivität:</label>
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0">Aktivität:</label>
               <select
                 value={activeTrackId || ''}
                 onChange={(e) => handleTrackChange(e.target.value)}
-                className="bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-100 border border-transparent hover:border-slate-200 dark:hover:border-slate-700/80 rounded-xl px-3 py-2 cursor-pointer focus:outline-none"
+                className="bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-100 border border-transparent hover:border-slate-200 dark:hover:border-slate-700/80 rounded-xl px-2.5 sm:px-3 py-1.5 sm:py-2 cursor-pointer focus:outline-none max-w-[140px] sm:max-w-[200px] truncate"
               >
                 {tracks.map(t => (
                   <option key={t.id} value={t.id}>
@@ -666,7 +668,9 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
             {/* Close */}
             <button
               onClick={onClose}
-              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer shrink-0"
+              title="Schließen"
+              aria-label="Schließen"
             >
               <X size={20} />
             </button>
@@ -1148,7 +1152,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                           <span>JSON</span>
                         </div>
                         <pre className="font-mono text-[11px] text-emerald-400 dark:text-emerald-400 leading-relaxed overflow-x-auto whitespace-pre-wrap">
-                          {JSON.stringify(activeRecord, null, 2)}
+                          {safeStringifyOrFallback(activeRecord, '{}', null, 2)}
                         </pre>
                       </div>
                     </div>
@@ -1344,87 +1348,22 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                     </button>
                   </div>
 
-                  {/* Points Table with selected highlighted row */}
-                  <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 rounded-3xl overflow-hidden mt-4 shadow-sm min-h-0 flex-1 overflow-y-auto">
+                  {/* High-Performance Virtualized Points Table */}
+                  <div className="mt-4 flex-1 min-h-0 flex flex-col">
                     {currentPointsPage.length === 0 ? (
-                      <div className="p-12 text-center text-slate-400 font-bold text-xs space-y-2">
+                      <div className="p-12 text-center text-slate-400 font-bold text-xs space-y-2 bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800/80">
                         <BadgeInfo className="mx-auto text-slate-300" size={30} />
                         <h4>Keine Punkte für diesen FilterTyp gefunden</h4>
                         <p className="text-[10px] font-semibold text-slate-405">Nutze den ersten Filter 'Alle Punkte', um die komplette Serie zu sichten.</p>
                       </div>
                     ) : (
-                      <table className="w-full text-left border-collapse text-xs select-none">
-                        <thead>
-                          <tr className="bg-slate-50 dark:bg-slate-950 text-slate-405 font-black uppercase text-[9px] tracking-wider border-b border-slate-100 dark:border-slate-800">
-                            <th className="py-3 px-5 w-16">Status</th>
-                            <th className="py-3 px-5">Zeitstempel (Timestamp)</th>
-                            <th className="py-3 px-5">Breiten- & Längengrad</th>
-                            <th className="py-3 px-5">Höhe</th>
-                            <th className="py-3 px-5 text-center">Puls (HR)</th>
-                            <th className="py-3 px-5 text-center">Trittfrequenz</th>
-                            <th className="py-3 px-5 text-center">Effektive Watt</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50 dark:divide-slate-850 font-semibold text-slate-700 dark:text-slate-350">
-                          {currentPointsPage.map((pt, index) => {
-                            const pointIndex = (page - 1) * rowsPerPage + index;
-                            const isSelectedPoint = pointIndex === selectedPointIndex;
-                            const globalPointNumber = pointIndex + 1;
-
-                            return (
-                              <tr 
-                                key={index} 
-                                onClick={() => setSelectedPointIndex(pointIndex)}
-                                className={`cursor-pointer transition-all border-l-4 ${
-                                  isSelectedPoint 
-                                    ? 'bg-indigo-50/50 dark:bg-indigo-950/20 border-l-indigo-600 dark:border-l-indigo-500 font-extrabold text-slate-900 dark:text-white' 
-                                    : 'border-l-transparent hover:bg-slate-50/50 dark:hover:bg-slate-900/40 text-slate-600 dark:text-slate-300'
-                                }`}
-                              >
-                                <td className="py-3.5 px-5 font-mono text-[10px] font-black">
-                                  {isSelectedPoint ? (
-                                    <span className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
-                                      <div className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping" />
-                                      AKTIV
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-400">#{globalPointNumber}</span>
-                                  )}
-                                </td>
-                                <td className="py-3.5 px-5 font-mono">
-                                  {formatDate(pt.time)}
-                                </td>
-                                <td className="py-3.5 px-5 font-mono text-[11px] leading-tight text-slate-500 dark:text-slate-400">
-                                  <div>Lat: {pt.lat.toFixed(6)}°</div>
-                                  <div>Lng: {pt.lng.toFixed(6)}°</div>
-                                </td>
-                                <td className="py-3.5 px-5 font-mono text-indigo-600 dark:text-indigo-400 font-extrabold">
-                                  {pt.ele !== undefined ? `${pt.ele.toFixed(1)} m` : '-'}
-                                </td>
-                                <td className="py-3.5 px-5 text-center font-mono">
-                                  {pt.hr !== undefined ? (
-                                    <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20 px-1.5 py-0.5 rounded font-black border border-rose-100/40">
-                                      <Heart size={9} fill="currentColor" />
-                                      {pt.hr} bpm
-                                    </span>
-                                  ) : '-'}
-                                </td>
-                                <td className="py-3.5 px-5 text-center font-mono font-bold text-teal-600 dark:text-teal-400">
-                                  {pt.cadence !== undefined ? `${pt.cadence} rpm` : '-'}
-                                </td>
-                                <td className="py-3.5 px-5 text-center font-mono">
-                                  {pt.power !== undefined ? (
-                                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 bg-amber-50/50 dark:bg-amber-950/20 px-1.5 py-0.5 rounded font-black border border-amber-100/40">
-                                      <Activity size={9} />
-                                      {pt.power} W
-                                    </span>
-                                  ) : '-'}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      <VirtualizedPointsTable
+                        points={currentPointsPage}
+                        selectedPointIndex={selectedPointIndex}
+                        onSelectPoint={(idx) => setSelectedPointIndex(idx)}
+                        formatDate={formatDate}
+                        startIndexOffset={(page - 1) * rowsPerPage}
+                      />
                     )}
                   </div>
 
@@ -1487,12 +1426,12 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                           <div>
                             <span className="text-[10px] text-slate-404 block leading-none">Meereshöhe (Alt)</span>
                             <span className="font-mono text-xs font-black text-slate-805 dark:text-slate-205">
-                              {selectedPointMetric.current.ele !== undefined ? `${selectedPointMetric.current.ele.toFixed(1)} m` : 'Keine vorhanden'}
+                              {selectedPointMetric.current.ele !== undefined ? `${Math.round(selectedPointMetric.current.ele)} m` : 'Keine vorhanden'}
                             </span>
                           </div>
                           {selectedPointMetric.current.ele !== undefined && (
                             <span className="text-[10px] font-mono text-slate-400 font-bold bg-slate-100 dark:bg-slate-900/60 px-1.5 py-0.5 rounded">
-                              {(selectedPointMetric.current.ele * 3.28084).toFixed(0)} ft
+                              {(Math.round(selectedPointMetric.current.ele) * 3.28084).toFixed(0)} ft
                             </span>
                           )}
                         </div>
@@ -1712,7 +1651,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
 
                   <div className="flex-1 overflow-y-auto min-h-0 font-mono text-xs text-emerald-400 bg-slate-950 p-4 rounded-2xl border border-slate-800">
                     <pre className="whitespace-pre-wrap leading-relaxed text-emerald-400">
-                      {JSON.stringify({
+                      {safeStringifyOrFallback({
                         id: currentTrack.id,
                         name: currentTrack.name,
                         activityType: currentTrack.activityType,
@@ -1726,7 +1665,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                         },
                         rawFileDetails: rawDetails,
                         points: currentTrack.points.slice(0, 15).concat([{ '...': `Und ${totalPoints - 15} weitere dekomprimierte Punktdatensätze` } as any])
-                      }, null, 2)}
+                      }, '{}', null, 2)}
                     </pre>
                   </div>
                 </div>

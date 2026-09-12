@@ -188,7 +188,7 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
 
   return (
     <div 
-      className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[5000] flex items-center justify-center p-3 md:p-6 overflow-y-auto" 
+      className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[5000] flex items-center justify-center p-2 sm:p-4 md:p-6 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] overflow-y-auto cursor-pointer" 
       id="modal-summary-report-overlay"
       onClick={onClose}
     >
@@ -226,45 +226,45 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
         initial={{ opacity: 0, scale: 0.98, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.98, y: 15 }}
-        className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden text-left cursor-default pointer-events-auto"
+        className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-5xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92vh] flex flex-col overflow-hidden text-left cursor-default pointer-events-auto"
         id="modal-summary-report"
         onClick={(e) => e.stopPropagation()}
       >
         
         {/* Header - Non printable control panel */}
-        <div className="p-4 md:p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50 relative z-10 no-print">
-          <div className="flex items-center gap-2.5">
-            <div className="bg-blue-600 p-2 rounded-2xl text-white shadow-md shadow-blue-500/10">
+        <div className="p-3 sm:p-4 md:p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50 relative z-10 no-print gap-2 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+            <div className="bg-blue-600 p-2 rounded-2xl text-white shadow-md shadow-blue-500/10 shrink-0">
               <Trophy className="w-5 h-5" />
             </div>
-            <div>
-              <h3 className="text-lg font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
-                Aktivitäts-Zusammenfassung &amp; Report
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base sm:text-lg font-extrabold text-slate-800 tracking-tight flex items-center gap-2 truncate">
+                Aktivitäts-Report
               </h3>
-              <p className="text-xs text-slate-400">Exportfertiges Datenblatt deiner absolvierten Strecke</p>
+              <p className="text-xs text-slate-400 truncate hidden sm:block">Exportfertiges Datenblatt deiner absolvierten Strecke</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 handlePrint();
               }}
-              className="px-4 py-2 bg-blue-650 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md hover:shadow transition-all flex items-center gap-1.5 cursor-pointer"
+              className="hidden sm:flex px-3 sm:px-4 py-2 bg-blue-650 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md hover:shadow transition-all items-center gap-1.5 cursor-pointer"
               title="Report an Drucker senden oder als PDF speichern"
               id="btn-print-report"
               type="button"
             >
               <Printer className="w-3.5 h-3.5" />
-              Drucken / PDF
+              <span>Drucken / PDF</span>
             </button>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 handleCopyReport();
               }}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer border ${
+              className={`hidden sm:flex px-3 sm:px-4 py-2 rounded-xl text-xs font-black transition-all items-center gap-1.5 cursor-pointer border ${
                 copied 
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
                   : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700 shadow-sm'
@@ -274,17 +274,18 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
               type="button"
             >
               {copied ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> : <Clipboard className="w-3.5 h-3.5 text-slate-500" />}
-              {copied ? 'Kopiert!' : 'Kopieren'}
+              <span>{copied ? 'Kopiert!' : 'Kopieren'}</span>
             </button>
             <button 
               onClick={(e) => {
                 e.stopPropagation();
                 onClose();
               }}
-              className="p-2 text-slate-450 hover:text-slate-650 hover:bg-slate-100 rounded-xl transition-all cursor-pointer border border-transparent hover:border-slate-200"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-600 hover:text-slate-800 bg-slate-200/70 hover:bg-slate-200 rounded-xl transition-all cursor-pointer border border-transparent hover:border-slate-300 shrink-0"
               id="btn-close-report"
               type="button"
               title="Fenster schließen"
+              aria-label="Fenster schließen"
             >
               <X className="w-5 h-5" />
             </button>
@@ -661,9 +662,18 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
           )}
 
           {/* Professional Footer Credentials */}
-          <div className="pt-6 border-t border-slate-200/85 mt-4 text-[9px] text-slate-400 flex flex-col md:flex-row justify-between items-center gap-2">
+          <div className="pt-6 border-t border-slate-200/85 mt-4 text-[9px] text-slate-400 flex flex-col md:flex-row justify-between items-center gap-3">
             <span>© 2026 GPX Master Pro - All rights reserved. Powered by OpenStreetMap Cloud &amp; Sports Science Engine.</span>
-            <span className="font-mono bg-slate-100/80 border border-slate-200 text-slate-600 px-2 py-0.5 rounded font-semibold uppercase">Systembericht ID: {track.id.substring(0, 8).toUpperCase()}</span>
+            <div className="flex items-center gap-3 no-print">
+              <span className="font-mono bg-slate-100/80 border border-slate-200 text-slate-600 px-2 py-0.5 rounded font-semibold uppercase">Systembericht ID: {track.id.substring(0, 8).toUpperCase()}</span>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 min-h-[44px] min-w-[80px] bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Schließen
+              </button>
+            </div>
           </div>
 
         </div>

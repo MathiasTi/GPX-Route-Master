@@ -560,40 +560,42 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[2000] flex items-center justify-center p-4 overflow-y-auto"
+      className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] overflow-y-auto cursor-pointer"
       onClick={onClose}
     >
       <motion.div 
         initial={{ scale: 0.95, y: 20 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.95, y: 20 }}
-        className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-5xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header Ribbon */}
-        <div className="bg-gradient-to-r from-red-650 via-rose-600 to-indigo-650 px-6 py-4 flex justify-between items-center text-white shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="bg-white/20 p-2.5 rounded-2xl animate-pulse">
-              <Heart className="w-6 h-6 fill-white" />
+        <div className="bg-gradient-to-r from-red-650 via-rose-600 to-indigo-650 px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center text-white shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="bg-white/20 p-2 sm:p-2.5 rounded-2xl animate-pulse shrink-0">
+              <Heart className="w-5 h-5 sm:w-6 sm:h-6 fill-white" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <h2 className="text-xl font-bold tracking-tight">Trainingszonen & Puls Analyse</h2>
+                <h2 className="text-sm sm:text-xl font-bold tracking-tight truncate">Trainingszonen &amp; Puls</h2>
                 <button 
                   onClick={() => setIsInfoOpen(true)}
-                  className="p-1 hover:bg-white/10 rounded-lg text-white/90 hover:text-white transition-all cursor-pointer inline-flex items-center"
+                  className="p-1 hover:bg-white/10 rounded-lg text-white/90 hover:text-white transition-all cursor-pointer inline-flex items-center shrink-0"
                   title="Unterschied zwischen Herzfrequenzzonen und Leistungszonen erklären"
                   id="btn-training-zones-info"
                 >
-                  <Info className="w-5 h-5 animate-pulse" />
+                  <Info className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               </div>
-              <p className="text-xs text-white/85">Konfiguriere deine Trainingsbereiche und analysiere deine Herzarbeit</p>
+              <p className="text-[10px] sm:text-xs text-white/85 truncate hidden sm:block">Konfiguriere deine Trainingsbereiche und analysiere deine Herzarbeit</p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="p-2 hover:bg-white/10 rounded-xl transition-all cursor-pointer hover:rotate-90 duration-300"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-white/10 rounded-xl transition-all cursor-pointer shrink-0"
+            title="Schließen"
+            aria-label="Schließen"
           >
             <X className="w-5 h-5 text-white" />
           </button>
@@ -977,14 +979,16 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-[2100] flex items-center justify-center p-4 md:p-6"
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-[2100] flex items-center justify-center p-3 sm:p-6 cursor-pointer"
               id="modal-training-zones-info-overlay"
+              onClick={() => setIsInfoOpen(false)}
             >
               <motion.div 
                 initial={{ scale: 0.95, y: 15 }}
                 animate={{ scale: 1, y: 0 }}
                 exit={{ scale: 0.95, y: 15 }}
-                className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto p-5 md:p-8 relative text-left"
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-4xl w-full max-h-[calc(100dvh-2rem)] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-8 relative text-left cursor-default"
                 id="modal-training-zones-info"
               >
                 {/* Decorative background gradients */}
@@ -993,8 +997,10 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
 
                 <button 
                   onClick={() => setIsInfoOpen(false)}
-                  className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-xl transition-all cursor-pointer z-50"
+                  className="absolute top-3 right-3 sm:top-4 sm:right-4 p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all cursor-pointer z-50"
                   id="btn-training-zones-info-close"
+                  title="Schließen"
+                  aria-label="Schließen"
                 >
                   <X className="w-5 h-5" />
                 </button>

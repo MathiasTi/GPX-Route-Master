@@ -113,7 +113,7 @@ export const TimeGapAnalysisModal: React.FC<TimeGapAnalysisModalProps> = ({
     <AnimatePresence>
       <div 
         onClick={onClose}
-        className="fixed inset-0 z-[120] flex items-center justify-center p-3 md:p-6 bg-slate-950/70 backdrop-blur-md cursor-pointer"
+        className="fixed inset-0 z-[120] flex items-center justify-center p-2 sm:p-4 md:p-6 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-slate-950/70 backdrop-blur-md cursor-pointer"
       >
         <motion.div
           onClick={(e) => e.stopPropagation()}
@@ -121,28 +121,29 @@ export const TimeGapAnalysisModal: React.FC<TimeGapAnalysisModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 15 }}
           transition={{ duration: 0.2 }}
-          className="relative w-full max-w-4xl max-h-[92vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden text-slate-800 dark:text-slate-100 cursor-default"
+          className="relative w-full max-w-4xl max-h-[calc(100dvh-1rem)] sm:max-h-[92vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden text-slate-800 dark:text-slate-100 cursor-default"
         >
           {/* Header */}
-          <div className="relative p-5 md:p-6 bg-gradient-to-r from-amber-600 via-orange-600 to-red-600 text-white flex justify-between items-start shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-white/15 backdrop-blur-md rounded-xl border border-white/20 shadow-inner">
-                <Scissors className="w-6 h-6 text-amber-200" />
+          <div className="relative p-3.5 sm:p-5 md:p-6 bg-gradient-to-r from-amber-600 via-orange-600 to-red-600 text-white flex justify-between items-center shrink-0 gap-2">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+              <div className="p-2 sm:p-3 bg-white/15 backdrop-blur-md rounded-xl border border-white/20 shadow-inner shrink-0">
+                <Scissors className="w-5 h-5 sm:w-6 sm:h-6 text-amber-200" />
               </div>
-              <div>
-                <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
-                  Zeitlücken-Analyse & Trennen / Zusammenfügen
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm sm:text-xl font-bold tracking-tight truncate">
+                  Zeitlücken-Analyse
                 </h2>
-                <p className="text-xs text-amber-100/90 font-medium mt-0.5">
-                  Erkennt automatische Unterbrechungen, Signalpausen & Zeitaufzeichnungen &gt; 30 Sekunden
+                <p className="text-[10px] sm:text-xs text-amber-100/90 font-medium mt-0.5 truncate hidden sm:block">
+                  Erkennt automatische Unterbrechungen, Signalpausen &amp; Zeitaufzeichnungen &gt; 30s
                 </p>
               </div>
             </div>
 
             <button
               onClick={onClose}
-              className="p-2 bg-black/20 hover:bg-black/30 text-white rounded-xl transition-all cursor-pointer border border-white/20"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-black/20 hover:bg-black/30 text-white rounded-xl transition-all cursor-pointer border border-white/20 shrink-0"
               title="Schließen"
+              aria-label="Schließen"
             >
               <X size={20} />
             </button>

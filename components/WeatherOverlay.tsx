@@ -460,7 +460,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                       </span>
                       {weather.elevation !== undefined && (
                         <span className="text-[10px] text-slate-400 font-medium">
-                          ({weather.elevation} m ü. M.)
+                          ({Math.round(weather.elevation)} m ü. M.)
                         </span>
                       )}
                     </div>

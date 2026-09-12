@@ -42,17 +42,51 @@ export function runStorageAndArchitectureTests() {
   const emptySanitized = sanitizeTracksForStorage([] as any);
   assert(Array.isArray(emptySanitized) && emptySanitized.length === 0, 'sanitizeTracksForStorage handles empty array');
 
+  // Setup mock localStorage on globalThis for testing storage operations
+  const mockStorage: Record<string, string> = {};
+  (globalThis as any).window = {
+    localStorage: {
+      setItem: (k: string, v: string) => { mockStorage[k] = v; },
+      getItem: (k: string) => mockStorage[k] !== undefined ? mockStorage[k] : null,
+      removeItem: (k: string) => { delete mockStorage[k]; }
+    }
+  };
+
   // Test 3: safeSetItem & safeGetItem in memory/browser
   const testKey = 'test_architecture_key';
   const testVal = 'architecture_stable_v1';
   const setOk = safeSetItem(testKey, testVal);
-  if (typeof window !== 'undefined' && window.localStorage) {
-    assert(setOk, 'safeSetItem succeeds when localStorage available');
-    const readVal = safeGetItem(testKey);
-    assert(readVal === testVal, 'safeGetItem retrieves correct value');
-  } else {
-    assert(true, 'safeSetItem handles non-window environment gracefully');
+  assert(setOk, 'safeSetItem succeeds when localStorage available');
+  const readVal = safeGetItem(testKey);
+  assert(readVal === testVal, 'safeGetItem retrieves correct value');
+
+  // Test 4: Cyclic structure immunity in saveWorkspaceTracks
+  const cyclicTrack: any = {
+    id: 'track-cyclic-test',
+    name: 'Cyclic Track',
+    distance: 10,
+    ascent: 200,
+    descent: 200,
+    color: '#3b82f6',
+    points: [
+      { lat: 47.0, lng: 11.0, ele: 600 }
+    ]
+  };
+  // Introduce direct cyclic reference:
+  cyclicTrack.self = cyclicTrack;
+  cyclicTrack.points[0].parent = cyclicTrack;
+
+  let cyclicSaveSuccess = false;
+  try {
+    cyclicSaveSuccess = saveWorkspaceTracks([cyclicTrack]);
+  } catch (err) {
+    cyclicSaveSuccess = false;
   }
+  assert(cyclicSaveSuccess, 'saveWorkspaceTracks survives and succeeds with circular reference without throwing');
+
+  // Test 5: Verify loaded cyclic track does not break loadWorkspaceTracks
+  const loadedTracks = loadWorkspaceTracks();
+  assert(loadedTracks.length === 1 && loadedTracks[0].id === 'track-cyclic-test', 'loadWorkspaceTracks recovers sanitized track');
 
   console.log(`\n📊 Storage & Architecture Test Summary: ${passed} Passed, ${failed} Failed`);
   return { passed, failed };

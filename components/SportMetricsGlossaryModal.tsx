@@ -672,39 +672,43 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
   ];
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-slate-900/80 backdrop-blur-md overflow-hidden">
+    <div 
+      className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-slate-900/80 backdrop-blur-md overflow-hidden cursor-pointer"
+      onClick={onClose}
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 10 }}
         transition={{ duration: 0.2 }}
-        className="w-full max-w-5xl h-[92vh] max-h-[850px] bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-5xl h-[calc(100dvh-1rem)] sm:h-[92vh] max-h-[850px] bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden cursor-default"
       >
         {/* Modal Header */}
-        <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md">
+        <div className="px-3 sm:px-5 py-3 sm:py-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800 shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md shrink-0">
               <BookOpen size={20} className="stroke-[2.5]" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-black tracking-tight">Sport-Metriken & Trainingswissenschaftliches Glossar</h2>
-                <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <h2 className="text-sm sm:text-base font-black tracking-tight truncate">Sport-Metriken & Glossar</h2>
+                <span className="hidden sm:inline-flex text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shrink-0">
                   Wissenschaftlich fundiert
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-400 truncate hidden sm:block">
                 Präzise Definitionen, Formeln, Schwellenwerte und physiologische Hintergründe (VAM, TSS, FTP, EF, VO2max)
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* View Mode Toggle */}
             <div className="flex bg-slate-800 p-0.5 rounded-xl border border-slate-700">
               <button
                 onClick={() => { triggerHaptic('light'); setActiveTab('glossary'); }}
-                className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
                   activeTab === 'glossary'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'text-slate-400 hover:text-white'
@@ -715,7 +719,7 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
               </button>
               <button
                 onClick={() => { triggerHaptic('light'); setActiveTab('calculator'); }}
-                className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
                   activeTab === 'calculator'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'text-slate-400 hover:text-white'
@@ -728,10 +732,11 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
 
             <button
               onClick={() => { triggerHaptic('light'); onClose(); }}
-              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
               title="Schließen (Esc)"
+              aria-label="Schließen"
             >
-              <X size={18} />
+              <X size={20} />
             </button>
           </div>
         </div>

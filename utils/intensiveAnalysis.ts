@@ -240,8 +240,8 @@ export function performLocalIntensiveAnalysis(
     else flatDist += segDist;
   }
 
-  const finalAscent = track.ascent && track.ascent > 0 ? track.ascent : Math.round(totalAscent);
-  const finalDescent = track.descent && track.descent > 0 ? track.descent : Math.round(totalDescent);
+  const finalAscent = Math.round(track.ascent && track.ascent > 0 ? track.ascent : totalAscent);
+  const finalDescent = Math.round(track.descent && track.descent > 0 ? track.descent : totalDescent);
   const avgGrade = segmentCount > 0 ? Number((gradeSum / segmentCount).toFixed(1)) : 2.0;
 
   // Physics-based speed model

@@ -4,12 +4,17 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen } from 'lucide-react';
-import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX } from '../utils/gpxUtils';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
+import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
+import { safeGetItem, safeSetItem } from '../utils/storage';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
 import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
+import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
+import { BatchGpxUploader, UploadProgressInfo } from './BatchGpxUploader';
+import { OfflineCacheStatusWidget } from './sidebar/OfflineCacheStatusWidget';
 import { 
   DndContext, 
   closestCenter, 
@@ -122,6 +127,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
     return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
   }, [track.climbs, track.points]);
 
+  const startValidation = useMemo(() => validateTrackStartPoint(track), [track]);
+
   return (
     <div 
       ref={setNodeRef} 
@@ -151,6 +158,19 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
                 {track.name}
               </span>
+              {startValidation.issue && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onOpenValidation) onOpenValidation(track.id);
+                  }}
+                  className="shrink-0 text-[8.5px] bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900/80 text-amber-800 dark:text-amber-300 font-extrabold px-1.5 py-0.5 rounded border border-amber-300/80 dark:border-amber-800 flex items-center gap-0.5 cursor-pointer transition-colors"
+                  title={`Startpunkt-Abweichung: ${startValidation.issue.description} (Klicken für Prüfbericht & Autokorrektur)`}
+                >
+                  <AlertTriangle className="w-2.5 h-2.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>Start prüfen</span>
+                </span>
+              )}
               {track.isVirtual && (
                 <span className="shrink-0 text-[8px] bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-extrabold px-1 py-0.5 rounded border border-orange-200/40 dark:border-orange-900/30 cursor-help" title="Diese Aktivität enthält keine echten GPS-Koordinaten (nur Leistungs-/Gesundheitsdaten)">
                   ⚠️
@@ -242,14 +262,14 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
           {expanded && (
             <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
               {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) */}
-              <div className="grid grid-cols-4 gap-1 bg-slate-50/50 dark:bg-slate-900/30 p-1 rounded-xl border border-slate-100 dark:border-slate-800/80" onClick={(e) => e.stopPropagation()}>
+              <div className="grid grid-cols-4 gap-1.5 bg-slate-50/70 dark:bg-slate-900/40 p-1.5 rounded-xl border border-slate-200/60 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
                 <button 
                   type="button"
                   onClick={() => onToggleVisibility(track.id)} 
-                  className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black ${
+                  className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold shadow-2xs ${
                     track.visible 
-                      ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/60 dark:bg-slate-900/40 dark:text-slate-350 dark:border-slate-800' 
-                      : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200/60 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                      ? 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200/80 dark:bg-slate-850 dark:hover:bg-slate-800 dark:text-slate-200 dark:border-slate-700/70' 
+                      : 'bg-amber-50/80 hover:bg-amber-100/80 text-amber-700 border-amber-300/80 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800'
                   }`}
                   title="Sichtbarkeit umschalten"
                 >
@@ -261,7 +281,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenIntensiveAnalysis(track.id)} 
-                    className="p-1.5 bg-purple-50/80 hover:bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 rounded-lg border border-purple-250/20 dark:border-purple-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
@@ -273,10 +293,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenAnalytics(track.id)} 
-                    className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-250/20 dark:border-indigo-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Ausführliche Daten- & Leistungsanalyse"
                   >
-                    <BarChart2 className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                    <BarChart2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                     <span>Analyse</span>
                   </button>
                 )}
@@ -285,7 +305,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenClimbs(track.id)} 
-                    className="p-1.5 bg-emerald-55/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-355 rounded-lg border border-emerald-250/20 dark:border-emerald-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Steigungs- & Bergwertungs-Analyse öffnen"
                   >
                     <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -297,10 +317,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenTrainingZones(track.id)} 
-                    className="p-1.5 bg-rose-50/80 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-350 rounded-lg border border-rose-250/20 dark:border-rose-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Trainingszonen & Puls-Analyse öffnen"
                   >
-                    <Heart className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
+                    <Heart className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
                     <span>Zonen</span>
                   </button>
                 )}
@@ -309,10 +329,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenRawData(track.id)} 
-                    className="p-1.5 bg-teal-50/80 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-350 rounded-lg border border-teal-250/20 dark:border-teal-800/40 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Rohdaten & Telemetrie-Sätze inspizieren"
                   >
-                    <FileCode className="w-3.5 h-3.5 text-teal-650 dark:text-teal-400" />
+                    <FileCode className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
                     <span>Rohdaten</span>
                   </button>
                 )}
@@ -321,7 +341,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenTimeGapAnalysis(track.id)} 
-                    className="p-1.5 bg-amber-50/80 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 rounded-lg border border-amber-250/20 dark:border-amber-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Zeitlücken > 30s analysieren & Track trennen"
                   >
                     <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
@@ -333,7 +353,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onReverseTrack(track.id)} 
-                    className="p-1.5 bg-violet-50/80 hover:bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 rounded-lg border border-violet-250/20 dark:border-violet-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Streckenverlauf umkehren (Start/Ziel & Höhendaten tauschen)"
                   >
                     <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
@@ -345,21 +365,24 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onOpenValidation(track.id)} 
-                    className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 rounded-lg border border-indigo-200/40 dark:border-indigo-900/30 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
-                    title="GPS-Validierung & Plausibilitätsprüfung (Ausreißer, Null-Island, Höhenprofil)"
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold relative" 
+                    title={startValidation.issue ? `Plausibilitätsprüfung: ${startValidation.issue.title}` : "GPS-Validierung & Plausibilitätsprüfung (Ausreißer, Null-Island, Höhenprofil)"}
                   >
                     <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                     <span>Prüfen</span>
+                    {startValidation.issue && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white dark:ring-slate-900" />
+                    )}
                   </button>
                 )}
 
                 <button 
                   type="button"
                   onClick={handleExportGPX} 
-                  className="p-1.5 bg-sky-50/80 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 rounded-lg border border-sky-250/20 dark:border-sky-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold font-sans" 
                   title="Track zurück als GPX-Datei exportieren"
                 >
-                  <Download className="w-3.5 h-3.5 text-sky-655 dark:text-sky-450" />
+                  <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                   <span>Export</span>
                 </button>
 
@@ -371,7 +394,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                       text: `🚴 GPX Route: ${track.name}\n📏 Distanz: ${track.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(track.ascent)}m`
                     });
                   }} 
-                  className="p-1.5 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-lg border border-emerald-250/20 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black font-sans" 
+                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold font-sans" 
                   title="Route via Smartphone (WhatsApp, Messages, Strava) teilen"
                 >
                   <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -381,20 +404,20 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 <button 
                   type="button"
                   onClick={() => onSaveTrackToLibrary?.(track.id)} 
-                  className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-350 rounded-lg border border-indigo-200/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black animate-none" 
+                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                   title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
                 >
-                  <Database className="w-3.5 h-3.5 text-indigo-650 dark:text-indigo-400" />
+                  <Database className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                   <span>Sichern</span>
                 </button>
 
                 <button 
                   type="button"
                   onClick={() => onRemoveTrack(track.id)} 
-                  className="p-1.5 bg-red-50/80 hover:bg-red-100 text-red-650 dark:bg-rose-950/20 dark:text-rose-300 rounded-lg border border-red-250/20 dark:border-rose-900/30 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-black" 
+                  className="p-1.5 bg-white hover:bg-rose-50 dark:bg-slate-850 dark:hover:bg-rose-950/30 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 rounded-lg border border-slate-200/80 hover:border-rose-200 dark:border-slate-700/70 dark:hover:border-rose-900/50 shadow-2xs transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                   title="Track vollständig entfernen"
                 >
-                  <Trash2 className="w-3.5 h-3.5 text-red-650 dark:text-rose-400" />
+                  <Trash2 className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />
                   <span>Löschen</span>
                 </button>
               </div>
@@ -481,7 +504,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
                     <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Steigung</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                      {(track.maxSlope ?? 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
+                      {(track.maxSlope && track.maxSlope > 0
+                        ? track.maxSlope
+                        : (track.points && track.points.length > 1 ? (calculateElevationStats(track.points).maxSlope || 0) : 0)
+                      ).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
                     </span>
                   </div>
                 </div>
@@ -733,7 +759,8 @@ interface SidebarProps {
   markedTrackId: string | null;
   onMarkTrack: (id: string) => void;
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
-  onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onUpload: (files: FileList | File[] | React.ChangeEvent<HTMLInputElement>) => Promise<void> | void;
+  uploadProgress?: UploadProgressInfo | null;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
   onMergeSelected: () => void;
@@ -803,6 +830,10 @@ interface SidebarProps {
   setShowDbCyclingHeatmap?: (show: boolean) => void;
   showDbRunningHeatmap?: boolean;
   setShowDbRunningHeatmap?: (show: boolean) => void;
+  onOpenShortcuts?: () => void;
+  onToggleAllVisibility?: (makeAllVisible: boolean) => void;
+  onFitVisibleTracks?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
+  onLoadReferenceTours?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -811,6 +842,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onMarkTrack,
   onChangeActivityType,
   onUpload, 
+  uploadProgress,
   onToggleVisibility, 
   onRemoveTrack, 
   onMergeSelected,
@@ -848,6 +880,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenSummaryReport,
   onOpenIntensiveAnalysis,
   onOpenGlossary,
+  onOpenShortcuts,
   onOpenAnalytics,
   onOpenClimbs,
   onOpenWeather,
@@ -879,11 +912,23 @@ const Sidebar: React.FC<SidebarProps> = ({
   showDbCyclingHeatmap = false,
   setShowDbCyclingHeatmap,
   showDbRunningHeatmap = false,
-  setShowDbRunningHeatmap
+  setShowDbRunningHeatmap,
+  onToggleAllVisibility,
+  onFitVisibleTracks,
+  onLoadReferenceTours
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
   const [expandedTrackMap, setExpandedTrackMap] = useState<Record<string, boolean>>({});
+  const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
+
+  const filteredTracks = useMemo(() => {
+    if (activityFilter === 'all') return tracks;
+    return tracks.filter(t => t.activityType === activityFilter);
+  }, [tracks, activityFilter]);
+
+  const cyclingCount = useMemo(() => tracks.filter(t => t.activityType === 'cycling').length, [tracks]);
+  const runningCount = useMemo(() => tracks.filter(t => t.activityType === 'running').length, [tracks]);
 
   const allTracksExpanded = useMemo(() => {
     if (tracks.length === 0) return false;
@@ -904,6 +949,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [latestVersion, setLatestVersion] = useState('2.7.7');
   const [latestBuildDate, setLatestBuildDate] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  // Offline-Speicher is collapsed/hidden by default for a clean layout
+  const [showOfflineStorage, setShowOfflineStorage] = useState<boolean>(() => {
+    return safeGetItem('gpx_show_offline_storage') === 'true';
+  });
 
   useEffect(() => {
     const updateOnline = () => setIsOnline(navigator.onLine);
@@ -919,9 +968,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     const fetchLatestVersion = async () => {
       try {
-        const res = await fetch(getApiUrl('/api/versions'));
-        const data = await res.json();
-        if (data.success && data.versions.length > 0) {
+        const apiUrl = getApiUrl('/api/versions');
+        const res = await fetch(apiUrl);
+        if (!res.ok) return;
+        const text = await res.text();
+        if (!text || !text.trim().startsWith('{')) return;
+        const data = JSON.parse(text);
+        if (data.success && Array.isArray(data.versions) && data.versions.length > 0) {
           setLatestVersion(data.versions[0].version);
           try {
             const dateObj = new Date(data.versions[0].updated_at);
@@ -937,7 +990,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           }
         }
       } catch (e) {
-        console.error('Failed to load latest version in sidebar:', e);
+        console.warn('Unable to load latest version in sidebar:', e);
       }
     };
     fetchLatestVersion();
@@ -989,7 +1042,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
-        w-[290px] md:w-auto bg-white border-r border-slate-200 shadow-2xl md:shadow-none
+        w-[88vw] max-w-[340px] md:w-auto bg-white border-r border-slate-200 shadow-2xl md:shadow-none
         ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none md:bg-transparent' : 'md:w-80 md:shadow-2xl md:bg-white md:border-r md:border-slate-200'}
         h-full flex flex-col overflow-visible
       `}>
@@ -1007,29 +1060,22 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
           {/* Mobile Close Button */}
           <button 
+            type="button"
+            aria-label="Menü schließen"
             onClick={() => setIsMobileMenuOpen(false)}
-            className="md:hidden absolute right-4 top-4 p-2 bg-slate-100 rounded-xl text-slate-600 z-50"
+            className="md:hidden absolute right-4 top-4 min-h-[44px] min-w-[44px] flex items-center justify-center p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl z-50 touch-manipulation active:scale-95 shadow-xs"
           >
             <X size={20} />
           </button>
 
-          {/* AI Generated Background Image */}
-          <div 
-            className="absolute inset-0 z-0 opacity-60 pointer-events-none"
-            style={{
-              backgroundImage: 'url("https://images.unsplash.com/photo-1524661135-423995f22d0b?q=80&w=800&auto=format&fit=crop")',
-              backgroundSize: 'cover',
-              backgroundPosition: 'center'
-            }}
-          />
-          <div className="absolute inset-0 z-0 bg-white/60 backdrop-blur-md pointer-events-none" />
-
-          <div className="relative z-10 p-6 bg-slate-900/95 text-white flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Layers className="w-6 h-6 text-blue-400 shrink-0" />
+          <div className="relative z-10 px-5 py-4 bg-slate-900 text-white flex justify-between items-center border-b border-slate-800/80">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                <Layers className="w-5 h-5 text-blue-400 shrink-0" />
+              </div>
               <div>
-                <h1 className="text-xl font-bold whitespace-nowrap">GPX Master</h1>
-                <p className="text-[10px] text-slate-400 uppercase tracking-widest">OSM Pro Tools</p>
+                <h1 className="text-base font-bold tracking-tight whitespace-nowrap leading-none">GPX Master</h1>
+                <p className="text-[9px] text-slate-400 uppercase tracking-widest mt-1">OSM Pro Tools</p>
               </div>
             </div>
             
@@ -1049,14 +1095,12 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="relative z-10 flex-1 overflow-y-auto p-4 space-y-6">
-            <section>
-              <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                  <p className="text-sm text-slate-500 font-medium">GPX, FIT oder ZIP hochladen</p>
-                </div>
-                <input type="file" className="hidden" accept=".gpx, .fit, .FIT, .zip, .ZIP, application/gpx+xml, application/octet-stream, application/x-garmin-fit, application/zip, application/x-zip-compressed" multiple onChange={onUpload} />
-              </label>
+            <section id="section-batch-upload">
+              <BatchGpxUploader
+                onUpload={onUpload}
+                uploadProgress={uploadProgress}
+                isDark={isDark}
+              />
             </section>
 
             {/* 3D Terrain Hover Preview & Instantaneous Slope/Altitude HUD */}
@@ -1089,124 +1133,183 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <button 
                   onClick={() => onOpenIntensiveAnalysis(markedTrackId || undefined)}
                   disabled={tracks.length === 0}
-                  className="w-full flex items-center justify-center gap-2 p-3.5 rounded-xl text-sm font-black bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-purple-200/50 dark:shadow-none transition-all cursor-pointer ring-2 ring-purple-400/30"
+                  className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-all cursor-pointer group"
                   title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
                 >
-                  <Sparkles className="w-4 h-4 text-purple-200" />
-                  Intensive Track & Pacing Analyse
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1 rounded-md bg-white/15">
+                      <Sparkles className="w-4 h-4 text-indigo-100" />
+                    </div>
+                    <div className="text-left">
+                      <div className="font-bold leading-tight">Intensive Pacing Analyse</div>
+                      <div className="text-[10px] text-indigo-200 font-normal">Segment- & Leistungsphysik</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-indigo-200 group-hover:translate-x-0.5 transition-transform" />
                 </button>
               )}
 
+              {/* Core Route Tools: Clean 2x2 Grid */}
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={onMergeSelected}
                   disabled={tracks.length < 2}
-                  className="flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
                 >
-                  <Combine className="w-4 h-4" />
-                  Verbinden
+                  <Combine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <span>Verbinden</span>
                 </button>
                 <button 
                   onClick={() => setIs3D(!is3D)}
-                  className={`flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-semibold transition-all ${is3D ? 'bg-purple-600 text-white shadow-lg shadow-purple-200' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                  className={`flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold border shadow-2xs transition-all cursor-pointer ${
+                    is3D 
+                      ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-800' 
+                      : 'bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
                 >
-                  <Box className="w-4 h-4" />
-                  3D Ansicht {is3D ? 'aktiv' : ''}
+                  <Box className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                  <span>3D {is3D ? 'Aktiv' : 'Ansicht'}</span>
+                </button>
+                <button 
+                  onClick={onOpenComparison}
+                  disabled={tracks.length < 2}
+                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
+                  title={tracks.length < 2 ? "Lade mindestens 2 Aktivitäten hoch, um sie zu vergleichen" : "Aktivitäten vergleichen"}
+                >
+                  <GitCompare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span>Vergleichen</span>
+                </button>
+                <button 
+                  onClick={() => onOpenTimeGapAnalysis?.(markedTrackId || undefined)}
+                  disabled={tracks.length === 0}
+                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
+                  title="Erkennt Unterbrechungen > 30s und erlaubt das Trennen oder Schließen von Zeitlücken"
+                >
+                  <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>Zeitlücken</span>
                 </button>
               </div>
-              <button 
-                onClick={onOpenComparison}
-                disabled={tracks.length < 2}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 disabled:hover:bg-indigo-600 disabled:cursor-not-allowed shadow-md shadow-indigo-100 transition-all"
-                title={tracks.length < 2 ? "Lade mindestens 2 Aktivitäten hoch, um sie zu vergleichen" : "Aktivitäten vergleichen"}
-              >
-                <GitCompare className="w-4 h-4" />
-                Aktivitäten vergleichen
-              </button>
 
-              <button 
-                onClick={() => onOpenTimeGapAnalysis?.(markedTrackId || undefined)}
-                disabled={tracks.length === 0}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-orange-100 dark:shadow-none transition-all cursor-pointer"
-                title="Erkennt Unterbrechungen > 30s und erlaubt das Trennen oder Schließen von Zeitlücken"
-              >
-                <Scissors className="w-4 h-4 text-amber-200" />
-                Zeitlücken & Trennen
-              </button>
-
+              {/* Active Route Quick-Actions (when a track is selected) */}
               {markedTrack && (
+                <div className="p-2 rounded-xl bg-slate-50/90 dark:bg-slate-850/60 border border-slate-200/70 dark:border-slate-800 space-y-1.5">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 truncate">
+                    Auswahl: <span className="text-slate-700 dark:text-slate-300 font-semibold normal-case">{markedTrack.name}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button 
+                      onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
+                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                      title="Ausführlichen, druckbaren Aktivitäts-Report mit allen Statistiken anzeigen"
+                    >
+                      <BarChart2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>PDF-Report</span>
+                    </button>
+                    <button 
+                      onClick={() => {
+                        triggerHaptic('medium');
+                        downloadTrackAsGPX(markedTrack, { textMarkers });
+                      }}
+                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                      title="Markierten Track als .gpx herunterladen"
+                    >
+                      <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                      <span>GPX Export</span>
+                    </button>
+                  </div>
+                  {markedShowAnalyticsAndZones && (
+                    <button 
+                      onClick={() => onOpenTrainingZones?.(markedTrackId || undefined)}
+                      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-rose-600 dark:text-rose-400 border border-slate-200/80 dark:border-slate-700 hover:bg-rose-50/50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer shadow-2xs"
+                      title="Puls-Trainingsbereiche anzeigen und analysieren"
+                    >
+                      <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+                      <span>Puls-Trainingsbereiche</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Extended Analytics & Garmin: Clean, Unified Segmented Card */}
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-850/50 backdrop-blur-xs overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
+                <button 
+                  onClick={onOpenPerformanceAnalysis}
+                  className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
+                  title="Wissenschaftliche Leistungs- & Fitness-Analyse (CTL, ATL, TSB, Leistungskurven)"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/40">
+                      <TrendingUp className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Fitness & Leistung (CTL/ATL)</span>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+                </button>
+
+                <button 
+                  onClick={onOpenGarminHealth}
+                  className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
+                  title="Garmin Connect Fitness- & Gesundheitsdaten anzeigen & SQLite-Import"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1 rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900/40">
+                      <Database className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Garmin Fitness & Gesundheit</span>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+                </button>
+
+                {onOpenGarminActivitiesAnalysis && (
+                  <button 
+                    onClick={onOpenGarminActivitiesAnalysis}
+                    className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
+                    title="Garmin Connect Aktivitäten-Verlauf analysieren & Einheiten vergleichen"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-1 rounded-md bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 border border-orange-100 dark:border-orange-900/40">
+                        <GitCompare className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Garmin Einheiten-Vergleich</span>
+                    </div>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+                  </button>
+                )}
+
+                {onOpenGlossary && (
+                  <button 
+                    onClick={() => onOpenGlossary()}
+                    className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
+                    title="Wissenschaftliches Sport-Glossar (VAM, TSS, FTP, EF, VO2max, VI, Pacing) & Interaktive Rechner"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-1 rounded-md bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/40">
+                        <BookOpen className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Sport-Glossar (VAM, TSS...)</span>
+                    </div>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+                  </button>
+                )}
+              </div>
+
+              {onOpenShortcuts && (
                 <button 
                   onClick={() => {
-                    triggerHaptic('medium');
-                    downloadTrackAsGPX(markedTrack, { textMarkers });
+                    triggerHaptic('light');
+                    onOpenShortcuts();
                   }}
-                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-sky-600 hover:bg-sky-700 text-white shadow-md shadow-sky-100 dark:shadow-none transition-all cursor-pointer"
-                  title="Markierten Track mit allen Metadaten, Oberflächen-Tags & Bereinigungen als .gpx herunterladen"
+                  className="w-full flex items-center justify-between p-3 rounded-xl text-sm font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/60 dark:border-slate-700/60 shadow-xs transition-all cursor-pointer group"
+                  title="Übersicht aller Tastaturkürzel anzeigen (Drücke ? oder Shift+/)"
+                  id="btn-sidebar-shortcuts"
                 >
-                  <Download className="w-4 h-4 text-sky-200" />
-                  Markierten Track als GPX exportieren
-                </button>
-              )}
-
-              {markedTrack && (
-                <button 
-                  onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
-                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-blue-650 hover:bg-blue-700 text-white shadow-md shadow-blue-100 transition-all cursor-pointer"
-                  title="Ausführlichen, druckbaren Aktivitäts-Report mit allen Statistiken anzeigen"
-                >
-                  <BarChart2 className="w-4 h-4" />
-                  Zusammenfassung & PDF-Report
-                </button>
-              )}
-              
-              {markedShowAnalyticsAndZones && (
-                <button 
-                  onClick={() => onOpenTrainingZones?.(markedTrackId || undefined)}
-                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-100 transition-all"
-                  title="Puls-Trainingsbereiche anzeigen und analysieren"
-                >
-                  <Heart className="w-4 h-4 fill-white animate-pulse" />
-                  Trainingsbereiche & Puls
-                </button>
-              )}
-
-              <button 
-                onClick={onOpenGarminHealth}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-md shadow-amber-100 transition-all cursor-pointer"
-                title="Garmin Connect Fitness- & Gesundheitsdaten anzeigen & SQLite-Import"
-              >
-                <Database className="w-4 h-4" />
-                Garmin Fitness & Gesundheit
-              </button>
-
-              {onOpenGarminActivitiesAnalysis && (
-                <button 
-                  onClick={onOpenGarminActivitiesAnalysis}
-                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-orange-600 hover:bg-orange-700 text-white shadow-md shadow-orange-100 transition-all cursor-pointer"
-                  title="Garmin Connect Aktivitäten-Verlauf analysieren & Einheiten vergleichen"
-                >
-                  <GitCompare className="w-4 h-4" />
-                  Garmin Aktivitäten & Vergleich
-                </button>
-              )}
-
-              <button 
-                onClick={onOpenPerformanceAnalysis}
-                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-indigo-650 hover:bg-indigo-700 text-white shadow-md shadow-indigo-105 transition-all cursor-pointer"
-                title="Wissenschaftliche Leistungs- & Fitness-Analyse (CTL, ATL, TSB, Leistungskurven)"
-              >
-                <TrendingUp className="w-4 h-4" />
-                Leistungs- & Fitness-Analyse
-              </button>
-
-              {onOpenGlossary && (
-                <button 
-                  onClick={() => onOpenGlossary()}
-                  className="w-full flex items-center justify-center gap-2 p-3 rounded-xl text-sm font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-100 dark:shadow-none transition-all cursor-pointer"
-                  title="Wissenschaftliches Sport-Glossar (VAM, TSS, FTP, EF, VO2max, VI, Pacing) & Interaktive Rechner"
-                >
-                  <BookOpen className="w-4 h-4 text-emerald-200" />
-                  Sport-Metriken & Glossar (VAM, TSS...)
+                  <div className="flex items-center gap-2">
+                    <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
+                    <span>Tastaturkürzel & Steuerung</span>
+                  </div>
+                  <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-black bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-slate-600 dark:text-slate-300 shadow-2xs">
+                    ?
+                  </kbd>
                 </button>
               )}
             </section>
@@ -1556,35 +1659,116 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               {activeTab === 'active' && (
-                <div className="space-y-2 pb-6">
+                <div className="space-y-3 pb-6">
                   {tracks.length > 0 && (
-                    <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-900/50 rounded-lg border border-slate-200/60 dark:border-slate-800/60">
-                      <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
-                        Workspace ({tracks.length})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleToggleExpandAll}
-                        className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-3xs transition-all cursor-pointer select-none"
-                        title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
-                      >
-                        {allTracksExpanded ? (
-                          <>
-                            <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
-                            <span>Alle einklappen</span>
-                          </>
-                        ) : (
-                          <>
-                            <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
-                            <span>Alle ausklappen</span>
-                          </>
-                        )}
-                      </button>
+                    <WorkspaceSummaryDashboard
+                      tracks={tracks}
+                      userWeight={userWeight}
+                      estimatedSpeed={estimatedSpeed}
+                      variant="sidebar"
+                      isDark={isDark}
+                      markedTrackId={markedTrackId}
+                      onMarkTrack={onMarkTrack}
+                      onToggleTrackVisibility={onToggleVisibility}
+                      onToggleAllVisibility={onToggleAllVisibility}
+                      onFitVisibleTracks={onFitVisibleTracks}
+                      onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
+                    />
+                  )}
+
+                  {tracks.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-900/50 rounded-lg border border-slate-200/60 dark:border-slate-800/60">
+                        <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
+                          Workspace ({tracks.length})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleToggleExpandAll}
+                          className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-3xs transition-all cursor-pointer select-none"
+                          title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
+                        >
+                          {allTracksExpanded ? (
+                            <>
+                              <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
+                              <span>Alle einklappen</span>
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
+                              <span>Alle ausklappen</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {/* Touch-Ergonomic Mobile Activity Filter Chips */}
+                      {(cyclingCount > 0 && runningCount > 0) && (
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar select-none">
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('all')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 ${
+                              activityFilter === 'all'
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            Alle ({tracks.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('cycling')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
+                              activityFilter === 'cycling'
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            <span>🚴 Rad</span>
+                            <span className="text-[9.5px] opacity-80">({cyclingCount})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('running')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
+                              activityFilter === 'running'
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            <span>🏃 Lauf</span>
+                            <span className="text-[9.5px] opacity-80">({runningCount})</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {tracks.length === 0 && (
-                    <p className="text-xs text-slate-400 italic text-center py-8 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Noch keine Routen geladen.</p>
+                    <div className="text-center py-6 px-4 bg-slate-50/80 dark:bg-slate-900/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-3">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Noch keine Routen im Workspace vorhanden.</p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('library')}
+                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
+                      >
+                        <Sparkles className="w-4 h-4 text-indigo-200" />
+                        Bibliothek öffnen (7 Alpen-Touren)
+                      </button>
+                      {onLoadReferenceTours && (
+                        <button
+                          type="button"
+                          onClick={onLoadReferenceTours}
+                          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
+                        >
+                          Referenztouren in Workspace laden
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {tracks.length > 0 && filteredTracks.length === 0 && (
+                    <p className="text-xs text-slate-400 italic text-center py-6 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Keine Aktivitäten für diese Kategorie vorhanden.</p>
                   )}
                   <DndContext 
                     sensors={sensors}
@@ -1592,11 +1776,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                     onDragEnd={handleDragEnd}
                   >
                     <SortableContext 
-                      items={tracks.map(t => t.id)}
+                      items={filteredTracks.map(t => t.id)}
                       strategy={verticalListSortingStrategy}
                     >
                       <div className="space-y-2">
-                        {tracks.map((track) => (
+                        {filteredTracks.map((track) => (
                           <SortableTrackItem 
                             key={track.id} 
                             track={track} 
@@ -1640,19 +1824,66 @@ const Sidebar: React.FC<SidebarProps> = ({
                     onActiveTrackId={markedTrackId}
                     selectionBounds={selectionBounds}
                     onClearSelection={onClearSelection}
+                    workspaceTracks={tracks}
                   />
                 </div>
               )}
             </section>
           </div>
 
+          {showOfflineStorage && (
+            <OfflineCacheStatusWidget 
+              tracks={tracks} 
+              isOnline={isOnline} 
+              onClose={() => {
+                setShowOfflineStorage(false);
+                safeSetItem('gpx_show_offline_storage', 'false');
+              }}
+            />
+          )}
+
           <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-1 rounded-b-xl">
             <div className="flex justify-between items-center font-medium">
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                 <span className="font-semibold text-slate-600 dark:text-slate-400">
-                  {isOnline ? 'Online (PWA)' : 'Offline (Cache)'}
+                  {isOnline ? 'Online' : 'Offline'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('light');
+                    setShowOfflineStorage(prev => {
+                      const next = !prev;
+                      safeSetItem('gpx_show_offline_storage', String(next));
+                      return next;
+                    });
+                  }}
+                  className={`ml-1 px-1.5 py-0.5 rounded border text-[9px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                    showOfflineStorage 
+                      ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800' 
+                      : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-slate-700'
+                  }`}
+                  title={showOfflineStorage ? "Offline-Speicher ausblenden" : "Offline-Speicher & Cache-Status anzeigen"}
+                  id="btn-footer-toggle-offline-cache"
+                >
+                  <HardDrive size={10} />
+                  <span>Speicher</span>
+                </button>
+                {onOpenShortcuts && (
+                  <button
+                    onClick={() => {
+                      triggerHaptic('light');
+                      onOpenShortcuts();
+                    }}
+                    className="ml-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 border border-slate-200/70 dark:border-slate-700 font-mono text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Tastaturkürzel anzeigen (?)"
+                    id="btn-footer-shortcuts"
+                  >
+                    <Keyboard size={10} />
+                    <span>?</span>
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => setIsAboutOpen(true)}

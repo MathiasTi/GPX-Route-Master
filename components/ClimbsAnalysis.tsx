@@ -150,7 +150,9 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
   const handleUpdateCriteria = (key: keyof ClimbCriteria, value: any) => {
     const updated = { ...activeCriteria, [key]: value, type: 'custom' as const };
     setActiveCriteria(updated);
-    localStorage.setItem('gpx_climb_criteria', JSON.stringify(updated));
+    try {
+      localStorage.setItem('gpx_climb_criteria', JSON.stringify(updated));
+    } catch (e) {}
   };
 
   const handleApplyPreset = (presetKey: string) => {
@@ -158,7 +160,9 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
     if (preset) {
       const updated = { ...preset.criteria, type: presetKey as any };
       setActiveCriteria(updated);
-      localStorage.setItem('gpx_climb_criteria', JSON.stringify(updated));
+      try {
+        localStorage.setItem('gpx_climb_criteria', JSON.stringify(updated));
+      } catch (e) {}
     }
   };
 
@@ -167,37 +171,37 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[2000] flex items-center justify-center p-4 md:p-6"
+      className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[2000] flex items-center justify-center p-2 sm:p-4 md:p-6 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] cursor-pointer"
       onClick={onClose}
     >
       <motion.div 
         initial={{ scale: 0.95, y: 15 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.95, y: 15 }}
-        className="bg-white dark:bg-slate-900 w-full max-w-6xl h-[88vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col"
+        className="bg-white dark:bg-slate-900 w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header banner */}
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-950/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 rounded-2xl">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-950/20 shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="p-2 sm:p-2.5 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 rounded-2xl shrink-0">
               <TrendingUp size={20} className="animate-pulse" />
             </div>
-            <div>
-              <h2 className="text-base font-black text-slate-800 dark:text-slate-100 leading-snug">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 leading-snug truncate">
                 Bergwertungs- & Steigungs-Analyse
               </h2>
-              <p className="text-xs text-slate-400 font-bold leading-none mt-1">
+              <p className="text-[10px] sm:text-xs text-slate-400 font-bold leading-none mt-1 truncate">
                 Route: <span className="text-indigo-600 dark:text-indigo-400 font-black">{track.name}</span>
               </p>
             </div>
           </div>
           
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Settings button */}
             <button
               onClick={() => setShowConfig(!showConfig)}
-              className={`p-2.5 rounded-2xl cursor-pointer transition-all flex items-center gap-2 text-xs font-bold border ${
+              className={`p-2 sm:p-2.5 rounded-2xl cursor-pointer transition-all flex items-center gap-1.5 sm:gap-2 text-xs font-bold border ${
                 showConfig 
                   ? 'bg-indigo-50 border-indigo-200 text-indigo-600 dark:bg-indigo-950/40 dark:border-indigo-900/60 dark:text-indigo-400 shadow-inner' 
                   : 'bg-white hover:bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700'
@@ -209,7 +213,9 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
 
             <button
               onClick={onClose}
-              className="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-250 transition-colors cursor-pointer"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-250 transition-colors cursor-pointer shrink-0"
+              title="Schließen"
+              aria-label="Schließen"
             >
               <X size={20} />
             </button>

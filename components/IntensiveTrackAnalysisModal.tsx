@@ -4,8 +4,8 @@ import {
   X, Printer, Share2, Clipboard, Heart, Activity, Zap,
   Layers, Trophy, Calendar, Clock, Bike, AlertTriangle, Sparkles,
   Navigation, CheckCircle, RefreshCw, Droplets, Flame, ShieldAlert,
-  MapPin, Plus, Sliders, Info, ArrowUpRight, Gauge, ChevronRight,
-  TrendingUp, Mountain, Compass, Crosshair, BookOpen
+  MapPin, Plus, Sliders, Info, ArrowUpRight, Gauge, ChevronRight, ChevronLeft,
+  TrendingUp, Mountain, Compass, Crosshair, BookOpen, Table, FileText
 } from 'lucide-react';
 import { GPXTrack, TextMarker, MapLayer } from '../types';
 import {
@@ -20,6 +20,10 @@ import {
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
 import { calculateDistance } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
+import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
+import { ZonesTab } from './analysis/ZonesTab';
+import { RawDataTab } from './analysis/RawDataTab';
+import { PrintReportTab } from './analysis/PrintReportTab';
 
 interface IntensiveElevationChartProps {
   data: Array<{
@@ -58,7 +62,7 @@ const CustomElevationTooltip = ({ active, payload, climbs }: any) => {
       <div className="p-3 rounded-xl bg-slate-900/95 text-white shadow-2xl border border-slate-700/80 text-xs backdrop-blur-md min-w-[210px] space-y-2 pointer-events-none z-50">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-1.5">
           <span className="font-bold text-slate-300">Distanz: {point.dist} km</span>
-          <span className="font-black text-indigo-400">{point.ele} m ü.NN</span>
+          <span className="font-black text-indigo-400">{point.ele !== undefined ? `${Math.round(point.ele)} m ü.NN` : '-'}</span>
         </div>
 
         {climb ? (
@@ -79,7 +83,7 @@ const CustomElevationTooltip = ({ active, payload, climbs }: any) => {
             <div className="grid grid-cols-2 gap-x-2.5 gap-y-1 text-[11px] bg-slate-800/80 p-2 rounded-lg border border-slate-700/50">
               <div>
                 <span className="text-slate-400 block text-[9px]">Höhengewinn</span>
-                <span className="font-black text-emerald-400">+{climb.ascentMeters} Hm</span>
+                <span className="font-black text-emerald-400">+{Math.round(climb.ascentMeters)} Hm</span>
               </div>
               <div>
                 <span className="text-slate-400 block text-[9px]">Ø Steigung</span>
@@ -134,7 +138,7 @@ const IntensiveElevationChart: React.FC<IntensiveElevationChartProps> = ({
               {title}
             </h3>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Min: {minElevation}m • Max: {maxElevation}m {climbs.length > 0 ? `• ${climbs.length} Bergwertungen farbig markiert` : ''}
+              Min: {Math.round(minElevation)}m • Max: {Math.round(maxElevation)}m {climbs.length > 0 ? `• ${climbs.length} Bergwertungen farbig markiert` : ''}
             </p>
           </div>
         </div>
@@ -310,7 +314,7 @@ const IntensiveElevationChart: React.FC<IntensiveElevationChartProps> = ({
                 />
                 <span>#{climb.index + 1} {climb.categoryLabel}</span>
                 <span className={isSelected ? 'text-indigo-200' : 'text-emerald-600 dark:text-emerald-400'}>
-                  +{climb.ascentMeters}m
+                  +{Math.round(climb.ascentMeters)}m
                 </span>
                 <span className={isSelected ? 'text-indigo-200' : 'text-slate-400'}>
                   ({climb.startKm}–{climb.endKm} km)
@@ -324,8 +328,13 @@ const IntensiveElevationChart: React.FC<IntensiveElevationChartProps> = ({
   );
 };
 
-interface IntensiveTrackAnalysisModalProps {
+export type AnalysisTab = 'overview' | 'power' | 'climbs' | 'zones' | 'nutrition' | 'splits' | 'tactics' | 'rawdata' | 'report' | 'pois';
+
+export interface IntensiveTrackAnalysisModalProps {
   track: GPXTrack;
+  allTracks?: GPXTrack[];
+  onSelectTrack?: (trackId: string) => void;
+  initialTab?: AnalysisTab;
   onClose: () => void;
   ftp?: number;
   userWeight?: number;
@@ -343,6 +352,9 @@ interface IntensiveTrackAnalysisModalProps {
 
 export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalProps> = ({
   track,
+  allTracks,
+  onSelectTrack,
+  initialTab = 'overview',
   onClose,
   ftp = 220,
   userWeight = 75,
@@ -368,7 +380,13 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const [customFtp, setCustomFtp] = useState<number>(ftp || 220);
   const [customWeight, setCustomWeight] = useState<number>(userWeight || 75);
   const [customTemp, setCustomTemp] = useState<number>(20);
-  const [activeTab, setActiveTab] = useState<'overview' | 'climbs' | 'nutrition' | 'splits' | 'tactics' | 'pois'>('overview');
+  const [activeTab, setActiveTab] = useState<AnalysisTab>(initialTab || 'overview');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [copied, setCopied] = useState(false);
   const [addedPois, setAddedPois] = useState<Record<string, boolean>>({});
   const [highlightedClimbIndex, setHighlightedClimbIndex] = useState<number | null>(null);
@@ -430,11 +448,11 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const handleCopySummary = () => {
     triggerHaptic();
     const climbsSummary = analysis.climbs.length > 0
-      ? `\n⛰️ Bergwertungen (${analysis.climbs.length}): ${analysis.totalClimbAscentMeters} Hm in Anstiegen (${analysis.totalClimbDistanceKm} km)`
+      ? `\n⛰️ Bergwertungen (${analysis.climbs.length}): ${Math.round(analysis.totalClimbAscentMeters)} Hm in Anstiegen (${analysis.totalClimbDistanceKm} km)`
       : '';
     const text = `📊 INTENSIVE STRECKENANALYSE: ${analysis.trackName}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📏 Distanz: ${analysis.totalDistanceKm} km | ⛰️ Höhenmeter: +${analysis.totalAscentMeters}m / -${analysis.totalDescentMeters}m${climbsSummary}
+📏 Distanz: ${analysis.totalDistanceKm} km | ⛰️ Höhenmeter: +${Math.round(analysis.totalAscentMeters)}m / -${Math.round(analysis.totalDescentMeters)}m${climbsSummary}
 ⏱️ Geschätzte Fahr-/Laufzeit: ${formatSecondsToTime(analysis.estimatedMovingTimeSeconds)} (Brutto: ${formatSecondsToTime(analysis.estimatedElapsedTimeSeconds)})
 🚀 Ø-Geschwindigkeit: ${analysis.estimatedAverageSpeedKmh} km/h
 🔥 Kalorienverbrauch: ${analysis.totalCaloriesKcal} kcal (${analysis.carbsBurnedGrams}g KH / ${analysis.fatBurnedGrams}g Fett)
@@ -489,14 +507,14 @@ GPX Route Master Pro`;
     onAddTextMarker({
       lat: climb.startPoint.lat,
       lng: climb.startPoint.lng,
-      label: `Start Anstieg #${climb.index + 1} (${climb.startElevationM}m, km ${climb.startKm})`,
+      label: `Start Anstieg #${climb.index + 1} (${Math.round(climb.startElevationM)}m, km ${climb.startKm})`,
       color: '#3b82f6'
     });
     // Peak marker
     onAddTextMarker({
       lat: climb.peakPoint.lat,
       lng: climb.peakPoint.lng,
-      label: `Gipfel #${climb.index + 1} (${climb.categoryLabel}: +${climb.ascentMeters}m @ ${climb.avgGradePercent}%)`,
+      label: `Gipfel #${climb.index + 1} (${climb.categoryLabel}: +${Math.round(climb.ascentMeters)}m @ ${climb.avgGradePercent}%)`,
       color: '#ef4444'
     });
     setAddedPois(prev => ({ ...prev, [`climb-${climb.index}`]: true }));
@@ -523,43 +541,95 @@ GPX Route Master Pro`;
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs"
+      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer"
       onClick={onClose}
     >
       <motion.div 
         initial={{ scale: 0.95, y: 15 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.95, y: 15 }}
-        className="bg-white dark:bg-slate-900 w-full max-w-5xl max-h-[92vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800"
+        className="bg-white dark:bg-slate-900 w-full max-w-5xl max-h-[calc(100dvh-1rem)] sm:max-h-[92vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800 cursor-default"
         id="intensive-analysis-modal"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-r from-indigo-50/50 via-white to-purple-50/50 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/30">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-md shadow-indigo-200 dark:shadow-none">
-              <Sparkles className="w-5 h-5 text-amber-300" />
+        <div className="flex items-center justify-between px-3 sm:px-5 py-3 sm:py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-r from-indigo-50/50 via-white to-purple-50/50 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/30 gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-md shadow-indigo-200 dark:shadow-none shrink-0">
+              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-amber-300" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
+                <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white tracking-tight truncate">
                   Intensive Streckenanalyse
                 </h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300">
+                <span className="hidden sm:inline-flex px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 shrink-0">
                   Physics & Nutrition Pro
                 </span>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-                {analysis.trackName} • {analysis.totalDistanceKm} km • +{analysis.totalAscentMeters} Hm
-              </p>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-medium truncate">
+                  {analysis.trackName} • {analysis.totalDistanceKm} km • +{Math.round(analysis.totalAscentMeters)} Hm
+                </span>
+
+                {allTracks && allTracks.length > 1 && onSelectTrack && (
+                  <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-700 shrink-0">
+                    <button
+                      type="button"
+                      disabled={allTracks.findIndex(t => t.id === track.id) <= 0}
+                      onClick={() => {
+                        const idx = allTracks.findIndex(t => t.id === track.id);
+                        if (idx > 0) {
+                          triggerHaptic('light');
+                          onSelectTrack(allTracks[idx - 1].id);
+                        }
+                      }}
+                      className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
+                      title="Vorherige Etappe / Track"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <select
+                      value={track.id}
+                      onChange={(e) => {
+                        triggerHaptic('light');
+                        onSelectTrack(e.target.value);
+                      }}
+                      className="bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-200 cursor-pointer focus:outline-none max-w-[140px] sm:max-w-[210px] truncate"
+                      title="Zu anderer Etappe / Route wechseln"
+                    >
+                      {allTracks.map((t, idx) => (
+                        <option key={t.id} value={t.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+                          {idx + 1}. {t.name} ({t.distance.toFixed(1)} km)
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={allTracks.findIndex(t => t.id === track.id) >= allTracks.length - 1}
+                      onClick={() => {
+                        const idx = allTracks.findIndex(t => t.id === track.id);
+                        if (idx < allTracks.length - 1) {
+                          triggerHaptic('light');
+                          onSelectTrack(allTracks[idx + 1].id);
+                        }
+                      }}
+                      className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
+                      title="Nächste Etappe / Track"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {onOpenGlossary && (
               <button
                 onClick={() => onOpenGlossary()}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
                 title="Wissenschaftliches Sport-Metriken Glossar & Rechner öffnen"
               >
                 <BookOpen className="w-3.5 h-3.5" />
@@ -569,7 +639,7 @@ GPX Route Master Pro`;
 
             <button
               onClick={handleCopySummary}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
               title="Zusammenfassung kopieren"
             >
               {copied ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500" /> : <Clipboard className="w-3.5 h-3.5" />}
@@ -578,7 +648,7 @@ GPX Route Master Pro`;
 
             <button
               onClick={() => window.print()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
               title="Drucken / PDF"
             >
               <Printer className="w-3.5 h-3.5" />
@@ -587,7 +657,9 @@ GPX Route Master Pro`;
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer ml-1"
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors cursor-pointer shrink-0 shadow-xs"
+              aria-label="Schließen"
+              title="Schließen (Esc)"
             >
               <X className="w-5 h-5" />
             </button>
@@ -701,9 +773,12 @@ GPX Route Master Pro`;
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center px-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 gap-2 overflow-x-auto">
+        <div className="flex items-center px-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1 overflow-x-auto">
           <button
-            onClick={() => setActiveTab('overview')}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('overview');
+            }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'overview'
                 ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
@@ -716,7 +791,22 @@ GPX Route Master Pro`;
 
           <button
             onClick={() => {
-              triggerHaptic();
+              triggerHaptic('light');
+              setActiveTab('power');
+            }}
+            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'power'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Zap className="w-4 h-4 text-amber-500" />
+            <span>Leistung & Physik</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic('light');
               setActiveTab('climbs');
             }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
@@ -726,7 +816,7 @@ GPX Route Master Pro`;
             }`}
           >
             <TrendingUp className="w-4 h-4 text-emerald-500" />
-            <span>Anstiege & Bergwertungen</span>
+            <span>Anstiege & Berge</span>
             {analysis.climbs.length > 0 && (
               <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
                 {analysis.climbs.length}
@@ -735,7 +825,25 @@ GPX Route Master Pro`;
           </button>
 
           <button
-            onClick={() => setActiveTab('nutrition')}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('zones');
+            }}
+            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'zones'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Heart className="w-4 h-4 text-rose-500" />
+            <span>Trainingszonen</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('nutrition');
+            }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'nutrition'
                 ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
@@ -747,7 +855,10 @@ GPX Route Master Pro`;
           </button>
 
           <button
-            onClick={() => setActiveTab('splits')}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('splits');
+            }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'splits'
                 ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
@@ -759,7 +870,10 @@ GPX Route Master Pro`;
           </button>
 
           <button
-            onClick={() => setActiveTab('tactics')}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('tactics');
+            }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'tactics'
                 ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
@@ -767,11 +881,44 @@ GPX Route Master Pro`;
             }`}
           >
             <ShieldAlert className="w-4 h-4 text-emerald-500" />
-            <span>Taktik & Sicherheit</span>
+            <span>Taktik & Pacing</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('pois')}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('rawdata');
+            }}
+            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'rawdata'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Table className="w-4 h-4 text-indigo-500" />
+            <span>Telemetrie & Rohdaten</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('report');
+            }}
+            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'report'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <FileText className="w-4 h-4 text-slate-500" />
+            <span>Druck-Report</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('pois');
+            }}
             className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'pois'
                 ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
@@ -780,6 +927,11 @@ GPX Route Master Pro`;
           >
             <MapPin className="w-4 h-4 text-purple-500" />
             <span>POIs & Wegpunkte</span>
+            {analysis.poiRecommendations.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
+                {analysis.poiRecommendations.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -879,7 +1031,7 @@ GPX Route Master Pro`;
                       </h3>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
                         {analysis.climbs.length > 0
-                          ? `${analysis.climbs.length} kategorisierte ${analysis.climbs.length === 1 ? 'Bergwertung' : 'Bergwertungen'} erkannt (+${analysis.totalClimbAscentMeters} Hm in Anstiegen)`
+                          ? `${analysis.climbs.length} kategorisierte ${analysis.climbs.length === 1 ? 'Bergwertung' : 'Bergwertungen'} erkannt (+${Math.round(analysis.totalClimbAscentMeters)} Hm in Anstiegen)`
                           : 'Keine steilen kategorisierten Passagen auf diesem Streckenabschnitt'}
                       </p>
                     </div>
@@ -919,7 +1071,7 @@ GPX Route Master Pro`;
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-600 dark:text-slate-400 flex items-center justify-between">
-                          <span>{climb.distanceKm} km • +{climb.ascentMeters} Hm</span>
+                          <span>{climb.distanceKm} km • +{Math.round(climb.ascentMeters)} Hm</span>
                           <span className="font-bold text-slate-900 dark:text-white">Ø {climb.avgGradePercent}%</span>
                         </div>
                       </div>
@@ -999,7 +1151,7 @@ GPX Route Master Pro`;
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
                   <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Hm in Anstiegen</span>
                   <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
-                    +{analysis.totalClimbAscentMeters} m
+                    +{Math.round(analysis.totalClimbAscentMeters)} m
                   </div>
                   <div className="text-[10px] text-slate-400">
                     {analysis.totalAscentMeters > 0 ? Math.round((analysis.totalClimbAscentMeters / analysis.totalAscentMeters) * 100) : 0}% der Gesamthöhe
@@ -1145,14 +1297,14 @@ GPX Route Master Pro`;
                         <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
                           <span className="text-[10px] text-slate-400 block mb-0.5">Höhenunterschied</span>
                           <span className="font-black text-emerald-600 dark:text-emerald-400 text-sm">
-                            +{climb.ascentMeters} m
+                            +{Math.round(climb.ascentMeters)} m
                           </span>
                         </div>
 
                         <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
                           <span className="text-[10px] text-slate-400 block mb-0.5">Start → Gipfel</span>
                           <span className="font-bold text-slate-800 dark:text-slate-200">
-                            {climb.startElevationM}m → {climb.endElevationM}m
+                            {Math.round(climb.startElevationM)}m → {Math.round(climb.endElevationM)}m
                           </span>
                         </div>
 
@@ -1357,7 +1509,7 @@ GPX Route Master Pro`;
                       >
                         <td className="p-3 font-bold text-indigo-600 dark:text-indigo-400">km {split.kmMarker}</td>
                         <td className="p-3">+{split.splitDistanceKm} km</td>
-                        <td className="p-3">+{split.splitAscentMeters} m</td>
+                        <td className="p-3">+{Math.round(split.splitAscentMeters)} m</td>
                         <td className="p-3">{split.splitAvgGradePercent}%</td>
                         <td className="p-3">
                           <span
@@ -1506,6 +1658,39 @@ GPX Route Master Pro`;
               </div>
             </div>
           )}
+
+          {activeTab === 'power' && (
+            <PowerPhysicsTab
+              track={track}
+              activityType={activityType}
+              initialWeight={customWeight}
+              initialFtp={customFtp}
+              onOpenGlossary={onOpenGlossary}
+            />
+          )}
+
+          {activeTab === 'zones' && (
+            <ZonesTab
+              track={track}
+              initialMaxHr={userMaxHr}
+              initialFtp={customFtp}
+              onOpenGlossary={onOpenGlossary}
+            />
+          )}
+
+          {activeTab === 'rawdata' && (
+            <RawDataTab
+              track={track}
+              onSelectPoint={onSelectTrackPoint}
+            />
+          )}
+
+          {activeTab === 'report' && (
+            <PrintReportTab
+              track={track}
+              analysis={analysis}
+            />
+          )}
         </div>
 
         {/* Footer */}
@@ -1517,7 +1702,7 @@ GPX Route Master Pro`;
 
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-xl font-bold bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition-colors cursor-pointer"
+            className="px-4 py-2 min-h-[44px] min-w-[90px] flex items-center justify-center rounded-xl font-bold bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition-colors cursor-pointer shrink-0"
           >
             Schließen
           </button>

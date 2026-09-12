@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
+import { getCuratedSeedTours } from './seedTours';
 
 // Store the SQLite database file in a data directory for clean docker volume persistence
 const dbDir = path.join(process.cwd(), 'data');
@@ -11,6 +12,10 @@ if (!fs.existsSync(dbDir)) {
 const dbPath = path.join(dbDir, 'gpx_library.db');
 
 export let db: Database.Database;
+
+export function getDb(): Database.Database {
+  return db;
+}
 
 function configureDbPragmas(database: Database.Database): void {
   try {
@@ -24,44 +29,108 @@ function configureDbPragmas(database: Database.Database): void {
   }
 }
 
+function purgeDatabaseFiles(): void {
+  const exts = ['', '-wal', '-shm'];
+  const timestamp = Date.now();
+  for (const ext of exts) {
+    const p = dbPath + ext;
+    if (fs.existsSync(p)) {
+      const backupPath = `${dbPath}.corrupt_${timestamp}${ext}`;
+      try {
+        fs.renameSync(p, backupPath);
+        console.warn(`[Self-Healing] Archived corrupted SQLite file: ${p} -> ${backupPath}`);
+      } catch {
+        try {
+          fs.unlinkSync(p);
+          console.warn(`[Self-Healing] Deleted corrupted SQLite file: ${p}`);
+        } catch (e: any) {
+          console.error(`[Self-Healing] Failed to remove corrupt file ${p}:`, e.message);
+        }
+      }
+    }
+  }
+}
+
+export function verifyDatabaseIntegrity(database: Database.Database): boolean {
+  try {
+    const res = database.pragma('quick_check') as Array<{ quick_check: string }>;
+    if (!res || res.length === 0 || res[0].quick_check !== 'ok') {
+      console.warn('[SQLite Integrity] quick_check detected database corruption:', res);
+      return false;
+    }
+    const hasTracks = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tracks'").get();
+    if (hasTracks) {
+      database.prepare("SELECT COUNT(*) FROM tracks").get();
+    }
+    return true;
+  } catch (err: any) {
+    console.warn('[SQLite Integrity] Database integrity check failed:', err.message);
+    return false;
+  }
+}
+
+export function recoverCorruptDatabase(): Database.Database {
+  console.warn('[Self-Healing] Recovering corrupt SQLite database...');
+  try {
+    if (db && db.open) {
+      db.close();
+    }
+  } catch {}
+
+  purgeDatabaseFiles();
+
+  db = new Database(dbPath);
+  configureDbPragmas(db);
+  runInitDbStatements();
+  try {
+    seedCuratedTours(true);
+  } catch (e: any) {
+    console.error('[Self-Healing] Error re-seeding curated tours after recovery:', e.message);
+  }
+  console.log('[Self-Healing] Database recovery complete and verified healthy.');
+  return db;
+}
+
+export function executeWithCorruptionRecovery<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (err: any) {
+    const msg = String(err?.message || '').toLowerCase();
+    const isCorrupt = msg.includes('malformed') || msg.includes('corrupt') || err?.code === 'SQLITE_CORRUPT';
+    if (isCorrupt) {
+      console.error('[Self-Healing] SQLite corruption detected during operation. Triggering auto-recovery:', err.message);
+      recoverCorruptDatabase();
+      return operation();
+    }
+    throw err;
+  }
+}
+
 function openAndVerifyDb(): Database.Database {
   let tempDb: Database.Database | null = null;
   try {
-    tempDb = new Database(dbPath);
-    configureDbPragmas(tempDb);
-    // Simple verification query to make sure the db file and sqlite_master are healthy
-    tempDb.prepare("SELECT name FROM sqlite_master LIMIT 1").all();
-    return tempDb;
+    if (fs.existsSync(dbPath)) {
+      tempDb = new Database(dbPath);
+      configureDbPragmas(tempDb);
+      if (!verifyDatabaseIntegrity(tempDb)) {
+        throw new Error('Database file is corrupt according to integrity verification.');
+      }
+      return tempDb;
+    }
   } catch (err: any) {
     console.error("CRITICAL DATABASE CORRUPTION DETECTED during opening/verification:", err.message);
-    
-    // Close the corrupt handle if opened
-    try {
-      if (tempDb) {
-        tempDb.close();
-      }
-    } catch (e) {}
-
-    const corruptBackupPath = dbPath + `.corrupt_${Date.now()}`;
-    try {
-      if (fs.existsSync(dbPath)) {
-        fs.renameSync(dbPath, corruptBackupPath);
-        console.warn(`[Self-Healing] Corrupted database file was renamed to: ${corruptBackupPath}`);
-      }
-    } catch (renameErr: any) {
-      console.error("[Self-Healing] Failed to rename corrupted database file:", renameErr.message);
+    if (tempDb) {
       try {
-        fs.unlinkSync(dbPath);
-        console.warn(`[Self-Healing] Corrupted database file was deleted.`);
-      } catch (unlinkErr: any) {
-        console.error("[Self-Healing] Failed to delete corrupted database file:", unlinkErr.message);
-      }
+        tempDb.close();
+      } catch {}
+      tempDb = null;
     }
-
-    const fallbackDb = new Database(dbPath);
-    configureDbPragmas(fallbackDb);
-    return fallbackDb;
+    purgeDatabaseFiles();
   }
+
+  const freshDb = new Database(dbPath);
+  configureDbPragmas(freshDb);
+  return freshDb;
 }
 
 db = openAndVerifyDb();
@@ -101,36 +170,13 @@ export interface DbTrackRecord {
 
 export function initDb() {
   try {
+    if (!verifyDatabaseIntegrity(db)) {
+      throw new Error("Database failed integrity check during initDb.");
+    }
     runInitDbStatements();
   } catch (err: any) {
     console.error("CRITICAL DATABASE CORRUPTION DETECTED during execution/init:", err.message);
-    
-    // Close the corrupt handle
-    try {
-      db.close();
-    } catch (e) {}
-
-    const corruptBackupPath = dbPath + `.corrupt_${Date.now()}`;
-    try {
-      if (fs.existsSync(dbPath)) {
-        fs.renameSync(dbPath, corruptBackupPath);
-        console.warn(`[Self-Healing] Corrupted database file renamed to: ${corruptBackupPath}`);
-      }
-    } catch (renameErr: any) {
-      console.error("[Self-Healing] Failed to rename corrupted database file:", renameErr.message);
-      try {
-        fs.unlinkSync(dbPath);
-        console.warn(`[Self-Healing] Corrupted database file deleted.`);
-      } catch (unlinkErr: any) {
-        console.error("[Self-Healing] Failed to delete corrupted database file:", unlinkErr.message);
-      }
-    }
-
-    // Re-initialize a clean database
-    db = new Database(dbPath);
-    configureDbPragmas(db);
-    console.log("[Self-Healing] Retrying database initialization with a fresh file...");
-    runInitDbStatements();
+    recoverCorruptDatabase();
   }
 }
 
@@ -299,10 +345,28 @@ function runInitDbStatements() {
     const hasV278 = (checkStmt.get('2.7.8') as { count: number }).count > 0;
     if (!hasV278) {
       const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
-      insertStmt.run('2.7.8', new Date().toISOString(), 'Sport-Metriken & Trainingswissenschaftliches Glossar: Umfassendes Nachschlagewerk für Leistungs- und Physiologiemetriken (VAM, TSS, FTP, NP, IF, VI, CTL/ATL/TSB, VO2max, EF, Pw:HR Decoupling, Climb Categories HC-4, kJ/kcal) mit mathematischen Formeln, Referenz-Skalen, Praxistipps und 4 interaktiven Simulatoren (VAM-, TSS-, Pacing- und Bergwertungs-Rechner).');
+      insertStmt.run('2.7.8', '2026-08-20T00:00:00.000Z', 'Sport-Metriken & Trainingswissenschaftliches Glossar: Umfassendes Nachschlagewerk für Leistungs- und Physiologiemetriken (VAM, TSS, FTP, NP, IF, VI, CTL/ATL/TSB, VO2max, EF, Pw:HR Decoupling, Climb Categories HC-4, kJ/kcal) mit mathematischen Formeln, Referenz-Skalen, Praxistipps und 4 interaktiven Simulatoren (VAM-, TSS-, Pacing- und Bergwertungs-Rechner).');
+    }
+
+    const hasV279 = (checkStmt.get('2.7.9') as { count: number }).count > 0;
+    if (!hasV279) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.7.9', '2026-08-22T00:00:00.000Z', 'Tastaturkürzel-Übersicht & Accessibility-Modal: Interaktives Shortcuts-Modal (Taste ? oder F1) mit Kategoriefilterung und Schnellsuche zur einfachen Entdeckung von Tastenkombinationen wie C (Strecken durchwechseln), M (auf Punkt zentrieren), 3 (3D-Gelände), F (Flugmodus), G (Glossar), Pfeiltasten zur Punktnavigation und Schnellzugriff-Buttons in Sidebar und Karte.');
+    }
+
+    const hasV280 = (checkStmt.get('2.8.0') as { count: number }).count > 0;
+    if (!hasV280) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.8.0', new Date().toISOString(), 'Workspace Summary Dashboard & Multi-Track Aggregation: Interaktive Gesamtübersicht aller im Workspace sichtbaren Strecken mit kumulierter Gesamtdistanz, Gesamtaufstieg/-abstieg, Netto-Höhenmeter, berechneter Gesamtdauer, Kalorienverbrauch, Min/Max-Gipfelhöhe, 1-Click Bounding-Box Kamera-Fokus (Fit to View), globaler Strecken-Sichtbarkeitsschaltung (Alle Ein/Aus) und interaktivem HUD-Karten-Overlay (Taste D).');
+    }
+
+    const hasV281 = (checkStmt.get('2.8.1') as { count: number }).count > 0;
+    if (!hasV281) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.8.1', new Date().toISOString(), 'GPX-Touren-Bibliothek & Touren-Seeding: Integrierte Sammlung kuratierter GPX-Referenzrouten (Alpe d’Huez, Stilfser Joch, Col du Tourmalet, Isar-Radweg, Feldberg-Gravel, Berlin Marathon, Sa Calobra, Eibsee-Trailrun) mit detaillierten Höhenprofilen, Anstiegssegmenten, Telemetrie und Untergrundanalysen. 1-Klick Workspace-zu-Bibliothek Sicherung und Touren-Wiederherstellung.');
     } else {
       const updateStmt = db.prepare('UPDATE app_version SET updated_at = ? WHERE version = ?');
-      updateStmt.run(new Date().toISOString(), '2.7.8');
+      updateStmt.run(new Date().toISOString(), '2.8.1');
     }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
@@ -390,7 +454,69 @@ function runInitDbStatements() {
     console.error('Error auto-sanitizing road track surface stats:', e);
   }
 
+  // Clean up legacy synthetic curated tours and old timestamp-based gpx IDs
+  try {
+    const deletedLegacy = db.prepare("DELETE FROM tracks WHERE id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-2026-%'").run();
+    if (deletedLegacy.changes > 0) {
+      console.log(`[DB Migration] Removed ${deletedLegacy.changes} legacy tour record(s) from database.`);
+    }
+  } catch (e) {}
+
+  // Auto-seed real GPX files from /gpx folder on database initialization with verified start points
+  try {
+    seedCuratedTours(true);
+  } catch (e) {
+    console.error('Error auto-seeding GPX folder tours:', e);
+  }
+
   console.log('SQLite database initialized successfully at', dbPath);
+}
+
+export function seedCuratedTours(force: boolean = false): { seeded: number; total: number } {
+  // Always ensure old synthetic tours and legacy IDs are purged
+  try {
+    if (force) {
+      db.prepare("DELETE FROM tracks WHERE id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-%'").run();
+    }
+  } catch (e) {}
+
+  const tours = getCuratedSeedTours();
+  let seeded = 0;
+
+  for (const tour of tours) {
+    if (!force) {
+      const existing = db.prepare('SELECT id FROM tracks WHERE id = ?').get(tour.id);
+      if (existing) {
+        seeded++;
+        continue;
+      }
+    }
+
+    saveTrack({
+      id: tour.id,
+      name: tour.name,
+      distance: tour.distance,
+      ascent: tour.ascent,
+      descent: tour.descent,
+      duration: tour.duration,
+      activityType: tour.activityType,
+      description: tour.description,
+      tags: Array.isArray(tour.tags) ? tour.tags.join(', ') : tour.tags,
+      dateCreated: tour.dateCreated,
+      originalFilename: tour.originalFilename,
+      points: tour.points,
+      powerStats: tour.powerStats,
+      surfaceStats: tour.surfaceStats,
+      climbs: tour.climbs,
+      maxSlope: tour.maxSlope,
+      color: tour.color,
+      hasTimestamps: tour.hasTimestamps
+    });
+    seeded++;
+  }
+
+  console.log(`GPX folder tours loaded: ${seeded} of ${tours.length}`);
+  return { seeded, total: tours.length };
 }
 
 export function downsamplePoints(points: any[], maxPoints: number = 1000): any[] {
@@ -434,76 +560,89 @@ export function saveTrack(track: {
   hasTimestamps?: boolean;
   rawFileDetails?: any;
 }) {
-  const statement = db.prepare(`
-    INSERT OR REPLACE INTO tracks (
-      id, name, distance, ascent, descent, duration, activity_type,
-      description, tags, date_created, points_json, power_stats_json,
-      surface_stats_json, climbs_json, original_filename, max_slope,
-      color, has_timestamps, raw_file_json
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    )
-  `);
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare(`
+      INSERT OR REPLACE INTO tracks (
+        id, name, distance, ascent, descent, duration, activity_type,
+        description, tags, date_created, points_json, power_stats_json,
+        surface_stats_json, climbs_json, original_filename, max_slope,
+        color, has_timestamps, raw_file_json
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )
+    `);
 
-  const tagsStr = track.tags || '';
-  const dateStr = track.dateCreated || new Date().toISOString().split('T')[0];
+    const tagsStr = track.tags || '';
+    const dateStr = track.dateCreated || new Date().toISOString().split('T')[0];
 
-  statement.run(
-    track.id,
-    track.name,
-    track.distance,
-    track.ascent,
-    track.descent,
-    track.duration || null,
-    track.activityType || 'cycling',
-    track.description || '',
-    tagsStr,
-    dateStr,
-    JSON.stringify(track.points),
-    track.powerStats ? JSON.stringify(track.powerStats) : null,
-    track.surfaceStats ? JSON.stringify(track.surfaceStats) : null,
-    track.climbs ? JSON.stringify(track.climbs) : null,
-    track.originalFilename || null,
-    track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : null,
-    track.color || null,
-    track.hasTimestamps ? 1 : 0,
-    track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null
-  );
+    statement.run(
+      track.id,
+      track.name,
+      track.distance,
+      track.ascent,
+      track.descent,
+      track.duration || null,
+      track.activityType || 'cycling',
+      track.description || '',
+      tagsStr,
+      dateStr,
+      JSON.stringify(track.points),
+      track.powerStats ? JSON.stringify(track.powerStats) : null,
+      track.surfaceStats ? JSON.stringify(track.surfaceStats) : null,
+      track.climbs ? JSON.stringify(track.climbs) : null,
+      track.originalFilename || null,
+      track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : null,
+      track.color || null,
+      track.hasTimestamps ? 1 : 0,
+      track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null
+    );
 
-  return track.id;
+    return track.id;
+  });
 }
 
 export function searchTracks(queryText: string = '', activityType?: string): DbTrackRecord[] {
-  let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json FROM tracks`;
-  const conditions: string[] = [];
-  const params: any[] = [];
+  return executeWithCorruptionRecovery(() => {
+    let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json FROM tracks`;
+    const conditions: string[] = [];
+    const params: any[] = [];
 
-  const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
-  if (cleanActivity && cleanActivity !== 'all') {
-    conditions.push(`activity_type = ?`);
-    params.push(cleanActivity);
-  }
+    const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
+    if (cleanActivity && cleanActivity !== 'all') {
+      conditions.push(`activity_type = ?`);
+      params.push(cleanActivity);
+    }
 
-  const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
-  if (cleanQuery) {
-    const term = `%${cleanQuery}%`;
-    conditions.push(`(name LIKE ? OR description LIKE ? OR tags LIKE ? OR original_filename LIKE ?)`);
-    params.push(term, term, term, term);
-  }
+    const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
+    if (cleanQuery) {
+      const term = `%${cleanQuery}%`;
+      conditions.push(`(name LIKE ? OR description LIKE ? OR tags LIKE ? OR original_filename LIKE ?)`);
+      params.push(term, term, term, term);
+    }
 
-  if (conditions.length > 0) {
-    sql += ` WHERE ` + conditions.join(' AND ');
-  }
+    if (conditions.length > 0) {
+      sql += ` WHERE ` + conditions.join(' AND ');
+    }
 
-  sql += ` ORDER BY date_created DESC`;
+    sql += ` ORDER BY date_created DESC, name ASC`;
 
-  return db.prepare(sql).all(...params) as DbTrackRecord[];
+    return db.prepare(sql).all(...params) as DbTrackRecord[];
+  });
+}
+
+export function getAllTracksFull(limit: number = 20): DbTrackRecord[] {
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare('SELECT * FROM tracks WHERE points_json IS NOT NULL ORDER BY date_created DESC, name ASC LIMIT ?');
+    return statement.all(limit) as DbTrackRecord[];
+  });
 }
 
 export function getTrackDetails(id: string): DbTrackRecord | null {
-  const statement = db.prepare('SELECT * FROM tracks WHERE id = ?');
-  const record = statement.get(id) as DbTrackRecord | undefined;
-  return record || null;
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare('SELECT * FROM tracks WHERE id = ?');
+    const record = statement.get(id) as DbTrackRecord | undefined;
+    return record || null;
+  });
 }
 
 export function updateTrackMetadata(id: string, metadata: {
@@ -513,72 +652,88 @@ export function updateTrackMetadata(id: string, metadata: {
   activityType?: string;
   dateCreated?: string;
 }) {
-  const statement = db.prepare(`
-    UPDATE tracks 
-    SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
-    WHERE id = ?
-  `);
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare(`
+      UPDATE tracks 
+      SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
+      WHERE id = ?
+    `);
 
-  statement.run(
-    metadata.name,
-    metadata.description || '',
-    metadata.tags || '',
-    metadata.activityType || 'cycling',
-    metadata.dateCreated || new Date().toISOString().split('T')[0],
-    id
-  );
+    statement.run(
+      metadata.name,
+      metadata.description || '',
+      metadata.tags || '',
+      metadata.activityType || 'cycling',
+      metadata.dateCreated || new Date().toISOString().split('T')[0],
+      id
+    );
+  });
 }
 
 export function deleteTrack(id: string) {
-  const statement = db.prepare('DELETE FROM tracks WHERE id = ?');
-  statement.run(id);
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare('DELETE FROM tracks WHERE id = ?');
+    statement.run(id);
+  });
+}
+
+export function clearAllTracks(): number {
+  return executeWithCorruptionRecovery(() => {
+    const count = (db.prepare('SELECT COUNT(*) as count FROM tracks').get() as { count: number }).count;
+    db.prepare('DELETE FROM tracks').run();
+    return count;
+  });
 }
 
 export function getTracksInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbTrackRecord[] {
-  // Select columns including points_json to filter by coordinates
-  const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json, raw_file_json FROM tracks');
-  const allTracks = statement.all() as DbTrackRecord[];
-  
-  return allTracks.filter(track => {
-    try {
-      const points = JSON.parse(track.points_json);
-      if (!Array.isArray(points)) return false;
-      return points.some(pt => 
-        pt.lat >= minLat && pt.lat <= maxLat && 
-        pt.lng >= minLng && pt.lng <= maxLng
-      );
-    } catch (e) {
-      return false;
-    }
+  return executeWithCorruptionRecovery(() => {
+    // Select columns including points_json to filter by coordinates
+    const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json, raw_file_json FROM tracks');
+    const allTracks = statement.all() as DbTrackRecord[];
+    
+    return allTracks.filter(track => {
+      try {
+        const points = JSON.parse(track.points_json);
+        if (!Array.isArray(points)) return false;
+        return points.some(pt => 
+          pt.lat >= minLat && pt.lat <= maxLat && 
+          pt.lng >= minLng && pt.lng <= maxLng
+        );
+      } catch (e) {
+        return false;
+      }
+    });
   });
 }
 
 export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbGarminActivityRecord[] {
-  const statement = db.prepare('SELECT * FROM garmin_activities');
-  const allActivities = statement.all() as DbGarminActivityRecord[];
-  
-  return allActivities.filter(act => {
-    try {
-      if (!act.points_json) return false;
-      const points = JSON.parse(act.points_json);
-      if (!Array.isArray(points)) return false;
-      return points.some(pt => {
-        let lat: number | undefined;
-        let lng: number | undefined;
-        if (Array.isArray(pt)) {
-          // parse_garmin.py stores points as [lng, lat, ele, ...]
-          lat = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
-          lng = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
-        } else if (pt && typeof pt === 'object') {
-          lat = pt.lat !== undefined ? parseFloat(pt.lat) : (pt.latitude !== undefined ? parseFloat(pt.latitude) : undefined);
-          lng = pt.lng !== undefined ? parseFloat(pt.lng) : (pt.longitude !== undefined ? parseFloat(pt.longitude) : undefined);
-        }
-        if (lat === undefined || lng === undefined || isNaN(lat) || isNaN(lng)) return false;
-        return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng;
-      });
-    } catch (e) {
-      return false;
-    }
+  return executeWithCorruptionRecovery(() => {
+    const statement = db.prepare('SELECT * FROM garmin_activities');
+    const allActivities = statement.all() as DbGarminActivityRecord[];
+    
+    return allActivities.filter(act => {
+      try {
+        if (!act.points_json) return false;
+        const points = JSON.parse(act.points_json);
+        if (!Array.isArray(points)) return false;
+        return points.some(pt => {
+          let lat: number | undefined;
+          let lng: number | undefined;
+          if (Array.isArray(pt)) {
+            // parse_garmin.py stores points as [lng, lat, ele, ...]
+            lat = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
+            lng = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
+          } else if (pt && typeof pt === 'object') {
+            lat = pt.lat !== undefined ? parseFloat(pt.lat) : (pt.latitude !== undefined ? parseFloat(pt.latitude) : undefined);
+            lng = pt.lng !== undefined ? parseFloat(pt.lng) : (pt.longitude !== undefined ? parseFloat(pt.longitude) : undefined);
+          }
+          if (lat === undefined || lng === undefined || isNaN(lat) || isNaN(lng)) return false;
+          return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng;
+        });
+      } catch (e) {
+        return false;
+      }
+    });
   });
 }
 

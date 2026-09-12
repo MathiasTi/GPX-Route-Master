@@ -22,14 +22,19 @@ import { WeatherOverlay } from './components/WeatherOverlay';
 import { ClimbsAnalysis } from './components/ClimbsAnalysis';
 import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
 import { SummaryReportModal } from './components/SummaryReportModal';
-import { IntensiveTrackAnalysisModal } from './components/IntensiveTrackAnalysisModal';
+import { IntensiveTrackAnalysisModal, AnalysisTab } from './components/IntensiveTrackAnalysisModal';
 import { SportMetricsGlossaryModal } from './components/SportMetricsGlossaryModal';
+import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { GarminDashboard } from './components/GarminDashboard';
 import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
 import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
+import { WorkspaceSummaryDashboard } from './components/WorkspaceSummaryDashboard';
+import { MobileThumbBar } from './components/mobile/MobileThumbBar';
+import { MobileTelemetryPill } from './components/mobile/MobileTelemetryPill';
 import { getApiUrl } from './utils/api';
 import { triggerHaptic } from './utils/haptics';
-import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem } from './utils/storage';
+import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem, safeRemoveItem, isDefaultCuratedTrack } from './utils/storage';
+import { safeStringifyOrFallback } from './domain/serialization/safeJson';
 
 const App: React.FC = () => {
   // --- Core State Declarations ---
@@ -88,8 +93,10 @@ const App: React.FC = () => {
   const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
   const [summaryReportOpen, setSummaryReportOpen] = useState(false);
   const [intensiveAnalysisOpen, setIntensiveAnalysisOpen] = useState(false);
+  const [intensiveAnalysisTab, setIntensiveAnalysisTab] = useState<AnalysisTab>('overview');
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [initialGlossaryMetricId, setInitialGlossaryMetricId] = useState<string | undefined>(undefined);
+  const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [weatherOpen, setWeatherOpen] = useState(false);
   const [rawDataOpen, setRawDataOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -99,6 +106,7 @@ const App: React.FC = () => {
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [pendingValidationTracks, setPendingValidationTracks] = useState<GPXTrack[]>([]);
   const [isValidationPreCheck, setIsValidationPreCheck] = useState(true);
+  const [showWorkspaceHud, setShowWorkspaceHud] = useState<boolean>(true);
 
   const [mapView, setMapView] = useState({
     lat: 51.1657,
@@ -126,7 +134,7 @@ const App: React.FC = () => {
   const [userAge, setUserAge] = useState(35);
   const [userMaxHr, setUserMaxHr] = useState<number>(() => {
     try {
-      const saved = localStorage.getItem('velo_user_max_hr');
+      const saved = safeGetItem('velo_user_max_hr');
       if (saved) return Number(saved);
     } catch (e) {}
     return 220 - 35; // default 185
@@ -189,9 +197,7 @@ const App: React.FC = () => {
   // --- Helper Handlers ---
   const handleMaxHrChange = useCallback((newMaxHr: number) => {
     setUserMaxHr(newMaxHr);
-    try {
-      localStorage.setItem('velo_user_max_hr', String(newMaxHr));
-    } catch (e) {}
+    safeSetItem('velo_user_max_hr', String(newMaxHr));
   }, []);
 
   const handleAddTextMarker = useCallback((newMarker: Omit<TextMarker, 'id'>) => {
@@ -219,6 +225,14 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const handleOpenTrackAnalysis = useCallback((trackId?: string, tab: AnalysisTab = 'overview') => {
+    if (trackId) {
+      setMarkedTrackId(trackId);
+    }
+    setIntensiveAnalysisTab(tab);
+    setIntensiveAnalysisOpen(true);
+  }, []);
+
   // --- Lifecycle Effects ---
   // Auto-save workspace tracks with safe storage and quota management
   useEffect(() => {
@@ -239,19 +253,17 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Sync text markers with localStorage
+  // Sync text markers with safe storage
   useEffect(() => {
-    localStorage.setItem('velo_text_markers', JSON.stringify(textMarkers));
+    safeSetItem('velo_text_markers', safeStringifyOrFallback(textMarkers, '[]'));
   }, [textMarkers]);
 
-  // Sync active layer with localStorage
+  // Sync active layer with safe storage
   useEffect(() => {
-    try {
-      localStorage.setItem('velo_workspace_active_layer', activeLayer);
-    } catch (e) {}
+    safeSetItem('velo_workspace_active_layer', activeLayer);
   }, [activeLayer]);
 
-  // Sync theme with document & localStorage
+  // Sync theme with document & safe storage
   useEffect(() => {
     const root = window.document.documentElement;
     if (theme === 'dark') {
@@ -259,18 +271,16 @@ const App: React.FC = () => {
     } else {
       root.classList.remove('dark');
     }
-    localStorage.setItem('gpx_theme', theme);
+    safeSetItem('gpx_theme', theme);
   }, [theme]);
 
-  // Sync marked track ID with localStorage
+  // Sync marked track ID with safe storage
   useEffect(() => {
-    try {
-      if (markedTrackId) {
-        localStorage.setItem('velo_workspace_marked_track', markedTrackId);
-      } else {
-        localStorage.removeItem('velo_workspace_marked_track');
-      }
-    } catch (e) {}
+    if (markedTrackId) {
+      safeSetItem('velo_workspace_marked_track', markedTrackId);
+    } else {
+      safeRemoveItem('velo_workspace_marked_track');
+    }
   }, [markedTrackId]);
 
   // Auto-dismiss success messages
@@ -285,39 +295,41 @@ const App: React.FC = () => {
 
   // Update max HR if userAge changes and no custom max HR saved
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('velo_user_max_hr');
-      if (!saved) {
-        setUserMaxHr(220 - userAge);
-      }
-    } catch (e) {}
+    const saved = safeGetItem('velo_user_max_hr');
+    if (!saved) {
+      setUserMaxHr(220 - userAge);
+    }
   }, [userAge]);
 
   // Load settings on startup from SQLite database via API
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const response = await fetch(getApiUrl('/api/settings'));
+        const apiUrl = getApiUrl('/api/settings');
+        const response = await fetch(apiUrl);
         if (response.ok) {
-          const data = await response.json();
-          if (data.success && data.settings) {
-            const s = data.settings;
-            if (s.ftp) setFtp(Number(s.ftp));
-            if (s.userWeight) setUserWeight(Number(s.userWeight));
-            if (s.userAge) setUserAge(Number(s.userAge));
-            if (s.userMaxHr) setUserMaxHr(Number(s.userMaxHr));
-            if (s.theme) {
-              setTheme(s.theme === 'dark' ? 'dark' : 'light');
-            }
-            if (s.velo_text_markers) {
-              try {
-                setTextMarkers(JSON.parse(s.velo_text_markers));
-              } catch (e) {}
+          const text = await response.text();
+          if (text && text.trim().startsWith('{')) {
+            const data = JSON.parse(text);
+            if (data.success && data.settings) {
+              const s = data.settings;
+              if (s.ftp) setFtp(Number(s.ftp));
+              if (s.userWeight) setUserWeight(Number(s.userWeight));
+              if (s.userAge) setUserAge(Number(s.userAge));
+              if (s.userMaxHr) setUserMaxHr(Number(s.userMaxHr));
+              if (s.theme) {
+                setTheme(s.theme === 'dark' ? 'dark' : 'light');
+              }
+              if (s.velo_text_markers) {
+                try {
+                  setTextMarkers(JSON.parse(s.velo_text_markers));
+                } catch (e) {}
+              }
             }
           }
         }
       } catch (e) {
-        console.error('Failed to load settings from DB:', e);
+        console.warn('Unable to load settings from DB:', e);
       } finally {
         setSettingsLoaded(true);
       }
@@ -340,18 +352,33 @@ const App: React.FC = () => {
               userAge: String(userAge),
               userMaxHr: String(userMaxHr),
               theme: theme,
-              velo_text_markers: JSON.stringify(textMarkers)
+              velo_text_markers: safeStringifyOrFallback(textMarkers, '[]')
             }
           })
         });
       } catch (e) {
-        console.error('Failed to save settings to DB:', e);
+        console.warn('Unable to save settings to DB:', e);
       }
     };
     
     const timeout = setTimeout(saveSettings, 1000);
     return () => clearTimeout(timeout);
   }, [ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
+
+  // Keep default curated reference tours in the Library, not in the active Workspace
+  useEffect(() => {
+    if (safeGetItem('velo_defaults_moved_to_library_v1') !== 'true') {
+      const hasDefaults = unhydratedTracks.some(t => isDefaultCuratedTrack(t));
+      if (hasDefaults) {
+        setTracks(prev => {
+          const filtered = prev.filter(t => !isDefaultCuratedTrack(t));
+          saveWorkspaceTracks(filtered);
+          return filtered;
+        });
+      }
+      safeSetItem('velo_defaults_moved_to_library_v1', 'true');
+    }
+  }, [unhydratedTracks]);
 
   // Recalculate power stats when FTP, weight, or estimated Speed changes
   useEffect(() => {
@@ -396,11 +423,11 @@ const App: React.FC = () => {
       const apiUrl = getApiUrl("/api/analyze-surface");
       let result: Response;
       
-      const requestPayload = JSON.stringify({
+      const requestPayload = safeStringifyOrFallback({
         points: pointsToAnalyze,
         name: trackName,
         activityType: activityType
-      });
+      }, '{}');
 
       const requestHeaders = {
         "Content-Type": "application/json"
@@ -645,8 +672,17 @@ const App: React.FC = () => {
     setSuccessMessage(`Alle ${gaps.length} Zeitlücken erfolgreich aus dem Track entfernt`);
   }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
  
-  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement> | { target?: { files?: FileList | File[] | null; value?: string } } | FileList | File[]) => {
+    let files: FileList | File[] | null = null;
+    if (Array.isArray(e)) {
+      files = e;
+    } else if (typeof FileList !== 'undefined' && e instanceof FileList) {
+      files = e;
+    } else if (e && 'target' in e && e.target && e.target.files) {
+      files = e.target.files;
+    } else if (e && 'files' in (e as any)) {
+      files = (e as any).files;
+    }
     if (!files || files.length === 0) return;
 
     setTrackUploadProgress({
@@ -870,7 +906,9 @@ const App: React.FC = () => {
       }
     }
     setTrackUploadProgress(null);
-    e.target.value = '';
+    if (e && typeof e === 'object' && 'target' in e && e.target && 'value' in e.target) {
+      (e.target as any).value = '';
+    }
   }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
 
   const commitApprovedTracks = useCallback((approvedTracks: GPXTrack[], fitMeta?: { fitDate: string | null; fitTime: string | null }) => {
@@ -925,6 +963,30 @@ const App: React.FC = () => {
   const toggleVisibility = useCallback((id: string) => {
     setTracks(prev => prev.map(t => t.id === id ? { ...t, visible: !t.visible } : t));
   }, []);
+
+  const handleToggleAllVisibility = useCallback((makeAllVisible: boolean) => {
+    setTracks(prev => prev.map(t => ({ ...t, visible: makeAllVisible })));
+    setSuccessMessage(makeAllVisible ? 'Alle Strecken eingeblendet' : 'Alle Strecken ausgeblendet');
+  }, []);
+
+  const handleFitVisibleTracks = useCallback((bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
+    const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
+    const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
+    const maxDelta = Math.max(latDiff, lngDiff);
+    
+    let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
+    estimatedZoom = Math.min(17, Math.max(6, estimatedZoom - 1));
+
+    setMapView(prev => ({
+      ...prev,
+      lat: (bounds.minLat + bounds.maxLat) / 2,
+      lng: (bounds.minLng + bounds.maxLng) / 2,
+      zoom: estimatedZoom
+    }));
+
+    triggerHaptic('light');
+    setSuccessMessage('Kartenansicht auf alle sichtbaren Strecken angepasst');
+  }, []);
  
   const removeTrack = useCallback((id: string) => {
     saveToHistory();
@@ -939,6 +1001,8 @@ const App: React.FC = () => {
     merged.powerStats = calculatePowerStats(merged.points, ftp, userWeight, estimatedSpeed);
     setTracks([merged]);
     setMarkedTrackId(merged.id);
+    setSuccessMessage(`${tracks.length} Abschnitte erfolgreich zu einer Gesamttour zusammengeführt!`);
+    triggerHaptic('medium');
   }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed]);
  
   const handleReorder = useCallback((oldIndex: number, newIndex: number) => {
@@ -995,41 +1059,14 @@ const App: React.FC = () => {
     if (!track) return;
 
     try {
-      // 1. Fetch library to see if it is already stored there
-      const libResponse = await fetch(getApiUrl('/api/library'));
-      const libData = await libResponse.json();
-      let isAlreadyInLibrary = false;
-      
-      if (libData.success && Array.isArray(libData.tracks)) {
-        isAlreadyInLibrary = libData.tracks.some((t: any) => 
-          t.id === track.id || 
-          (t.name === track.name && Math.abs(t.distance - track.distance) < 0.05) ||
-          (t.pointsLength === track.points?.length && Math.abs(t.distance - track.distance) < 0.05)
-        );
-      }
-
-      // 2. Check if a duplicate exists in the workspace (excluding self)
-      const workspaceOthers = tracks.filter(t => t.id !== track.id);
-      const dupCheck = checkTrackDuplicateGPS(track, workspaceOthers);
-
-      if (isAlreadyInLibrary) {
-        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits in der Bibliothek.`);
-        return;
-      }
-
-      if (dupCheck.isDuplicate) {
-        setErrorMessage(`Die Aktivität "${track.name}" befindet sich bereits als Duplikat im Workspace (${dupCheck.reason}).`);
-        return;
-      }
-
       const response = await fetch(getApiUrl('/api/library'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(track)
+        body: safeStringifyOrFallback(track, '{}')
       });
       const data = await response.json();
       if (data.success) {
-        setSuccessMessage(`"${track.name}" wurde erfolgreich in der Bibliothek gespeichert!`);
+        setSuccessMessage(`"${track.name}" wurde erfolgreich in der SQLite-Bibliothek gespeichert!`);
       } else {
         setErrorMessage(data.error || 'Fehler beim Speichern in der Bibliothek.');
       }
@@ -1038,6 +1075,27 @@ const App: React.FC = () => {
       setErrorMessage('Speichern in der Bibliothek fehlgeschlagen.');
     }
   }, [tracks]);
+
+  const handleLoadReferenceTours = useCallback(async () => {
+    try {
+      setSuccessMessage('Lade Alpen-Referenztouren...');
+      const res = await fetch(getApiUrl('/api/tracks'));
+      if (!res.ok) throw new Error('Netzwerkfehler');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
+        setTracks(data.tracks);
+        if (data.tracks[0]?.id) {
+          setMarkedTrackId(data.tracks[0].id);
+        }
+        setSuccessMessage(`${data.tracks.length} Alpen-Referenztouren erfolgreich geladen!`);
+        triggerHaptic('success');
+      } else {
+        setErrorMessage('Keine Referenztouren in der Datenbank gefunden.');
+      }
+    } catch (e: any) {
+      setErrorMessage('Fehler beim Laden der Referenztouren: ' + (e.message || 'Unbekannt'));
+    }
+  }, []);
 
   const markedTrack = tracks.find(t => t.id === markedTrackId) || tracks[0];
   const suggestedFtp = markedTrack?.powerStats?.best20m ? Math.round(markedTrack.powerStats.best20m * 0.95) : null;
@@ -1107,6 +1165,8 @@ const App: React.FC = () => {
 
       // Escape key: close any open modal or clear active selection/flight
       if (e.key === 'Escape') {
+        if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
+        if (glossaryOpen) { setGlossaryOpen(false); return; }
         if (intensiveAnalysisOpen) { setIntensiveAnalysisOpen(false); return; }
         if (analyticsOpen) { setAnalyticsOpen(false); return; }
         if (garminHealthOpen) { setGarminHealthOpen(false); return; }
@@ -1123,6 +1183,87 @@ const App: React.FC = () => {
         if (isExportModalOpen) { setIsExportModalOpen(false); return; }
         if (isFlying) { setIsFlying(false); return; }
         if (selectionBounds) { setSelectionBounds(null); return; }
+        return;
+      }
+
+      // Help / Keyboard shortcuts: '?' or 'Shift + /' or 'F1'
+      if (e.key === '?' || (e.key === '/' && e.shiftKey) || e.key === 'F1') {
+        e.preventDefault();
+        triggerHaptic('light');
+        setShortcutsModalOpen(prev => !prev);
+        return;
+      }
+
+      // '3' shortcut: Toggle 3D Terrain mode
+      if (e.key === '3' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('medium');
+        setIs3D(prev => {
+          const next = !prev;
+          setSuccessMessage(next ? '3D-Geländemodus aktiviert (Taste 3)' : 'Standard 2D-Kartenansicht aktiviert (Taste 3)');
+          return next;
+        });
+        return;
+      }
+
+      // 'F' shortcut: Toggle 3D Flyover / Abflug
+      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('medium');
+        setIsFlying(prev => {
+          if (!prev) {
+            setFlyProgress(0);
+            setSuccessMessage('Virtueller Strecken-Abflug gestartet (Taste F)');
+            return true;
+          } else {
+            setSuccessMessage('Virtueller Strecken-Abflug beendet');
+            return false;
+          }
+        });
+        return;
+      }
+
+      // 'G' shortcut: Toggle Sport Metrics Glossary
+      if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        setGlossaryOpen(prev => !prev);
+        return;
+      }
+
+      // 'A' or 'I' shortcut: Open Intensive Track Analysis
+      if ((e.key === 'a' || e.key === 'A' || e.key === 'i' || e.key === 'I') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        setIntensiveAnalysisOpen(prev => !prev);
+        return;
+      }
+
+      // 'P' shortcut: Open Performance Analysis
+      if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        setPerformanceAnalysisOpen(prev => !prev);
+        return;
+      }
+
+      // 'W' shortcut: Open Weather Forecast
+      if ((e.key === 'w' || e.key === 'W') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        setWeatherOpen(prev => !prev);
+        return;
+      }
+
+      // 'D' shortcut: Toggle Workspace Summary Dashboard HUD
+      if ((e.key === 'd' || e.key === 'D') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        setShowWorkspaceHud(prev => {
+          const next = !prev;
+          setSuccessMessage(next ? 'Workspace-Gesamtübersicht eingeblendet (Taste D)' : 'Workspace-Gesamtübersicht ausgeblendet (Taste D)');
+          return next;
+        });
         return;
       }
 
@@ -1305,6 +1446,10 @@ const App: React.FC = () => {
     setHoveredPoint,
     setMapView,
     analyticsOpen,
+    shortcutsModalOpen,
+    glossaryOpen,
+    intensiveAnalysisOpen,
+    validationModalOpen,
     garminHealthOpen,
     garminActivitiesAnalysisOpen,
     performanceAnalysisOpen,
@@ -1321,7 +1466,7 @@ const App: React.FC = () => {
   ]);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-slate-105 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50">
+    <div className="relative flex h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50" id="app-workspace-root">
       {/* Visual Progress Bar Overlay for GPX/FIT/ZIP Uploads */}
       <AnimatePresence>
         {trackUploadProgress && (
@@ -1388,6 +1533,7 @@ const App: React.FC = () => {
         }}
         onChangeActivityType={handleChangeActivityType}
         onUpload={handleFileUpload}
+        uploadProgress={trackUploadProgress}
         onToggleVisibility={toggleVisibility}
         onRemoveTrack={removeTrack}
         onMergeSelected={handleMerge}
@@ -1436,24 +1582,15 @@ const App: React.FC = () => {
           setIsMobileMenuOpen(false);
         }}
         onOpenTrainingZones={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
-          setTrainingZonesOpen(true);
+          handleOpenTrackAnalysis(id, 'zones');
           setIsMobileMenuOpen(false);
         }}
         onOpenSummaryReport={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
-          setSummaryReportOpen(true);
+          handleOpenTrackAnalysis(id, 'report');
           setIsMobileMenuOpen(false);
         }}
         onOpenIntensiveAnalysis={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
-          setIntensiveAnalysisOpen(true);
+          handleOpenTrackAnalysis(id, 'overview');
           setIsMobileMenuOpen(false);
         }}
         onOpenGlossary={(metricId) => {
@@ -1461,12 +1598,16 @@ const App: React.FC = () => {
           setGlossaryOpen(true);
           setIsMobileMenuOpen(false);
         }}
-        onOpenAnalytics={() => {
-          setAnalyticsOpen(true);
+        onOpenShortcuts={() => {
+          setShortcutsModalOpen(true);
           setIsMobileMenuOpen(false);
         }}
-        onOpenClimbs={() => {
-          setClimbsOpen(true);
+        onOpenAnalytics={(id) => {
+          handleOpenTrackAnalysis(id, 'power');
+          setIsMobileMenuOpen(false);
+        }}
+        onOpenClimbs={(id) => {
+          handleOpenTrackAnalysis(id, 'climbs');
           setIsMobileMenuOpen(false);
         }}
         onOpenWeather={() => {
@@ -1474,10 +1615,7 @@ const App: React.FC = () => {
           setIsMobileMenuOpen(false);
         }}
         onOpenRawData={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
-          setRawDataOpen(true);
+          handleOpenTrackAnalysis(id, 'rawdata');
           setIsMobileMenuOpen(false);
         }}
         onOpenTimeGapAnalysis={(id) => {
@@ -1520,6 +1658,9 @@ const App: React.FC = () => {
         setShowDbCyclingHeatmap={setShowDbCyclingHeatmap}
         showDbRunningHeatmap={showDbRunningHeatmap}
         setShowDbRunningHeatmap={setShowDbRunningHeatmap}
+        onToggleAllVisibility={handleToggleAllVisibility}
+        onFitVisibleTracks={handleFitVisibleTracks}
+        onLoadReferenceTours={handleLoadReferenceTours}
       />
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {!isOnline && (
@@ -1533,22 +1674,41 @@ const App: React.FC = () => {
           </div>
         )}
         {/* Mobile Header */}
-        <div className="md:hidden flex items-center justify-between px-4 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60]">
+        <div className="md:hidden flex items-center justify-between px-3.5 pb-2.5 pt-[calc(env(safe-area-inset-top,0px)+0.5rem)] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60] shadow-xs">
           <div className="flex items-center gap-2">
-            <Activity className="text-indigo-600 dark:text-indigo-400" size={24} />
-            <span className="font-black tracking-tight text-lg text-slate-950 dark:text-slate-100">VeloAnalytics</span>
+            <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800/80 flex items-center justify-center">
+              <Activity className="text-indigo-600 dark:text-indigo-400" size={18} />
+            </div>
+            <div>
+              <span className="font-black tracking-tight text-base text-slate-950 dark:text-slate-100">GPX Master</span>
+              {tracks.length > 0 && (
+                <p className="text-[10px] text-slate-500 font-semibold leading-none">
+                  {tracks.filter(t => t.visible).length} von {tracks.length} aktiv
+                </p>
+              )}
+            </div>
           </div>
           <button 
+            type="button"
+            aria-label="Menü und Streckenliste öffnen"
             onClick={() => {
               triggerHaptic('medium');
               setIsMobileMenuOpen(true);
             }}
-            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-transform"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-transform touch-manipulation shadow-xs"
             title="Menü öffnen"
           >
-            <BarChart2 size={24} />
+            <Menu size={20} />
           </button>
         </div>
+        {/* Mobile Telemetry Floating Pill */}
+        <MobileTelemetryPill
+          hoveredPoint={hoveredPoint}
+          trackColor={markedTrack?.color}
+          tracks={tracks}
+          onClose={() => setHoveredPoint(null)}
+        />
+
         <div className="flex-1 relative">
           <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
             {is3D ? (
@@ -1593,8 +1753,7 @@ const App: React.FC = () => {
                 showDbRunningHeatmap={showDbRunningHeatmap}
                 onAnalyzeSurface={analyzeTrackSurface}
                 onOpenIntensiveAnalysis={(id) => {
-                  setMarkedTrackId(id);
-                  setIntensiveAnalysisOpen(true);
+                  handleOpenTrackAnalysis(id, 'overview');
                 }}
                 analyzingSurfaces={analyzingSurfaces}
                 surfaceAnalysisStatuses={surfaceAnalysisStatuses}
@@ -1603,9 +1762,31 @@ const App: React.FC = () => {
                 onSelectGap={handleFocusGapOnMap}
                 onSplitGap={handleSplitTrack}
                 onCloseGap={handleCloseGap}
+                onOpenShortcuts={() => setShortcutsModalOpen(true)}
               />
             )}
           </ErrorBoundary>
+
+          {/* Workspace Summary Map HUD */}
+          {showWorkspaceHud && tracks.some(t => t.visible) && !weatherOpen && !analyticsOpen && !climbsOpen && !comparisonOpen && !trainingZonesOpen && !summaryReportOpen && !intensiveAnalysisOpen && (
+            <div className="absolute top-3 left-14 z-[400] pointer-events-auto hidden sm:block">
+              <WorkspaceSummaryDashboard
+                tracks={tracks}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+                variant="map-hud"
+                isDark={theme === 'dark'}
+                markedTrackId={markedTrackId}
+                onMarkTrack={setMarkedTrackId}
+                onToggleTrackVisibility={toggleVisibility}
+                onToggleAllVisibility={handleToggleAllVisibility}
+                onFitVisibleTracks={handleFitVisibleTracks}
+                onOpenIntensiveAnalysis={(id) => {
+                  handleOpenTrackAnalysis(id, 'overview');
+                }}
+              />
+            </div>
+          )}
 
           <AnimatePresence>
             {timeGapModalOpen && (
@@ -1798,6 +1979,9 @@ const App: React.FC = () => {
               <IntensiveTrackAnalysisModal
                 key="intensive-analysis-modal"
                 track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                allTracks={tracks}
+                onSelectTrack={(id) => setMarkedTrackId(id)}
+                initialTab={intensiveAnalysisTab}
                 onClose={() => setIntensiveAnalysisOpen(false)}
                 ftp={ftp}
                 userWeight={userWeight}
@@ -1826,6 +2010,15 @@ const App: React.FC = () => {
                 }}
                 initialMetricId={initialGlossaryMetricId}
                 isDark={theme === 'dark'}
+              />
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {shortcutsModalOpen && (
+              <KeyboardShortcutsModal
+                isOpen={shortcutsModalOpen}
+                onClose={() => setShortcutsModalOpen(false)}
               />
             )}
           </AnimatePresence>
@@ -1906,7 +2099,7 @@ const App: React.FC = () => {
         </div>
 
         {markedTrack && (
-          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-44 sm:h-48 md:h-56'} bg-white border-t border-slate-200 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-48 sm:h-48 md:h-56 pb-16 sm:pb-2'} bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
             <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
               <ElevationProfile 
                 track={markedTrack} 
@@ -1948,13 +2141,35 @@ const App: React.FC = () => {
         {markedTrack && isProfileCollapsed && (
           <button
             onClick={() => setIsProfileCollapsed(false)}
-            className="fixed bottom-4 right-4 z-[99] bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-1.5 font-bold text-xs transition-all cursor-pointer border border-indigo-500 hover:scale-105 active:scale-95 animate-fade-in"
+            className="hidden sm:flex fixed bottom-4 right-4 z-[99] bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full shadow-2xl items-center gap-1.5 font-bold text-xs transition-all cursor-pointer border border-indigo-500 hover:scale-105 active:scale-95 animate-fade-in"
             title="Höhenprofil anzeigen"
           >
             <BarChart2 size={14} />
             <span>Höhenprofil einblenden</span>
           </button>
         )}
+
+        {/* Mobile Ergonomic Thumb-Zone Navigation */}
+        <MobileThumbBar
+          isSidebarOpen={isMobileMenuOpen}
+          onToggleSidebar={() => setIsMobileMenuOpen(prev => !prev)}
+          hasTrack={!!markedTrack}
+          isProfileCollapsed={isProfileCollapsed}
+          onToggleProfile={() => setIsProfileCollapsed(prev => !prev)}
+          is3D={is3D}
+          onToggle3D={() => setIs3D(prev => !prev)}
+          onFitTrack={() => {
+            if (markedTrack) {
+              const bounds = calculateTrackCenterAndBounds(markedTrack);
+              if (bounds) {
+                window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
+              }
+            }
+          }}
+          onOpenAnalytics={() => setAnalyticsOpen(true)}
+          trackCount={tracks.length}
+          visibleTrackCount={tracks.filter(t => t.visible).length}
+        />
 
         <VideoExportModal
           track={markedTrack}

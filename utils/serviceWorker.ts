@@ -8,56 +8,30 @@ export interface SWCacheStats {
 }
 
 export function registerServiceWorker(onUpdate?: () => void) {
-  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
-    return;
-  }
-
-  const isLocalOrHttps = window.location.protocol === 'https:' || 
-    window.location.hostname === 'localhost' || 
-    window.location.hostname === '127.0.0.1';
-
-  if (!isLocalOrHttps) {
-    return;
-  }
-
-  const register = () => {
-    try {
-      navigator.serviceWorker
-        .register('/sw.js', { scope: '/' })
-        .then((registration) => {
-          console.info('[SW] ServiceWorker registered successfully with scope:', registration.scope);
-
-          registration.onupdatefound = () => {
-            const installingWorker = registration.installing;
-            if (installingWorker) {
-              installingWorker.onstatechange = () => {
-                if (installingWorker.state === 'installed') {
-                  if (navigator.serviceWorker.controller) {
-                    console.info('[SW] New content is available; please refresh.');
-                    if (onUpdate) onUpdate();
-                  } else {
-                    console.info('[SW] Content is cached for offline use.');
-                  }
-                }
-              };
-            }
-          };
-        })
-        .catch((error: any) => {
-          // Gracefully handle iframe / sandboxed preview restrictions without fatal console errors
-          console.warn('[SW] ServiceWorker registration unavailable or restricted in current frame context:', error?.message || error);
-        });
-    } catch (err: any) {
-      console.warn('[SW] ServiceWorker initialization skipped:', err?.message || err);
+  try {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
     }
-  };
 
-  if (document.readyState === 'complete') {
-    register();
-  } else {
-    window.addEventListener('load', register, { once: true });
+    // Unconditionally unregister all service workers and purge caches
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      if (registrations && Array.isArray(registrations)) {
+        for (const reg of registrations) {
+          reg.unregister().catch(() => {});
+        }
+      }
+    }).catch(() => {});
+
+    if (typeof caches !== 'undefined') {
+      caches.keys().then((keys) => {
+        keys.forEach((k) => caches.delete(k).catch(() => {}));
+      }).catch(() => {});
+    }
+  } catch (e) {
+    // Top-level defensive catch-all
   }
 }
+
 
 export async function getSWCacheStats(): Promise<SWCacheStats> {
   if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {

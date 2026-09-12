@@ -765,6 +765,60 @@ graph TD
 - **Aerobic Decoupling (Pw:HR)**: $\text{Decoupling} = \frac{\text{EF}_{\text{Hälfte 1}} - \text{EF}_{\text{Hälfte 2}}}{\text{EF}_{\text{Hälfte 1}}} \times 100$
 - **UCI Climb Score**: $\text{Score} = \text{Ascent (m)} \times \left(\frac{\text{Grade (\%)}}{100}\right) \times \sqrt{\text{Distance (km)}}$
 
+---
+
+## 25. ArchiMate 3.1 Enterprise & System Architecture Viewpoint
+
+For complete architectural governance conforming to The Open Group ArchiMate® 3.1 Standard, see the dedicated specification in [`ARCHIMATE.md`](./ARCHIMATE.md).
+
+### Layered Architecture Overview (ArchiMate 3.1 Notation)
+
+```mermaid
+flowchart TD
+    %% ArchiMate standard layer color palette
+    classDef business fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:#374151;
+    classDef application fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#0F172A;
+    classDef tech fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20;
+
+    subgraph BusinessLayer ["🟡 Business Layer (Geschäftsebene)"]
+        BA["👤 Ausdauerathlet / Radsportler (Business Actor)"]:::business
+        BP["🗺️ Routenplanung, Bereinigung & Pacing (Business Process)"]:::business
+        BS["🚴 GPX Inspektions- & Analyse-Dienst (Business Service)"]:::business
+        BA --> BP --> BS
+    end
+
+    subgraph ApplicationLayer ["🔷 Application Layer (Anwendungsebene)"]
+        AC_Client["Frontend SPA (Leaflet, MapLibre 3D, Elevation Engine)"]:::application
+        AC_Hex["Clean Architecture Core (Domain, Ports & Use Cases)"]:::application
+        AC_Server["Express REST Gateway & Proxy Services"]:::application
+        BS -.-> AC_Client
+        AC_Client --> AC_Hex
+        AC_Client <--> AC_Server
+    end
+
+    subgraph TechnologyLayer ["🟢 Technology Layer (Technologieebene)"]
+        NODE["Node.js Container Runtime (Port 3000)"]:::tech
+        DB["activities.db (SQLite with WAL Persistence)"]:::tech
+        EXT["Externe GIS-Dienste (OpenStreetMap Overpass, Open-Meteo)"]:::tech
+        AC_Server --> NODE
+        NODE --> DB
+        AC_Server --> EXT
+    end
+```
+
+### Architectural Decision Record (ADR 025): Formal ArchiMate 3.1 Enterprise Modeling
+- **Context**: As the system expanded to include clean domain layers, telemetry math engines, 3D terrain engines, and multi-track workspace persistence, a standardized cross-cutting enterprise architecture model was required to document how business processes, application services, and physical container components align.
+- **Decision**: Adopt The Open Group ArchiMate 3.1 specification across five core viewpoints:
+  1. **Layered Viewpoint**: Business processes (planning, pacing) realized by application components and served by execution environments.
+  2. **Application Cooperation Viewpoint**: Hexagonal Ports & Adapters isolating the mathematical domain from UI and infrastructure.
+  3. **Information Structure Viewpoint**: Mapping GPX track business entities to typed data objects and SQLite relational schemas.
+  4. **Technology & Physical Viewpoint**: Cloud Run container, Nginx reverse proxy, browser runtime, and external GIS proxies.
+  5. **Motivation & Strategy Viewpoint**: Direct traceability from athlete quality drivers (sub-second responsiveness, accurate climb gradients) down to mathematical algorithms (RDP downsampling, Savitzky-Golay filtering, UCI climb scoring).
+- **Consequences**:
+  - Full transparency across all architectural layers.
+  - Clear governance for future refactoring, domain extensions, and infrastructure migrations.
+
+
 
 
 

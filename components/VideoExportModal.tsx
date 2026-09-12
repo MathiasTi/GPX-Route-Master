@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, GPXPoint } from '../types';
 import { calculateDistance } from '../utils/gpxUtils';
+import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 
 interface VideoExportModalProps {
   track: GPXTrack | undefined;
@@ -158,8 +159,10 @@ export const VideoExportModal: React.FC<VideoExportModalProps> = ({
 
         // Instant speed
         let speed = estimatedSpeed; // fallback
-        if (pt.time && prev.time) {
-          const dt = (pt.time.getTime() - prev.time.getTime()) / 1000;
+        const ptMs = toValidTimestampMs(pt.time);
+        const prevMs = toValidTimestampMs(prev.time);
+        if (ptMs !== undefined && prevMs !== undefined) {
+          const dt = (ptMs - prevMs) / 1000;
           if (dt > 1 && dt < 120 && d > 0) {
             speed = (d / dt) * 3.6; // m/s to km/h
           }
@@ -1332,14 +1335,14 @@ export const VideoExportModal: React.FC<VideoExportModalProps> = ({
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           {/* Backdrop screen */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={exporting ? undefined : handleClose}
-            className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-md cursor-pointer"
           />
 
           {/* Modal Container */}
@@ -1347,25 +1350,27 @@ export const VideoExportModal: React.FC<VideoExportModalProps> = ({
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
-            className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-4xl max-h-[90vh] overflow-y-auto flex flex-col p-6 sm:p-8"
+            className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-4xl max-h-[calc(100dvh-1rem)] sm:max-h-[90vh] overflow-y-auto flex flex-col p-4 sm:p-8 cursor-default"
           >
             {/* Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
-              <div>
-                <h3 className="text-xl font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                  <span className="bg-emerald-500 text-white p-1.5 rounded-xl text-sm antialiased">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 gap-2">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-xl font-extrabold text-slate-900 dark:text-white flex items-center gap-2 truncate">
+                  <span className="bg-emerald-500 text-white p-1.5 rounded-xl text-sm antialiased shrink-0">
                     📹
                   </span>
-                  Überflug-Video exportieren (Flyover)
+                  <span className="truncate">Überflug-Video exportieren (Flyover)</span>
                 </h3>
-                <p className="text-xs text-slate-400 font-bold mt-0.5">
+                <p className="text-[10px] sm:text-xs text-slate-400 font-bold mt-0.5 truncate hidden sm:block">
                   Generiere ein Video mit Live-Tachometer, Höhenmetern, Anstiegen und einer GPS-Minimap.
                 </p>
               </div>
               {!exporting && (
                 <button
                   onClick={handleClose}
-                  className="p-2 text-slate-400 hover:text-slate-500 rounded-full hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                  title="Schließen"
+                  aria-label="Schließen"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>

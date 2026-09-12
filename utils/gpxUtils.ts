@@ -1,5 +1,7 @@
 
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue, TextMarker } from '../types';
+import { validateTrackStartPoint } from './startPointValidator';
+export { validateTrackStartPoint };
 
 export const toDate = (timeVal: any): Date | undefined => {
   if (!timeVal) return undefined;
@@ -599,8 +601,8 @@ export const findClimbs = (
 ): ClimbSegment[] => {
   if (points.length < 5) return [];
   
-  const minClimbDistance = criteria.minDistance;
-  const minAvgGradient = criteria.minGradient;
+  const minClimbDistance = Math.max(10, criteria.minDistance || 500);
+  const minAvgGradient = criteria.minGradient ?? 3.0;
   const minScore = criteria.minScore || 0;
   const SMOOTH_WINDOW_M = criteria.smoothingWindow || 30;
   
@@ -728,7 +730,7 @@ export const findClimbs = (
             startIndex: optStart,
             endIndex: exactSummitIndex,
             distance: finalDist,
-            ascent: finalAscent,
+            ascent: Math.round(finalAscent),
             avgGradient: finalAvgGrad,
             maxGradient: runningMaxGrad
           });
@@ -949,7 +951,7 @@ export const calculatePowerStats = (
   const endTime = tEnd.getTime();
   const durationSec = Math.floor((endTime - startTime) / 1000);
   
-  if (durationSec < 5) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
+  if (isNaN(durationSec) || durationSec < 5 || durationSec > 604800) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
 
   const power1s = new Float32Array(durationSec + 1);
   let pIdx = 0;
@@ -963,7 +965,9 @@ export const calculatePowerStats = (
     if (p2) {
       const t1 = toDate(p1.time)?.getTime() ?? 0;
       const t2 = toDate(p2.time)?.getTime() ?? 0;
-      if (t2 - t1 > 5000) { // Gap larger than 5 seconds
+      if (t2 <= t1) {
+        power1s[t] = p1.power!;
+      } else if (t2 - t1 > 5000) { // Gap larger than 5 seconds
         if (targetTime - t1 <= 2000) power1s[t] = p1.power!;
         else if (t2 - targetTime <= 2000) power1s[t] = p2.power!;
         else power1s[t] = 0;
@@ -1005,8 +1009,9 @@ export const calculatePowerStats = (
     normalizedPower = Math.pow(sumPowers / count, 0.25);
   }
 
-  const intensityFactor = normalizedPower / ftp;
-  const tss = (totalTime * normalizedPower * intensityFactor) / (ftp * 36) ; // (s * watts * IF) / (ftp * 3600) * 100
+  const safeFtp = ftp > 0 ? ftp : 250;
+  const intensityFactor = normalizedPower / safeFtp;
+  const tss = (totalTime * normalizedPower * intensityFactor) / (safeFtp * 36) ; // (s * watts * IF) / (ftp * 3600) * 100
   const variabilityIndex = avgPower > 0 ? normalizedPower / avgPower : 1;
 
   return {
@@ -1033,7 +1038,7 @@ export const formatPace = (durationSecs: number, distanceKm: number): string => 
 };
 
 export const getPaceString = (speedKmh: number): string => {
-  if (speedKmh <= 0.1) return "--:-- min/km";
+  if (!speedKmh || isNaN(speedKmh) || speedKmh <= 0.1) return "--:-- min/km";
   const paceMinKm = 60 / speedKmh;
   if (paceMinKm > 60) return ">60:00 min/km";
   const mins = Math.floor(paceMinKm);
@@ -1052,7 +1057,8 @@ export const calculateDistance = (p1: GPXPoint, p2: GPXPoint): number => {
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(p1.lat * Math.PI / 180) * Math.cos(p2.lat * Math.PI / 180) * 
     Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const safeA = Math.max(0, Math.min(1, a));
+  const c = 2 * Math.atan2(Math.sqrt(safeA), Math.sqrt(Math.max(0, 1 - safeA)));
   return R * c;
 };
 
@@ -1139,30 +1145,45 @@ export const calculateElevationStats = (points: GPXPoint[]) => {
     }
   }
 
-  // 3. Calculate max slope over a fixed distance window (50 meters)
+  // 3. Calculate point-by-point slope and max slope over a centered distance window (50 meters)
   const SLOPE_WINDOW_KM = 0.050; 
   
   for (let i = 0; i < points.length; i++) {
-    if (isNaN(smoothedEle[i])) continue;
-    
-    let j = i + 1;
-    while (j < points.length && cumDist[j] - cumDist[i] < SLOPE_WINDOW_KM) {
-      j++;
+    points[i].dist = Number(cumDist[i].toFixed(3));
+
+    if (isNaN(smoothedEle[i])) {
+      if (points[i].slope === undefined) points[i].slope = 0;
+      continue;
     }
     
-    if (j < points.length) {
-      const dSum = cumDist[j] - cumDist[i];
-      if (dSum >= SLOPE_WINDOW_KM * 0.5) { // At least 25m to calculate a stable slope
-        const eleDiff = smoothedEle[j] - smoothedEle[i];
-        const slope = (eleDiff / (dSum * 1000)) * 100;
-        if (slope > maxSlope) {
-          maxSlope = slope;
-        }
+    let prevIdx = i;
+    while (prevIdx > 0 && cumDist[i] - cumDist[prevIdx] < SLOPE_WINDOW_KM / 2) {
+      prevIdx--;
+    }
+    let nextIdx = i;
+    while (nextIdx < points.length - 1 && cumDist[nextIdx] - cumDist[i] < SLOPE_WINDOW_KM / 2) {
+      nextIdx++;
+    }
+    
+    const dSum = cumDist[nextIdx] - cumDist[prevIdx];
+    if (dSum >= 0.015) { // At least 15m to calculate a stable slope
+      const eleDiff = smoothedEle[nextIdx] - smoothedEle[prevIdx];
+      const ptSlope = Number(((eleDiff / (dSum * 1000)) * 100).toFixed(1));
+      points[i].slope = ptSlope;
+      if (ptSlope > maxSlope) {
+        maxSlope = ptSlope;
       }
+    } else {
+      points[i].slope = 0;
     }
   }
 
-  return { ascent, descent, maxSlope, totalDist };
+  return { 
+    ascent: Math.round(ascent), 
+    descent: Math.round(descent), 
+    maxSlope, 
+    totalDist 
+  };
 };
 
 export const calculateTrackCenterAndBounds = (track: GPXTrack): { centerLat: number; centerLng: number; minLat: number; maxLat: number; minLng: number; maxLng: number } | null => {
@@ -1697,6 +1718,17 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
 
   const climbs = findClimbs(combinedPoints);
   
+  let duration = 0;
+  const firstTime = combinedPoints[0]?.time;
+  const lastTime = combinedPoints[combinedPoints.length - 1]?.time;
+  if (firstTime && lastTime) {
+    duration = Math.max(0, Math.round((lastTime.getTime() - firstTime.getTime()) / 1000));
+  } else {
+    duration = tracks.reduce((acc, t) => acc + (t.duration || 0), 0);
+  }
+
+  const hasTimestamps = combinedPoints.some(p => p.time !== undefined);
+
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : `merged-${Date.now()}-${Math.random()}`,
     name: `Kombiniert: ${names.substring(0, 40)}${names.length > 40 ? '...' : ''}`,
@@ -1708,6 +1740,8 @@ export const mergeTracks = (tracks: GPXTrack[]): GPXTrack => {
     maxSlope,
     visible: true,
     activityType,
+    duration,
+    hasTimestamps,
     powerStats,
     surfaceStats,
     climbs
@@ -3077,6 +3111,12 @@ export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport =
     });
   }
 
+  // 6. Automated Start Point & Expected Entry Point Deviation Check
+  const startValidation = validateTrackStartPoint(track);
+  if (startValidation.issue) {
+    issues.push(startValidation.issue);
+  }
+
   let overallStatus: 'clean' | 'info' | 'warning' | 'error' = 'clean';
   if (issues.some(i => i.severity === 'error')) {
     overallStatus = 'error';
@@ -3091,14 +3131,16 @@ export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport =
     trackName: track.name,
     status: overallStatus,
     issues,
+    startPointValidation: startValidation.detail,
     stats: {
       totalPoints,
       pointsWithElevation: totalPoints - missingEleCount,
       missingElevationCount: missingEleCount,
-      outlierCoordinateCount: outOfBoundsCount + nullIslandCount + extremeJumpCount,
+      outlierCoordinateCount: outOfBoundsCount + nullIslandCount + extremeJumpCount + (startValidation.detail.suggestedFixStartIndex ? 1 : 0),
       nullIslandCount,
       extremeJumpCount,
       elevationSpikeCount: eleSpikeCount,
+      startPointDeviationKm: startValidation.detail.distanceToExpectedKm ?? startValidation.detail.distanceToNearestCentroidKm,
       minElevation,
       maxElevation,
       maxSpeedJumpKmh
@@ -3108,7 +3150,8 @@ export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport =
 
 /**
  * Automatically repairs detected validation anomalies: removes out-of-bounds and null island points,
- * filters isolated teleportation outliers, interpolates missing elevation values, and recalculates track statistics.
+ * filters isolated teleportation outliers, trims anomalous start-point waypoint deviations,
+ * interpolates missing elevation values, and recalculates track statistics.
  */
 export const autoFixTrackValidation = (
   track: GPXTrack,
@@ -3131,6 +3174,16 @@ export const autoFixTrackValidation = (
   if (validPoints.length === 0) {
     // If all were invalid, fallback to original to prevent empty track
     validPoints = track.points.map(p => ({ ...p }));
+  }
+
+  // 1.5. Trim isolated start point anomaly / prepended waypoint outlier if detected
+  const startCheck = validateTrackStartPoint(track);
+  if (
+    startCheck.detail.suggestedFixStartIndex &&
+    startCheck.detail.suggestedFixStartIndex > 0 &&
+    startCheck.detail.suggestedFixStartIndex < validPoints.length
+  ) {
+    validPoints = validPoints.slice(startCheck.detail.suggestedFixStartIndex);
   }
 
   // 2. Remove isolated outlier coordinate spikes

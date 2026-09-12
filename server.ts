@@ -1,18 +1,29 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, updateTrackMetadata, deleteTrack, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings } from "./utils/db.js";
+import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, getAllTracksFull, updateTrackMetadata, deleteTrack, clearAllTracks, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings, seedCuratedTours } from "./utils/db.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
+import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
+import { SqliteTrackRepository } from "./infrastructure/repositories/sqliteTrackRepository.js";
+import { GetTrackByIdUseCase } from "./application/usecases/track/getTrackById.usecase.js";
+import { SaveTrackUseCase } from "./application/usecases/track/saveTrack.usecase.js";
+import { SearchTracksUseCase } from "./application/usecases/track/searchTracks.usecase.js";
 import fs from "fs";
 import os from "os";
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const PORT = 3000;
 
   // Initialize the SQLite database
   initDb();
+
+  // Initialize Clean Architecture Ports and Adapters
+  const trackRepository = new SqliteTrackRepository();
+  const getTrackByIdUseCase = new GetTrackByIdUseCase(trackRepository);
+  const saveTrackUseCase = new SaveTrackUseCase(trackRepository);
+  const searchTracksUseCase = new SearchTracksUseCase(trackRepository);
 
   // Set security headers to follow best security practices safely (without breaking AI Studio iframe bounds)
   app.use((req, res, next) => {
@@ -27,7 +38,10 @@ async function startServer() {
       // Sanitize against CRLF injection in origin header
       const sanitizedOrigin = origin.replace(/[\r\n]/g, "");
       res.setHeader("Access-Control-Allow-Origin", sanitizedOrigin);
-      res.setHeader("Access-Control-Allow-Credentials", "true");
+      // 'null' origin must not be paired with Allow-Credentials: true according to CORS spec
+      if (sanitizedOrigin !== "null") {
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+      }
     } else {
       res.setHeader("Access-Control-Allow-Origin", "*");
     }
@@ -37,6 +51,19 @@ async function startServer() {
     if (req.method === "OPTIONS") {
       res.sendStatus(200);
       return;
+    }
+    next();
+  });
+
+  // Auto-purge stale service workers and corrupted caches on initial document navigation
+  app.use((req, res, next) => {
+    const rawCookies = req.headers.cookie || "";
+    const isDocument = req.headers["sec-fetch-dest"] === "document" || req.path === "/" || req.path.endsWith(".html");
+    const forceClean = req.query.clean_sw !== undefined || req.headers["x-clean-sw"] !== undefined;
+
+    if (isDocument && (forceClean || !rawCookies.includes("__sw_purged=1"))) {
+      res.setHeader("Clear-Site-Data", '"cache", "storage"');
+      res.setHeader("Set-Cookie", "__sw_purged=1; Path=/; SameSite=Lax; Max-Age=31536000");
     }
     next();
   });
@@ -58,7 +85,8 @@ async function startServer() {
     if (fs.existsSync(swPath)) {
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("ServiceWorker-Allowed", "/");
-      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+      res.setHeader("Clear-Site-Data", '"cache"');
       return res.sendFile(swPath);
     }
     res.status(404).send("// Service worker not found");
@@ -77,6 +105,9 @@ async function startServer() {
 
   // Serve static assets from public directory
   app.use(express.static(path.join(process.cwd(), "public")));
+
+  // Serve static GPX tour files from gpx directory
+  app.use("/gpx", express.static(path.join(process.cwd(), "gpx")));
 
   // API route to resolve weather using Open-Meteo and OpenStreetMap Nominatim (High limits - completely free, no API key required)
   app.post("/api/weather", async (req, res) => {
@@ -1351,7 +1382,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
         hasTimestamps: r.has_timestamps === 1,
-        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined,
+        rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
         isGarminActivity: false
       }));
 
@@ -1387,6 +1418,52 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  // Unified Tracks API: Get all tracks with full point arrays for workspace initialization
+  app.get("/api/tracks", (req, res) => {
+    try {
+      const records = getAllTracksFull(25);
+      const tracks = records.map(r => {
+        const points = safeJsonParse(r.points_json, []).data || [];
+        let surfaceStats = r.surface_stats_json ? safeJsonParse(r.surface_stats_json, []).data : [];
+        const calcStats = calculateSurfaceStatsFromPoints(points);
+        if (calcStats.length > 0) {
+          surfaceStats = calcStats;
+        } else if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
+          surfaceStats = [];
+        }
+        hydratePointsWithSurface(points, surfaceStats, r.distance);
+
+        return {
+          id: r.id,
+          name: r.name,
+          distance: r.distance,
+          ascent: r.ascent,
+          descent: r.descent,
+          duration: r.duration,
+          activityType: r.activity_type,
+          description: r.description || "",
+          tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+          dateCreated: r.date_created,
+          originalFilename: r.original_filename,
+          points,
+          powerStats: r.power_stats_json ? safeJsonParse(r.power_stats_json, undefined).data : undefined,
+          surfaceStats,
+          climbs: r.climbs_json ? safeJsonParse(r.climbs_json, undefined).data : undefined,
+          maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+          color: r.color || '#3b82f6',
+          hasTimestamps: r.has_timestamps === 1,
+          rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
+          visible: true
+        };
+      });
+
+      res.json({ success: true, tracks });
+    } catch (err: any) {
+      console.error("Error loading full tracks:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to load tracks" });
+    }
+  });
+
   // Library API: Search and list tracks
   app.get("/api/library", (req, res) => {
     try {
@@ -1396,7 +1473,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       
       // Map to thin, metadata-focused structure for the list view
       const mapped = records.map(r => {
-        let surfaceStats = r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined;
+        let surfaceStats = r.surface_stats_json ? safeJsonParse(r.surface_stats_json, []).data : [];
         if (!surfaceStats || !Array.isArray(surfaceStats) || surfaceStats.length === 0) {
           surfaceStats = [];
         }
@@ -1416,7 +1493,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           color: r.color || '#3b82f6',
           hasTimestamps: r.has_timestamps === 1,
           surfaceStats,
-          rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined
+          rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined
         };
       });
       
@@ -1428,17 +1505,25 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   });
 
   // Library API: Get full track details by ID
-  app.get("/api/library/:id", (req, res) => {
+  app.get("/api/library/:id", async (req, res) => {
     try {
       const { id } = req.params;
+      const domainResult = await getTrackByIdUseCase.execute(id);
+      if (!domainResult.success) {
+        if (domainResult.error.code === "ENTITY_NOT_FOUND") {
+          return res.status(404).json({ success: false, error: domainResult.error.message });
+        }
+        return res.status(400).json({ success: false, error: domainResult.error.message });
+      }
+
       const r = getTrackDetails(id);
       
       if (!r) {
         return res.status(404).json({ success: false, error: "Track not found in library" });
       }
 
-      const points = JSON.parse(r.points_json || '[]');
-      let surfaceStats = r.surface_stats_json ? JSON.parse(r.surface_stats_json) : undefined;
+      const points = safeJsonParse(r.points_json, []).data || [];
+      let surfaceStats = r.surface_stats_json ? safeJsonParse(r.surface_stats_json, []).data : [];
 
       const calcStats = calculateSurfaceStatsFromPoints(points);
       if (calcStats.length > 0) {
@@ -1463,13 +1548,13 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         dateCreated: r.date_created,
         originalFilename: r.original_filename,
         points,
-        powerStats: r.power_stats_json ? JSON.parse(r.power_stats_json) : undefined,
+        powerStats: r.power_stats_json ? safeJsonParse(r.power_stats_json, undefined).data : undefined,
         surfaceStats,
-        climbs: r.climbs_json ? JSON.parse(r.climbs_json) : undefined,
+        climbs: r.climbs_json ? safeJsonParse(r.climbs_json, undefined).data : undefined,
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
         hasTimestamps: r.has_timestamps === 1,
-        rawFileDetails: r.raw_file_json ? JSON.parse(r.raw_file_json) : undefined,
+        rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
         visible: true
       };
 
@@ -1481,7 +1566,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   });
 
   // Library API: Save/insert a track to the database
-  app.post("/api/library", (req, res) => {
+  app.post("/api/library", async (req, res) => {
     try {
       const {
         id,
@@ -1516,10 +1601,31 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         return res.status(400).json({ success: false, error: "Points array exceeds maximum allowed length of 100,000 points." });
       }
 
-      const tagsStr = Array.isArray(tags) ? tags.slice(0, 50).join(",").slice(0, 1000) : String(tags || "").slice(0, 1000);
+      const tagsList = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : (typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : []);
       const safeDesc = String(description || "").slice(0, 5000);
-      const safeActivityType = String(activityType || "cycling").slice(0, 50);
+      const safeActivityType = activityType === "running" ? "running" : "cycling";
 
+      // Execute SaveTrackUseCase to strictly validate Domain invariants & invariants
+      const domainSaveRes = await saveTrackUseCase.execute({
+        id: id.trim(),
+        name: name.trim(),
+        points,
+        color: color ? String(color).slice(0, 30) : '#3b82f6',
+        distanceKm: Math.max(0, parseFloat(String(distance)) || 0),
+        ascentM: Math.max(0, parseFloat(String(ascent)) || 0),
+        descentM: Math.max(0, parseFloat(String(descent)) || 0),
+        maxSlopePercent: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : 0,
+        visible: true,
+        activityType: safeActivityType,
+        durationSeconds: duration ? parseInt(String(duration), 10) : undefined,
+        tags: tagsList
+      });
+
+      if (!domainSaveRes.success) {
+        return res.status(400).json({ success: false, error: domainSaveRes.error.message });
+      }
+
+      // Also persist legacy metadata extensions (powerStats, surfaceStats, climbs) to SQLite
       saveTrack({
         id: id.trim(),
         name: name.trim(),
@@ -1529,7 +1635,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         duration: duration ? parseInt(String(duration), 10) : undefined,
         activityType: safeActivityType,
         description: safeDesc,
-        tags: tagsStr,
+        tags: tagsList.join(","),
         dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined,
         originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : undefined,
         points,
@@ -1541,10 +1647,93 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         hasTimestamps: hasTimestamps === true || hasTimestamps === 1
       });
 
-      res.json({ success: true, id });
+      res.json({ success: true, id: domainSaveRes.data.id });
     } catch (err: any) {
       console.error("Error saving track to library:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to save track" });
+    }
+  });
+
+  // Library API: Seed or re-seed curated GPX reference tours
+  app.post("/api/library/seed-tours", (req, res) => {
+    try {
+      const force = req.body?.force === true;
+      const result = seedCuratedTours(force);
+      res.json({ success: true, seeded: result.seeded, total: result.total });
+    } catch (err: any) {
+      console.error("Error seeding curated tours:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to seed curated tours" });
+    }
+  });
+
+  // Library API: List available GPX tour files in the /gpx subfolder
+  app.get("/api/gpx-files", (req, res) => {
+    try {
+      const gpxDir = path.join(process.cwd(), "gpx");
+      if (!fs.existsSync(gpxDir)) {
+        return res.json({ success: true, files: [] });
+      }
+      const files = fs.readdirSync(gpxDir).filter(f => f.toLowerCase().endsWith(".gpx")).sort();
+      const details = files.map(file => {
+        const stat = fs.statSync(path.join(gpxDir, file));
+        return {
+          filename: file,
+          size: stat.size,
+          path: `/gpx/${encodeURIComponent(file)}`,
+          modified: stat.mtime
+        };
+      });
+      res.json({ success: true, files: details });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Library API: Batch save multiple workspace tracks
+  app.post("/api/library/save-batch", (req, res) => {
+    try {
+      const { tracks } = req.body;
+      if (!Array.isArray(tracks) || tracks.length === 0) {
+        return res.status(400).json({ success: false, error: "No tracks provided for batch saving." });
+      }
+
+      let savedCount = 0;
+      for (const track of tracks) {
+        if (!track || !track.id || !track.name || !Array.isArray(track.points) || track.points.length === 0) {
+          continue;
+        }
+
+        const tagsStr = Array.isArray(track.tags) ? track.tags.slice(0, 50).join(",").slice(0, 1000) : String(track.tags || "").slice(0, 1000);
+        const safeDesc = String(track.description || "").slice(0, 5000);
+        const safeActivityType = String(track.activityType || "cycling").slice(0, 50);
+
+        saveTrack({
+          id: String(track.id).trim().slice(0, 128),
+          name: String(track.name).trim().slice(0, 500),
+          distance: parseFloat(String(track.distance)) || 0,
+          ascent: parseFloat(String(track.ascent)) || 0,
+          descent: parseFloat(String(track.descent)) || 0,
+          duration: track.duration ? parseInt(String(track.duration), 10) : undefined,
+          activityType: safeActivityType,
+          description: safeDesc,
+          tags: tagsStr,
+          dateCreated: track.dateCreated ? String(track.dateCreated).slice(0, 30) : undefined,
+          originalFilename: track.originalFilename ? String(track.originalFilename).slice(0, 255) : undefined,
+          points: track.points,
+          powerStats: track.powerStats,
+          surfaceStats: track.surfaceStats,
+          climbs: track.climbs,
+          maxSlope: track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : undefined,
+          color: track.color ? String(track.color).slice(0, 30) : undefined,
+          hasTimestamps: track.hasTimestamps === true || track.hasTimestamps === 1
+        });
+        savedCount++;
+      }
+
+      res.json({ success: true, savedCount, totalRequested: tracks.length });
+    } catch (err: any) {
+      console.error("Error in batch track saving:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to batch save tracks" });
     }
   });
 
@@ -1582,14 +1771,41 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  // Library API: Delete all tracks from the library
+  app.delete("/api/library/clear-all", (req, res) => {
+    try {
+      const deletedCount = clearAllTracks();
+      res.json({ success: true, deletedCount });
+    } catch (err: any) {
+      console.error("Error clearing library tracks:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to clear library tracks" });
+    }
+  });
+
+  app.post("/api/library/clear-all", (req, res) => {
+    try {
+      const deletedCount = clearAllTracks();
+      res.json({ success: true, deletedCount });
+    } catch (err: any) {
+      console.error("Error clearing library tracks:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to clear library tracks" });
+    }
+  });
+
   // Library API: Delete a track from the library
-  app.delete("/api/library/:id", (req, res) => {
+  app.delete("/api/library/:id", async (req, res) => {
     try {
       const { id } = req.params;
       if (!id || typeof id !== "string" || id.length > 128) {
         return res.status(400).json({ success: false, error: "Invalid track ID." });
       }
-      deleteTrack(id);
+      const deleteResult = await trackRepository.deleteById(id);
+      if (!deleteResult.success) {
+        if (deleteResult.error.code === "ENTITY_NOT_FOUND") {
+          return res.status(404).json({ success: false, error: deleteResult.error.message });
+        }
+        return res.status(500).json({ success: false, error: deleteResult.error.message });
+      }
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error deleting track:", err);
@@ -1601,12 +1817,12 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   function downsampleActivity(act: any, maxPoints: number = 1000): any {
     if (act && act.points_json) {
       try {
-        const parsed = JSON.parse(act.points_json);
+        const parsed = safeJsonParse(act.points_json, []).data;
         if (Array.isArray(parsed) && parsed.length > maxPoints) {
           const downsampled = downsamplePoints(parsed, maxPoints);
           return {
             ...act,
-            points_json: JSON.stringify(downsampled)
+            points_json: safeStringifyOrFallback(downsampled, '[]')
           };
         }
       } catch (e) {
@@ -2593,9 +2809,24 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { index: false }));
     app.get('*all', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+        const host = req.headers.host || '';
+        const origin = host ? `${proto}://${host}` : (process.env.APP_URL || '');
+        let html = fs.readFileSync(indexPath, 'utf-8');
+        if (origin) {
+          html = html.replace(
+            '<head>',
+            `<head>\n    <base href="${origin}/">\n    <script>window.__APP_ORIGIN__ = "${origin}";</script>`
+          );
+        }
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(html);
+      }
+      res.status(404).send('Index not found');
     });
   }
 
@@ -2616,4 +2847,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   process.on("SIGINT", handleShutdown);
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("FATAL: Failed to start server:", err);
+  process.exit(1);
+});

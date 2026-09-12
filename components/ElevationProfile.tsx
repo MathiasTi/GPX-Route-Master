@@ -10,6 +10,7 @@ import {
   filterElevationProfile,
   ElevationFilterStrength
 } from '../utils/gpxUtils';
+import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
@@ -117,6 +118,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [activeAnomalyId, setActiveAnomalyId] = useState<string | null>(null);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragCurrentX, setDragCurrentX] = useState<number | null>(null);
+  const [isTouchScrubbing, setIsTouchScrubbing] = useState(false);
   const [showSelectedSurfaceStats, setShowSelectedSurfaceStats] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
@@ -418,8 +420,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (hasTimestamps && track.points.length > 1) {
       const firstTime = track.points.find(p => p.time !== undefined)?.time;
       const lastTime = [...track.points].reverse().find(p => p.time !== undefined)?.time;
-      if (firstTime && lastTime) {
-        duration = (lastTime.getTime() - firstTime.getTime()) / 1000;
+      const firstMs = toValidTimestampMs(firstTime);
+      const lastMs = toValidTimestampMs(lastTime);
+      if (firstMs !== undefined && lastMs !== undefined && lastMs >= firstMs) {
+        duration = (lastMs - firstMs) / 1000;
       }
     } else {
       duration = (totalDist / estimatedSpeed) * 3600;
@@ -639,6 +643,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
   const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
     if (!svgRef.current) return;
+    setIsTouchScrubbing(true);
+    triggerHaptic('light');
     const touch = e.touches[0];
     const rect = svgRef.current.getBoundingClientRect();
     const mouseX = touch.clientX - rect.left;
@@ -830,8 +836,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             selectedDistance += (p.dist - prevP.dist);
 
             // Time-weighted power calculation
-            if (p.time && prevP.time) {
-              const dt = (p.time.getTime() - prevP.time.getTime()) / 1000;
+            const pMs = toValidTimestampMs(p.time);
+            const prevMs = toValidTimestampMs(prevP.time);
+            if (pMs !== undefined && prevMs !== undefined) {
+              const dt = (pMs - prevMs) / 1000;
               if (dt > 0 && dt < 300) { // Ignore gaps > 5 mins
                 selectedEnergy += (prevP.power ?? 0) * dt;
                 selectionElapsedSecs += dt;
@@ -1438,17 +1446,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold font-mono">
                 <span className="flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60 font-medium">
                   <span className="text-[10px] text-emerald-600 font-bold">▲</span>
-                  <span>{track.ascent.toFixed(0)}m</span>
+                  <span>{Math.round(track.ascent)}m</span>
                   <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold font-sans ml-0.5">Anstieg</span>
                 </span>
                 <span className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60 font-medium">
                   <span className="text-[10px] text-rose-600 font-bold">▼</span>
-                  <span>{track.descent.toFixed(0)}m</span>
+                  <span>{Math.round(track.descent)}m</span>
                   <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold font-sans ml-0.5">Abstieg</span>
                 </span>
                 <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2 py-0.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60 font-medium">
                   <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold font-sans">Höhe:</span>
-                  <span>{minEle.toFixed(0)}m – {maxEle.toFixed(0)}m</span>
+                  <span>{Math.round(minEle)}m – {Math.round(maxEle)}m</span>
                 </span>
                 <span className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg border border-amber-200/80 dark:border-amber-800/60 font-medium">
                   <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold font-sans">Max. Steigung:</span>
@@ -1486,17 +1494,50 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             )}
           </div>
       
-      <div ref={containerRef} className="flex-1 min-h-0 relative">
+      <div ref={containerRef} className="flex-1 min-h-0 relative touch-none select-none">
+        {/* Mobile & Touch Floating HUD Bar - Prevents thumb from blocking metrics */}
+        {hoverInfo && isTouchScrubbing && (
+          <div className="absolute top-1 left-2 right-2 z-30 bg-slate-900/95 dark:bg-slate-950/95 text-white px-3.5 py-1.5 rounded-xl shadow-xl border border-white/15 flex items-center justify-between text-[11px] font-mono pointer-events-none backdrop-blur-md animate-in fade-in duration-150">
+            <div className="flex items-center gap-2">
+              <span className="font-extrabold text-white">{hoverInfo.dist.toFixed(2)} km</span>
+              <span className="text-slate-500">|</span>
+              <span className="font-bold text-indigo-300">{Math.round(hoverInfo.ele)} m</span>
+              <span className="text-slate-500">|</span>
+              <span className={`font-black ${hoverInfo.slope > 0 ? 'text-emerald-400' : hoverInfo.slope < 0 ? 'text-rose-400' : 'text-slate-300'}`}>
+                {hoverInfo.slope > 0 ? '+' : ''}{hoverInfo.slope.toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex items-center gap-2.5 text-[10px]">
+              {hoverInfo.power !== undefined && (
+                <span className="text-amber-400 font-black">{Math.round(hoverInfo.power)} W</span>
+              )}
+              {hoverInfo.hr !== undefined && (
+                <span className="text-rose-400 font-black">{Math.round(hoverInfo.hr)} bpm</span>
+              )}
+              {hoverInfo.speed !== undefined && (
+                <span className="text-teal-300 font-bold">{hoverInfo.speed.toFixed(1)} km/h</span>
+              )}
+            </div>
+          </div>
+        )}
+
         <svg 
           ref={svgRef}
           viewBox={`0 0 ${width} ${height}`} 
-          className={`w-full h-full overflow-visible ${dragStartX !== null ? 'cursor-ew-resize' : 'cursor-crosshair'}`}
+          className={`w-full h-full overflow-visible touch-none select-none ${dragStartX !== null ? 'cursor-ew-resize' : 'cursor-crosshair'}`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
-          onTouchEnd={handleMouseUp}
+          onTouchEnd={() => {
+            setIsTouchScrubbing(false);
+            handleMouseUp();
+          }}
+          onTouchCancel={() => {
+            setIsTouchScrubbing(false);
+            handleMouseUp();
+          }}
           onMouseLeave={() => {
             setHoverInfo(null);
             if (onHoverPoint) onHoverPoint(null);
@@ -1958,8 +1999,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   const t = new Date(baseDate.getTime() + timeAtDist * 1000);
                   timeStr = t.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
                 } else if (profileData.hasTimestamps && track.points[0].time) {
-                  const t = new Date(track.points[0].time.getTime() + timeAtDist * 1000);
-                  timeStr = t.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+                  const startMs = toValidTimestampMs(track.points[0].time);
+                  if (startMs !== undefined) {
+                    const t = new Date(startMs + timeAtDist * 1000);
+                    timeStr = t.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+                  } else {
+                    const h = Math.floor(timeAtDist / 3600);
+                    const m = Math.floor((timeAtDist % 3600) / 60);
+                    timeStr = `+${h}h ${m}m`;
+                  }
                 } else {
                   const h = Math.floor(timeAtDist / 3600);
                   const m = Math.floor((timeAtDist % 3600) / 60);

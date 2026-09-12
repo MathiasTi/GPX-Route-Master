@@ -30,9 +30,13 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
   const mapRef = useRef<MapRef>(null);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('velo_3d_terrain_collapsed') === 'true';
+      const saved = localStorage.getItem('velo_3d_terrain_collapsed');
+      if (saved !== null) {
+        return saved === 'true';
+      }
+      return true; // Collapsed by default
     } catch (e) {
-      return false;
+      return true;
     }
   });
 
@@ -79,11 +83,18 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
     let bearing = 0;
     let pointIndex = -1;
 
-    if (track && track.points && track.points.length > 1) {
+    // Resolve the actual track activePoint belongs to (supports all tracks and split Teilstücke)
+    const targetTrack = (allTracks && allTracks.length > 0)
+      ? (allTracks.find(t => (activePoint as any).trackId === t.id) ||
+         allTracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - activePoint.lat) < 0.0001 && Math.abs(p.lng - activePoint.lng) < 0.0001)) ||
+         track)
+      : track;
+
+    if (targetTrack && targetTrack.points && targetTrack.points.length > 1) {
       // Find point index
       let minDist = Infinity;
-      for (let i = 0; i < track.points.length; i++) {
-        const p = track.points[i];
+      for (let i = 0; i < targetTrack.points.length; i++) {
+        const p = targetTrack.points[i];
         const d = Math.abs(p.lat - activePoint.lat) + Math.abs(p.lng - activePoint.lng);
         if (d < minDist) {
           minDist = d;
@@ -93,10 +104,10 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
 
       if (pointIndex !== -1) {
         // Calculate bearing oriented forward along route
-        const nextIdx = Math.min(pointIndex + 4, track.points.length - 1);
+        const nextIdx = Math.min(pointIndex + 4, targetTrack.points.length - 1);
         const prevIdx = Math.max(0, pointIndex - 4);
-        const pPrev = track.points[prevIdx];
-        const pNext = track.points[nextIdx];
+        const pPrev = targetTrack.points[prevIdx];
+        const pNext = targetTrack.points[nextIdx];
 
         if (pPrev && pNext && (pPrev.lat !== pNext.lat || pPrev.lng !== pNext.lng)) {
           bearing = Math.round(calculateBearing(pPrev, pNext));
@@ -104,8 +115,8 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
 
         // Calculate slope if undefined
         if (slope === undefined) {
-          const sPrev = track.points[Math.max(0, pointIndex - 2)];
-          const sNext = track.points[Math.min(track.points.length - 1, pointIndex + 2)];
+          const sPrev = targetTrack.points[Math.max(0, pointIndex - 2)];
+          const sNext = targetTrack.points[Math.min(targetTrack.points.length - 1, pointIndex + 2)];
           if (sPrev && sNext && sPrev.ele !== undefined && sNext.ele !== undefined) {
             const stepMeters = calculateDistance(sPrev, sNext) * 1000;
             if (stepMeters > 5) {
@@ -118,7 +129,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
         if (dist === undefined) {
           let cumDist = 0;
           for (let i = 1; i <= pointIndex; i++) {
-            cumDist += calculateDistance(track.points[i - 1], track.points[i]);
+            cumDist += calculateDistance(targetTrack.points[i - 1], targetTrack.points[i]);
           }
           dist = cumDist;
         }
@@ -191,18 +202,46 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
     };
   }, [activePoint, track]);
 
-  // Dynamic Tile Layer Sources
-  const tileUrl = useMemo(() => {
+  // Dynamic Tile Layer Sources with strict maxzoom limits to prevent requests to non-existent tiles
+  const tileConfig = useMemo(() => {
     switch (layerType) {
       case 'satellite':
-        return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+        return {
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+          maxzoom: 19
+        };
       case 'topo':
-        return 'https://a.tile.opentopomap.org/{z}/{x}/{y}.png';
+        return {
+          tiles: ['a', 'b', 'c'].map(s => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`),
+          maxzoom: 17 // OpenTopoMap strictly supports max zoom 17; zoom 18+ lacks CORS headers
+        };
       case 'standard':
       default:
-        return 'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        return {
+          tiles: ['a', 'b', 'c'].map(s => `https://${s}.tile.openstreetmap.org/{z}/{x}/{y}.png`),
+          maxzoom: 19
+        };
     }
   }, [layerType]);
+
+  const transformRequest = useCallback((url: string, resourceType?: string) => {
+    if (resourceType === 'Tile' && url.includes('tile.opentopomap.org')) {
+      const match = url.match(/tile\.opentopomap\.org\/(\d+)\/(\d+)\/(\d+)\.png/);
+      if (match && parseInt(match[1], 10) > 17) {
+        const [, z, x, y] = match;
+        return { url: `https://a.tile.openstreetmap.org/${z}/${x}/${y}.png` };
+      }
+    }
+    return { url };
+  }, []);
+
+  const handleMapError = useCallback((e: any) => {
+    const errorMsg = e?.error?.message || '';
+    if (errorMsg.includes('tile') || errorMsg.includes('Load failed') || e?.error?.status === 0) {
+      return;
+    }
+    console.warn('TerrainHoverPreview3D map error:', e);
+  }, []);
 
   const mapStyle = useMemo(() => {
     return {
@@ -210,10 +249,10 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
       sources: {
         'basemap': {
           type: 'raster' as const,
-          tiles: [tileUrl],
+          tiles: tileConfig.tiles,
           tileSize: 256,
           attribution: '© OpenStreetMap contributors / Terrain DEM',
-          maxzoom: 19
+          maxzoom: tileConfig.maxzoom
         },
         'terrain': {
           type: 'raster-dem' as const,
@@ -243,7 +282,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
         exaggeration: exaggeration
       }
     };
-  }, [tileUrl, exaggeration, isDark]);
+  }, [tileConfig, exaggeration, isDark]);
 
   // GeoJSON Track Line Overlay
   const trackGeoJSON = useMemo(() => {
@@ -324,7 +363,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
       id="section-3d-terrain-hover-preview"
     >
       {/* Header Bar */}
-      <div className="p-3 bg-slate-50/90 dark:bg-slate-850 border-b border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-2">
+      <div className={`p-3 bg-slate-50/90 dark:bg-slate-850 flex items-center justify-between gap-2 ${!isCollapsed ? 'border-b border-slate-200/80 dark:border-slate-800' : ''}`}>
         <button
           onClick={toggleCollapsed}
           className="flex items-center gap-2 text-left cursor-pointer flex-1 min-w-0 group"
@@ -551,6 +590,8 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 dragRotate={true}
                 pitchWithRotate={true}
                 maxPitch={85}
+                transformRequest={transformRequest as any}
+                onError={handleMapError}
               >
                 {/* Track Polyline Layer */}
                 <Source id="preview-3d-track" type="geojson" data={trackGeoJSON}>

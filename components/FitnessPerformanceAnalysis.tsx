@@ -1397,26 +1397,28 @@ export default function FitnessPerformanceAnalysis({
   const mainContent = (
     <div className="w-full h-full flex flex-col overflow-hidden">
       {!isEmbedded && (
-        <div className="bg-slate-550 border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20">
+        <div className="bg-slate-550 border-b border-slate-100 dark:border-slate-800 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 shrink-0">
               <Zap className="w-5 h-5 text-amber-500" />
             </div>
-            <div>
-              <h1 className="text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
-                Leistungs- & Fitness-Analyse
-                <span className="bg-amber-500/10 text-amber-500 text-[10px] px-2 py-0.5 rounded-full font-mono font-bold border border-amber-500/20">
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm sm:text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2 truncate">
+                Leistungs- &amp; Fitness-Analyse
+                <span className="bg-amber-500/10 text-amber-500 text-[10px] px-2 py-0.5 rounded-full font-mono font-bold border border-amber-500/20 hidden sm:inline-block">
                   SPORTWISSENSCHAFT
                 </span>
               </h1>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Wissenschaftliche CTL/ATL/TSB-Trainingsmodelle & Power-Duration-Leistungskurven aus SQLite-Datenbanken
+              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
+                Wissenschaftliche CTL/ATL/TSB-Trainingsmodelle &amp; Power-Duration-Leistungskurven aus SQLite-Datenbanken
               </p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer shrink-0"
+            title="Schließen"
+            aria-label="Schließen"
           >
             <X className="w-5 h-5" />
           </button>
@@ -2942,12 +2944,15 @@ export default function FitnessPerformanceAnalysis({
   }
 
   return (
-    <div className="fixed inset-0 z-[2000] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 overflow-hidden" onClick={onClose}>
+    <div 
+      className="fixed inset-0 z-[2000] bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-0 md:p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] overflow-hidden cursor-pointer" 
+      onClick={onClose}
+    >
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="w-full h-full md:max-w-7xl md:h-[92vh] bg-white dark:bg-slate-900 md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800"
+        className="w-full h-full md:max-w-7xl md:h-[92vh] bg-white dark:bg-slate-900 md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800 cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {mainContent}

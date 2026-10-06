@@ -23,14 +23,21 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
     if (!hoveredPoint) return null;
 
     let surroundingPts: readonly GPXPoint[] | undefined = undefined;
-    if (hoveredPoint.slope === undefined && tracks && tracks.length > 0) {
-      const matchTrack = (hoveredPoint as any).trackId
-        ? tracks.find(t => t.id === (hoveredPoint as any).trackId)
-        : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.0001 && Math.abs(p.lng - hoveredPoint.lng) < 0.0001));
-      if (matchTrack) {
-        surroundingPts = matchTrack.points;
-      }
+    const matchTrack = (hoveredPoint as any).trackId
+      ? tracks?.find(t => t.id === (hoveredPoint as any).trackId)
+      : tracks?.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.0001 && Math.abs(p.lng - hoveredPoint.lng) < 0.0001));
+
+    if (matchTrack) {
+      surroundingPts = matchTrack.points;
     }
+
+    const isFit = Boolean(
+      matchTrack?.rawFileDetails?.fileType === 'fit' ||
+      matchTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
+      matchTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
+      matchTrack?.name?.toLowerCase().endsWith('.fit') ||
+      matchTrack?.id?.startsWith('fit-')
+    );
 
     const result = computeHoverPointTelemetry(
       {
@@ -46,7 +53,11 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
         dist: hoveredPoint.dist
       },
       surroundingPts,
-      { maxHr: userMaxHr }
+      { 
+        maxHr: userMaxHr,
+        isFitFile: isFit,
+        activityType: matchTrack?.activityType
+      }
     );
     return result.success ? result.data : null;
   }, [hoveredPoint, userMaxHr, tracks]);
@@ -158,14 +169,16 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
           </div>
         )}
 
-        {/* Tempo / Geschwindigkeit */}
+        {/* Tempo / Geschwindigkeit / Pace */}
         <div className="flex flex-col items-center justify-center bg-white/5 rounded-xl py-1 px-1 border border-white/5">
           <div className="flex items-center gap-0.5 text-[10px] text-slate-400 font-medium">
             <Gauge size={11} className="text-emerald-400" />
-            <span>Tempo</span>
+            <span>{(telemetry.isFitFile || telemetry.activityType === 'running') ? 'Pace' : 'Tempo'}</span>
           </div>
           <span className="text-xs font-black text-slate-100 mt-0.5">
-            {telemetry.speedKmh !== null && telemetry.speedKmh > 0
+            {(telemetry.isFitFile || telemetry.activityType === 'running') && telemetry.paceFormatted
+              ? telemetry.paceFormatted
+              : telemetry.speedKmh !== null && telemetry.speedKmh > 0
               ? `${telemetry.speedKmh.toFixed(1)} km/h`
               : '--'}
           </span>

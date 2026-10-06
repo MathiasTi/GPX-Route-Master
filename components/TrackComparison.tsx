@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { X, Trophy, Zap, Heart, Clock, TrendingUp, TrendingDown, ArrowLeftRight, Activity, Percent, Compass, Navigation, Dumbbell, Flame } from 'lucide-react';
+import { X, Trophy, Zap, Heart, Clock, TrendingUp, TrendingDown, ArrowLeftRight, Activity, Percent, Compass, Navigation, Dumbbell, Flame, AlertCircle } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
 import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
@@ -193,10 +193,13 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
     };
   }, [track2, estimatedSpeed, userWeight]);
 
-  // Check if either compared track represents a running activity
-  const isRunningComp = useMemo(() => {
-    return (track1?.activityType === 'running' || track2?.activityType === 'running');
-  }, [track1, track2]);
+  // Detailed sport modalities identification
+  const isRun1 = track1?.activityType === 'running';
+  const isRun2 = track2?.activityType === 'running';
+  const isBothRunning = Boolean(isRun1 && isRun2);
+  const isBothCycling = Boolean(!isRun1 && !isRun2);
+  const isMixedComparison = Boolean(track1 && track2 && isRun1 !== isRun2);
+  const isRunningComp = Boolean(isRun1 || isRun2);
 
   // Compute sampled chart records
   const chartData1 = useMemo(() => {
@@ -406,8 +409,14 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-base sm:text-xl font-bold text-slate-900 dark:text-white truncate">Aktivitäten-Vergleich</h2>
-              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest font-extrabold text-indigo-650 dark:text-indigo-400 truncate hidden sm:block">
-                {isRunningComp ? '🏃‍♀️ Lauf- & Sportdatenanalyse' : '🚴‍♀️ Radsport Leistungsanalyse'}
+              <p className="text-[10px] sm:text-xs uppercase tracking-widest font-extrabold truncate hidden sm:block">
+                {isBothRunning ? (
+                  <span className="text-emerald-600 dark:text-emerald-400">🏃‍♀️ Laufsport-Vergleich (Pace &amp; Schrittfrequenz)</span>
+                ) : isBothCycling ? (
+                  <span className="text-indigo-600 dark:text-indigo-400">🚴‍♀️ Radsport-Vergleich (Watt &amp; Trittfrequenz)</span>
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-400">🏃‍♀️ vs 🚴‍♀️ Multisport-Vergleich (Laufen vs. Radsport)</span>
+                )}
               </p>
             </div>
           </div>
@@ -441,12 +450,22 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
         ) : (
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
             
+            {/* Multisport Comparison Notice Banner */}
+            {isMixedComparison && (
+              <div className="bg-amber-500/10 border border-amber-200 dark:border-amber-800/60 p-3.5 rounded-2xl flex items-center gap-3 text-xs text-amber-800 dark:text-amber-200">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>
+                  <strong>Multisport-Vergleich aktiv:</strong> Du vergleichst {isRun1 ? 'eine Laufaktivität 🏃' : 'eine Radfahrt 🚴'} ({track1?.name}) mit {isRun2 ? 'einer Laufaktivität 🏃' : 'einer Radfahrt 🚴'} ({track2?.name}). Tempo (Pace vs. km/h) und Frequenzen (spm vs. rpm) sind modalitätsspezifisch berechnet.
+                </span>
+              </div>
+            )}
+
             {/* Action Selector Bar */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 dark:bg-slate-900/30 p-4 border border-slate-200/60 dark:border-slate-800 rounded-2xl">
               <div className="space-y-1">
                 <label className="text-[10px] font-black tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: '#2563eb' }} />
-                  Aktivität 1 (Blau/Referenz)
+                  Aktivität 1 ({isRun1 ? '🏃 Laufen' : '🚴 Rad'}) - Blau/Referenz
                 </label>
                 <select
                   value={track1Id}
@@ -464,7 +483,7 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
               <div className="space-y-1">
                 <label className="text-[10px] font-black tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: '#10b981' }} />
-                  Aktivität 2 (Grün)
+                  Aktivität 2 ({isRun2 ? '🏃 Laufen' : '🚴 Rad'}) - Grün
                 </label>
                 <select
                   value={track2Id}
@@ -520,23 +539,54 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                   {/* Average Speed / Pace */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
                     <span className="text-[10px] text-slate-400 font-bold uppercase">
-                      Ø Pace / Ø Geschwindigkeit
+                      {isBothRunning ? 'Ø Pace (min/km)' : isBothCycling ? 'Ø Geschwindigkeit (km/h)' : 'Ø Tempo / Pace'}
                     </span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                      <div className={`p-1 rounded ${stats1 && stats2 && stats1.avgSpeed >= stats2.avgSpeed ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
-                        {track1?.activityType === 'running'
-                          ? getPaceString(stats1?.avgSpeed || 0)
+                      <div className={`p-1 rounded ${
+                        isBothRunning && stats1 && stats2 && stats1.avgSpeed >= stats2.avgSpeed ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' :
+                        isBothCycling && stats1 && stats2 && stats1.avgSpeed >= stats2.avgSpeed ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''
+                      }`}>
+                        {isRun1
+                          ? `${getPaceString(stats1?.avgSpeed || 0)} min/km`
                           : `${stats1?.avgSpeed.toFixed(1)} km/h`
                         }
                       </div>
-                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${stats1 && stats2 && stats2.avgSpeed > stats1.avgSpeed ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''}`}>
-                        {track2?.activityType === 'running'
-                          ? getPaceString(stats2?.avgSpeed || 0)
+                      <div className={`p-1 rounded border-l border-slate-100 dark:border-slate-800 pl-2 ${
+                        isBothRunning && stats1 && stats2 && stats2.avgSpeed > stats1.avgSpeed ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' :
+                        isBothCycling && stats1 && stats2 && stats2.avgSpeed > stats1.avgSpeed ? 'bg-teal-50/50 dark:bg-teal-950/20 text-teal-600 dark:text-teal-400 font-black' : ''
+                      }`}>
+                        {isRun2
+                          ? `${getPaceString(stats2?.avgSpeed || 0)} min/km`
                           : `${stats2?.avgSpeed.toFixed(1)} km/h`
                         }
                       </div>
                     </div>
                   </div>
+
+                  {/* Cadence (Tritt- vs Schrittfrequenz) */}
+                  {(Boolean(stats1?.avgCadence && stats1.avgCadence > 0) || Boolean(stats2?.avgCadence && stats2.avgCadence > 0)) && (
+                    <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase">
+                        {isBothRunning ? 'Ø Schrittfrequenz' : isBothCycling ? 'Ø Trittfrequenz' : 'Ø Frequenz (spm / rpm)'}
+                      </span>
+                      <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
+                        <div className="p-1">
+                          {stats1?.avgCadence ? (
+                            isRun1
+                              ? `${Math.round(stats1.avgCadence < 110 ? stats1.avgCadence * 2 : stats1.avgCadence)} spm`
+                              : `${Math.round(stats1.avgCadence)} rpm`
+                          ) : '--'}
+                        </div>
+                        <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2">
+                          {stats2?.avgCadence ? (
+                            isRun2
+                              ? `${Math.round(stats2.avgCadence < 110 ? stats2.avgCadence * 2 : stats2.avgCadence)} spm`
+                              : `${Math.round(stats2.avgCadence)} rpm`
+                          ) : '--'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Calories */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
@@ -621,13 +671,15 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
               <div className="bg-slate-50/40 dark:bg-slate-950 border border-slate-150 dark:border-slate-850 p-5 rounded-2xl space-y-4">
                 <h4 className="text-xs font-black tracking-wider text-slate-400 uppercase flex items-center gap-1.5">
                   <Zap size={14} className="text-amber-500" />
-                  Leistungsdaten (Power & Puls)
+                  {isBothRunning ? 'Laufdynamik & Power' : isBothCycling ? 'Leistungsdaten (Watt & Puls)' : 'Leistungsdaten (Watt / Puls)'}
                 </h4>
 
                 <div className="space-y-3 font-sans">
                   {/* Avg Power */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Durchschnitts-Leistung</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase">
+                      {isBothRunning ? 'Ø Running Power' : isBothCycling ? 'Ø Kurbelleistung' : 'Ø Leistung (Power)'}
+                    </span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
                       <div className={`p-1 rounded ${track1?.powerStats && track2?.powerStats && track1.powerStats.avgPower >= track2.powerStats.avgPower ? 'bg-indigo-50/50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-black' : ''}`}>
                         {track1?.powerStats ? `${Math.round(track1.powerStats.avgPower)} W` : 'Keine Daten'}
@@ -640,7 +692,9 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
 
                   {/* Normalized Power */}
                   <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Normalized Power</span>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase">
+                      {isBothRunning ? 'Normalized Graded Power' : 'Normalized Power'}
+                    </span>
                     <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
                       <div className="p-1">
                         {track1?.powerStats?.normalizedPower ? `${Math.round(track1.powerStats.normalizedPower)} W` : 'Keine Daten'}

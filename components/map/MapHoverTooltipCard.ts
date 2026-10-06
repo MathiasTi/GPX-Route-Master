@@ -51,7 +51,7 @@ function renderHeartRateZoneSegments(activeZone: number, activeColor: string): s
  * Builds the modern, compact card HTML representation for a hovered track coordinate on the Leaflet map.
  */
 export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
-  const { elevationM, slope, heartRate, powerWatts, speedKmh, timeFormatted, durationEstimate } = telemetry;
+  const { elevationM, slope, heartRate, powerWatts, speedKmh, paceFormatted, isFitFile, activityType, timeFormatted, durationEstimate } = telemetry;
 
   // Header subtitle: prefer absolute timestamp or elapsed duration
   const timeDisplay = timeFormatted ?? durationEstimate ?? '';
@@ -106,7 +106,7 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
     </div>
   `;
 
-  // Complementary chips (Power, Speed)
+  // Complementary chips (Power, Speed / Pace)
   const chips: string[] = [];
   if (powerWatts !== null && powerWatts > 0) {
     chips.push(`
@@ -115,7 +115,21 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
       </span>
     `);
   }
-  if (speedKmh !== null && speedKmh > 0) {
+
+  // Blue Box: For .FIT files (or running), display the precise Pace at this spot (with fallback or tooltip to speed)
+  const preferPace = isFitFile || activityType === 'running';
+
+  if (preferPace && paceFormatted) {
+    chips.push(`
+      <span title="Pace an diesem Streckenpunkt${speedKmh ? ` (${speedKmh} km/h)` : ''}" style="display: inline-flex; align-items: center; gap: 2.5px; font-size: 8.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.14); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 1px 5px;">
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle;">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        ${paceFormatted}
+      </span>
+    `);
+  } else if (speedKmh !== null && speedKmh > 0) {
     chips.push(`
       <span style="display: inline-flex; align-items: center; gap: 2px; font-size: 8.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 4px; padding: 1px 5px;">
         ${speedKmh} km/h
@@ -153,6 +167,7 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
           <div style="display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 600; color: #cbd5e1; font-family: ui-monospace, monospace;">
             <span style="display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #10b981; box-shadow: 0 0 5px #10b981;"></span>
             <span>${timeDisplay || 'Streckenpunkt'}</span>
+            ${isFitFile ? `<span style="font-size: 7.5px; font-weight: 800; color: #38bdf8; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 3px; padding: 0.5px 3.5px; margin-left: 2px;">FIT</span>` : ''}
           </div>
           ${elevationM !== null ? `
             <div style="font-family: ui-monospace, monospace; font-size: 9px; font-weight: 800; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 4px; padding: 1px 5px;">

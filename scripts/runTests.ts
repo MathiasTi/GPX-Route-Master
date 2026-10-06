@@ -17,6 +17,7 @@ import { runSafeJsonTests } from '../tests/safeJson.test';
 import { runSafeTimeTests } from '../tests/safeTime.test';
 import { runMobileTelemetryPillTests } from '../tests/mobileTelemetryPill.test';
 import { runCleanArchitecturePortsAdaptersTests } from '../tests/cleanArchitecturePortsAdapters.test';
+import { runPowerZonesTests } from '../tests/powerZones.test';
 
 async function main() {
   try {
@@ -41,8 +42,9 @@ async function main() {
     const safeJsonSuccess = runSafeJsonTests();
     const safeTimeSuccess = runSafeTimeTests();
     const mobilePillSuccess = runMobileTelemetryPillTests();
+    const powerZonesSuccess = runPowerZonesTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

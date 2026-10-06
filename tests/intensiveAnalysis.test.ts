@@ -86,6 +86,10 @@ export function runIntensiveAnalysisTests(): boolean {
 
   assert(runResult.activityType === 'running', 'Running activity type preserved');
   assert(runResult.totalCaloriesKcal > result.totalCaloriesKcal * 0.5, 'Running calorie calculation reasonable');
+  const runningTacticalText = runResult.tacticalTips.map(t => `${t.title} ${t.description}`).join(' ').toLowerCase();
+  assert(!runningTacticalText.includes('trittfrequenz'), 'Running tactical tips do not mention Trittfrequenz');
+  assert(!runningTacticalText.includes('fahre '), 'Running tactical tips do not say "fahre "');
+  assert(!runningTacticalText.includes('bremsbeläge'), 'Running tactical tips do not mention Bremsbeläge');
 
   // 3. Test Cumulative Distances helper
   const distances = calculateCumulativeDistances(mockPoints);

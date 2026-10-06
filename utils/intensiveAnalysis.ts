@@ -373,10 +373,10 @@ export function performLocalIntensiveAnalysis(
 
     if (curSplitDist >= splitIntervalKm || i === points.length - 1) {
       const splitAvgGrade = curSplitDist > 0 ? Number(((curSplitAscent / (curSplitDist * 1000)) * 100).toFixed(1)) : 0;
-      let terrain = 'Flach / Rolleur';
+      let terrain = isCycling ? 'Flach / Rolleur' : 'Flach / Asphalt/Trail';
       if (splitAvgGrade > 6) terrain = 'Steiler Anstieg';
       else if (splitAvgGrade > 2) terrain = 'Wellig / Ansteigend';
-      else if (splitAvgGrade < -2) terrain = 'Abfahrt / Flow';
+      else if (splitAvgGrade < -2) terrain = isCycling ? 'Abfahrt / Flow' : 'Bergab / Gefälle';
 
       splits.push({
         kmMarker: Number(cumDists[i].toFixed(1)),
@@ -401,22 +401,28 @@ export function performLocalIntensiveAnalysis(
   if (steepClimbDist > 3 || finalAscent > 800) {
     tacticalTips.push({
       category: 'climbing',
-      title: 'Bergauf-Pacing & Trittfrequenz',
-      description: `Es stehen ${Math.round(finalAscent)} Hm und ${steepClimbDist.toFixed(1)} km Steigungen über 8% an. Fahre/Laufe die ersten Anstiege strikt unterhalb deiner anaeroben Schwelle (Zone 3/untere Z4), um spätere Einbrüche zu vermeiden.`,
+      title: isCycling ? 'Bergauf-Pacing & Trittfrequenz' : 'Berglauf-Pacing & Schrittfrequenz',
+      description: isCycling
+        ? `Es stehen ${Math.round(finalAscent)} Hm und ${steepClimbDist.toFixed(1)} km Steigungen über 8% an. Fahre die ersten Anstiege strikt unterhalb deiner anaeroben Schwelle (Zone 3/untere Z4), um spätere Einbrüche zu vermeiden.`
+        : `Es stehen ${Math.round(finalAscent)} Hm und ${steepClimbDist.toFixed(1)} km Steigungen über 8% an. Gehe die ersten Anstiege kontrolliert im aeroben Berglauftempo (Zone 3/untere Z4) an, um spätere Einbrüche zu vermeiden.`,
       urgency: 'critical'
     });
   } else if (finalAscent > 200) {
     tacticalTips.push({
       category: 'climbing',
-      title: 'Rhythmisches Bergauf-Pacing',
-      description: `Mit ${Math.round(finalAscent)} Hm bietet die Strecke spürbare Höhenmeter. Halte an den Wellen eine gleichmäßige Trittfrequenz (85–95 U/min) und dosiere deinen Krafteinsatz.`,
+      title: isCycling ? 'Rhythmisches Bergauf-Pacing' : 'Gleichmäßiges Berglauf-Pacing',
+      description: isCycling
+        ? `Mit ${Math.round(finalAscent)} Hm bietet die Strecke spürbare Höhenmeter. Halte an den Wellen eine gleichmäßige Trittfrequenz (85–95 U/min) und dosiere deinen Krafteinsatz.`
+        : `Mit ${Math.round(finalAscent)} Hm bietet die Strecke spürbare Höhenmeter. Halte an den Steigungen eine hohe, kompakte Schrittfrequenz (165–175 spm) und dosiere deinen Krafteinsatz.`,
       urgency: 'info'
     });
   } else {
     tacticalTips.push({
       category: 'pacing',
-      title: 'Aerodynamik & Tempoführung',
-      description: `Flaches Streckenprofil: Achte auf eine aerodynamische Haltung und kontinuierliches Pacing, um den Windwiderstand zu minimieren.`,
+      title: isCycling ? 'Aerodynamik & Tempoführung' : 'Laufökonomie & Tempoführung',
+      description: isCycling
+        ? `Flaches Streckenprofil: Achte auf eine aerodynamische Haltung und kontinuierliches Pacing, um den Windwiderstand zu minimieren.`
+        : `Flaches Streckenprofil: Achte auf eine ökonomische Laufhaltung mit aufrechtem Oberkörper und kontinuierliches Pacing.`,
       urgency: 'info'
     });
   }
@@ -432,7 +438,7 @@ export function performLocalIntensiveAnalysis(
     tacticalTips.push({
       category: 'nutrition',
       title: 'Flüssigkeitszufuhr',
-      description: `Für diese Distanz reicht 1 Trinkflasche (ca. ${totalFluidLiters} L). Regelmäßig kleine Schlucke trinken.`,
+      description: `Für diese Distanz reicht 1 Trinkflasche bzw. Softflask (ca. ${totalFluidLiters} L). Regelmäßig kleine Schlucke trinken.`,
       urgency: 'info'
     });
   }
@@ -449,8 +455,10 @@ export function performLocalIntensiveAnalysis(
   if (maxGrade > 14) {
     tacticalTips.push({
       category: 'gear',
-      title: 'Übersetzung & Bremsen-Check',
-      description: `Maximale Steigung/Gefälle von bis zu ${Math.round(maxGrade)}% registriert. Stelle sicher, dass Bremsbeläge intakt sind und für lange Abfahrten dosiert gebremst wird (Intervallbremsen gegen Fading).`,
+      title: isCycling ? 'Übersetzung & Bremsen-Check' : 'Schuhprofil & Trittsicherheit',
+      description: isCycling
+        ? `Maximale Steigung/Gefälle von bis zu ${Math.round(maxGrade)}% registriert. Stelle sicher, dass Bremsbeläge intakt sind und für lange Abfahrten dosiert gebremst wird (Intervallbremsen gegen Fading).`
+        : `Maximale Steigung/Gefälle von bis zu ${Math.round(maxGrade)}% registriert. Bei starkem Gefälle auf trittsichere Trail-Laufschuhe, sauberen Fußaufsatz und dosierte Schrittfrequenz zur Gelenkschonung achten.`,
       urgency: 'warning'
     });
   }
@@ -461,9 +469,11 @@ export function performLocalIntensiveAnalysis(
     cautionZones.push({
       kmStart: Math.max(0, Number((totalDist * 0.35).toFixed(1))),
       kmEnd: Number((totalDist * 0.45).toFixed(1)),
-      reason: 'Steilstufe & kurvige Bergpassage',
+      reason: isCycling ? 'Steilstufe & kurvige Bergpassage' : 'Steilstufe & anspruchsvolle Trail-Passage',
       severity: 'medium',
-      advice: 'Vorausschauend fahren, Gegenverkehr und Rollsplitt in Kehren beachten.'
+      advice: isCycling
+        ? 'Vorausschauend fahren, Gegenverkehr und Rollsplitt in Kehren beachten.'
+        : 'Vorausschauend laufen, auf Wurzeln, loses Geröll und nasse Passagen achten.'
     });
   }
 
@@ -485,7 +495,9 @@ export function performLocalIntensiveAnalysis(
       kmLocation: cumDists[highestIdx] || 0,
       type: 'summit',
       title: `Höchster Punkt (${Math.round(highestEle)} m)`,
-      description: 'Streckenscheitelpunkt. Idealer Ort für Windweste anziehen vor der Abfahrt.',
+      description: isCycling 
+        ? 'Streckenscheitelpunkt. Idealer Ort für Windweste anziehen vor der Abfahrt.'
+        : 'Streckenscheitelpunkt. Höchster Punkt erreicht – vor dem Bergablauf ggf. Windweste anziehen.',
       lat: points[highestIdx].lat,
       lng: points[highestIdx].lng
     });

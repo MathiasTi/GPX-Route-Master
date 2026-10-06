@@ -1977,7 +1977,7 @@ const App: React.FC = () => {
           <AnimatePresence>
             {intensiveAnalysisOpen && (markedTrack || tracks.find(t => t.visible) || tracks[0]) && (
               <IntensiveTrackAnalysisModal
-                key="intensive-analysis-modal"
+                key={`intensive-analysis-modal-${(markedTrack || tracks.find(t => t.visible) || tracks[0]).id}`}
                 track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
                 allTracks={tracks}
                 onSelectTrack={(id) => setMarkedTrackId(id)}

@@ -525,7 +525,7 @@ export const GLOSSARY_METRICS: GlossaryMetric[] = [
     category: 'nutrition',
     badgeColor: 'amber',
     definition: 'Kilojoules (kJ) messen die reine physikalische Arbeit, die am Pedal geleistet wurde. Da der menschliche Wirkungsgrad auf dem Rad bei ca. 22–24 % liegt (4,184 kJ pro kcal), entspricht 1 kJ mechanische Arbeit am Pedal nahezu 1:1 einer verbrannten Kilokalorie (kcal) Stoffwechselenergie.',
-    formula: 'Arbeit (kJ) = (Durchschnittsleistung in Watt × Fahrzeit in Sekunden) / 1000 ≈ Verbrauch in kcal',
+    formula: 'Arbeit (kJ) = (Durchschnittsleistung in Watt × Belastungszeit in Sekunden) / 1000 ≈ Verbrauch in kcal',
     unit: 'kJ (Arbeit) / kcal (Stoffwechselenergie)',
     origin: 'Thermodynamik & Arbeitsphysiologie',
     interpretation: {

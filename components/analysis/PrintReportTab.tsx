@@ -10,6 +10,8 @@ interface PrintReportTabProps {
 }
 
 export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis }) => {
+  const isRun = (analysis.activityType || track.activityType) === 'running';
+
   const handlePrint = () => {
     triggerHaptic('medium');
     window.print();
@@ -26,7 +28,7 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
               Druck- & PDF-Report
             </h3>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Optimiert für den standardisierten A4-Ausdruck und den PDF-Export deiner Tour
+              Optimiert für den standardisierten A4-Ausdruck und den PDF-Export deiner {isRun ? 'Laufstrecke' : 'Tour'}
             </p>
           </div>
         </div>
@@ -50,9 +52,9 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
         <div className="border-b border-slate-200 dark:border-slate-800 pb-5 flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mb-1">
-              <span>Alpentour • Offizieller Aktivitätsbericht</span>
+              <span>{isRun ? '🏃 Laufsport • Offizieller Aktivitätsbericht' : '🚴 Radsport • Offizieller Aktivitätsbericht'}</span>
               <span>•</span>
-              <span>{analysis.activityType === 'cycling' ? 'Radsport' : 'Laufen'}</span>
+              <span>{isRun ? 'Laufen / Trail' : 'Radsport'}</span>
             </div>
             <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
               {analysis.trackName}
@@ -84,14 +86,22 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
             <span className="text-lg font-black text-rose-600 dark:text-rose-400 font-mono">-{Math.round(analysis.totalDescentMeters)} m</span>
           </div>
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Fahrzeit (Netto)</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
+              {isRun ? 'Laufzeit (Netto)' : 'Fahrzeit (Netto)'}
+            </span>
             <span className="text-lg font-black text-slate-900 dark:text-white font-mono">
               {formatSecondsToTime(analysis.estimatedMovingTimeSeconds)}
             </span>
           </div>
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Ø-Tempo</span>
-            <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono">{analysis.estimatedAverageSpeedKmh} km/h</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
+              {isRun ? 'Ø-Pace' : 'Ø-Tempo'}
+            </span>
+            <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono">
+              {isRun 
+                ? `${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km` 
+                : `${analysis.estimatedAverageSpeedKmh} km/h`}
+            </span>
           </div>
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Höchster Punkt</span>
@@ -103,11 +113,15 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
         <div className="space-y-2">
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
             <Mountain className="w-4 h-4 text-amber-500" />
-            Identifizierte Bergwertungen & Pässe ({analysis.climbs.length})
+            {isRun 
+              ? `Identifizierte Trail- & Steigungsabschnitte (${analysis.climbs.length})` 
+              : `Identifizierte Bergwertungen & Pässe (${analysis.climbs.length})`}
           </h3>
 
           {analysis.climbs.length === 0 ? (
-            <p className="text-xs text-slate-400 italic py-2">Keine nennenswerten Passanstiege auf dieser Teilstrecke identifiziert.</p>
+            <p className="text-xs text-slate-400 italic py-2">
+              {isRun ? 'Keine nennenswerten Steigungen auf dieser Laufstrecke identifiziert.' : 'Keine nennenswerten Passanstiege auf dieser Teilstrecke identifiziert.'}
+            </p>
           ) : (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
               <table className="w-full text-left text-xs">
@@ -198,7 +212,7 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
 
         {/* Footer info */}
         <div className="border-t border-slate-100 dark:border-slate-800 pt-4 flex items-center justify-between text-[10px] text-slate-400">
-          <span>GPX Route Master Pro • Alpentour GPS Navigator</span>
+          <span>GPX Route Master Pro • {isRun ? 'Laufsport & Trail GPS Navigator' : 'Alpentour & Radsport GPS Navigator'}</span>
           <span>Seite 1 von 1</span>
         </div>
       </div>

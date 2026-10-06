@@ -27,13 +27,13 @@ const FIT_MESSAGE_EXPLANATIONS: Record<string, { title: string; desc: string; ca
     category: "Aktivitäts-Typ"
   },
   session: {
-    title: "Fahrt-Zusammenfassung",
+    title: "Aktivitäts-Zusammenfassung",
     desc: "Die globale statistische Auswertung deines gesamten Trainings. Hier werden kumulierte Kalorien, exakte Durchschnitts- und Höchstwerte sowie Trainingsberechnungen wie NP, TSS und IF verankert.",
     category: "Aktivitäts-Statistik"
   },
   lap: {
     title: "Runden- & Intervall-Sätze",
-    desc: "Statistiken für einzelne Teilabschnitte deines Trainings. Entweder manuell über die 'Lap'-Taste am Radcomputer getriggert oder automatisch (z. B. automatische 1-km, 5-km oder Anstieg-Splits).",
+    desc: "Statistiken für einzelne Teilabschnitte deines Trainings. Entweder manuell über die 'Lap'-Taste am Gerät getriggert oder automatisch (z. B. automatische 1-km, 5-km oder Anstieg-Splits).",
     category: "Aktivitäts-Statistik"
   },
   activity: {
@@ -43,7 +43,7 @@ const FIT_MESSAGE_EXPLANATIONS: Record<string, { title: string; desc: string; ca
   },
   course: {
     title: "Routen- & Kursdefinition",
-    desc: "Beschreibt den importierten Navigationspfad. Wenn du ein geplantes Fahrtprofil nachfährst, hält dieser Record den offiziellen Namen des Kurses.",
+    desc: "Beschreibt den importierten Navigationspfad. Wenn du ein geplantes Streckenprofil nachfährst oder läufst, hält dieser Record den offiziellen Namen des Kurses.",
     category: "Navigationsbahn"
   },
   waypoint: {
@@ -103,7 +103,7 @@ const FIT_FIELD_EXPLANATIONS: Record<string, { label: string; desc: string }> = 
   },
   total_timer_time: {
     label: "Reine Bewegungszeit",
-    desc: "Echte Netto-Fahrzeit in Sekunden. Stoppt automatisch bei Aktivierung von Auto-Pause auf dem Radcomputer."
+    desc: "Echte Netto-Bewegungszeit (Fahr- bzw. Laufzeit) in Sekunden. Stoppt automatisch bei Aktivierung von Auto-Pause auf der Sportuhr oder dem Radcomputer."
   },
   total_distance: {
     label: "Gesamtstrecke",
@@ -187,11 +187,11 @@ const FIT_FIELD_EXPLANATIONS: Record<string, { label: string; desc: string }> = 
   },
   avg_speed: {
     label: "Ø Geschwindigkeit",
-    desc: "Durchschnittliche Fahrtgeschwindigkeit in Metern pro Sekunde (m/s). Multipliziere mit 3,6 für km/h."
+    desc: "Durchschnittliche Geschwindigkeit in Metern pro Sekunde (m/s). Multipliziere mit 3,6 für km/h."
   },
   max_speed: {
     label: "Max. Geschwindigkeit",
-    desc: "Die absolute Spitzengeschwindigkeit der Tour (z. B. in rasanten Pass-Abfahrten)."
+    desc: "Die absolute Spitzengeschwindigkeit der Tour bzw. des Laufs."
   },
   name: {
     label: "Bezeichnung",
@@ -230,8 +230,8 @@ const FIT_FIELD_EXPLANATIONS: Record<string, { label: string; desc: string }> = 
     desc: "Die Herzfrequenz des Sportlers in Schlägen pro Minute (bpm) an dieser Stelle."
   },
   cadence: {
-    label: "Trittfrequenz",
-    desc: "Die Pedalumdrehungen pro Minute (rpm) an dieser Stelle."
+    label: "Tritt- / Schrittfrequenz",
+    desc: "Die Pedalumdrehungen pro Minute (rpm) beim Radsport bzw. Schritte pro Minute (spm) beim Laufen."
   },
   distance: {
     label: "Distanz-Kilometer",
@@ -239,11 +239,11 @@ const FIT_FIELD_EXPLANATIONS: Record<string, { label: string; desc: string }> = 
   },
   speed: {
     label: "Aktuelle Geschwindigkeit",
-    desc: "Die Fahrtgeschwindigkeit an dieser Stelle."
+    desc: "Die Fortbewegungsgeschwindigkeit an dieser Stelle."
   },
   power: {
     label: "Aktuelle Leistung (Watt)",
-    desc: "Die erbrachte mechanische Leistung des Radfahrers in Watt an dieser Stelle."
+    desc: "Die erbrachte mechanische Leistung des Athleten (Watt) an dieser Stelle."
   },
   temperature: {
     label: "Temperatur (°C)",
@@ -989,7 +989,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                       <div className="absolute top-0 right-0 p-3 text-[30px] font-mono font-extrabold text-emerald-505/5 select-none leading-none">02</div>
                       <h4 className="font-extrabold text-emerald-600 dark:text-emerald-400 text-xs mb-1 uppercase tracking-wider">2. Summarische Sätze (Summary Records)</h4>
                       <p className="text-[11px] text-slate-500 leading-normal font-medium">
-                        Auswertungen des Gesamt-Rides (`session`, `lap`, `sport`): Fahrtdauer, Gesamtstrecke, kumulierte Kalorien, exakte Durchschnittsleistungen und Höhenmeter.
+                        Auswertungen der Gesamt-Aktivität (`session`, `lap`, `sport`): Dauer (Fahr-/Laufzeit), Gesamtstrecke, kumulierte Kalorien, exakte Durchschnittsleistungen und Höhenmeter.
                       </p>
                       <div className="mt-3 text-[10px] bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-650 dark:text-emerald-400 px-2 py-1 rounded inline-block font-mono">
                         Keys: total_timer_time, avg_heart_rate, total_calories
@@ -1580,7 +1580,7 @@ export const RawDataAnalysis: React.FC<RawDataAnalysisProps> = ({
                           {selectedPointMetric.current.power !== undefined ? (
                             <div className="space-y-1">
                               <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-                                Physik-Äquivalent: Generiert <strong>{selectedPointMetric.current.power} Joules kinetische Arbeit pro Sekunde</strong>. Bei 75 kg Fahrergewicht entspricht das einer Leistung von <strong>{(selectedPointMetric.current.power / 75).toFixed(1)} W/kg</strong>.
+                                Physik-Äquivalent: Generiert <strong>{selectedPointMetric.current.power} Joules kinetische Arbeit pro Sekunde</strong>. Bei 75 kg {currentTrack?.activityType === 'running' ? 'Läufergewicht' : 'Fahrergewicht'} entspricht das einer Leistung von <strong>{(selectedPointMetric.current.power / 75).toFixed(1)} W/kg</strong>.
                               </p>
                             </div>
                           ) : (

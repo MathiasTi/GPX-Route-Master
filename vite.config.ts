@@ -20,13 +20,15 @@ export default defineConfig(({ mode }) => {
         {
           name: 'html-transform-origin',
           transformIndexHtml(html, ctx: any) {
-            const host = ctx.req?.headers?.host || ctx.server?.config?.server?.host || '';
+            const host = ctx.req?.headers?.['x-forwarded-host'] || ctx.req?.headers?.host || '';
             const proto = ctx.req?.headers?.['x-forwarded-proto'] || (ctx.req?.socket?.encrypted ? 'https' : 'http');
-            const origin = host && typeof host === 'string' && !host.includes('0.0.0.0') ? `${proto}://${host}` : (process.env.APP_URL || env.APP_URL || '');
-            if (origin) {
+            const origin = host && typeof host === 'string' && !host.includes('0.0.0.0') && !host.includes('localhost')
+              ? `${proto}://${host}`
+              : (process.env.APP_URL || env.APP_URL || '');
+            if (origin && !origin.includes('google.com') && !origin.includes('ai.studio')) {
               return html.replace(
                 '<head>',
-                `<head>\n    <base href="${origin}/">\n    <script>window.__APP_ORIGIN__ = "${origin}";</script>`
+                `<head>\n    <script>window.__APP_ORIGIN__ = "${origin}";</script>`
               );
             }
             return html;
@@ -45,8 +47,8 @@ export default defineConfig(({ mode }) => {
         }
       },
       define: {
-        '__APP_URL__': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-dev-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
-        'process.env.APP_URL': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-dev-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
+        '__APP_URL__': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
+        'process.env.APP_URL': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.VITE_BUILD_DATE': JSON.stringify(new Date().toLocaleString('de-DE', {

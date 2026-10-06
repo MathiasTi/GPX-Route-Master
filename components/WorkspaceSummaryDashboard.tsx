@@ -41,6 +41,20 @@ export interface WorkspaceSummaryStats {
     cycling: number;
     running: number;
   };
+  sportStats: {
+    cycling: {
+      count: number;
+      distanceKm: number;
+      ascentM: number;
+      caloriesKcal: number;
+    };
+    running: {
+      count: number;
+      distanceKm: number;
+      ascentM: number;
+      caloriesKcal: number;
+    };
+  };
   visibleTracks: GPXTrack[];
 }
 
@@ -69,6 +83,12 @@ export function calculateWorkspaceSummary(
 
   let cyclingCount = 0;
   let runningCount = 0;
+  let cyclingDistanceKm = 0;
+  let runningDistanceKm = 0;
+  let cyclingAscentM = 0;
+  let runningAscentM = 0;
+  let cyclingCalories = 0;
+  let runningCalories = 0;
 
   for (const track of visibleTracks) {
     const dist = Math.max(0, Number(track.distance) || 0);
@@ -79,10 +99,23 @@ export function calculateWorkspaceSummary(
     totalAscentM += asc;
     totalDescentM += desc;
 
-    if (track.activityType === 'running') {
+    // Caloric expenditure estimation per activity
+    const isRunning = track.activityType === 'running';
+    const baseMetabolicFactor = isRunning ? 0.95 : 0.42; // kcal per kg per km
+    const climbingFactor = 0.021; // kcal per kg per 10m ascent
+    const trackKcal = (dist * userWeight * baseMetabolicFactor) + ((asc / 10) * userWeight * climbingFactor);
+    totalCalories += trackKcal;
+
+    if (isRunning) {
       runningCount++;
+      runningDistanceKm += dist;
+      runningAscentM += asc;
+      runningCalories += trackKcal;
     } else {
       cyclingCount++;
+      cyclingDistanceKm += dist;
+      cyclingAscentM += asc;
+      cyclingCalories += trackKcal;
     }
 
     if (track.points && Array.isArray(track.points)) {
@@ -106,13 +139,6 @@ export function calculateWorkspaceSummary(
       const spd = track.activityType === 'running' ? 10 : (estimatedSpeed || 25);
       totalDurationSeconds += Math.round((dist / spd) * 3600);
     }
-
-    // Caloric expenditure estimation
-    const isRunning = track.activityType === 'running';
-    const baseMetabolicFactor = isRunning ? 0.95 : 0.42; // kcal per kg per km
-    const climbingFactor = 0.021; // kcal per kg per 10m ascent
-    const trackKcal = (dist * userWeight * baseMetabolicFactor) + ((asc / 10) * userWeight * climbingFactor);
-    totalCalories += trackKcal;
   }
 
   // Format Duration String
@@ -146,6 +172,20 @@ export function calculateWorkspaceSummary(
     activityBreakdown: {
       cycling: cyclingCount,
       running: runningCount
+    },
+    sportStats: {
+      cycling: {
+        count: cyclingCount,
+        distanceKm: Number(cyclingDistanceKm.toFixed(2)),
+        ascentM: Math.round(cyclingAscentM),
+        caloriesKcal: Math.round(cyclingCalories)
+      },
+      running: {
+        count: runningCount,
+        distanceKm: Number(runningDistanceKm.toFixed(2)),
+        ascentM: Math.round(runningAscentM),
+        caloriesKcal: Math.round(runningCalories)
+      }
     },
     visibleTracks
   };
@@ -388,6 +428,33 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
                     </span>
                   </div>
 
+                  {/* Sport Modality Subtotals (Cycling vs Running) */}
+                  {stats.sportStats && (stats.sportStats.cycling.count > 0 && stats.sportStats.running.count > 0) ? (
+                    <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                      <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-200/50 dark:border-indigo-900/40 text-[9.5px]">
+                        <div className="flex items-center justify-between font-bold text-indigo-700 dark:text-indigo-300">
+                          <span>🚴 Rad ({stats.sportStats.cycling.count})</span>
+                          <span className="font-mono">{stats.sportStats.cycling.distanceKm.toFixed(1)} km</span>
+                        </div>
+                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-mono mt-0.5 flex justify-between">
+                          <span>+{stats.sportStats.cycling.ascentM} hm</span>
+                          <span>~{stats.sportStats.cycling.caloriesKcal} kcal</span>
+                        </div>
+                      </div>
+
+                      <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-200/50 dark:border-emerald-900/40 text-[9.5px]">
+                        <div className="flex items-center justify-between font-bold text-emerald-700 dark:text-emerald-300">
+                          <span>🏃 Lauf ({stats.sportStats.running.count})</span>
+                          <span className="font-mono">{stats.sportStats.running.distanceKm.toFixed(1)} km</span>
+                        </div>
+                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-mono mt-0.5 flex justify-between">
+                          <span>+{stats.sportStats.running.ascentM} hm</span>
+                          <span>~{stats.sportStats.running.caloriesKcal} kcal</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {/* Multi-Track Segmented Color Bar */}
                   {stats.visibleTracks.length > 1 && (
                     <div className="space-y-1">
@@ -570,6 +637,43 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
                   </span>
                 </div>
               </div>
+
+              {/* Sport Modality Subtotals (Cycling vs Running) */}
+              {stats.sportStats && (stats.sportStats.cycling.count > 0 && stats.sportStats.running.count > 0) ? (
+                <div className="p-2.5 rounded-xl bg-slate-50/70 dark:bg-slate-850/60 border border-slate-200/60 dark:border-slate-800 space-y-1.5">
+                  <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    <span>Sportarten-Aufteilung</span>
+                    <span className="font-mono text-indigo-600 dark:text-indigo-400">Multisport</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[10.5px]">
+                    <div className="p-2 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40">
+                      <div className="flex items-center justify-between font-bold text-indigo-700 dark:text-indigo-300">
+                        <span>🚴 Radsport</span>
+                        <span className="text-[9px] font-mono px-1 rounded bg-indigo-200/50 dark:bg-indigo-900/60">
+                          {stats.sportStats.cycling.count}
+                        </span>
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-600 dark:text-slate-300 mt-1">
+                        <div>{stats.sportStats.cycling.distanceKm.toFixed(1)} km</div>
+                        <div className="text-emerald-600 dark:text-emerald-400 font-bold">+{stats.sportStats.cycling.ascentM} hm</div>
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/40">
+                      <div className="flex items-center justify-between font-bold text-emerald-700 dark:text-emerald-300">
+                        <span>🏃 Laufsport</span>
+                        <span className="text-[9px] font-mono px-1 rounded bg-emerald-200/50 dark:bg-emerald-900/60">
+                          {stats.sportStats.running.count}
+                        </span>
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-600 dark:text-slate-300 mt-1">
+                        <div>{stats.sportStats.running.distanceKm.toFixed(1)} km</div>
+                        <div className="text-emerald-600 dark:text-emerald-400 font-bold">+{stats.sportStats.running.ascentM} hm</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Segmented Color Track Proportion Bar */}
               {stats.visibleTracks.length > 1 && (

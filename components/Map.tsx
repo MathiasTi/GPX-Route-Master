@@ -1672,10 +1672,22 @@ const Map: React.FC<MapProps> = ({
             : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
             || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
 
+          const isFit = Boolean(
+            pointTrack?.rawFileDetails?.fileType === 'fit' ||
+            pointTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
+            pointTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
+            pointTrack?.name?.toLowerCase().endsWith('.fit') ||
+            pointTrack?.id?.startsWith('fit-')
+          );
+
           const telemetryResult = computeHoverPointTelemetry(
             hoveredPoint,
             pointTrack?.points,
-            { estimatedSpeedKmh: estimatedSpeed }
+            { 
+              estimatedSpeedKmh: estimatedSpeed,
+              isFitFile: isFit,
+              activityType: pointTrack?.activityType
+            }
           );
           if (!telemetryResult.success) return null;
 

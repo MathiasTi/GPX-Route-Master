@@ -122,13 +122,26 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
   const [activeHandbookTab, setActiveHandbookTab] = useState<'aero' | 'energy' | 'substrate' | 'slope'>('aero');
   const [isZoneExplanationOpen, setIsZoneExplanationOpen] = useState(false);
   
-  const isRunning = track.activityType === 'running';
+  const [sportModality, setSportModality] = useState<'cycling' | 'running'>(
+    track.activityType === 'running' ? 'running' : 'cycling'
+  );
+  const isRunning = sportModality === 'running';
 
   // Dynamic Overlay metrics overlay mode toggles
   const [isOverlayMode, setIsOverlayMode] = useState<boolean>(true);
   const [overlayMetrics, setOverlayMetrics] = useState<string[]>(
-    isRunning ? ['elevation', 'pace', 'hr'] : ['elevation', 'power', 'hr']
+    track.activityType === 'running' ? ['elevation', 'pace', 'hr'] : ['elevation', 'power', 'hr']
   );
+
+  useEffect(() => {
+    if (isRunning) {
+      setOverlayMetrics(['elevation', 'pace', 'hr']);
+      setLabBikeWeight(1.5);
+    } else {
+      setOverlayMetrics(['elevation', 'power', 'hr']);
+      setLabBikeWeight(9.5);
+    }
+  }, [isRunning]);
 
   const METRIC_METADATA: Record<string, { name: string; color: string; darkColor: string; unit: string }> = {
     pace: { name: 'Lauf-Pace', color: '#f97316', darkColor: '#ff8a43', unit: ' min/km' },
@@ -1046,14 +1059,47 @@ const AdvancedAnalytics: React.FC<AdvancedAnalyticsProps> = ({
             </p>
           </div>
         </div>
-        <button 
-          onClick={onClose}
-          className="p-2 sm:p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-full transition-colors text-slate-500 hover:text-slate-800 dark:text-slate-300 dark:hover:text-white shrink-0 cursor-pointer shadow-2xs"
-          title="Schließen"
-          aria-label="Schließen"
-        >
-          <X className="w-5 h-5 sm:w-7 sm:h-7" />
-        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Sport Modality Switcher */}
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl gap-1 shrink-0 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => setSportModality('cycling')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1 cursor-pointer ${
+                !isRunning
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Radsport-Modus (Watt, Trittfrequenz, Aerodynamik)"
+            >
+              <span>🚴</span>
+              <span className="hidden md:inline">Rad-Modus</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSportModality('running')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1 cursor-pointer ${
+                isRunning
+                  ? 'bg-orange-500 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Laufsport-Modus (Pace min/km, Schrittfrequenz, Laufbiomechanik)"
+            >
+              <span>🏃</span>
+              <span className="hidden md:inline">Lauf-Modus</span>
+            </button>
+          </div>
+
+          <button 
+            onClick={onClose}
+            className="p-2 sm:p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-full transition-colors text-slate-500 hover:text-slate-800 dark:text-slate-300 dark:hover:text-white shrink-0 cursor-pointer shadow-2xs"
+            title="Schließen"
+            aria-label="Schließen"
+          >
+            <X className="w-5 h-5 sm:w-7 sm:h-7" />
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 bg-slate-50 dark:bg-slate-950">

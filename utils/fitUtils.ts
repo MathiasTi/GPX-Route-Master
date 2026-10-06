@@ -2310,9 +2310,11 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               
               let pointSpeed: number | undefined = undefined;
               if (enhancedSpeed !== undefined && enhancedSpeed !== null && !isNaN(enhancedSpeed) && enhancedSpeed !== 4294967295) {
-                pointSpeed = enhancedSpeed / 3000;
+                // FIT specification: enhanced_speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
+                pointSpeed = Number(((enhancedSpeed / 1000) * 3.6).toFixed(2));
               } else if (speed !== undefined && speed !== null && !isNaN(speed) && speed !== 65535) {
-                pointSpeed = speed / 1000;
+                // FIT specification: speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
+                pointSpeed = Number(((speed / 1000) * 3.6).toFixed(2));
               }
 
               points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed });

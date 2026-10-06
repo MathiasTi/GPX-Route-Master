@@ -268,7 +268,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
             <div className="flex justify-between font-medium text-slate-600 dark:text-slate-300">
               <span className="flex items-center gap-1">
                 <Scale className="w-3.5 h-3.5 text-indigo-500" />
-                Fahrergewicht:
+                {activityType === 'running' ? 'Läufergewicht:' : 'Fahrergewicht:'}
               </span>
               <span className="font-mono font-bold">{riderWeight} kg</span>
             </div>
@@ -283,7 +283,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
             />
             <div className="flex justify-between text-[10px] text-slate-400">
               <span>50 kg</span>
-              <span>System: {riderWeight + bikeWeight} kg</span>
+              <span>{activityType === 'running' ? `Körper: ${riderWeight} kg` : `System: ${riderWeight + bikeWeight} kg`}</span>
               <span>120 kg</span>
             </div>
           </div>
@@ -291,7 +291,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
           {/* Bike & Tire Type */}
           <div className="space-y-1.5">
             <label className="block font-medium text-slate-600 dark:text-slate-300">
-              Rad- & Reifentyp (Crr):
+              {activityType === 'running' ? 'Schuh- & Untergrundtyp:' : 'Rad- & Reifentyp (Crr):'}
             </label>
             <div className="grid grid-cols-3 gap-1">
               <button
@@ -303,7 +303,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
               >
-                Rennrad
+                {activityType === 'running' ? 'Asphalt' : 'Rennrad'}
               </button>
               <button
                 type="button"
@@ -314,7 +314,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
               >
-                Gravel
+                {activityType === 'running' ? 'Trail/Kies' : 'Gravel'}
               </button>
               <button
                 type="button"
@@ -325,7 +325,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
               >
-                MTB
+                {activityType === 'running' ? 'Wald/Gras' : 'MTB'}
               </button>
             </div>
           </div>
@@ -333,7 +333,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
           {/* Riding Position */}
           <div className="space-y-1.5">
             <label className="block font-medium text-slate-600 dark:text-slate-300">
-              Sitzhaltung (CdA):
+              {activityType === 'running' ? 'Laufhaltung (CdA):' : 'Sitzhaltung (CdA):'}
             </label>
             <div className="grid grid-cols-3 gap-1">
               <button
@@ -344,9 +344,9 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     ? 'bg-indigo-600 text-white shadow-sm'
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
-                title="Unterlenker / Aero (CdA 0.27)"
+                title={activityType === 'running' ? "Geduckt / Sprint (CdA 0.38)" : "Unterlenker / Aero (CdA 0.27)"}
               >
-                Unterlenker
+                {activityType === 'running' ? 'Aero/Sprint' : 'Unterlenker'}
               </button>
               <button
                 type="button"
@@ -356,9 +356,9 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     ? 'bg-indigo-600 text-white shadow-sm'
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
-                title="Bremsgriffe (CdA 0.32)"
+                title={activityType === 'running' ? "Kompakte Laufhaltung (CdA 0.45)" : "Bremsgriffe (CdA 0.32)"}
               >
-                Bremsgriffe
+                {activityType === 'running' ? 'Kompakt' : 'Bremsgriffe'}
               </button>
               <button
                 type="button"
@@ -368,7 +368,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
                     ? 'bg-indigo-600 text-white shadow-sm'
                     : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                 }`}
-                title="Oberlenker / Aufrecht (CdA 0.38)"
+                title={activityType === 'running' ? "Aufrecht / Berglauf (CdA 0.52)" : "Oberlenker / Aufrecht (CdA 0.38)"}
               >
                 Aufrecht
               </button>
@@ -463,7 +463,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
       <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-            Aufteilung der Fahrwiderstände (Watt & Prozent)
+            {activityType === 'running' ? 'Aufteilung der Laufwiderstände (Watt & Prozent)' : 'Aufteilung der Fahrwiderstände (Watt & Prozent)'}
           </h4>
           <span className="text-xs text-slate-400">Gesamt-Arbeit: <strong className="text-slate-700 dark:text-slate-200 font-mono">{physics.workKj} kJ</strong></span>
         </div>
@@ -482,12 +482,12 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
           <div 
             style={{ width: `${physics.pRollPct}%` }}
             className="bg-amber-500 hover:opacity-90 transition-all cursor-pointer"
-            title={`Rollreibung: ${physics.powerRollWatts}W (${physics.pRollPct}%)`}
+            title={`${activityType === 'running' ? 'Bodenreibung' : 'Rollreibung'}: ${physics.powerRollWatts}W (${physics.pRollPct}%)`}
           />
           <div 
             style={{ width: `${physics.pLossPct}%` }}
             className="bg-slate-400 hover:opacity-90 transition-all cursor-pointer"
-            title={`Antriebsverlust: ${physics.powerLossWatts}W (${physics.pLossPct}%)`}
+            title={`${activityType === 'running' ? 'Biomechanikverlust' : 'Antriebsverlust'}: ${physics.powerLossWatts}W (${physics.pLossPct}%)`}
           />
         </div>
 
@@ -511,7 +511,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
           <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50/60 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/40">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
             <div className="min-w-0">
-              <span className="font-semibold text-slate-700 dark:text-slate-200 block text-[11px]">Rollreibung</span>
+              <span className="font-semibold text-slate-700 dark:text-slate-200 block text-[11px]">{activityType === 'running' ? 'Bodenreibung' : 'Rollreibung'}</span>
               <span className="font-mono font-bold text-amber-700 dark:text-amber-400 text-[11px]">{physics.powerRollWatts} W ({physics.pRollPct}%)</span>
             </div>
           </div>
@@ -519,7 +519,7 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
           <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-100/60 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
             <span className="w-2.5 h-2.5 rounded-full bg-slate-400 shrink-0" />
             <div className="min-w-0">
-              <span className="font-semibold text-slate-700 dark:text-slate-200 block text-[11px]">Kettentrieb / Verluste</span>
+              <span className="font-semibold text-slate-700 dark:text-slate-200 block text-[11px]">{activityType === 'running' ? 'Biomechanik / Dämpfung' : 'Kettentrieb / Verluste'}</span>
               <span className="font-mono font-bold text-slate-600 dark:text-slate-400 text-[11px]">{physics.powerLossWatts} W ({physics.pLossPct}%)</span>
             </div>
           </div>

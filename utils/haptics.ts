@@ -34,12 +34,16 @@ export const triggerHaptic = (type: 'light' | 'medium' | 'heavy' | 'success' | '
  */
 export const shareTrackNative = async (data: { title: string; text: string; url?: string }) => {
   triggerHaptic('medium');
+  const rawUrl = data.url || (typeof window !== 'undefined' ? window.location.href : '');
+  // Always convert private ais-dev URL to public ais-pre URL so external/shared access never hits Google's 401
+  const cleanUrl = rawUrl.replace('ais-dev-', 'ais-pre-');
+
   if (typeof navigator !== 'undefined' && navigator.share) {
     try {
       await navigator.share({
         title: data.title,
         text: data.text,
-        url: data.url || window.location.href,
+        url: cleanUrl,
       });
       return true;
     } catch (err: any) {
@@ -51,7 +55,7 @@ export const shareTrackNative = async (data: { title: string; text: string; url?
 
   // Fallback to clipboard copy
   try {
-    const textToCopy = `${data.title}\n${data.text}\n${data.url || window.location.href}`;
+    const textToCopy = `${data.title}\n${data.text}\n${cleanUrl}`;
     await navigator.clipboard.writeText(textToCopy);
     triggerHaptic('success');
     return 'copied';

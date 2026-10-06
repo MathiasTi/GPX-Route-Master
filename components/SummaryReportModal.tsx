@@ -19,9 +19,13 @@ interface SummaryReportModalProps {
 
 export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, onClose, ftp, onAnalyzeSurface, isAnalyzing, onSelection }) => {
   const [copied, setCopied] = useState(false);
+  const [sportMode, setSportMode] = useState<'cycling' | 'running'>(
+    track.activityType === 'running' ? 'running' : 'cycling'
+  );
 
   // Parse activity and stats
-  const isCycling = track.activityType !== 'running';
+  const isCycling = sportMode === 'cycling';
+  const isRunning = !isCycling;
   
   const estimatedSpeed = isCycling ? 22 : 10;
   const durationInSeconds = track.duration || Math.round((track.distance / estimatedSpeed) * 3600);
@@ -125,29 +129,33 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
 
   // Create a markdown report draft to share
   const handleCopyReport = () => {
-    const typeLabel = isCycling ? 'Rennrad / Radsport' : 'Laufen / Trailrunning';
-    let text = `📊 **GPX MASTER - AKTIVITÄTS-ZUSAMMENFASSUNG** 📊\n`;
+    const typeLabel = isCycling ? '🚴 Rennrad / Radsport' : '🏃 Laufen / Trailrunning';
+    let text = `📊 **GPX MASTER - ${isCycling ? 'RADSPORT' : 'LAUFSPORT'}-ZUSAMMENFASSUNG** 📊\n`;
     text += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     text += `🏔️ **Name**: ${track.name}\n`;
-    text += `🚴 **Typ**: ${typeLabel}\n`;
+    text += `🏆 **Sportart**: ${typeLabel}\n`;
     text += `🗺️ **Distanz**: ${track.distance.toFixed(2)} km\n`;
     text += `⏱️ **Aktivitätszeit**: ${formattedDuration}\n`;
-    text += `⚡ **Geschwindigkeit**: ${avgSpeedKmh} km/h (${formattedPace})\n\n`;
+    if (isRunning) {
+      text += `⚡ **Pace**: ${formattedPace} (Tempo: ${avgSpeedKmh} km/h)\n\n`;
+    } else {
+      text += `⚡ **Geschwindigkeit**: ${avgSpeedKmh} km/h (Pace: ${formattedPace})\n\n`;
+    }
     
     text += `📈 **HÖHENPROFIL & ANSTIEGE**\n`;
     text += `🔺 **Anstieg (Aufstieg)**: +${Math.round(track.ascent)}m\n`;
     text += `🔻 **Abstieg**: -${Math.round(track.descent)}m\n`;
     text += `🗻 **Höhenbereich**: ${minEle}m - ${maxEle}m\n`;
     text += `📐 **Max. Steigung**: ${(track.maxSlope ?? 0).toFixed(1)}%\n`;
-    text += `⛰️ **Berge/Climbs**: ${trackClimbs.length} kategorisierte Steigungen gefunden\n\n`;
+    text += `⛰️ **${isCycling ? 'Berge/Climbs' : 'Trail-Steigungen'}**: ${trackClimbs.length} Sektoren identifiziert\n\n`;
 
     if (track.powerStats) {
-      text += `⚡ **LEISTUNGSWERTE (WATT)**\n`;
-      text += `⏱️ **FTP-Einstellung**: ${ftp} W\n`;
-      text += `🔥 **Normalized Power (NP)**: ${Math.round(track.powerStats.normalizedPower || 0)} W\n`;
-      text += `🏋️ **Durchschnitt (AP)**: ${Math.round(track.powerStats.avgPower || 0)} W\n`;
+      text += `⚡ **${isCycling ? 'RAD-LEISTUNGSWERTE (KURBEL-WATT)' : 'RUNNING POWER & LAUFDYNAMIK (WATT)'}**\n`;
+      text += `⏱️ **${isCycling ? 'FTP-Einstellung' : 'rFTPw-Schwellenwert'}**: ${ftp} W\n`;
+      text += `🔥 **${isCycling ? 'Normalized Power (NP)' : 'Normalized Graded Power'}**: ${Math.round(track.powerStats.normalizedPower || 0)} W\n`;
+      text += `🏋️ **Durchschnitt**: ${Math.round(track.powerStats.avgPower || 0)} W\n`;
       text += `📈 **Max. Leistung**: ${track.powerStats.maxPower || 0} W\n`;
-      text += `🔋 **TSS (Stress Score)**: ${Math.round(track.powerStats.tss || 0)}\n`;
+      text += `🔋 **${isCycling ? 'TSS (Stress Score)' : 'rTSS (Running Stress)'}**: ${Math.round(track.powerStats.tss || 0)}\n`;
       text += `⚡ **IF (Intensity Factor)**: ${(track.powerStats.intensityFactor || 0).toFixed(2)}\n`;
       text += `🥛 **VI (Variabilitätsindex)**: ${(track.powerStats.variabilityIndex || 0).toFixed(2)}\n\n`;
     }
@@ -246,6 +254,36 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Sport Modality Switcher */}
+            <div className="flex items-center bg-slate-200/80 p-0.5 rounded-xl text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setSportMode('cycling')}
+                className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  isCycling
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Radsport-Modus (km/h, Kurbel-Watt, FTP)"
+              >
+                <span>🚴</span>
+                <span className="hidden sm:inline">Radsport</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSportMode('running')}
+                className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  isRunning
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Laufsport-Modus (Pace min/km, Running Power, rFTPw)"
+              >
+                <span>🏃</span>
+                <span className="hidden sm:inline">Laufsport</span>
+              </button>
+            </div>
+
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -306,7 +344,12 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
                 <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                   isCycling ? 'bg-indigo-100 text-indigo-800' : 'bg-emerald-100 text-emerald-800'
                 }`}>
-                  {isCycling ? 'Radsport / Cycling' : 'Laufsport / Running'}
+                  {isCycling ? '🚴 Radsport / Cycling' : '🏃 Laufsport / Running'}
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                  isCycling ? 'bg-slate-100 text-slate-600' : 'bg-orange-100 text-orange-700'
+                }`}>
+                  {isCycling ? 'Watt & Speed-Profil' : 'Pace & Laufdynamik'}
                 </span>
                 <span className="text-[10px] font-bold text-slate-400 font-mono">
                   {track.points.length.toLocaleString('de-DE')} GPS-Punkte
@@ -327,7 +370,7 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
               <div className="flex md:block flex-wrap gap-x-3">
                 <div className="font-bold text-slate-700">GPX-MASTER-SYSTEM REPORT</div>
                 <div>Startpunkt: Lat {track.points[0]?.lat.toFixed(4)}, Lng {track.points[0]?.lng.toFixed(4)}</div>
-                <div>Status: Ausgewertet / Verifiziert</div>
+                <div>Status: Ausgewertet / {isCycling ? 'Radsport' : 'Laufsport'} verifiziert</div>
               </div>
             </div>
           </div>
@@ -379,22 +422,36 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
             </div>
           </div>
 
-          {/* Sub-bento-grid row: Tempo, Max slope, elevations */}
+          {/* Sub-bento-grid row: Tempo / Pace, Max slope, elevations */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-1">
-            <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-150">
-              <span className="text-[9px] font-black tracking-wider uppercase text-slate-400">DURCHSCHNITTSTEMPO</span>
-              <div className="mt-1 font-mono font-extrabold text-lg text-slate-800">
-                {avgSpeedKmh} <span className="text-[10px] text-slate-500">km/h</span>
+            {isRunning ? (
+              <div className="bg-emerald-500/10 p-4 rounded-2xl border border-emerald-200">
+                <span className="text-[9px] font-black tracking-wider uppercase text-emerald-700 flex items-center gap-1">
+                  <span>🏃</span> DURCHSCHNITTS-PACE
+                </span>
+                <div className="mt-1 font-mono font-extrabold text-lg text-emerald-800">
+                  {formattedPace} <span className="text-[10px] text-emerald-600">min/km</span>
+                </div>
+                <p className="text-[9px] text-emerald-600/80 mt-0.5">Tempo: {avgSpeedKmh} km/h</p>
               </div>
-              <p className="text-[9px] text-slate-450 mt-0.5">Entspricht Pace: {formattedPace}</p>
-            </div>
+            ) : (
+              <div className="bg-indigo-500/10 p-4 rounded-2xl border border-indigo-200">
+                <span className="text-[9px] font-black tracking-wider uppercase text-indigo-700 flex items-center gap-1">
+                  <span>🚴</span> DURCHSCHNITTSTEMPO
+                </span>
+                <div className="mt-1 font-mono font-extrabold text-lg text-indigo-900">
+                  {avgSpeedKmh} <span className="text-[10px] text-indigo-600">km/h</span>
+                </div>
+                <p className="text-[9px] text-indigo-600/80 mt-0.5">Entspricht Pace: {formattedPace}</p>
+              </div>
+            )}
 
             <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-150">
               <span className="text-[9px] font-black tracking-wider uppercase text-slate-400 font-sans">MAX. STEIGUNG</span>
               <div className="mt-1 font-mono font-extrabold text-lg text-slate-800">
                 {(track.maxSlope ?? 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
               </div>
-              <p className="text-[9px] text-slate-450 mt-0.5">Steilster Fahrbahnschnitt</p>
+              <p className="text-[9px] text-slate-450 mt-0.5">{isCycling ? 'Steilster Fahrbahnschnitt' : 'Steilster Trail-Abschnitt'}</p>
             </div>
 
             <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-150">
@@ -416,22 +473,28 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
 
           {/* Power Stats Section (Dynamic - Only shown if available) */}
           {track.powerStats && (
-            <div className="bg-amber-500/5 border border-amber-100 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center gap-2 border-b border-amber-100 pb-2.5">
-                <Zap className="w-5 h-5 text-amber-600 fill-amber-300/30" />
+            <div className={`${isRunning ? 'bg-emerald-500/5 border-emerald-100' : 'bg-amber-500/5 border-amber-100'} border rounded-2xl p-5 space-y-4`}>
+              <div className={`flex items-center gap-2 border-b ${isRunning ? 'border-emerald-100' : 'border-amber-100'} pb-2.5`}>
+                <Zap className={`w-5 h-5 ${isRunning ? 'text-emerald-600 fill-emerald-300/30' : 'text-amber-600 fill-amber-300/30'}`} />
                 <div>
-                  <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight">Physikalische Leistungs-Analytik (Power Stats)</h4>
-                  <p className="text-[10px] text-slate-500 font-medium">Basiert auf gemessener Tretleistung der Aktivität im Verhältnis zu deinen FTP-Schwellenwert ({ftp} Watt)</p>
+                  <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight">
+                    {isCycling ? 'Physikalische Leistungs-Analytik (Power Stats)' : 'Laufdynamik & Power-Analytik (Running Power)'}
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-medium">
+                    {isCycling 
+                      ? `Basiert auf gemessener Tretleistung der Aktivität im Verhältnis zu deinen FTP-Schwellenwert (${ftp} Watt)`
+                      : `Basiert auf Stryd/Garmin Laufleistung im Verhältnis zur Schwellenleistung rFTPw (${ftp} Watt)`}
+                  </p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-6 gap-4 font-mono">
                 <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col justify-center text-center shadow-xs">
-                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">Normalized Power</span>
+                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">{isCycling ? 'Normalized Power' : 'Norm. Graded Power'}</span>
                   <span className="text-lg font-black text-slate-700 mt-0.5">{Math.round(track.powerStats.normalizedPower || 0)}W</span>
                 </div>
                 <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col justify-center text-center shadow-xs">
-                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">Avg Power (AP)</span>
+                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">{isCycling ? 'Avg Power (AP)' : 'Avg Running Power'}</span>
                   <span className="text-lg font-black text-slate-700 mt-0.5">{Math.round(track.powerStats.avgPower || 0)}W</span>
                 </div>
                 <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col justify-center text-center shadow-xs">
@@ -439,8 +502,8 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
                   <span className="text-lg font-black text-slate-700 mt-0.5">{track.powerStats.maxPower || 0}W</span>
                 </div>
                 <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col justify-center text-center shadow-xs">
-                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">Training Stress (TSS)</span>
-                  <span className="text-lg font-black text-amber-700 mt-0.5">{Math.round(track.powerStats.tss || 0)}</span>
+                  <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">{isCycling ? 'Training Stress (TSS)' : 'Running Stress (rTSS)'}</span>
+                  <span className={`text-lg font-black ${isRunning ? 'text-emerald-700' : 'text-amber-700'} mt-0.5`}>{Math.round(track.powerStats.tss || 0)}</span>
                 </div>
                 <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col justify-center text-center shadow-xs">
                   <span className="text-[8px] text-slate-400 font-sans font-bold uppercase">Intensity Factor (IF)</span>
@@ -584,14 +647,18 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
             {/* COLUMN 2: Mountain Climbs Analyzed */}
             <div className="bg-slate-50/20 border border-slate-200/60 p-5 rounded-2xl space-y-4">
               <div className="flex items-center gap-2 border-b border-slate-200/60 pb-2">
-                <Trophy className="w-5 h-5 text-indigo-600" />
-                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Kategorisierte Anstiege (Berge)</h4>
+                <Trophy className={`w-5 h-5 ${isRunning ? 'text-emerald-600' : 'text-indigo-600'}`} />
+                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  {isCycling ? 'Kategorisierte Anstiege (Bergwertungen)' : 'Trail- & Berglauf-Steigungen'}
+                </h4>
               </div>
 
               {trackClimbs && trackClimbs.length > 0 ? (
                 <div className="space-y-3">
                   <p className="text-[11px] text-slate-500 leading-normal">
-                    Automatisch ermittelte Steigungssektoren dieser Tour ({trackClimbs.length} Steigungen identifiziert):
+                    {isCycling 
+                      ? `Automatisch ermittelte Steigungssektoren dieser Radtour (${trackClimbs.length} Steigungen identifiziert):`
+                      : `Automatisch ermittelte Steigungssektoren dieses Laufs (${trackClimbs.length} Trail-Anstiege identifiziert):`}
                   </p>
                   
                   <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1">
@@ -624,7 +691,7 @@ export const SummaryReportModal: React.FC<SummaryReportModalProps> = ({ track, o
                       >
                         <div>
                           <span className="font-extrabold text-slate-800 dark:text-slate-200 text-[11px] flex items-center gap-1 group-hover:text-indigo-600 transition-colors">
-                            Bergwertungs-Sektor #{index + 1}
+                            {isCycling ? `Bergwertungs-Sektor #${index + 1}` : `Trail-Steigung #${index + 1}`}
                             <span className="text-[9px] text-indigo-500 font-normal">🔍 Zoomen</span>
                           </span>
                           <span className="text-[10px] text-slate-400 font-medium block mt-0.5">Länge: {Math.round(climb.distance).toLocaleString('de-DE')} m | Aufstieg: +{Math.round(climb.ascent)} m</span>

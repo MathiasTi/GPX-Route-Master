@@ -117,7 +117,27 @@ export function runPointMetricsEngineTests(): boolean {
     assert(t.heartRate !== null && t.heartRate.zoneNumber === 4, 'Heart rate assigned to Z4');
     assert(t.powerWatts === 245, 'Power correctly rounded (245W)');
     assert(t.speedKmh === 28.4, 'Speed correctly formatted (28.4 km/h)');
+    assert(t.paceFormatted !== null && t.paceFormatted.includes('min/km'), 'Pace formatted correctly');
     assert(t.timeFormatted !== null, 'Time formatted cleanly');
+  }
+
+  // FIT file pace calculation test (3.33 m/s in FIT -> 12.0 km/h -> 5:00 min/km)
+  const fitTelemetryResult = computeHoverPointTelemetry(
+    {
+      lat: 48.1,
+      lng: 11.5,
+      speed: 3.33,
+      power: 180
+    },
+    [],
+    { isFitFile: true, activityType: 'running' }
+  );
+  assert(isOk(fitTelemetryResult), 'Computes FIT telemetry with Pace successfully');
+  if (isOk(fitTelemetryResult)) {
+    const ft = fitTelemetryResult.data;
+    assert(ft.isFitFile === true, 'isFitFile flag set to true');
+    assert(ft.speedKmh === 12, 'Converts FIT m/s speed (3.33 m/s) to ~12 km/h');
+    assert(ft.paceFormatted === '5:00 min/km', 'Calculates 5:00 min/km Pace for 12 km/h');
   }
 
   // Pure distance test

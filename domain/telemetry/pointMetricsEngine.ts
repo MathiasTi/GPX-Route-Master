@@ -43,9 +43,30 @@ export interface HoverPointTelemetry {
   readonly heartRate: HeartRateZoneInfo | null;
   readonly powerWatts: number | null;
   readonly speedKmh: number | null;
+  readonly paceFormatted: string | null;
+  readonly isFitFile: boolean;
+  readonly activityType?: 'cycling' | 'running';
   readonly timeFormatted: string | null;
   readonly distanceKm: number | null;
   readonly durationEstimate: string | null;
+}
+
+/**
+ * Converts a speed in km/h to pace string format (e.g. "4:30 min/km").
+ * Filters out standstill / pauses (< 1.8 km/h).
+ */
+export function formatPaceFromSpeedKmh(speedKmh: number): string | null {
+  if (!Number.isFinite(speedKmh) || speedKmh < 1.8) {
+    return '--:-- min/km';
+  }
+  const paceMinKm = 60 / speedKmh;
+  if (paceMinKm > 25) return '--:-- min/km';
+  const mins = Math.floor(paceMinKm);
+  const secs = Math.round((paceMinKm % 1) * 60);
+  if (secs === 60) {
+    return `${mins + 1}:00 min/km`;
+  }
+  return `${mins}:${secs.toString().padStart(2, '0')} min/km`;
 }
 
 /**
@@ -279,7 +300,13 @@ export function calculateSlopeAtPoint(
 export function computeHoverPointTelemetry(
   point: HoverPointCoordinate,
   trackPoints?: readonly HoverPointCoordinate[],
-  options?: { maxHr?: number; estimatedSpeedKmh?: number }
+  options?: { 
+    maxHr?: number; 
+    estimatedSpeedKmh?: number;
+    isFitFile?: boolean;
+    activityType?: 'cycling' | 'running';
+    preferPace?: boolean;
+  }
 ): Result<HoverPointTelemetry, Error> {
   if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
     return err(new Error('Invalid point coordinates'));
@@ -287,6 +314,8 @@ export function computeHoverPointTelemetry(
 
   const maxHr = options?.maxHr ?? 185;
   const estimatedSpeed = options?.estimatedSpeedKmh ?? 15;
+  const isFitFile = Boolean(options?.isFitFile);
+  const activityType = options?.activityType;
 
   // 1. Heart rate classification
   let heartRateInfo: HeartRateZoneInfo | null = null;
@@ -342,7 +371,74 @@ export function computeHoverPointTelemetry(
 
   const elevationM = point.ele !== undefined && Number.isFinite(point.ele) ? Math.round(point.ele) : null;
   const powerWatts = point.power !== undefined && Number.isFinite(point.power) ? Math.round(point.power) : null;
-  const speedKmh = point.speed !== undefined && Number.isFinite(point.speed) ? Math.round(point.speed * 10) / 10 : null;
+
+  // 5. Speed (km/h) and Pace calculation with smart multi-hypothesis verification
+  let calculatedSpeedKmh: number | null = null;
+
+  // First, calculate ground speed from GPS coordinate and timestamp deltas
+  let gpsGroundSpeedKmh: number | null = null;
+  if (trackPoints && trackPoints.length > 1) {
+    const ptIndex = trackPoints.findIndex(
+      p => Math.abs(p.lat - point.lat) < 0.00005 && Math.abs(p.lng - point.lng) < 0.00005
+    );
+    if (ptIndex >= 0) {
+      // Use rolling window of +- 2 points for smooth, robust ground velocity
+      const startIdx = Math.max(0, ptIndex - 2);
+      const endIdx = Math.min(trackPoints.length - 1, ptIndex + 2);
+      const pStart = trackPoints[startIdx];
+      const pEnd = trackPoints[endIdx];
+      if (pStart?.time && pEnd?.time && startIdx !== endIdx) {
+        const t1 = pStart.time instanceof Date ? pStart.time.getTime() : new Date(pStart.time).getTime();
+        const t2 = pEnd.time instanceof Date ? pEnd.time.getTime() : new Date(pEnd.time).getTime();
+        const dtSec = (t2 - t1) / 1000;
+        if (dtSec > 0.5 && dtSec < 120) {
+          let distAccKm = 0;
+          for (let k = startIdx; k < endIdx; k++) {
+            distAccKm += calculatePointDistanceKm(trackPoints[k], trackPoints[k + 1]);
+          }
+          if (distAccKm > 0) {
+            gpsGroundSpeedKmh = (distAccKm / (dtSec / 3600));
+          }
+        }
+      }
+    }
+  }
+
+  if (point.speed !== undefined && Number.isFinite(point.speed) && point.speed > 0) {
+    if (gpsGroundSpeedKmh !== null && gpsGroundSpeedKmh > 1.0) {
+      // Cross-reference point.speed with GPS ground speed:
+      // 1. Direct match (already in km/h)
+      // 2. m/s match (point.speed * 3.6)
+      // 3. / 3000 legacy bug match (point.speed * 10.8)
+      const diffDirect = Math.abs(point.speed - gpsGroundSpeedKmh);
+      const diffMs = Math.abs(point.speed * 3.6 - gpsGroundSpeedKmh);
+      const diffBug = Math.abs(point.speed * 10.8 - gpsGroundSpeedKmh);
+
+      if (diffBug < diffMs && diffBug < diffDirect && diffBug < 6.0) {
+        calculatedSpeedKmh = Math.round(point.speed * 10.8 * 10) / 10;
+      } else if (diffMs < diffDirect && diffMs < 6.0) {
+        calculatedSpeedKmh = Math.round(point.speed * 3.6 * 10) / 10;
+      } else if (diffDirect < 12.0) {
+        calculatedSpeedKmh = Math.round(point.speed * 10) / 10;
+      } else {
+        // Fallback to smoothed GPS ground speed if sensor reading is anomalous
+        calculatedSpeedKmh = Math.round(gpsGroundSpeedKmh * 10) / 10;
+      }
+    } else {
+      // Standalone point without surrounding GPS ground speed:
+      // If speed is in typical m/s range for running/cycling (< 15) and from FIT, convert to km/h
+      if (isFitFile && point.speed < 15) {
+        calculatedSpeedKmh = Math.round(point.speed * 3.6 * 10) / 10;
+      } else {
+        calculatedSpeedKmh = Math.round(point.speed * 10) / 10;
+      }
+    }
+  } else if (gpsGroundSpeedKmh !== null) {
+    calculatedSpeedKmh = Math.round(gpsGroundSpeedKmh * 10) / 10;
+  }
+
+  const speedKmh = calculatedSpeedKmh;
+  const paceFormatted = speedKmh !== null && speedKmh > 0 ? formatPaceFromSpeedKmh(speedKmh) : null;
 
   return ok({
     lat: point.lat,
@@ -352,6 +448,9 @@ export function computeHoverPointTelemetry(
     heartRate: heartRateInfo,
     powerWatts,
     speedKmh,
+    paceFormatted,
+    isFitFile,
+    activityType,
     timeFormatted,
     distanceKm,
     durationEstimate

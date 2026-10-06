@@ -18,7 +18,7 @@ import {
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
-import { calculateDistance } from '../utils/gpxUtils';
+import { calculateDistance, detectActivityType } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
@@ -370,17 +370,27 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   onOpenGlossary
 }) => {
   // Activity Configuration State
-  const [activityType, setActivityType] = useState<'cycling' | 'running'>(
-    track.activityType === 'running' ? 'running' : 'cycling'
-  );
+  const initialDetected = useMemo<'cycling' | 'running'>(() => {
+    if (track.activityType === 'running' || track.activityType === 'cycling') {
+      return track.activityType;
+    }
+    return detectActivityType(track.points || [], track.name || '', track.name || '');
+  }, [track.activityType, track.points, track.name]);
+
+  const [activityType, setActivityType] = useState<'cycling' | 'running'>(initialDetected);
   const [subType, setSubType] = useState<'road' | 'gravel' | 'mtb' | 'trail'>(
-    track.activityType === 'running' ? 'trail' : 'road'
+    initialDetected === 'running' ? 'trail' : 'road'
   );
   const [fitnessLevel, setFitnessLevel] = useState<'beginner' | 'moderate' | 'advanced' | 'elite'>('moderate');
   const [customFtp, setCustomFtp] = useState<number>(ftp || 220);
   const [customWeight, setCustomWeight] = useState<number>(userWeight || 75);
   const [customTemp, setCustomTemp] = useState<number>(20);
   const [activeTab, setActiveTab] = useState<AnalysisTab>(initialTab || 'overview');
+
+  useEffect(() => {
+    setActivityType(initialDetected);
+    setSubType(initialDetected === 'running' ? 'trail' : 'road');
+  }, [track.id, initialDetected]);
 
   useEffect(() => {
     if (initialTab) {
@@ -448,13 +458,13 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const handleCopySummary = () => {
     triggerHaptic();
     const climbsSummary = analysis.climbs.length > 0
-      ? `\n⛰️ Bergwertungen (${analysis.climbs.length}): ${Math.round(analysis.totalClimbAscentMeters)} Hm in Anstiegen (${analysis.totalClimbDistanceKm} km)`
+      ? `\n⛰️ ${activityType === 'running' ? 'Trail-Steigungen' : 'Bergwertungen'} (${analysis.climbs.length}): ${Math.round(analysis.totalClimbAscentMeters)} Hm in Anstiegen (${analysis.totalClimbDistanceKm} km)`
       : '';
     const text = `📊 INTENSIVE STRECKENANALYSE: ${analysis.trackName}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📏 Distanz: ${analysis.totalDistanceKm} km | ⛰️ Höhenmeter: +${Math.round(analysis.totalAscentMeters)}m / -${Math.round(analysis.totalDescentMeters)}m${climbsSummary}
-⏱️ Geschätzte Fahr-/Laufzeit: ${formatSecondsToTime(analysis.estimatedMovingTimeSeconds)} (Brutto: ${formatSecondsToTime(analysis.estimatedElapsedTimeSeconds)})
-🚀 Ø-Geschwindigkeit: ${analysis.estimatedAverageSpeedKmh} km/h
+⏱️ Geschätzte ${activityType === 'running' ? 'Laufzeit' : 'Fahrzeit'}: ${formatSecondsToTime(analysis.estimatedMovingTimeSeconds)} (Brutto: ${formatSecondsToTime(analysis.estimatedElapsedTimeSeconds)})
+🚀 ${activityType === 'running' ? `Ø-Pace: ${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km (Tempo: ${analysis.estimatedAverageSpeedKmh} km/h)` : `Ø-Geschwindigkeit: ${analysis.estimatedAverageSpeedKmh} km/h`}
 🔥 Kalorienverbrauch: ${analysis.totalCaloriesKcal} kcal (${analysis.carbsBurnedGrams}g KH / ${analysis.fatBurnedGrams}g Fett)
 💧 Flüssigkeitsbedarf: ${analysis.totalFluidRecommendedLiters} Liter | 🧂 Natrium: ~${analysis.sodiumRecommendedMg} mg
 🎯 Schwierigkeitsgrad: ${analysis.difficultyScore}/10
@@ -561,7 +571,7 @@ GPX Route Master Pro`;
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white tracking-tight truncate">
-                  Intensive Streckenanalyse
+                  {activityType === 'running' ? 'Intensive Laufanalyse' : 'Intensive Streckenanalyse'}
                 </h2>
                 <span className="hidden sm:inline-flex px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 shrink-0">
                   Physics & Nutrition Pro
@@ -746,7 +756,7 @@ GPX Route Master Pro`;
               </div>
             )}
 
-            <div className="flex items-center gap-1.5" title="Fahrergewicht">
+            <div className="flex items-center gap-1.5" title={activityType === 'running' ? "Läufergewicht" : "Fahrergewicht"}>
               <Gauge className="w-3.5 h-3.5 text-indigo-500" />
               <span>Gewicht:</span>
               <input
@@ -786,7 +796,7 @@ GPX Route Master Pro`;
             }`}
           >
             <Gauge className="w-4 h-4" />
-            <span>Fahrzeit & Physis</span>
+            <span>{activityType === 'running' ? 'Laufzeit & Physis' : 'Fahrzeit & Physis'}</span>
           </button>
 
           <button
@@ -943,7 +953,9 @@ GPX Route Master Pro`;
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Reine Fahrzeit (Netto)</span>
+                    <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                      {activityType === 'running' ? 'Reine Laufzeit (Netto)' : 'Reine Fahrzeit (Netto)'}
+                    </span>
                     <Clock className="w-4 h-4 text-indigo-500" />
                   </div>
                   <div className="text-xl font-black text-slate-900 dark:text-white">
@@ -956,14 +968,26 @@ GPX Route Master Pro`;
 
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Ø-Geschwindigkeit</span>
+                    <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                      {activityType === 'running' ? 'Ø-Laufpace' : 'Ø-Geschwindigkeit'}
+                    </span>
                     <Activity className="w-4 h-4 text-blue-500" />
                   </div>
                   <div className="text-xl font-black text-slate-900 dark:text-white">
-                    {analysis.estimatedAverageSpeedKmh} <span className="text-xs font-normal text-slate-400">km/h</span>
+                    {activityType === 'running' ? (
+                      <>
+                        {(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} <span className="text-xs font-normal text-slate-400">min/km</span>
+                      </>
+                    ) : (
+                      <>
+                        {analysis.estimatedAverageSpeedKmh} <span className="text-xs font-normal text-slate-400">km/h</span>
+                      </>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                    Pace: {(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km
+                    {activityType === 'running'
+                      ? `Tempo: ${analysis.estimatedAverageSpeedKmh} km/h`
+                      : `Pace: ${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km`}
                   </div>
                 </div>
 
@@ -1109,7 +1133,9 @@ GPX Route Master Pro`;
                     </div>
                   </div>
                   <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400">Abfahrt (&lt; -2.5%)</span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {activityType === 'running' ? 'Gefälle / Bergab (< -2.5%)' : 'Abfahrt (< -2.5%)'}
+                    </span>
                     <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-0.5">
                       {analysis.descentDistanceKm} km
                     </div>
@@ -1125,16 +1151,18 @@ GPX Route Master Pro`;
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                    Kategorisierte Anstiege & Bergwertungen
+                    {activityType === 'running' ? 'Kategorisierte Anstiege & Berglauf-Profile' : 'Kategorisierte Anstiege & Bergwertungen'}
                   </h4>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Detaillierte Analyse aller signifikanten Steigungsabschnitte mit Steigleistung (VAM), Zeit- & Wattprognosen.
+                    {activityType === 'running'
+                      ? 'Detaillierte Analyse aller signifikanten Steigungsabschnitte mit Steigleistung (VAM), Laufzeit- & Paceprognosen.'
+                      : 'Detaillierte Analyse aller signifikanten Steigungsabschnitte mit Steigleistung (VAM), Zeit- & Wattprognosen.'}
                   </p>
                 </div>
 
                 <div className="flex items-center gap-2">
                   <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                    {analysis.climbs.length} {analysis.climbs.length === 1 ? 'Anstieg' : 'Anstiege'} erkannt
+                    {analysis.climbs.length} {analysis.climbs.length === 1 ? (activityType === 'running' ? 'Trail-Anstieg' : 'Anstieg') : (activityType === 'running' ? 'Trail-Anstiege' : 'Anstiege')} erkannt
                   </span>
                 </div>
               </div>
@@ -1142,7 +1170,9 @@ GPX Route Master Pro`;
               {/* KPI Ribbon */}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
-                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Bergwertungen</span>
+                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    {activityType === 'running' ? 'Steigungs-Segmente' : 'Bergwertungen'}
+                  </span>
                   <div className="text-lg font-black text-slate-900 dark:text-white mt-0.5">
                     {analysis.climbs.length}
                   </div>
@@ -1316,7 +1346,9 @@ GPX Route Master Pro`;
                         </div>
 
                         <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                          <span className="text-[10px] text-slate-400 block mb-0.5">Prognose Fahrzeit</span>
+                          <span className="text-[10px] text-slate-400 block mb-0.5">
+                            {(activityType === 'running' || analysis.activityType === 'running') ? 'Prognose Laufzeit' : 'Prognose Fahrzeit'}
+                          </span>
                           <span className="font-black text-indigo-600 dark:text-indigo-400 text-sm">
                             {formatSecondsToTime(climb.estimatedTimeSeconds)}
                           </span>
@@ -1324,7 +1356,7 @@ GPX Route Master Pro`;
 
                         <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
                           <span className="text-[10px] text-slate-400 block mb-0.5">
-                            {analysis.activityType === 'cycling' ? 'Zielleistung' : 'Pace'}
+                            {(activityType === 'cycling' && analysis.activityType !== 'running') ? 'Zielleistung' : 'Lauf-Pace'}
                           </span>
                           <span className="font-bold text-slate-800 dark:text-slate-200">
                             {climb.estimatedPowerWatts ? `~${climb.estimatedPowerWatts} W` : 'Pacing Z3'}
@@ -1672,8 +1704,10 @@ GPX Route Master Pro`;
           {activeTab === 'zones' && (
             <ZonesTab
               track={track}
+              activityType={activityType}
               initialMaxHr={userMaxHr}
               initialFtp={customFtp}
+              initialWeight={customWeight}
               onOpenGlossary={onOpenGlossary}
             />
           )}
@@ -1697,7 +1731,11 @@ GPX Route Master Pro`;
         <div className="px-5 py-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-1.5 font-medium">
             <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-            <span>Streckenmodell basiert auf physikalischer Gravitations- & Leistungskurve</span>
+            <span>
+              {activityType === 'running'
+                ? 'Laufmodell basiert auf biomechanischer Gravitations- & Leistungskurve'
+                : 'Streckenmodell basiert auf physikalischer Gravitations- & Leistungskurve'}
+            </span>
           </div>
 
           <button

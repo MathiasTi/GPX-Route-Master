@@ -4,6 +4,7 @@ import { GPXTrack, GPXPoint } from '../types';
 
 export interface HeartRateZonesProps {
   track: GPXTrack;
+  activityType?: 'cycling' | 'running';
   maxHr: number;
   onMaxHrChange: (maxHr: number) => void;
 }
@@ -27,9 +28,13 @@ export interface ZoneData {
 
 export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
   track,
+  activityType,
   maxHr,
   onMaxHrChange
 }) => {
+  const effectiveActivityType = activityType || track.activityType || 'cycling';
+  const isRunning = effectiveActivityType === 'running';
+
   // Check if current track has real HR data
   const hasRealHr = useMemo(() => {
     return track.points.some(p => p.hr !== undefined && p.hr > 0);
@@ -41,8 +46,11 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
       return track.points;
     }
 
-    // Adaptively simulate HR based on max HR, slope, and terrain
-    const baselineHr = Math.round(maxHr * 0.62); // standard aerobic base (~115 bpm for 185 max)
+    // Adaptively simulate HR based on max HR, slope, terrain, and activity type
+    // Running typically has a higher baseline HR (~66-68%) vs Cycling (~60-62%) due to upright gravity load
+    const baselineHr = isRunning
+      ? Math.round(maxHr * 0.67)
+      : Math.round(maxHr * 0.62);
     let prevHr = baselineHr;
 
     return track.points.map((pt, idx) => {
@@ -64,10 +72,11 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
       }
 
       // Heart rate takes time to catch up with slope (inertia)
-      let targetHr = baselineHr + (slope * (maxHr * 0.03));
+      const slopeFactor = isRunning ? 0.035 : 0.03;
+      let targetHr = baselineHr + (slope * (maxHr * slopeFactor));
       
       // Bound simulator between 50% and 100% of max HR
-      const minLimit = Math.round(maxHr * 0.48);
+      const minLimit = isRunning ? Math.round(maxHr * 0.52) : Math.round(maxHr * 0.48);
       const maxLimit = maxHr;
       if (targetHr < minLimit) targetHr = minLimit;
       if (targetHr > maxLimit) targetHr = maxLimit;
@@ -80,10 +89,85 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
         hr: smoothedHr
       };
     });
-  }, [track, hasRealHr, maxHr]);
+  }, [track, hasRealHr, maxHr, isRunning]);
 
-  // 5 standard zones of physical exertion based on Max HR
+  // 5 standard zones of physical exertion based on Max HR (adapted for Running vs Cycling)
   const zonesConfig = useMemo(() => {
+    if (isRunning) {
+      return [
+        {
+          key: 1,
+          name: 'Z1 Erholung',
+          fullName: 'Z1 Kompensation / Recom (Laufen)',
+          minPercent: 50,
+          maxPercent: 60,
+          minBpm: Math.round(maxHr * 0.50),
+          maxBpm: Math.round(maxHr * 0.60),
+          color: '#3b82f6', // blue-500
+          textColor: 'text-blue-700 dark:text-blue-400',
+          bgColor: 'bg-blue-50 dark:bg-blue-950/20',
+          borderColor: 'border-blue-200/50 dark:border-blue-900/30',
+          desc: 'Aktive Erholung, sehr lockeres Traben oder Gehen. Schont Gelenke und beschleunigt die Regeneration.'
+        },
+        {
+          key: 2,
+          name: 'Z2 GA1',
+          fullName: 'Z2 Grundlagenausdauer 1 (Lockerer Dauerlauf)',
+          minPercent: 60,
+          maxPercent: 70,
+          minBpm: Math.round(maxHr * 0.60),
+          maxBpm: Math.round(maxHr * 0.70),
+          color: '#10b981', // emerald-500
+          textColor: 'text-emerald-700 dark:text-emerald-400',
+          bgColor: 'bg-emerald-50 dark:bg-emerald-950/20',
+          borderColor: 'border-emerald-200/50 dark:border-emerald-900/30',
+          desc: 'Klassischer Grundlagendauerlauf. Fördert Fettverbrennung, Kapillarisierung und Sehnenstabilität.'
+        },
+        {
+          key: 3,
+          name: 'Z3 GA2',
+          fullName: 'Z3 Grundlagenausdauer 2 (Tempodauerlauf / MRT)',
+          minPercent: 70,
+          maxPercent: 80,
+          minBpm: Math.round(maxHr * 0.70),
+          maxBpm: Math.round(maxHr * 0.80),
+          color: '#eab308', // amber-500
+          textColor: 'text-amber-700 dark:text-amber-400',
+          bgColor: 'bg-amber-50 dark:bg-amber-950/20',
+          borderColor: 'border-amber-200/50 dark:border-amber-900/30',
+          desc: 'Zügiges Laufen, Marathontempo (MRT). Vertiefte Atmung, stärkt die aerobe Tempohärte.'
+        },
+        {
+          key: 4,
+          name: 'Z4 Schwelle',
+          fullName: 'Z4 Entwicklungsbereich (Schwellenlauf / TDL)',
+          minPercent: 80,
+          maxPercent: 90,
+          minBpm: Math.round(maxHr * 0.80),
+          maxBpm: Math.round(maxHr * 0.90),
+          color: '#f97316', // orange-500
+          textColor: 'text-orange-700 dark:text-orange-400',
+          bgColor: 'bg-orange-50 dark:bg-orange-950/20',
+          borderColor: 'border-orange-200/50 dark:border-orange-900/30',
+          desc: 'Laktatschwelle (10k-Renntempo). Schult die Laktattoleranz und Laktat-Pufferung im Muskel.'
+        },
+        {
+          key: 5,
+          name: 'Z5 Spitze',
+          fullName: 'Z5 Spitzenbereich (VO2max / Intervalle)',
+          minPercent: 90,
+          maxPercent: 100,
+          minBpm: Math.round(maxHr * 0.90),
+          maxBpm: maxHr,
+          color: '#ef4444', // red-500
+          textColor: 'text-red-700 dark:text-red-400',
+          bgColor: 'bg-red-50 dark:bg-red-950/20',
+          borderColor: 'border-red-200/50 dark:border-red-900/30',
+          desc: 'Maximale Belastung bei Bahn-Intervallen (400m-1000m) und Zielsprints. Steigert die VO2max.'
+        }
+      ];
+    }
+
     return [
       {
         key: 1,
@@ -156,7 +240,7 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
         desc: 'Maximale anaerobe Belastung. Verbessert die absolute Sprintfähigkeit, VO2max sowie Muskelrekrutierung.'
       }
     ];
-  }, [maxHr]);
+  }, [maxHr, isRunning]);
 
   // Process time distribution inside zones
   const stats = useMemo(() => {
@@ -247,6 +331,25 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
 
   return (
     <div className="space-y-4">
+      {/* Sport Activity Badge */}
+      <div className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between ${
+        isRunning 
+          ? 'bg-amber-500/10 text-amber-900 dark:text-amber-200 border border-amber-300/40 dark:border-amber-700/40' 
+          : 'bg-indigo-500/10 text-indigo-900 dark:text-indigo-200 border border-indigo-300/40 dark:border-indigo-700/40'
+      }`}>
+        <div className="flex items-center gap-2">
+          <span>{isRunning ? '🏃' : '🚴'}</span>
+          <span className="text-[11px]">
+            {isRunning
+              ? 'Lauf-Physiologie aktiv: Angepasste Zonenbeschreibungen für Dauerlauf, TDL & VO2max'
+              : 'Radsport-Physiologie aktiv: Angepasste Zonenbeschreibungen für Grundlagenausdauer & EB'}
+          </span>
+        </div>
+        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/70 dark:bg-slate-800/80 font-black uppercase">
+          {effectiveActivityType}
+        </span>
+      </div>
+
       {/* Simulation Banner if needed */}
       {!hasRealHr && (
         <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl flex items-start gap-2.5">

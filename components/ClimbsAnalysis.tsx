@@ -13,9 +13,9 @@ interface ClimbsAnalysisProps {
   onSelection?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null) => void;
 }
 
-const PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCriteria }> = {
+const CYCLING_PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCriteria }> = {
   standard: {
-    label: 'Standard',
+    label: 'Standard (Rad)',
     desc: 'Mildere Erkennung, für hügeliges / welliges Terrain.',
     criteria: { type: 'standard', minDistance: 150, minGradient: 1.5, minScore: 0, smoothingWindow: 30 }
   },
@@ -36,6 +36,29 @@ const PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCrit
   }
 };
 
+const RUNNING_PRESETS: Record<string, { label: string; desc: string; criteria: ClimbCriteria }> = {
+  trail: {
+    label: 'Trail & Berglauf',
+    desc: 'Sensible Kriterien für Läufer (ab 120m Länge und 3.5% Steigung).',
+    criteria: { type: 'standard', minDistance: 120, minGradient: 3.5, minScore: 400, smoothingWindow: 20 }
+  },
+  skyrun: {
+    label: 'Skyrunning / Vertikal',
+    desc: 'Erkennt Steilrampen & Kletteranstiege für Bergläufer (ab 8% Steigung).',
+    criteria: { type: 'custom', minDistance: 200, minGradient: 8.0, minScore: 1200, smoothingWindow: 25 }
+  },
+  standard: {
+    label: 'Hügellauf (Standard)',
+    desc: 'Mäßige Anstiege für Stadt- & Landschaftsläufe.',
+    criteria: { type: 'standard', minDistance: 150, minGradient: 2.5, minScore: 300, smoothingWindow: 25 }
+  },
+  custom: {
+    label: 'Individuell',
+    desc: 'Passe Schwellen, Steigung und Glättung manuell an.',
+    criteria: { type: 'custom', minDistance: 150, minGradient: 3.0, minScore: 400, smoothingWindow: 20 }
+  }
+};
+
 export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({ 
   track, 
   onClose, 
@@ -45,6 +68,11 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
 }) => {
   const [selectedClimbIndex, setSelectedClimbIndex] = useState<number | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [sportMode, setSportMode] = useState<'cycling' | 'running'>(
+    track.activityType === 'running' ? 'running' : 'cycling'
+  );
+  const isRunning = sportMode === 'running';
+
   const [activeCriteria, setActiveCriteria] = useState<ClimbCriteria>(() => {
     return getActiveClimbCriteria();
   });
@@ -114,14 +142,21 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
     return findClimbs(track.points || [], activeCriteria);
   }, [track.points, activeCriteria]);
 
-  // Calculate difficulty categories
+  // Calculate difficulty categories based on sport
   const getClimbCategory = (ascent: number, avgGrad: number, distM: number) => {
     const score = (ascent * avgGrad) / 10 + (ascent * ascent / distM) * 0.1;
-    if (score >= 200) return { label: 'HC (Hors Catégorie)', color: 'bg-black text-white border-slate-900', desc: 'Legendärer Anstieg. Brutal steil und extrem lang.' };
-    if (score >= 120) return { label: 'Kategorie 1', color: 'bg-rose-600 text-white border-rose-700', desc: 'Schwerer Anstieg. Lange Auffahrt mit viel Gesamthöhenmetern.' };
-    if (score >= 50) return { label: 'Kategorie 2', color: 'bg-orange-500 text-white border-orange-600', desc: 'Moderater Berg. Mittelschwere Steigungsprozente.' };
-    if (score >= 20) return { label: 'Kategorie 3', color: 'bg-amber-500 text-slate-900 border-amber-600', desc: 'Leichterer Hügel. Für fitte Sportler gut fahrbar.' };
-    return { label: 'Kategorie 4', color: 'bg-blue-500 text-white border-blue-600', desc: 'Kleiner Hügel / kurze Steigung. Perfekt für Antritte.' };
+    if (isRunning) {
+      if (score >= 180) return { label: 'HC (Trail Extrem)', color: 'bg-black text-white border-slate-900', desc: 'Extremer Skyrun- & Trail-Anstieg. Ab 15% meist Power-Hiking erforderlich.' };
+      if (score >= 100) return { label: 'Kategorie 1', color: 'bg-rose-600 text-white border-rose-700', desc: 'Schwerer Berglauf-Anstieg mit hoher kardiovaskulärer Vertikallast.' };
+      if (score >= 45) return { label: 'Kategorie 2', color: 'bg-orange-500 text-white border-orange-600', desc: 'Moderater Trail-Berg. Im stetigen Berglaufschritt fordernd zu bewältigen.' };
+      if (score >= 18) return { label: 'Kategorie 3', color: 'bg-amber-500 text-slate-900 border-amber-600', desc: 'Hügeliger Laufabschnitt. Flüssig im Laufrhythmus durchlaufbar.' };
+      return { label: 'Kategorie 4', color: 'bg-blue-500 text-white border-blue-600', desc: 'Kurze Steigungswelle. Ideal für Zwischenantritte und Bergsprints.' };
+    }
+    if (score >= 200) return { label: 'HC (Hors Catégorie)', color: 'bg-black text-white border-slate-900', desc: 'Legendärer Pass für den Radsport. Brutal steil und extrem lang.' };
+    if (score >= 120) return { label: 'Kategorie 1', color: 'bg-rose-600 text-white border-rose-700', desc: 'Schwerer Anstieg. Lange Auffahrt mit vielen Gesamthöhenmetern.' };
+    if (score >= 50) return { label: 'Kategorie 2', color: 'bg-orange-500 text-white border-orange-600', desc: 'Moderater Berg. Mittelschwere Steigungsprozente für Rennrad/Gravel.' };
+    if (score >= 20) return { label: 'Kategorie 3', color: 'bg-amber-500 text-slate-900 border-amber-600', desc: 'Leichterer Hügel. Für fitte Radsportler flüssig fahrbar.' };
+    return { label: 'Kategorie 4', color: 'bg-blue-500 text-white border-blue-600', desc: 'Kleiner Hügel / kurze Steigung. Perfekt für Kurbelantritte.' };
   };
 
   const climbsDetailed = useMemo(() => {
@@ -132,6 +167,15 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
       const startEle = segmentPoints[0]?.ele ?? 0;
       const endEle = segmentPoints[segmentPoints.length - 1]?.ele ?? 0;
 
+      // Calculate duration & VAM (Vertical Ascent Speed in m/h) if timestamps exist
+      let durationSec = 0;
+      const startTime = segmentPoints[0]?.time;
+      const endTime = segmentPoints[segmentPoints.length - 1]?.time;
+      if (startTime && endTime) {
+        durationSec = Math.max(0, (new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
+      }
+      const vam = durationSec > 10 ? Math.round((climb.ascent / (durationSec / 3600))) : null;
+
       return {
         ...climb,
         index: idx,
@@ -139,9 +183,11 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
         category: cat,
         startElevation: startEle,
         endElevation: endEle,
+        durationSec,
+        vam
       };
     });
-  }, [climbs, track.points]);
+  }, [climbs, track.points, isRunning]);
 
   const totalClimbAscent = useMemo(() => {
     return climbs.reduce((acc, c) => acc + c.ascent, 0);
@@ -155,8 +201,10 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
     } catch (e) {}
   };
 
+  const currentPresets = isRunning ? RUNNING_PRESETS : CYCLING_PRESETS;
+
   const handleApplyPreset = (presetKey: string) => {
-    const preset = PRESETS[presetKey];
+    const preset = currentPresets[presetKey] || CYCLING_PRESETS[presetKey] || RUNNING_PRESETS[presetKey];
     if (preset) {
       const updated = { ...preset.criteria, type: presetKey as any };
       setActiveCriteria(updated);
@@ -181,16 +229,25 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
         className="bg-white dark:bg-slate-900 w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header banner */}
+        {/* Header banner with distinct Running vs Cycling Switcher */}
         <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-950/20 shrink-0 gap-2">
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
-            <div className="p-2 sm:p-2.5 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 rounded-2xl shrink-0">
+            <div className={`p-2 sm:p-2.5 rounded-2xl shrink-0 ${isRunning ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400' : 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400'}`}>
               <TrendingUp size={20} className="animate-pulse" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 leading-snug truncate">
-                Bergwertungs- & Steigungs-Analyse
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 leading-snug">
+                  {isRunning ? '🏃 Trail- & Berglauf-Analyse' : '🚴 Bergwertungs- & Rad-Analyse'}
+                </h2>
+                <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                  isRunning 
+                    ? 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800'
+                    : 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
+                }`}>
+                  {isRunning ? 'Laufsport-Modus' : 'Radsport-Modus'}
+                </span>
+              </div>
               <p className="text-[10px] sm:text-xs text-slate-400 font-bold leading-none mt-1 truncate">
                 Route: <span className="text-indigo-600 dark:text-indigo-400 font-black">{track.name}</span>
               </p>
@@ -198,6 +255,36 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
           </div>
           
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Sport Switcher Toggle */}
+            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl gap-1 shrink-0 border border-slate-200/80 dark:border-slate-700/80">
+              <button
+                type="button"
+                onClick={() => setSportMode('cycling')}
+                className={`px-2.5 py-1 text-xs font-black rounded-xl transition-all flex items-center gap-1 cursor-pointer ${
+                  !isRunning
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+                title="Radsport-Modus (Coggan / Bergwertungen)"
+              >
+                <span>🚴</span>
+                <span className="hidden sm:inline">Rad</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSportMode('running')}
+                className={`px-2.5 py-1 text-xs font-black rounded-xl transition-all flex items-center gap-1 cursor-pointer ${
+                  isRunning
+                    ? 'bg-orange-500 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+                title="Laufsport-Modus (Trailrunning & Berglauf)"
+              >
+                <span>🏃</span>
+                <span className="hidden sm:inline">Lauf/Trail</span>
+              </button>
+            </div>
+
             {/* Settings button */}
             <button
               onClick={() => setShowConfig(!showConfig)}
@@ -208,7 +295,7 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
               }`}
             >
               <Settings size={16} />
-              <span className="hidden sm:inline">Konfiguration</span>
+              <span className="hidden sm:inline">Kriterien</span>
             </button>
 
             <button
@@ -308,7 +395,7 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
                               </span>
                             )}
                             <span className="bg-slate-900/85 backdrop-blur-md border border-white/10 text-white font-mono text-[10px] font-black px-2 py-1 rounded-xl shadow-lg">
-                              #{climb.index + 1} Bergwertung
+                              #{climb.index + 1} {isRunning ? 'Trail-Sektion' : 'Bergwertung'}
                             </span>
                           </div>
                         </div>
@@ -336,6 +423,30 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
                                   {climb.avgGradient.toFixed(1)}%
                                 </span>
                               </div>
+                            </div>
+
+                            {/* VAM or Sport Characteristic highlight */}
+                            <div className="flex items-center justify-between text-[10px] font-bold py-1 px-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
+                              <span className="text-slate-500 dark:text-slate-400">
+                                {isRunning ? 'Lauf-Charakter:' : 'Rad-Klassifizierung:'}
+                              </span>
+                              <span className={`font-black ${
+                                climb.avgGradient >= 15
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : climb.avgGradient >= 8
+                                  ? 'text-orange-600 dark:text-orange-400'
+                                  : 'text-indigo-600 dark:text-indigo-400'
+                              }`}>
+                                {isRunning 
+                                  ? (climb.avgGradient >= 15 ? '🧗 Power-Hiking' : climb.avgGradient >= 8 ? '🏃 Berglauf' : '🏃 Flüssig laufbar')
+                                  : (climb.avgGradient >= 15 ? '⚙️ Wiegetritt / Steilrampe' : climb.avgGradient >= 8 ? '🚴 Bergübersetzung' : '🚴 Rouleur / Tempo')
+                                }
+                              </span>
+                              {climb.vam && (
+                                <span className="font-mono text-slate-700 dark:text-slate-300">
+                                  VAM: <strong className="text-indigo-600 dark:text-indigo-400">{climb.vam}</strong> m/h
+                                </span>
+                              )}
                             </div>
 
                             {/* Elevation Profile representation */}
@@ -432,10 +543,17 @@ export const ClimbsAnalysis: React.FC<ClimbsAnalysisProps> = ({
                 <div className="p-6 space-y-6 flex-1 overflow-y-auto">
                   {/* Preset Buttons */}
                   <div className="space-y-2.5">
-                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block dark:text-slate-500">Erkennungs-Modus / Profile</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block dark:text-slate-500">
+                        {isRunning ? 'Lauf- & Trail-Profile' : 'Radsport-Profile'}
+                      </label>
+                      <span className="text-[9px] font-bold text-slate-400">
+                        {isRunning ? '🏃 Berglauf' : '🚴 Radsport'}
+                      </span>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
-                      {Object.keys(PRESETS).map((key) => {
-                        const pre = PRESETS[key];
+                      {Object.keys(currentPresets).map((key) => {
+                        const pre = currentPresets[key];
                         const isSelected = activeCriteria.type === key;
                         return (
                           <button

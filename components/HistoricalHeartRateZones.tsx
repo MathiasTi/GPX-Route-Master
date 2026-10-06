@@ -65,6 +65,7 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
     return tracks.map(t => t.id);
   });
   const [onlyRealSensors, setOnlyRealSensors] = useState<boolean>(false);
+  const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
 
   // Sync state if tracks change (e.g. new file uploaded)
   const allTrackIds = useMemo(() => tracks.map(t => t.id), [tracks]);
@@ -82,6 +83,7 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
       return {
         id: track.id,
         name: track.name,
+        activityType: track.activityType || 'cycling',
         date: track.points[0]?.time || new Date(),
         distance: track.distance,
         duration: track.duration || 0,
@@ -106,13 +108,14 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
     }
   };
 
-  // Filter track info list based on sensor filter
+  // Filter track info list based on sensor filter and sport activity
   const filteredTrackInfoList = useMemo(() => {
-    if (onlyRealSensors) {
-      return trackInfoList.filter(t => t.hasRealHr);
-    }
-    return trackInfoList;
-  }, [trackInfoList, onlyRealSensors]);
+    return trackInfoList.filter(t => {
+      if (onlyRealSensors && !t.hasRealHr) return false;
+      if (activityFilter !== 'all' && t.activityType !== activityFilter) return false;
+      return true;
+    });
+  }, [trackInfoList, onlyRealSensors, activityFilter]);
 
   // Toggle individual track
   const handleToggleTrack = (id: string) => {
@@ -522,24 +525,65 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
           </div>
 
           {/* Quick Filters */}
-          <div className="flex flex-wrap gap-2 text-[10.5px]">
-            <button 
-              onClick={() => setOnlyRealSensors(prev => !prev)}
-              className={`px-3 py-1.5 rounded-xl border font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                onlyRealSensors 
-                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-800 dark:text-emerald-400' 
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              Nur echte Sensor-Werte ({trackInfoList.filter(t => t.hasRealHr).length})
-            </button>
-            <button
-              onClick={handleToggleSelectAll}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 font-bold dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400 transition-all cursor-pointer"
-            >
-              {selectedTrackIds.length === filteredTrackInfoList.length ? 'Alle abwählen' : 'Alle auswählen'}
-            </button>
+          <div className="space-y-2">
+            {/* Sport Selector */}
+            <div className="flex bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-xl text-[10px] font-bold">
+              <button
+                type="button"
+                onClick={() => setActivityFilter('all')}
+                className={`flex-1 py-1 px-2 rounded-lg transition-all text-center ${
+                  activityFilter === 'all'
+                    ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                }`}
+              >
+                Alle ({trackInfoList.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivityFilter('cycling')}
+                className={`flex-1 py-1 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1 ${
+                  activityFilter === 'cycling'
+                    ? 'bg-white dark:bg-slate-700 text-indigo-750 dark:text-indigo-300 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                }`}
+              >
+                <span>🚴</span>
+                <span>Rad ({trackInfoList.filter(t => t.activityType === 'cycling').length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivityFilter('running')}
+                className={`flex-1 py-1 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1 ${
+                  activityFilter === 'running'
+                    ? 'bg-white dark:bg-slate-700 text-amber-750 dark:text-amber-300 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                }`}
+              >
+                <span>🏃</span>
+                <span>Lauf ({trackInfoList.filter(t => t.activityType === 'running').length})</span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2 text-[10.5px]">
+              <button 
+                onClick={() => setOnlyRealSensors(prev => !prev)}
+                className={`px-3 py-1.5 rounded-xl border font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  onlyRealSensors 
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-800 dark:text-emerald-400' 
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Nur echte Sensor-Werte ({trackInfoList.filter(t => t.hasRealHr).length})
+              </button>
+              <button
+                onClick={handleToggleSelectAll}
+                className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 font-bold dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400 transition-all cursor-pointer"
+              >
+                {selectedTrackIds.length === filteredTrackInfoList.length ? 'Alle abwählen' : 'Alle auswählen'}
+              </button>
+            </div>
           </div>
 
           {/* List of track activities with custom checkboxes */}
@@ -551,6 +595,7 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
             ) : (
               filteredTrackInfoList.map(t => {
                 const isSelected = selectedTrackIds.includes(t.id);
+                const isRunning = t.activityType === 'running';
                 return (
                   <div
                     key={t.id}
@@ -571,8 +616,9 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
                     
                     <div className="min-w-0 flex-1">
                       <div className="flex justify-between items-start gap-1">
-                        <span className={`text-[11px] font-bold truncate block ${isSelected ? 'text-slate-800 dark:text-slate-200' : 'text-slate-450'}`}>
-                          {t.name}
+                        <span className={`text-[11px] font-bold truncate flex items-center gap-1 ${isSelected ? 'text-slate-800 dark:text-slate-200' : 'text-slate-450'}`}>
+                          <span>{isRunning ? '🏃' : '🚴'}</span>
+                          <span className="truncate">{t.name}</span>
                         </span>
                         <span className="text-[9px] font-mono shrink-0 text-slate-400 text-right mt-0.5">
                           {t.date.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })}

@@ -14,6 +14,17 @@ import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
+const isFitTrack = (t?: GPXTrack | null): boolean => {
+  if (!t) return false;
+  return Boolean(
+    t.rawFileDetails?.fileType === 'fit' ||
+    t.originalFilename?.toLowerCase().endsWith('.fit') ||
+    t.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
+    t.name?.toLowerCase().endsWith('.fit') ||
+    t.id?.startsWith('fit-')
+  );
+};
+
 interface ElevationProfileProps {
   track: GPXTrack;
   onHoverPoint?: (point: GPXPoint | null) => void;
@@ -247,14 +258,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       
       const ele = pointsToUse[i].ele;
 
-      // Calculate instant/interval speed if timestamps are present
+      // Calculate instant/interval speed if present or from timestamps
       let s = 0;
-      const t1 = pointsToUse[i - 1].time;
-      const t2 = pointsToUse[i].time;
-      if (t1 && t2) {
-        const dt = (new Date(t2).getTime() - new Date(t1).getTime()) / 1000;
-        if (dt > 0 && dt < 120) { // skip anomalies/breaks larger than 120 seconds
-          s = (distStep / (dt / 3600));
+      if (pointsToUse[i].speed !== undefined && pointsToUse[i].speed > 0) {
+        // If speed is in m/s (FIT legacy or < 15 with isFitTrack), convert to km/h, otherwise use directly
+        s = (isFitTrack(track) && pointsToUse[i].speed < 15) ? pointsToUse[i].speed * 3.6 : pointsToUse[i].speed;
+      } else {
+        const t1 = pointsToUse[i - 1].time;
+        const t2 = pointsToUse[i].time;
+        if (t1 && t2) {
+          const dt = (new Date(t2).getTime() - new Date(t1).getTime()) / 1000;
+          if (dt > 0 && dt < 120) { // skip anomalies/breaks larger than 120 seconds
+            s = (distStep / (dt / 3600));
+          }
         }
       }
 
@@ -636,8 +652,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       onHoverPoint({
         ...originalPoint,
         slope: point.slope,
-        dist: point.dist
-      });
+        dist: point.dist,
+        trackId: track.id,
+        speed: point.speed ?? originalPoint.speed
+      } as any);
     }
   };
 
@@ -710,8 +728,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       onHoverPoint({
         ...originalPoint,
         slope: point.slope,
-        dist: point.dist
-      });
+        dist: point.dist,
+        trackId: track.id,
+        speed: point.speed ?? originalPoint.speed
+      } as any);
     }
   };
 
@@ -1027,7 +1047,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   onChange={(e) => setShowCadence(e.target.checked)}
                   className="w-3.5 h-3.5 text-purple-550 rounded bg-slate-100 border-slate-300 focus:ring-purple-550 cursor-pointer"
                 />
-                Trittfrequenz
+                {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
               </label>
             )}
             <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 transition-colors">
@@ -1252,7 +1272,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   onChange={(e) => setShowCadence(e.target.checked)}
                   className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-purple-500"
                 />
-                Trittfrequenz
+                {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
               </label>
             )}
             <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
@@ -1515,7 +1535,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 <span className="text-rose-400 font-black">{Math.round(hoverInfo.hr)} bpm</span>
               )}
               {hoverInfo.speed !== undefined && (
-                <span className="text-teal-300 font-bold">{hoverInfo.speed.toFixed(1)} km/h</span>
+                <span 
+                  className="text-teal-300 font-bold"
+                  title={isFitTrack(track) || track.activityType === 'running' ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${getPaceString(hoverInfo.speed)}`}
+                >
+                  {isFitTrack(track) || track.activityType === 'running'
+                    ? getPaceString(hoverInfo.speed)
+                    : `${hoverInfo.speed.toFixed(1)} km/h`}
+                </span>
               )}
             </div>
           </div>
@@ -2089,9 +2116,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 }
                 
                 if (hasSpeed) {
+                  const showPace = isFitTrack(track) || track.activityType === 'running';
                   rows.push({
-                    label: track.activityType === 'running' ? "Pace:" : "Tempo:",
-                    val: track.activityType === 'running'
+                    label: showPace ? "Pace:" : "Tempo:",
+                    val: showPace
                       ? getPaceString(hoverInfo.speed!)
                       : `${hoverInfo.speed!.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`,
                     color: "fill-teal-400"
@@ -2099,9 +2127,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 }
                 
                 if (hasCadence) {
+                  const isRun = track.activityType === 'running';
+                  const rawCad = hoverInfo.cadence!;
+                  const displayCad = isRun && rawCad > 0 && rawCad < 110 ? rawCad * 2 : rawCad;
                   rows.push({
-                    label: "Trittfrequenz:",
-                    val: `${hoverInfo.cadence!.toLocaleString('de-DE', { maximumFractionDigits: 0 })} rpm`,
+                    label: isRun ? "Schrittfrequenz:" : "Trittfrequenz:",
+                    val: `${displayCad.toLocaleString('de-DE', { maximumFractionDigits: 0 })} ${isRun ? 'spm' : 'rpm'}`,
                     color: "fill-purple-400"
                   });
                 }

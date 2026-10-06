@@ -1428,7 +1428,11 @@ export const validateGPX = (xmlString: string): { isValid: boolean; error?: stri
 
 export const detectActivityType = (points: GPXPoint[], name: string, fileName: string): 'cycling' | 'running' => {
   const combined = (name + " " + fileName).toLowerCase();
-  const keywords = ['run', 'lauf', 'jog', 'walk', 'hiking', 'running', 'laufen', 'jogging', 'spazier', 'wander', 'pace', 'lauft'];
+  const keywords = [
+    'run', 'lauf', 'jog', 'walk', 'hiking', 'running', 'laufen', 'jogging',
+    'spazier', 'wander', 'pace', 'lauft', 'marathon', 'halbmarathon', 'trail',
+    'trailrun', 'ultratrail', 'dauerlauf', 'tempodauerlauf', 'crosslauf', 'berglauf'
+  ];
   for (const kw of keywords) {
     if (combined.includes(kw)) return 'running';
   }
@@ -1587,7 +1591,17 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       }
     }
 
-    const activityType = detectActivityType(points, activityName, fileName);
+    // Extract activity type from GPX XML type tag or heuristic
+    const typeNode = xml.querySelector("trk > type") || xml.querySelector("gpx > metadata > type") || xml.querySelector("type");
+    const parsedType = typeNode?.textContent?.trim().toLowerCase() || "";
+    let activityType: 'cycling' | 'running';
+    if (parsedType.includes('run') || parsedType.includes('lauf') || parsedType.includes('jog') || parsedType.includes('walk') || parsedType.includes('hike') || parsedType.includes('trail')) {
+      activityType = 'running';
+    } else if (parsedType.includes('cycle') || parsedType.includes('bike') || parsedType.includes('rad') || parsedType.includes('ride')) {
+      activityType = 'cycling';
+    } else {
+      activityType = detectActivityType(points, activityName, fileName);
+    }
     const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
     const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     

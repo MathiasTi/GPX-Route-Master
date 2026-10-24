@@ -1,10 +1,21 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, getAllTracksFull, updateTrackMetadata, deleteTrack, clearAllTracks, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings, seedCuratedTours } from "./utils/db.js";
+import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, getAllTracksFull, updateTrackMetadata, deleteTrack, clearAllTracks, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, searchGarminHealthMetrics, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings, seedCuratedTours } from "./utils/db.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
+import {
+  getGarminPersonalApiStatus,
+  purgeLegacyPersistentGarminSecrets,
+  clearGarminPersonalApiConfig,
+  clearGarminCachedToken,
+  validateGarminBaseUrl,
+  getGarminBearerToken,
+  syncGarminPersonalActivities,
+  syncGarminPersonalHealth,
+  downloadAndParseGarminActivityFit
+} from "./utils/garminPersonalApi.js";
 import { SqliteTrackRepository } from "./infrastructure/repositories/sqliteTrackRepository.js";
 import { GetTrackByIdUseCase } from "./application/usecases/track/getTrackById.usecase.js";
 import { SaveTrackUseCase } from "./application/usecases/track/saveTrack.usecase.js";
@@ -41,8 +52,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Initialize the SQLite database
+  // Initialize the SQLite database and purge any legacy persisted Garmin API keys
   initDb();
+  purgeLegacyPersistentGarminSecrets();
 
   // Initialize Clean Architecture Ports and Adapters
   const trackRepository = new SqliteTrackRepository();
@@ -61,17 +73,36 @@ async function startServer() {
     const origin = req.headers.origin;
     if (origin && typeof origin === "string") {
       // Sanitize against CRLF injection in origin header
-      const sanitizedOrigin = origin.replace(/[\r\n]/g, "");
-      res.setHeader("Access-Control-Allow-Origin", sanitizedOrigin);
-      // 'null' origin must not be paired with Allow-Credentials: true according to CORS spec
-      if (sanitizedOrigin !== "null") {
-        res.setHeader("Access-Control-Allow-Credentials", "true");
+      const sanitizedOrigin = origin.replace(/[\r\n]/g, "").trim();
+      if (sanitizedOrigin === "null") {
+        res.setHeader("Access-Control-Allow-Origin", "null");
+      } else {
+        try {
+          const parsedOrigin = new URL(sanitizedOrigin);
+          const host = parsedOrigin.hostname.toLowerCase();
+          const reqHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(":")[0].toLowerCase();
+          const isTrustedOrigin =
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === reqHost ||
+            host.endsWith(".run.app") ||
+            host.endsWith(".google.com") ||
+            host.endsWith(".googleusercontent.com") ||
+            host.endsWith(".aistudio.google.com");
+
+          if (isTrustedOrigin) {
+            res.setHeader("Access-Control-Allow-Origin", parsedOrigin.origin);
+            res.setHeader("Access-Control-Allow-Credentials", "true");
+          }
+        } catch {
+          // Ignore malformed Origin header
+        }
       }
     } else {
       res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-requested-with");
+    res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-requested-with, X-Garmin-Personal-Key");
 
     if (req.method === "OPTIONS") {
       res.sendStatus(200);
@@ -1862,18 +1893,269 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     return act;
   }
 
-  // Garmin Activities API: Search and list imported Garmin activities with name, description or location
+  // Garmin Activities API: Search and list imported Garmin activities with name, description, location, date & metric filters
   app.get("/api/garmin-activities", (req, res) => {
     try {
       const q = typeof req.query.q === "string" ? req.query.q : "";
       const activityType = typeof req.query.activityType === "string" ? req.query.activityType : "all";
-      const records = searchGarminActivities(q, activityType);
+      const startDate = typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+      const endDate = typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+      const minDistance = req.query.minDistance !== undefined && req.query.minDistance !== "" ? Number(req.query.minDistance) : undefined;
+      const maxDistance = req.query.maxDistance !== undefined && req.query.maxDistance !== "" ? Number(req.query.maxDistance) : undefined;
+      const minAscent = req.query.minAscent !== undefined && req.query.minAscent !== "" ? Number(req.query.minAscent) : undefined;
+      const hasGps = req.query.hasGps === "true" || req.query.hasGps === "1";
+
+      const records = searchGarminActivities(q, activityType, {
+        startDate,
+        endDate,
+        minDistance,
+        maxDistance,
+        minAscent,
+        hasGps
+      });
       const downsampledRecords = records.map(act => downsampleActivity(act, 1000));
       
       res.json({ success: true, activities: downsampledRecords });
     } catch (err: any) {
       console.error("Error searching Garmin activities:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to search Garmin activities" });
+    }
+  });
+
+  // ============================================================================
+  // GARMIN CONNECT PERSONAL API (https://developer.garmin.com/gc-developer-program/personal/personal-api)
+  // ============================================================================
+
+  function extractRequestGarminKey(req: express.Request): string | undefined {
+    const rawHeader = req.headers["x-garmin-personal-key"];
+    if (typeof rawHeader === "string" && rawHeader.trim().length > 0) {
+      return rawHeader.trim();
+    }
+    return undefined;
+  }
+
+  // GET /api/garmin/personal/status: Current Personal API configuration & OAuth2 token status
+  app.get("/api/garmin/personal/status", (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const status = getGarminPersonalApiStatus(headerKey);
+      res.json({ success: true, status });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || "Fehler beim Abrufen des Garmin API-Status" });
+    }
+  });
+
+  // POST /api/garmin/personal/config: Validate Personal API Key in non-persistent tab mode (removing any legacy stored DB key)
+  app.post("/api/garmin/personal/config", async (req, res) => {
+    try {
+      const { apiKey, baseUrl, skipVerification } = req.body || {};
+
+      let cleanBaseUrl: string;
+      try {
+        cleanBaseUrl = validateGarminBaseUrl(typeof baseUrl === "string" ? baseUrl : undefined, true);
+      } catch (urlErr: any) {
+        return res.status(400).json({
+          success: false,
+          error: urlErr?.message || "Ungültige Garmin API Base-URL."
+        });
+      }
+
+      saveSetting("garmin_personal_api_base_url", cleanBaseUrl);
+
+      const headerKey = extractRequestGarminKey(req);
+      const effectiveKey = typeof apiKey === "string" && apiKey.trim().length > 0
+        ? apiKey.trim()
+        : (headerKey || "");
+
+      // Enforce non-persistent session mode: remove any legacy DB key and cached token
+      const { keyDeleted: previousDbKeyRemoved } = clearGarminPersonalApiConfig({ clearSyncedData: false });
+
+      let tokenVerified = false;
+      let tokenWarning: string | null = null;
+
+      if (!skipVerification && effectiveKey) {
+        try {
+          await getGarminBearerToken(
+            effectiveKey,
+            cleanBaseUrl,
+            true
+          );
+          tokenVerified = true;
+        } catch (tokenErr: any) {
+          tokenWarning = tokenErr?.message || "Token-Austausch konnte noch nicht verifiziert werden.";
+        }
+      }
+
+      const status = getGarminPersonalApiStatus(effectiveKey || undefined);
+      res.json({
+        success: true,
+        persistent: false,
+        previousDbKeyRemoved,
+        tokenVerified,
+        warning: tokenWarning,
+        status
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || "Fehler beim Konfigurieren des Garmin Personal API Keys" });
+    }
+  });
+
+  // DELETE /api/garmin/personal/config: Physically delete stored encrypted Personal API key, clear cached token, and optionally clear synced Garmin data
+  app.delete("/api/garmin/personal/config", (req, res) => {
+    try {
+      const clearData = req.query.clearData === "true" || req.query.clearData === "1" || req.body?.clearData === true;
+      const { keyDeleted, dataCleared } = clearGarminPersonalApiConfig({ clearSyncedData: clearData });
+      const status = getGarminPersonalApiStatus();
+      res.json({
+        success: true,
+        keyDeleted,
+        dataCleared,
+        status
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || "Fehler beim Entfernen des Garmin API Keys" });
+    }
+  });
+
+  // POST /api/garmin/personal/clear-session: Clear server-side cached OAuth2 token/metadata when a non-persistent tab session ends
+  app.post("/api/garmin/personal/clear-session", (_req, res) => {
+    try {
+      clearGarminCachedToken();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || "Fehler beim Zurücksetzen der Garmin-Sitzung" });
+    }
+  });
+
+  // POST /api/garmin/personal/test-token: Explicitly exchange API Key for OAuth2 Bearer token
+  app.post("/api/garmin/personal/test-token", async (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const { expiresAt } = await getGarminBearerToken(headerKey, undefined, true);
+      const status = getGarminPersonalApiStatus(headerKey);
+      res.json({
+        success: true,
+        expiresAt,
+        status,
+        message: "OAuth2 Access-Token erfolgreich von personal.connectapi.garmin.com bezogen (24h gültig)."
+      });
+    } catch (err: any) {
+      res.status(400).json({
+        success: false,
+        error: err.message || "Token-Austausch mit Garmin Personal API fehlgeschlagen."
+      });
+    }
+  });
+
+  // POST /api/garmin/personal/sync-activities: Pull activities and optional .FIT routes from Garmin Personal API
+  app.post("/api/garmin/personal/sync-activities", async (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const { startDate, endDate, limit, downloadFitRoutes } = req.body || {};
+      const result = await syncGarminPersonalActivities({
+        startDate,
+        endDate,
+        limit: limit ? Number(limit) : 50,
+        downloadFitRoutes: Boolean(downloadFitRoutes),
+        overrideApiKey: headerKey
+      });
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.error("[Garmin Personal API] Activity sync error:", err);
+      res.status(400).json({
+        success: false,
+        error: err.message || "Fehler beim Synchronisieren der Garmin-Aktivitäten über die Personal API."
+      });
+    }
+  });
+
+  // POST /api/garmin/personal/sync-health: Pull Sleep, RHR, Stress, Steps, Weight from Garmin Personal API
+  app.post("/api/garmin/personal/sync-health", async (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const { startDate, endDate } = req.body || {};
+      const result = await syncGarminPersonalHealth({
+        startDate,
+        endDate,
+        overrideApiKey: headerKey
+      });
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.error("[Garmin Personal API] Health sync error:", err);
+      res.status(400).json({
+        success: false,
+        error: err.message || "Fehler beim Synchronisieren der Gesundheitsdaten über die Garmin Personal API."
+      });
+    }
+  });
+
+  // GET /api/garmin/personal/activity/:id/fit: Download & decode binary .FIT track for a specific Garmin activity
+  app.get("/api/garmin/personal/activity/:id/fit", async (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const activityId = req.params.id;
+      if (!activityId) {
+        return res.status(400).json({ success: false, error: "Ungültige Aktivitäts-ID" });
+      }
+      const result = await downloadAndParseGarminActivityFit(activityId, {
+        saveToWorkspaceTracks: true,
+        overrideApiKey: headerKey
+      });
+      res.json({
+        success: true,
+        track: result.track,
+        pointsCount: result.pointsCount,
+        sourceFormat: result.sourceFormat
+      });
+    } catch (err: any) {
+      console.error("[Garmin Personal API] FIT download error:", err);
+      res.status(400).json({
+        success: false,
+        error: err.message || "Fehler beim Herunterladen der FIT-Strecke."
+      });
+    }
+  });
+
+  // GET /api/garmin/personal/search: Unified search across activities and health metrics
+  app.get("/api/garmin/personal/search", (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      const activityType = typeof req.query.activityType === "string" ? req.query.activityType : "all";
+      const startDate = typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+      const endDate = typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+      const minDistance = req.query.minDistance !== undefined && req.query.minDistance !== "" ? Number(req.query.minDistance) : undefined;
+      const maxDistance = req.query.maxDistance !== undefined && req.query.maxDistance !== "" ? Number(req.query.maxDistance) : undefined;
+      const minAscent = req.query.minAscent !== undefined && req.query.minAscent !== "" ? Number(req.query.minAscent) : undefined;
+      const hasGps = req.query.hasGps === "true" || req.query.hasGps === "1";
+
+      const activities = searchGarminActivities(q, activityType, {
+        startDate,
+        endDate,
+        minDistance,
+        maxDistance,
+        minAscent,
+        hasGps
+      }).map(act => downsampleActivity(act, 1000));
+
+      const health = searchGarminHealthMetrics(startDate, endDate);
+
+      res.json({
+        success: true,
+        activities,
+        health
+      });
+    } catch (err: any) {
+      console.error("[Garmin Personal API] Search error:", err);
+      res.status(500).json({
+        success: false,
+        error: err.message || "Fehler bei der Suche in Aktivitäten und Gesundheitsdaten."
+      });
     }
   });
 
@@ -2397,8 +2679,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
     // Blacklist sensitive configuration or system files
     const basename = path.basename(absolutePath).toLowerCase();
-    const sensitiveFiles = [".env", ".env.example", ".gitignore", "package.json", "package-lock.json", "server.ts", "tsconfig.json", "vite.config.ts"];
-    if (sensitiveFiles.includes(basename) || basename.startsWith(".git") || basename.startsWith(".aistudio")) {
+    const sensitiveFiles = [".env", ".env.local", ".env.example", ".garmin_secret.key", ".gitignore", "package.json", "package-lock.json", "server.ts", "tsconfig.json", "vite.config.ts"];
+    if (sensitiveFiles.includes(basename) || basename.startsWith(".git") || basename.startsWith(".aistudio") || basename.endsWith(".key")) {
       return { valid: false, absolutePath, error: "Zugriff auf diese Systemdatei ist aus Sicherheitsgründen verweigert." };
     }
 
@@ -2794,7 +3076,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   app.post("/api/settings", (req, res) => {
     try {
       const { key, value, settings } = req.body;
-      const forbiddenKeys = ["__proto__", "constructor", "prototype"];
+      const forbiddenKeys = [
+        "__proto__",
+        "constructor",
+        "prototype",
+        "garmin_personal_api_key",
+        "garmin_personal_api_key_enc",
+        "garmin_personal_api_base_url",
+        "garmin_personal_token_expires_at"
+      ];
 
       if (settings && typeof settings === "object" && !Array.isArray(settings)) {
         for (const [k, v] of Object.entries(settings)) {
@@ -2833,7 +3123,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -2843,16 +3133,19 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     app.get('*all', (req, res) => {
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
-        const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-        const host = req.headers['x-forwarded-host'] || req.headers.host || '';
-        const origin = host && !host.includes('0.0.0.0') && !host.includes('localhost')
-          ? `${proto}://${host}`
+        const rawProto = String(req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')).split(',')[0].trim().toLowerCase();
+        const safeProto = rawProto === 'https' ? 'https' : 'http';
+        const rawHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+        const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : '';
+        const origin = safeHost && !safeHost.includes('0.0.0.0') && !safeHost.includes('localhost')
+          ? `${safeProto}://${safeHost}`
           : (process.env.APP_URL || '');
         let html = fs.readFileSync(indexPath, 'utf-8');
         if (origin && !origin.includes('google.com') && !origin.includes('ai.studio')) {
+          const serializedOrigin = JSON.stringify(origin).replace(/</g, '\\u003c');
           html = html.replace(
             '<head>',
-            `<head>\n    <script>window.__APP_ORIGIN__ = "${origin}";</script>`
+            `<head>\n    <script>window.__APP_ORIGIN__ = ${serializedOrigin};</script>`
           );
         }
         res.setHeader('Content-Type', 'text/html; charset=utf-8');

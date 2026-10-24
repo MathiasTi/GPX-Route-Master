@@ -86,17 +86,12 @@ interface MapProps {
   mapView: {lat: number, lng: number, zoom: number, pitch?: number, bearing?: number};
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
   estimatedSpeed?: number;
-  isFlying?: boolean;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
   onDeleteTextMarker: (id: string) => void;
   hideLegend?: boolean;
   ftp?: number;
   isDark?: boolean;
-  showCyclingHeatmap?: boolean;
-  showRunningHeatmap?: boolean;
-  showDbCyclingHeatmap?: boolean;
-  showDbRunningHeatmap?: boolean;
   onAnalyzeSurface?: (id: string, force?: boolean) => void;
   onOpenIntensiveAnalysis?: (id: string) => void;
   analyzingSurfaces?: Record<string, boolean>;
@@ -242,26 +237,6 @@ const MapResizer = ({ markedTrackId, tracksLength }: { markedTrackId: string | n
   return null;
 };
 
-const FlyoverFollow = ({ point, active }: { point: GPXPoint | null, active: boolean }) => {
-  const map = useMap();
-  const lastTargetRef = useRef<[number, number] | null>(null);
-
-  useEffect(() => {
-    if (active && point) {
-      // Use a smaller threshold for following during flight to ensure smoothness
-      const isSignificant = !lastTargetRef.current || 
-        Math.abs(lastTargetRef.current[0] - point.lat) > 0.00005 ||
-        Math.abs(lastTargetRef.current[1] - point.lng) > 0.00005;
-
-      if (isSignificant) {
-        lastTargetRef.current = [point.lat, point.lng];
-        // Short duration prevents animation queue buildup
-        map.panTo([point.lat, point.lng], { animate: true, duration: 0.3, easeLinearity: 0.1 });
-      }
-    }
-  }, [point, active, map]);
-  return null;
-};
 
 const UserLocationMarker = ({ isTracking, autoCenter }: { isTracking: boolean; autoCenter: boolean }) => {
   const map = useMap();
@@ -484,15 +459,13 @@ const MobileZoomControls = ({
   );
 };
 
-const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapViewChange: any, isFlying: boolean }) => {
+const SyncView = ({ mapView, onMapViewChange }: { mapView: any, onMapViewChange: any }) => {
   const map = useMap();
   const lastEmittedView = useRef<{ lat: number; lng: number; zoom: number } | null>(null);
   const lastPropView = useRef<{ lat: number; lng: number; zoom: number } | null>(null);
 
   // Sync external changes from props to Leaflet map (only when external props genuinely change from outside)
   useEffect(() => {
-    if (isFlying) return;
-    
     const propChanged = !lastPropView.current ||
       Math.abs(lastPropView.current.lat - mapView.lat) > 0.00001 ||
       Math.abs(lastPropView.current.lng - mapView.lng) > 0.00001 ||
@@ -520,10 +493,9 @@ const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapV
     if (isDifferentFromMap && !isReflectionOfEmission) {
       map.setView([mapView.lat, mapView.lng], mapView.zoom, { animate: false });
     }
-  }, [mapView.lat, mapView.lng, mapView.zoom, map, isFlying]);
+  }, [mapView.lat, mapView.lng, mapView.zoom, map]);
 
   const handleMapChange = useCallback(() => {
-    if (isFlying) return;
     const center = map.getCenter();
     const zoom = map.getZoom();
 
@@ -543,7 +515,7 @@ const SyncView = ({ mapView, onMapViewChange, isFlying }: { mapView: any, onMapV
         bearing: 0
       });
     }
-  }, [map, isFlying, onMapViewChange]);
+  }, [map, onMapViewChange]);
 
   useMapEvents({
     moveend: handleMapChange,
@@ -691,17 +663,12 @@ const Map: React.FC<MapProps> = ({
   mapView, 
   onMapViewChange, 
   estimatedSpeed = 15, 
-  isFlying = false,
   textMarkers,
   onAddTextMarker,
   onDeleteTextMarker,
   hideLegend = false,
   ftp = 250,
   isDark = false,
-  showCyclingHeatmap = false,
-  showRunningHeatmap = false,
-  showDbCyclingHeatmap = false,
-  showDbRunningHeatmap = false,
   onAnalyzeSurface,
   onOpenIntensiveAnalysis,
   analyzingSurfaces,
@@ -722,104 +689,6 @@ const Map: React.FC<MapProps> = ({
   const [recenterTrigger, setRecenterTrigger] = useState(0);
   const [isTrackingLocation, setIsTrackingLocation] = useState(false);
   const [autoCenterLocation, setAutoCenterLocation] = useState(true);
-
-  // States for database activity heatmaps
-  const [dbCyclingPaths, setDbCyclingPaths] = useState<[number, number][][]>([]);
-  const [dbRunningPaths, setDbRunningPaths] = useState<[number, number][][]>([]);
-  const [isLoadingDbCycling, setIsLoadingDbCycling] = useState(false);
-  const [isLoadingDbRunning, setIsLoadingDbRunning] = useState(false);
-
-  // Helper to normalize raw database track points
-  const normalizeDbPoints = (rawPoints: any[]): [number, number][] => {
-    if (!rawPoints || rawPoints.length === 0) return [];
-    const sample = rawPoints.find(p => p.lat !== undefined && p.lng !== undefined && p.lat !== 0 && p.lng !== 0) || rawPoints[0];
-    if (!sample) return [];
-
-    const rawLat = Math.abs(parseFloat(sample.lat));
-    const rawLng = Math.abs(parseFloat(sample.lng));
-
-    if (isNaN(rawLat) || isNaN(rawLng)) return [];
-
-    let scale = 1.0;
-    if (rawLat > 180 || rawLng > 180) {
-      if (rawLat > 10000000) {
-        scale = 180 / 2147483648;
-      } else {
-        scale = 1 / 10000000;
-      }
-    }
-
-    return rawPoints
-      .map(p => {
-        const latVal = parseFloat(p.lat) * scale;
-        const lngVal = parseFloat(p.lng) * scale;
-        if (isNaN(latVal) || isNaN(lngVal)) return null;
-        return [latVal, lngVal] as [number, number];
-      })
-      .filter((coords): coords is [number, number] => coords !== null);
-  };
-
-  useEffect(() => {
-    if (showDbCyclingHeatmap && dbCyclingPaths.length === 0) {
-      setIsLoadingDbCycling(true);
-      fetch(getApiUrl('/api/garmin-activities?activityType=cycling'))
-        .then(res => res.json())
-        .then(json => {
-          if (json.success && Array.isArray(json.activities)) {
-            const paths: [number, number][][] = [];
-            json.activities.forEach((act: any) => {
-              if (act.points_json) {
-                try {
-                  const pts = JSON.parse(act.points_json);
-                  if (Array.isArray(pts) && pts.length > 1) {
-                    const normalized = normalizeDbPoints(pts);
-                    if (normalized.length > 1) {
-                      paths.push(normalized);
-                    }
-                  }
-                } catch (e) {
-                  console.error('Error parsing heatmap points:', e);
-                }
-              }
-            });
-            setDbCyclingPaths(paths);
-          }
-        })
-        .catch(err => console.error('Failed to fetch cycling heatmap:', err))
-        .finally(() => setIsLoadingDbCycling(false));
-    }
-  }, [showDbCyclingHeatmap, dbCyclingPaths.length]);
-
-  useEffect(() => {
-    if (showDbRunningHeatmap && dbRunningPaths.length === 0) {
-      setIsLoadingDbRunning(true);
-      fetch(getApiUrl('/api/garmin-activities?activityType=running'))
-        .then(res => res.json())
-        .then(json => {
-          if (json.success && Array.isArray(json.activities)) {
-            const paths: [number, number][][] = [];
-            json.activities.forEach((act: any) => {
-              if (act.points_json) {
-                try {
-                  const pts = JSON.parse(act.points_json);
-                  if (Array.isArray(pts) && pts.length > 1) {
-                    const normalized = normalizeDbPoints(pts);
-                    if (normalized.length > 1) {
-                      paths.push(normalized);
-                    }
-                  }
-                } catch (e) {
-                  console.error('Error parsing heatmap points:', e);
-                }
-              }
-            });
-            setDbRunningPaths(paths);
-          }
-        })
-        .catch(err => console.error('Failed to fetch running heatmap:', err))
-        .finally(() => setIsLoadingDbRunning(false));
-    }
-  }, [showDbRunningHeatmap, dbRunningPaths.length]);
 
   // Local state for POI options (disabled by default for a clean, distraction-free map)
   const [showPOIs, setShowPOIs] = useState<boolean>(() => {
@@ -1131,6 +1000,7 @@ const Map: React.FC<MapProps> = ({
         scrollWheelZoom={true}
         boxZoom={false}
         zoomControl={false}
+        preferCanvas={true}
         className={`z-0 ${isDarkTile ? 'dark-tiles' : ''}`}
       >
         <LeafletTileLayer
@@ -1141,71 +1011,6 @@ const Map: React.FC<MapProps> = ({
         />
 
         <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
-        
-        {showCyclingHeatmap && (
-          <LeafletTileLayer
-            url="https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://cycling.waymarkedtrails.org">Waymarked Trails</a>'
-            maxZoom={18}
-            opacity={0.85}
-          />
-        )}
-        
-        {showRunningHeatmap && (
-          <LeafletTileLayer
-            url="https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://hiking.waymarkedtrails.org">Waymarked Trails</a>'
-            maxZoom={18}
-            opacity={0.85}
-          />
-        )}
-
-        {/* Eigene Garmin DB-Heatmaps */}
-        {showDbCyclingHeatmap && dbCyclingPaths.map((path, idx) => (
-          <React.Fragment key={`db-cycling-${idx}`}>
-            {/* Outer glow line */}
-            <LeafletPolyline
-              positions={path}
-              color="#3b82f6"
-              weight={6}
-              opacity={0.15}
-              lineCap="round"
-              lineJoin="round"
-            />
-            {/* Core glowing line */}
-            <LeafletPolyline
-              positions={path}
-              color="#3b82f6"
-              weight={2.5}
-              opacity={0.4}
-              lineCap="round"
-              lineJoin="round"
-            />
-          </React.Fragment>
-        ))}
-
-        {showDbRunningHeatmap && dbRunningPaths.map((path, idx) => (
-          <React.Fragment key={`db-running-${idx}`}>
-            {/* Outer glow line */}
-            <LeafletPolyline
-              positions={path}
-              color="#f43f5e"
-              weight={6}
-              opacity={0.15}
-              lineCap="round"
-              lineJoin="round"
-            />
-            {/* Core glowing line */}
-            <LeafletPolyline
-              positions={path}
-              color="#f43f5e"
-              weight={2.5}
-              opacity={0.4}
-              lineCap="round"
-              lineJoin="round"
-            />
-          </React.Fragment>
-        ))}
         
         {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
           const isMarked = track.id === markedTrackId;
@@ -1227,7 +1032,7 @@ const Map: React.FC<MapProps> = ({
           let selectedPolylines: [number, number][][] = [];
           if (isMarked && selectionBounds) {
             let currentLine: [number, number][] = [];
-            validPoints.forEach(p => {
+            renderPoints.forEach(p => {
               const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
                                p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
               if (inBounds) {
@@ -1246,14 +1051,13 @@ const Map: React.FC<MapProps> = ({
 
           const displayTrackColor = sanitizeColor(track.color);
 
-          // Build continuous segments of identical surface types
+          // Build continuous coalesced segments of identical surface types over simplified renderPoints
           const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
-          if (validPoints.length > 0) {
-            // Map surface either from point or from track surfaceStats
-            const pointsWithSurface = validPoints.map((pt, idx) => {
+          if (renderPoints.length > 0) {
+            const pointsWithSurface = renderPoints.map((pt, idx) => {
               if (pt.surface) return pt.surface;
               if (track.surfaceStats && track.surfaceStats.length > 0 && track.distance > 0) {
-                const currentDist = (idx / Math.max(1, validPoints.length - 1)) * track.distance;
+                const currentDist = (idx / Math.max(1, renderPoints.length - 1)) * track.distance;
                 let runningDist = 0;
                 for (const stat of track.surfaceStats) {
                   runningDist += stat.distance;
@@ -1265,10 +1069,10 @@ const Map: React.FC<MapProps> = ({
             });
 
             let currentSurface = pointsWithSurface[0];
-            let currentPositions: [number, number][] = [[validPoints[0].lat, validPoints[0].lng]];
+            let currentPositions: [number, number][] = [[renderPoints[0].lat, renderPoints[0].lng]];
 
-            for (let i = 1; i < validPoints.length; i++) {
-              const pt = validPoints[i];
+            for (let i = 1; i < renderPoints.length; i++) {
+              const pt = renderPoints[i];
               const surf = pointsWithSurface[i];
               if (surf === currentSurface) {
                 currentPositions.push([pt.lat, pt.lng]);
@@ -1284,13 +1088,13 @@ const Map: React.FC<MapProps> = ({
             }
           }
 
-          // Build continuous segments of identical zone colors
+          // Build continuous coalesced segments of identical zone colors over simplified renderPoints
           const zoneSegments: { color: string; positions: [number, number][] }[] = [];
-          if (colorMode !== 'default' && validPoints.length > 0) {
+          if (colorMode !== 'default' && renderPoints.length > 0) {
             let activeSegmentColor: string | null = null;
             let currentPositions: [number, number][] = [];
 
-            validPoints.forEach((pt) => {
+            renderPoints.forEach((pt) => {
               const color = getPointColorMode(pt, track.activityType);
               const latlng: [number, number] = [pt.lat, pt.lng];
 
@@ -1374,11 +1178,7 @@ const Map: React.FC<MapProps> = ({
 
                       let pointDist = closestPoint.dist;
                       if (pointDist === undefined || !Number.isFinite(pointDist)) {
-                        let d = 0;
-                        for (let k = 1; k <= closestIndex; k++) {
-                          d += calculateDistance(validPoints[k - 1], validPoints[k]);
-                        }
-                        pointDist = Number(d.toFixed(2));
+                        pointDist = Number((track.distance * (closestIndex / Math.max(1, validPoints.length - 1))).toFixed(2));
                       }
 
                       onHoverPoint({
@@ -1661,8 +1461,7 @@ const Map: React.FC<MapProps> = ({
         <ZoomToActiveTrack activeTrack={activeTrack} recenterTrigger={recenterTrigger} />
         <ZoomToSelection bounds={selectionBounds} />
         <MapResizer markedTrackId={markedTrackId} tracksLength={tracks.length} />
-        <FlyoverFollow point={hoveredPoint || null} active={isFlying} />
-        <SyncView mapView={mapView} onMapViewChange={onMapViewChange} isFlying={isFlying} />
+        <SyncView mapView={mapView} onMapViewChange={onMapViewChange} />
         <SelectionTool active={true} onSelection={onSelection} currentBounds={selectionBounds} />
         
         {hoveredPoint && (() => {
@@ -2502,7 +2301,9 @@ const Map: React.FC<MapProps> = ({
       {/* Active Track Stats Overlay Card */}
       {activeTrack && (
         <div 
-          className="absolute top-2 left-12 sm:top-4 sm:left-14 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg pointer-events-auto select-none font-sans transition-all duration-300 overflow-hidden max-w-[280px] sm:max-w-[340px]"
+          className={`absolute top-2 left-12 sm:top-4 sm:left-14 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg pointer-events-auto select-none font-sans transition-all duration-300 overflow-hidden max-w-[calc(100vw-3.75rem)] sm:max-w-[340px] ${
+            hoveredPoint ? 'opacity-0 pointer-events-none sm:opacity-100 sm:pointer-events-auto' : 'opacity-100'
+          }`}
           id="active-track-stats-overlay"
         >
           {isStatsCollapsed ? (
@@ -2616,7 +2417,7 @@ const Map: React.FC<MapProps> = ({
               {/* Extra Info (Pace/Tempo and Activity Badge) */}
               <div className="mt-2.5 pt-2 border-t border-slate-100/60 dark:border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                 <span className="font-sans font-semibold text-slate-400">Tempo / Geschwindigkeit</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                <span className="font-extrabold text-slate-700 dark:text-slate-300 tabular-nums">
                   {activeTrack.duration ? (
                     activeTrack.activityType === 'running' 
                       ? formatPace(activeTrack.duration, activeTrack.distance)
@@ -2646,12 +2447,6 @@ const Map: React.FC<MapProps> = ({
               )}
             </div>
           )}
-        </div>
-      )}
-      {(isLoadingDbCycling || isLoadingDbRunning) && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-indigo-600/95 dark:bg-indigo-500/95 text-white font-sans text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-2 animate-pulse backdrop-blur-xs">
-          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          <span>Generiere DB-Heatmap...</span>
         </div>
       )}
     </div>

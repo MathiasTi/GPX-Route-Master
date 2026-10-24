@@ -1,12 +1,11 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { GPXTrack, GPXPoint, TextMarker, MapLayer, TimeGap } from './types';
 import Sidebar from './components/Sidebar';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X } from 'lucide-react';
-import { GPXTrack, GPXPoint, MapLayer, TextMarker, TimeGap } from './types';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, closeTimeGapInTrack, reverseTrack, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -63,11 +62,6 @@ const App: React.FC = () => {
     } catch (e) {}
     return MapLayer.OSM;
   });
-
-  const [showCyclingHeatmap, setShowCyclingHeatmap] = useState(false);
-  const [showRunningHeatmap, setShowRunningHeatmap] = useState(false);
-  const [showDbCyclingHeatmap, setShowDbCyclingHeatmap] = useState(false);
-  const [showDbRunningHeatmap, setShowDbRunningHeatmap] = useState(false);
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
@@ -129,6 +123,7 @@ const App: React.FC = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
+  const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
   const [showHint, setShowHint] = useState(false);
   const [userWeight, setUserWeight] = useState(75);
   const [userAge, setUserAge] = useState(35);
@@ -152,9 +147,6 @@ const App: React.FC = () => {
     const minutes = String(today.getMinutes()).padStart(2, '0');
     return `${hours}:${minutes}`;
   });
-  const [isFlying, setIsFlying] = useState(false);
-  const [flyProgress, setFlyProgress] = useState(0); // 0 to 1
-  const [flySpeed, setFlySpeed] = useState(1); // multiplier
 
   const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
   const [surfaceAnalysisStatuses, setSurfaceAnalysisStatuses] = useState<Record<string, { status: 'idle' | 'loading' | 'success' | 'error' | 'simulated'; message?: string; source?: 'osm' | 'terrain' | 'manual'; timestamp?: number }>>({});
@@ -532,18 +524,6 @@ const App: React.FC = () => {
     setHistory(prev => [...prev, [...tracks]].slice(-10));
   }, [tracks]);
 
-  const handleReverseTrack = useCallback((trackId: string) => {
-    saveToHistory();
-    setTracks(prev => prev.map(t => {
-      if (t.id === trackId) {
-        return reverseTrack(t, ftp, userWeight, estimatedSpeed);
-      }
-      return t;
-    }));
-    setSuccessMessage('Streckenverlauf erfolgreich umgekehrt!');
-    triggerHaptic('medium');
-  }, [ftp, userWeight, estimatedSpeed, saveToHistory]);
-
   const handleRepairTrackAnomalies = useCallback((trackId: string) => {
     saveToHistory();
     setTracks(prev => prev.map(t => {
@@ -609,6 +589,87 @@ const App: React.FC = () => {
 
     setMarkedTrackId(result.track1.id);
     setSuccessMessage(`Track in 2 Abschnitte getrennt: "${result.track1.name}" & "${result.track2.name}"`);
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleExtractSubTrack = useCallback((startKm: number, endKm: number) => {
+    const active = tracks.find(t => t.id === markedTrackId) || tracks[0];
+    if (!active) return;
+
+    const extracted = sliceTrackRange(
+      active,
+      startKm,
+      endKm,
+      `${active.name} (km ${startKm.toFixed(1)}–${endKm.toFixed(1)})`,
+      ftp,
+      userWeight,
+      estimatedSpeed
+    );
+    if (!extracted) return;
+
+    saveToHistory();
+    setTracks(prev => [...prev, extracted]);
+    setMarkedTrackId(extracted.id);
+    setSelectionBounds(null);
+    setSuccessMessage(`Teil-Track "${extracted.name}" (${extracted.distance} km, +${Math.round(extracted.ascent)} m) als eigene Route erstellt!`);
+  }, [tracks, markedTrackId, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleCropTrack = useCallback((startKm: number, endKm: number) => {
+    const active = tracks.find(t => t.id === markedTrackId) || tracks[0];
+    if (!active) return;
+
+    const cropped = sliceTrackRange(
+      active,
+      startKm,
+      endKm,
+      `${active.name} (Zugeschnitten km ${startKm.toFixed(1)}–${endKm.toFixed(1)})`,
+      ftp,
+      userWeight,
+      estimatedSpeed
+    );
+    if (!cropped) return;
+
+    saveToHistory();
+    const updatedTrack: GPXTrack = {
+      ...cropped,
+      id: active.id
+    };
+    setTracks(prev => prev.map(t => t.id === active.id ? updatedTrack : t));
+    setSelectionBounds(null);
+    setSuccessMessage(`Track auf Abschnitt km ${startKm.toFixed(1)}–${endKm.toFixed(1)} (${updatedTrack.distance} km) zugeschnitten! (Rückgängig mit Strg+Z)`);
+  }, [tracks, markedTrackId, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleReverseTrack = useCallback((trackId: string) => {
+    const track = tracks.find(t => t.id === trackId);
+    if (!track) return;
+
+    saveToHistory();
+    const reversed = reverseTrack(track, ftp, userWeight, estimatedSpeed);
+    setTracks(prev => prev.map(t => t.id === trackId ? reversed : t));
+    setSuccessMessage(`Route "${reversed.name}" erfolgreich umgekehrt! (Gegenrichtung aktiv)`);
+    triggerHaptic('success');
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleShiftLoopStart = useCallback((trackId: string, pointIndex: number) => {
+    const track = tracks.find(t => t.id === trackId);
+    if (!track) return;
+
+    saveToHistory();
+    const shifted = shiftLoopStartTrack(track, pointIndex, ftp, userWeight, estimatedSpeed);
+    setTracks(prev => prev.map(t => t.id === trackId ? shifted : t));
+    setSuccessMessage(`Startpunkt der Route auf Punkt #${pointIndex + 1} verlegt!`);
+    triggerHaptic('success');
+  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+
+  const handleSanitizeTrack = useCallback((trackId: string) => {
+    const track = tracks.find(t => t.id === trackId);
+    if (!track) return;
+
+    saveToHistory();
+    const res = sanitizeTrackAllInOne(track, { removeSpikes: true, smoothElevation: true, simplifyPoints: true }, ftp, userWeight, estimatedSpeed);
+    setTracks(prev => prev.map(t => t.id === trackId ? res.sanitizedTrack : t));
+    const msg = `Track bereinigt: ${res.removedOutliers} GPS-Ausreißer entfernt, ${res.fixedSpikes} Höhen-Spikes geglättet, ${res.reducedPoints} Punkte reduziert.`;
+    setSuccessMessage(msg);
+    triggerHaptic('success');
   }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
 
   const handleCloseGap = useCallback((originalTrackId: string, gap: TimeGap) => {
@@ -1099,56 +1160,6 @@ const App: React.FC = () => {
 
   const markedTrack = tracks.find(t => t.id === markedTrackId) || tracks[0];
   const suggestedFtp = markedTrack?.powerStats?.best20m ? Math.round(markedTrack.powerStats.best20m * 0.95) : null;
- 
-  // Flyover Animation Logic
-  useEffect(() => {
-    let animationFrame: number;
-    let lastTimestamp = 0;
-    
-    const animate = (timestamp: number) => {
-      if (isFlying && markedTrack) {
-        if (!lastTimestamp) lastTimestamp = timestamp;
-        const delta = timestamp - lastTimestamp;
-        lastTimestamp = timestamp;
-
-        setFlyProgress(prev => {
-          // Consistent speed: base speed increased for better scaling
-          // 150km/h base provides better range up to 1500km/h at 10x
-          const targetSpeedKmh = 150 * flySpeed;
-          const targetSpeedKmMs = targetSpeedKmh / 3600000;
-          const distanceStep = targetSpeedKmMs * delta;
-          const progressStep = distanceStep / (markedTrack.distance || 1);
-          
-          const next = prev + progressStep;
-          if (next >= 1) {
-            setIsFlying(false);
-            return 0;
-          }
-          return next;
-        });
-      }
-      animationFrame = requestAnimationFrame(animate);
-    };
-    
-    if (isFlying) {
-      animationFrame = requestAnimationFrame(animate);
-    }
-    
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      lastTimestamp = 0;
-    };
-  }, [isFlying, markedTrack, flySpeed]);
-
-  // Sync flyProgress to hoveredPoint
-  useEffect(() => {
-    if (isFlying && markedTrack && markedTrack.points.length > 0) {
-      const index = Math.floor(flyProgress * (markedTrack.points.length - 1));
-      const point = markedTrack.points[index];
-      // Only update if the point actually changed to avoid redundant renders
-      setHoveredPoint(prev => prev === point ? prev : point);
-    }
-  }, [flyProgress, isFlying, markedTrack]);
 
   // Global keyboard shortcuts handler
   useEffect(() => {
@@ -1181,7 +1192,6 @@ const App: React.FC = () => {
         if (timeGapModalOpen) { setTimeGapModalOpen(false); return; }
         if (validationModalOpen) { setValidationModalOpen(false); return; }
         if (isExportModalOpen) { setIsExportModalOpen(false); return; }
-        if (isFlying) { setIsFlying(false); return; }
         if (selectionBounds) { setSelectionBounds(null); return; }
         return;
       }
@@ -1202,23 +1212,6 @@ const App: React.FC = () => {
           const next = !prev;
           setSuccessMessage(next ? '3D-Geländemodus aktiviert (Taste 3)' : 'Standard 2D-Kartenansicht aktiviert (Taste 3)');
           return next;
-        });
-        return;
-      }
-
-      // 'F' shortcut: Toggle 3D Flyover / Abflug
-      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        triggerHaptic('medium');
-        setIsFlying(prev => {
-          if (!prev) {
-            setFlyProgress(0);
-            setSuccessMessage('Virtueller Strecken-Abflug gestartet (Taste F)');
-            return true;
-          } else {
-            setSuccessMessage('Virtueller Strecken-Abflug beendet');
-            return false;
-          }
         });
         return;
       }
@@ -1461,7 +1454,6 @@ const App: React.FC = () => {
     rawDataOpen,
     timeGapModalOpen,
     isExportModalOpen,
-    isFlying,
     selectionBounds
   ]);
 
@@ -1626,6 +1618,8 @@ const App: React.FC = () => {
           setIsMobileMenuOpen(false);
         }}
         onOpenValidation={handleOpenValidation}
+        onReverseTrack={handleReverseTrack}
+        onSanitizeTrack={handleSanitizeTrack}
         textMarkers={textMarkers}
         onAddTextMarker={handleAddTextMarker}
         onDeleteTextMarker={handleDeleteTextMarker}
@@ -1642,7 +1636,6 @@ const App: React.FC = () => {
         }}
         onAnalyzeSurface={analyzeTrackSurface}
         onSetTrackSurface={handleSetTrackSurface}
-        onReverseTrack={handleReverseTrack}
         analyzingSurfaces={analyzingSurfaces}
         surfaceAnalysisStatuses={surfaceAnalysisStatuses}
         selectionBounds={selectionBounds}
@@ -1650,14 +1643,6 @@ const App: React.FC = () => {
         onClearSelection={() => setSelectionBounds(null)}
         isDark={theme === 'dark'}
         onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
-        showCyclingHeatmap={showCyclingHeatmap}
-        setShowCyclingHeatmap={setShowCyclingHeatmap}
-        showRunningHeatmap={showRunningHeatmap}
-        setShowRunningHeatmap={setShowRunningHeatmap}
-        showDbCyclingHeatmap={showDbCyclingHeatmap}
-        setShowDbCyclingHeatmap={setShowDbCyclingHeatmap}
-        showDbRunningHeatmap={showDbRunningHeatmap}
-        setShowDbRunningHeatmap={setShowDbRunningHeatmap}
         onToggleAllVisibility={handleToggleAllVisibility}
         onFitVisibleTracks={handleFitVisibleTracks}
         onLoadReferenceTours={handleLoadReferenceTours}
@@ -1724,8 +1709,6 @@ const App: React.FC = () => {
                 mapView={mapView}
                 onMapViewChange={setMapView}
                 estimatedSpeed={estimatedSpeed}
-                flySpeed={flySpeed}
-                isFlying={isFlying}
               />
             ) : (
               <Map 
@@ -1740,17 +1723,12 @@ const App: React.FC = () => {
                 mapView={mapView}
                 onMapViewChange={setMapView}
                 estimatedSpeed={estimatedSpeed}
-                isFlying={isFlying}
                 ftp={ftp}
                 textMarkers={textMarkers}
                 onAddTextMarker={handleAddTextMarker}
                 onDeleteTextMarker={handleDeleteTextMarker}
                 hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || comparisonOpen}
                 isDark={theme === 'dark'}
-                showCyclingHeatmap={showCyclingHeatmap}
-                showRunningHeatmap={showRunningHeatmap}
-                showDbCyclingHeatmap={showDbCyclingHeatmap}
-                showDbRunningHeatmap={showDbRunningHeatmap}
                 onAnalyzeSurface={analyzeTrackSurface}
                 onOpenIntensiveAnalysis={(id) => {
                   handleOpenTrackAnalysis(id, 'overview');
@@ -1993,6 +1971,23 @@ const App: React.FC = () => {
                 onSelectTrackPoint={(lat, lng) => {
                   setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
                 }}
+                onSelection={(bounds) => {
+                  setSelectionBounds(bounds);
+                  if (bounds) {
+                    const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
+                    const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
+                    const maxDelta = Math.max(latDiff, lngDiff);
+                    const estimatedZoom = Math.min(16, Math.max(11, Math.floor(Math.log2(360 / maxDelta)) - 1));
+                    setMapView(prev => ({
+                      ...prev,
+                      lat: (bounds.minLat + bounds.maxLat) / 2,
+                      lng: (bounds.minLng + bounds.maxLng) / 2,
+                      zoom: estimatedZoom
+                    }));
+                  }
+                }}
+                onReverseTrack={handleReverseTrack}
+                onSanitizeTrack={handleSanitizeTrack}
                 onOpenGlossary={(metricId) => {
                   setInitialGlossaryMetricId(metricId);
                   setGlossaryOpen(true);
@@ -2099,7 +2094,15 @@ const App: React.FC = () => {
         </div>
 
         {markedTrack && (
-          <div className={`${isProfileCollapsed ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none' : 'h-48 sm:h-48 md:h-56 pb-16 sm:pb-2'} bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+          <div className={`${
+            isProfileCollapsed
+              ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none'
+              : mobileProfileSnap === 'mini'
+              ? 'h-32 sm:h-48 md:h-56 pb-14 sm:pb-2'
+              : mobileProfileSnap === 'expanded'
+              ? 'h-[54vh] sm:h-64 md:h-72 pb-16 sm:pb-2'
+              : 'h-52 sm:h-48 md:h-56 pb-16 sm:pb-2'
+          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
             <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
               <ElevationProfile 
                 track={markedTrack} 
@@ -2110,11 +2113,8 @@ const App: React.FC = () => {
                 estimatedSpeed={estimatedSpeed}
                 selectedDate={selectedDate}
                 selectedTime={selectedTime}
-                isFlying={isFlying}
-                flySpeed={flySpeed}
-                onFlySpeedChange={setFlySpeed}
-                onOpenAnalytics={() => setAnalyticsOpen(true)}
-                onOpenIntensiveAnalysis={() => setIntensiveAnalysisOpen(true)}
+                onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack.id, 'power')}
+                onOpenIntensiveAnalysis={() => handleOpenTrackAnalysis(markedTrack.id, 'overview')}
                 onOpenVideoExport={() => setIsExportModalOpen(true)}
                 ftp={ftp}
                 textMarkers={textMarkers}
@@ -2124,14 +2124,13 @@ const App: React.FC = () => {
                 onApplyElevationFilter={handleApplyElevationFilter}
                 onAnalyzeSurface={analyzeTrackSurface}
                 isAnalyzingSurface={markedTrack ? !!analyzingSurfaces[markedTrack.id] : false}
-                onToggleFlyover={() => {
-                  if (isFlying) {
-                    setIsFlying(false);
-                  } else {
-                    setFlyProgress(0);
-                    setIsFlying(true);
-                  }
-                }}
+                onExtractSubTrack={handleExtractSubTrack}
+                onCropTrack={handleCropTrack}
+                onReverseTrack={handleReverseTrack}
+                onShiftLoopStart={handleShiftLoopStart}
+                onSanitizeTrack={handleSanitizeTrack}
+                mobileProfileSnap={mobileProfileSnap}
+                onMobileProfileSnapChange={setMobileProfileSnap}
                 onCollapse={() => setIsProfileCollapsed(true)}
               />
             </ErrorBoundary>
@@ -2156,6 +2155,7 @@ const App: React.FC = () => {
           hasTrack={!!markedTrack}
           isProfileCollapsed={isProfileCollapsed}
           onToggleProfile={() => setIsProfileCollapsed(prev => !prev)}
+          mobileProfileSnap={mobileProfileSnap}
           is3D={is3D}
           onToggle3D={() => setIs3D(prev => !prev)}
           onFitTrack={() => {

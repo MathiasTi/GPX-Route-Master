@@ -91,15 +91,6 @@ export const SHORTCUTS_DATA: ShortcutItem[] = [
     icon: <Box className="w-4 h-4 text-purple-500" />
   },
   {
-    id: 'toggle-flyover',
-    category: 'analysis',
-    keys: ['F'],
-    title: '3D-Flyover Flugsimulation',
-    description: 'Startet oder pausiert den virtuellen Helikopter-Überflug entlang der markierten Route.',
-    badge: 'Flugmodus',
-    icon: <Plane className="w-4 h-4 text-amber-500" />
-  },
-  {
     id: 'toggle-dashboard-hud',
     category: 'analysis',
     keys: ['D'],
@@ -157,8 +148,8 @@ export const SHORTCUTS_DATA: ShortcutItem[] = [
     id: 'escape-close',
     category: 'actions',
     keys: ['Esc'],
-    title: 'Dialoge / Flyover schließen',
-    description: 'Schließt geöffnete Modale, beendet den 3D-Flugmodus oder hebt eine aktive Gebietsauswahl auf der Karte auf.',
+    title: 'Dialoge schließen',
+    description: 'Schließt geöffnete Modale oder hebt eine aktive Gebietsauswahl auf der Karte auf.',
     badge: 'Global',
     icon: <X className="w-4 h-4 text-red-500" />
   }

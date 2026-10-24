@@ -13,6 +13,44 @@
               window.__APP_ORIGIN__ = origin;
             }
           }
+          // In the AI Studio / Cloud Run preview environment, HMR is disabled.
+          // Prevent @vite/client from attempting a failing WebSocket connection and throwing at @vite/client:454:31
+          if (typeof window !== 'undefined' && typeof window.WebSocket === 'function') {
+            var NativeWebSocket = window.WebSocket;
+            var PatchedWebSocket = function(url, protocols) {
+              var isViteHmr = protocols === 'vite-hmr' || (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1);
+              if (isViteHmr) {
+                return {
+                  url: String(url || ''),
+                  protocol: 'vite-hmr',
+                  readyState: 1, // OPEN
+                  CONNECTING: 0,
+                  OPEN: 1,
+                  CLOSING: 2,
+                  CLOSED: 3,
+                  bufferedAmount: 0,
+                  extensions: '',
+                  binaryType: 'blob',
+                  onopen: null,
+                  onerror: null,
+                  onclose: null,
+                  onmessage: null,
+                  addEventListener: function() {},
+                  removeEventListener: function() {},
+                  dispatchEvent: function() { return true; },
+                  send: function() {},
+                  close: function() { this.readyState = 3; }
+                };
+              }
+              return protocols !== undefined ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+            };
+            PatchedWebSocket.prototype = NativeWebSocket.prototype;
+            PatchedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+            PatchedWebSocket.OPEN = NativeWebSocket.OPEN;
+            PatchedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+            PatchedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+            window.WebSocket = PatchedWebSocket;
+          }
         } catch (e) {}
       })();
     </script>
@@ -106,11 +144,25 @@
           });
         }
 
+        function isIgnorableViteHmrError(msg, filename) {
+          var s = String(msg || '') + ' ' + String(filename || '');
+          return s.indexOf('@vite/client') !== -1 ||
+                 s.indexOf('WebSocket closed without opened') !== -1 ||
+                 s.indexOf('failed to connect to websocket') !== -1;
+        }
+
         // Capture phase listener for script and link loading errors
         window.addEventListener('error', function(event) {
+          if (isIgnorableViteHmrError(event && event.message, event && event.filename)) {
+            if (event.preventDefault) event.preventDefault();
+            return;
+          }
           var target = event.target;
           if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
             var resourceUrl = target.src || target.href || 'Unbekannte Ressource';
+            if (isIgnorableViteHmrError('', resourceUrl)) {
+              return;
+            }
             console.warn('[SW Intercept Catch] Script/resource loading failure on:', resourceUrl);
             
             // Auto unregister and reload once if blocked by service worker
@@ -153,6 +205,10 @@
         window.addEventListener('unhandledrejection', function(event) {
           var r = event.reason;
           var msg = r ? (r.stack || r.message || String(r)) : 'Unbekannter Promise-Fehler';
+          if (isIgnorableViteHmrError(msg, '')) {
+            if (event.preventDefault) event.preventDefault();
+            return;
+          }
           showFatalFallback('Unbehandelte Ausnahme (Promise)', 'Ein asynchroner Vorgang ist fehlgeschlagen:', msg);
         });
       })();

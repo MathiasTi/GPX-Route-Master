@@ -779,7 +779,7 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
         initial={{ scale: 0.95, y: 20 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.95, y: 20 }}
-        className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-5xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden cursor-default"
+        className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-5xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header Ribbon */}
@@ -814,7 +814,7 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
         </div>
 
         {/* Content Portal */}
-        <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8 bg-slate-50/20">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 space-y-6 sm:space-y-8 bg-slate-50/50 dark:bg-slate-950/40">
           
           {/* Notifications area */}
           {successMsg && (
@@ -822,9 +822,9 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
               initial={{ y: -10, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: -10, opacity: 0 }}
-              className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 px-4 py-3 rounded-2xl flex items-center gap-2 text-sm font-semibold"
+              className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-4 py-3 rounded-2xl flex items-center gap-2 text-sm font-semibold"
             >
-              <Check className="w-4 h-4 text-emerald-600" />
+              <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               <span>{successMsg}</span>
             </motion.div>
           )}
@@ -834,8 +834,8 @@ export const TrainingZonesAnalysis: React.FC<TrainingZonesAnalysisProps> = ({
             
             {/* Zone Configurator (Left Column) */}
             <div className="lg:col-span-5 space-y-6">
-              <div className="bg-white border border-slate-150 p-6 rounded-3xl shadow-sm space-y-4">
-                <div className="flex justify-between items-center border-b border-slate-50 pb-3">
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm space-y-4">
+                <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
                   <h3 className="text-sm font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2">
                     <Layers className="w-4 h-4 text-rose-500" />
                     Pulszonen Setup

@@ -823,7 +823,22 @@ export interface DbGarminActivityRecord {
   user_id?: string;
 }
 
-export function searchGarminActivities(queryText: string = '', activityType?: string): DbGarminActivityRecord[] {
+export interface GarminSearchFilterOptions {
+  queryText?: string;
+  activityType?: string;
+  startDate?: string;
+  endDate?: string;
+  minDistance?: number;
+  maxDistance?: number;
+  minAscent?: number;
+  hasGps?: boolean;
+}
+
+export function searchGarminActivities(
+  queryText: string = '',
+  activityType?: string,
+  extraFilters?: Omit<GarminSearchFilterOptions, 'queryText' | 'activityType'>
+): DbGarminActivityRecord[] {
   let sql = `SELECT * FROM garmin_activities`;
   const conditions: string[] = [];
   const params: any[] = [];
@@ -831,20 +846,48 @@ export function searchGarminActivities(queryText: string = '', activityType?: st
   const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
   if (cleanActivity && cleanActivity !== 'all') {
     if (cleanActivity === 'cycling') {
-      conditions.push(`(type LIKE '%cycle%' OR type LIKE '%bike%' OR type = 'cycling')`);
+      conditions.push(`(LOWER(type) LIKE '%cycle%' OR LOWER(type) LIKE '%bike%' OR LOWER(type) LIKE '%rad%' OR LOWER(type) = 'cycling')`);
     } else if (cleanActivity === 'running') {
-      conditions.push(`(type LIKE '%run%' OR type = 'running')`);
+      conditions.push(`(LOWER(type) LIKE '%run%' OR LOWER(type) LIKE '%lauf%' OR LOWER(type) = 'running')`);
+    } else if (cleanActivity === 'hiking') {
+      conditions.push(`(LOWER(type) LIKE '%hike%' OR LOWER(type) LIKE '%walk%' OR LOWER(type) LIKE '%wander%')`);
     } else {
-      conditions.push(`type = ?`);
-      params.push(cleanActivity);
+      conditions.push(`LOWER(type) LIKE ?`);
+      params.push(`%${cleanActivity.toLowerCase()}%`);
     }
   }
 
   const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
   if (cleanQuery) {
     const term = `%${cleanQuery}%`;
-    conditions.push(`(name LIKE ? OR description LIKE ? OR location LIKE ?)`);
-    params.push(term, term, term);
+    conditions.push(`(name LIKE ? OR description LIKE ? OR location LIKE ? OR type LIKE ?)`);
+    params.push(term, term, term, term);
+  }
+
+  if (extraFilters) {
+    if (extraFilters.startDate && /^\d{4}-\d{2}-\d{2}/.test(extraFilters.startDate)) {
+      conditions.push(`substr(date, 1, 10) >= ?`);
+      params.push(extraFilters.startDate.slice(0, 10));
+    }
+    if (extraFilters.endDate && /^\d{4}-\d{2}-\d{2}/.test(extraFilters.endDate)) {
+      conditions.push(`substr(date, 1, 10) <= ?`);
+      params.push(extraFilters.endDate.slice(0, 10));
+    }
+    if (typeof extraFilters.minDistance === 'number' && !isNaN(extraFilters.minDistance) && extraFilters.minDistance > 0) {
+      conditions.push(`distance >= ?`);
+      params.push(extraFilters.minDistance);
+    }
+    if (typeof extraFilters.maxDistance === 'number' && !isNaN(extraFilters.maxDistance) && extraFilters.maxDistance > 0) {
+      conditions.push(`distance <= ?`);
+      params.push(extraFilters.maxDistance);
+    }
+    if (typeof extraFilters.minAscent === 'number' && !isNaN(extraFilters.minAscent) && extraFilters.minAscent > 0) {
+      conditions.push(`COALESCE(ascent, 0) >= ?`);
+      params.push(extraFilters.minAscent);
+    }
+    if (extraFilters.hasGps === true) {
+      conditions.push(`points_json IS NOT NULL AND length(points_json) > 10`);
+    }
   }
 
   if (conditions.length > 0) {
@@ -856,6 +899,29 @@ export function searchGarminActivities(queryText: string = '', activityType?: st
   const activities = db.prepare(sql).all(...params) as DbGarminActivityRecord[];
   return activities;
 }
+
+export function searchGarminHealthMetrics(startDate?: string, endDate?: string) {
+  const dateWhere: string[] = [];
+  const params: any[] = [];
+  if (startDate && /^\d{4}-\d{2}-\d{2}/.test(startDate)) {
+    dateWhere.push(`substr(date, 1, 10) >= ?`);
+    params.push(startDate.slice(0, 10));
+  }
+  if (endDate && /^\d{4}-\d{2}-\d{2}/.test(endDate)) {
+    dateWhere.push(`substr(date, 1, 10) <= ?`);
+    params.push(endDate.slice(0, 10));
+  }
+  const whereClause = dateWhere.length > 0 ? ` WHERE ${dateWhere.join(' AND ')}` : '';
+
+  const sleep = db.prepare(`SELECT * FROM garmin_sleep${whereClause} ORDER BY date DESC`).all(...params);
+  const weight = db.prepare(`SELECT * FROM garmin_weight${whereClause} ORDER BY date DESC`).all(...params);
+  const stress = db.prepare(`SELECT * FROM garmin_stress${whereClause} ORDER BY date DESC`).all(...params);
+  const rhr = db.prepare(`SELECT * FROM garmin_rhr${whereClause} ORDER BY date DESC`).all(...params);
+  const steps = db.prepare(`SELECT * FROM garmin_steps${whereClause} ORDER BY date DESC`).all(...params);
+
+  return { sleep, weight, stress, rhr, steps };
+}
+
 
 export function getGarminActivityById(id: string): DbGarminActivityRecord | null {
   try {
@@ -922,6 +988,12 @@ export function addAppVersion(version: string, changelog: string): boolean {
 }
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const SENSITIVE_SETTINGS_KEYS = new Set([
+  'garmin_personal_api_key',
+  'garmin_personal_api_key_enc',
+  'garmin_personal_api_base_url',
+  'garmin_personal_token_expires_at'
+]);
 
 export function getSetting(key: string, defaultValue: string): string {
   try {
@@ -952,12 +1024,27 @@ export function saveSetting(key: string, value: string): boolean {
   }
 }
 
+export function deleteSetting(key: string): boolean {
+  try {
+    if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
+      return false;
+    }
+    const cleanKey = key.slice(0, 128);
+    const stmt = db.prepare('DELETE FROM user_settings WHERE key = ?');
+    const info = stmt.run(cleanKey);
+    return info.changes > 0;
+  } catch (e) {
+    console.error(`Failed to delete setting ${key}:`, e);
+    return false;
+  }
+}
+
 export function getAllSettings(): Record<string, string> {
   try {
     const rows = db.prepare('SELECT key, value FROM user_settings').all() as { key: string; value: string }[];
     const settings: Record<string, string> = Object.create(null);
     for (const row of rows) {
-      if (row.key && typeof row.key === 'string' && !FORBIDDEN_KEYS.has(row.key)) {
+      if (row.key && typeof row.key === 'string' && !FORBIDDEN_KEYS.has(row.key) && !SENSITIVE_SETTINGS_KEYS.has(row.key)) {
         settings[row.key] = row.value;
       }
     }
@@ -966,5 +1053,3 @@ export function getAllSettings(): Record<string, string> {
     return Object.create(null);
   }
 }
-
-

@@ -1,9 +1,10 @@
 
-import React, { useMemo, useState, useRef, useCallback } from 'react';
+import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { GPXTrack, GPXPoint, TextMarker } from '../types';
 import { 
   calculateDistance, 
   getPaceString, 
+  formatPace,
   downloadTrackAsGPX, 
   detectImpossibleGradientAnomalies, 
   GradientAnomaly,
@@ -11,7 +12,7 @@ import {
   ElevationFilterStrength
 } from '../utils/gpxUtils';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
-import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check } from 'lucide-react';
+import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
 const isFitTrack = (t?: GPXTrack | null): boolean => {
@@ -34,13 +35,12 @@ interface ElevationProfileProps {
   estimatedSpeed?: number;
   selectedDate: string;
   selectedTime: string;
-  isFlying?: boolean;
-  flySpeed?: number;
-  onFlySpeedChange?: (speed: number) => void;
-  onToggleFlyover?: () => void;
   onOpenAnalytics?: () => void;
   onOpenIntensiveAnalysis?: () => void;
   onOpenVideoExport?: () => void;
+  onReverseTrack?: (id: string) => void;
+  onShiftLoopStart?: (id: string, pointIndex: number) => void;
+  onSanitizeTrack?: (id: string) => void;
   ftp: number;
   onCollapse?: () => void;
   textMarkers?: TextMarker[];
@@ -50,6 +50,10 @@ interface ElevationProfileProps {
   onApplyElevationFilter?: (trackId: string, strength: ElevationFilterStrength) => void;
   onAnalyzeSurface?: (trackId: string) => void;
   isAnalyzingSurface?: boolean;
+  onExtractSubTrack?: (startKm: number, endKm: number) => void;
+  onCropTrack?: (startKm: number, endKm: number) => void;
+  mobileProfileSnap?: 'mini' | 'standard' | 'expanded';
+  onMobileProfileSnapChange?: (mode: 'mini' | 'standard' | 'expanded') => void;
 }
 
 export interface ProfileMarkerItem {
@@ -92,13 +96,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   estimatedSpeed = 15,
   selectedDate,
   selectedTime,
-  isFlying = false,
-  flySpeed = 1,
-  onFlySpeedChange,
-  onToggleFlyover,
   onOpenAnalytics,
   onOpenIntensiveAnalysis,
   onOpenVideoExport,
+  onReverseTrack,
+  onShiftLoopStart,
+  onSanitizeTrack,
   ftp,
   onCollapse,
   textMarkers = [],
@@ -107,7 +110,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onRepairAnomalies,
   onApplyElevationFilter,
   onAnalyzeSurface,
-  isAnalyzingSurface = false
+  isAnalyzingSurface = false,
+  onExtractSubTrack,
+  onCropTrack,
+  mobileProfileSnap = 'standard',
+  onMobileProfileSnapChange
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,6 +139,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [isTouchScrubbing, setIsTouchScrubbing] = useState(false);
   const [showSelectedSurfaceStats, setShowSelectedSurfaceStats] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const hoverRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverRafRef.current !== null) {
+        cancelAnimationFrame(hoverRafRef.current);
+      }
+    };
+  }, []);
 
   const handleDownloadGPX = useCallback(() => {
     try {
@@ -599,6 +615,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setDragCurrentX(svgX);
   };
 
+  const findClosestDataIdx = (data: readonly { dist: number }[], targetDist: number): number => {
+    let low = 0;
+    let high = data.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (data[mid].dist < targetDist) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    if (low >= data.length) return data.length - 1;
+    if (high < 0) return 0;
+    return Math.abs(data[low].dist - targetDist) < Math.abs(data[high].dist - targetDist) ? low : high;
+  };
+
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!profileData || !svgRef.current) return;
 
@@ -619,44 +651,40 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const distPercent = (clampedX - graphLeft) / (graphRight - graphLeft);
     const targetDist = distPercent * profileData.distRange;
 
-    let closestIdx = 0;
-    let minDiff = Infinity;
-    for (let i = 0; i < profileData.data.length; i++) {
-      const diff = Math.abs(profileData.data[i].dist - targetDist);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
-      }
-    }
-
+    const closestIdx = findClosestDataIdx(profileData.data, targetDist);
     const point = profileData.data[closestIdx];
     const x = (point.dist / profileData.distRange) * (graphRight - graphLeft) + graphLeft;
     const y = height - padding.bottom - ((point.ele - profileData.minEle) / profileData.eleRange) * (height - padding.top - padding.bottom);
 
-    setHoverInfo({
-      dist: point.dist,
-      ele: point.ele,
-      slope: point.slope,
-      power: point.power,
-      hr: point.hr,
-      time: point.time,
-      cadence: point.cadence,
-      speed: point.speed,
-      x,
-      y,
-      lat: point.lat,
-      lng: point.lng
-    });
-    if (onHoverPoint && !isFlying) {
-      const originalPoint = track.points[closestIdx];
-      onHoverPoint({
-        ...originalPoint,
-        slope: point.slope,
-        dist: point.dist,
-        trackId: track.id,
-        speed: point.speed ?? originalPoint.speed
-      } as any);
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
     }
+    hoverRafRef.current = requestAnimationFrame(() => {
+      setHoverInfo({
+        dist: point.dist,
+        ele: point.ele,
+        slope: point.slope,
+        power: point.power,
+        hr: point.hr,
+        time: point.time,
+        cadence: point.cadence,
+        speed: point.speed,
+        x,
+        y,
+        lat: point.lat,
+        lng: point.lng
+      });
+      if (onHoverPoint) {
+        const originalPoint = track.points[closestIdx];
+        onHoverPoint({
+          ...originalPoint,
+          slope: point.slope,
+          dist: point.dist,
+          trackId: track.id,
+          speed: point.speed ?? originalPoint.speed
+        } as any);
+      }
+    });
   };
 
   const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
@@ -695,44 +723,40 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const distPercent = (clampedX - graphLeft) / (graphRight - graphLeft);
     const targetDist = distPercent * profileData.distRange;
 
-    let closestIdx = 0;
-    let minDiff = Infinity;
-    for (let i = 0; i < profileData.data.length; i++) {
-      const diff = Math.abs(profileData.data[i].dist - targetDist);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
-      }
-    }
-
+    const closestIdx = findClosestDataIdx(profileData.data, targetDist);
     const point = profileData.data[closestIdx];
     const x = (point.dist / profileData.distRange) * (graphRight - graphLeft) + graphLeft;
     const y = height - padding.bottom - ((point.ele - profileData.minEle) / profileData.eleRange) * (height - padding.top - padding.bottom);
 
-    setHoverInfo({
-      dist: point.dist,
-      ele: point.ele,
-      slope: point.slope,
-      power: point.power,
-      hr: point.hr,
-      time: point.time,
-      cadence: point.cadence,
-      speed: point.speed,
-      x,
-      y,
-      lat: point.lat,
-      lng: point.lng
-    });
-    if (onHoverPoint && !isFlying) {
-      const originalPoint = track.points[closestIdx];
-      onHoverPoint({
-        ...originalPoint,
-        slope: point.slope,
-        dist: point.dist,
-        trackId: track.id,
-        speed: point.speed ?? originalPoint.speed
-      } as any);
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
     }
+    hoverRafRef.current = requestAnimationFrame(() => {
+      setHoverInfo({
+        dist: point.dist,
+        ele: point.ele,
+        slope: point.slope,
+        power: point.power,
+        hr: point.hr,
+        time: point.time,
+        cadence: point.cadence,
+        speed: point.speed,
+        x,
+        y,
+        lat: point.lat,
+        lng: point.lng
+      });
+      if (onHoverPoint) {
+        const originalPoint = track.points[closestIdx];
+        onHoverPoint({
+          ...originalPoint,
+          slope: point.slope,
+          dist: point.dist,
+          trackId: track.id,
+          speed: point.speed ?? originalPoint.speed
+        } as any);
+      }
+    });
   };
 
   const handleMouseUp = () => {
@@ -827,6 +851,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   let selectedEnergy = 0;
   let selectionElapsedSecs = 0;
   let selectedSurfaceStats: {type: string, distance: number}[] = [];
+  let selectedStartKm = 0;
+  let selectedEndKm = 0;
+  let selectedInBoundsCount = 0;
+  let selectedHrSum = 0;
+  let selectedHrCount = 0;
 
   if (selectionBounds) {
     for (let i = 0; i < data.length; i++) {
@@ -843,6 +872,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           currentRegion = { startX: x, endX: x };
         } else {
           currentRegion.endX = x;
+        }
+
+        if (selectedInBoundsCount === 0) {
+          selectedStartKm = p.dist;
+        }
+        selectedEndKm = p.dist;
+        selectedInBoundsCount++;
+
+        if (p.hr && p.hr > 0) {
+          selectedHrSum += p.hr;
+          selectedHrCount++;
         }
 
         if (i > 0) {
@@ -915,6 +955,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
   }
+
+  const selectedAvgHr = selectedHrCount > 0 ? Math.round(selectedHrSum / selectedHrCount) : null;
+  const selectedAvgPower = selectionElapsedSecs > 0 ? Math.round(selectedEnergy / selectionElapsedSecs) : null;
+  const selectedVam = selectionElapsedSecs > 10 && selectedAscent > 5 ? Math.round((selectedAscent / selectionElapsedSecs) * 3600) : null;
+  const isRunOrFit = isFitTrack(track) || track.activityType === 'running';
+  const selectedPaceStr = selectionElapsedSecs > 0 && selectedDistance > 0.03 
+    ? formatPace(selectionElapsedSecs, selectedDistance)
+    : (estimatedSpeed ? getPaceString(estimatedSpeed) : null);
+  const selectedSpeedKmh = selectionElapsedSecs > 0 && selectedDistance > 0.03
+    ? (selectedDistance / (selectionElapsedSecs / 3600))
+    : estimatedSpeed;
+  const selectedAvgGrade = selectedDistance > 0.05
+    ? ((selectedAscent - selectedDescent) / (selectedDistance * 1000)) * 100
+    : 0;
 
   const points = data.map(d => {
     const x = (d.dist / distRange) * graphWidth + padding.left;
@@ -1118,101 +1172,215 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         </div>
       </div>
 
-      {/* Mobile/Tablet Compact Topbar */}
-      <div className="flex lg:hidden justify-between items-center mb-1.5 px-1 bg-slate-50/50 p-1.5 rounded-xl border border-slate-100">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: track.color }}></div>
-          <span className="text-[10.5px] font-black text-slate-700 truncate max-w-[130px]" title={track.name}>
-            {track.name}
-          </span>
+      {/* Mobile Drawer Grab-Handle & Snap Controller */}
+      <div className="flex lg:hidden items-center justify-between px-2 pt-0 pb-1 select-none shrink-0 border-b border-slate-100 dark:border-slate-800/80 mb-1">
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200/70 dark:border-slate-700/70 text-[9.5px] font-bold">
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              onMobileProfileSnapChange?.('mini');
+            }}
+            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              mobileProfileSnap === 'mini'
+                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+            }`}
+          >
+            Mini
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              onMobileProfileSnapChange?.('standard');
+            }}
+            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              mobileProfileSnap === 'standard'
+                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+            }`}
+          >
+            Standard
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              onMobileProfileSnapChange?.('expanded');
+            }}
+            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              mobileProfileSnap === 'expanded'
+                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+            }`}
+          >
+            Max (55%)
+          </button>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* GPX Download */}
-          <button
-            onClick={handleDownloadGPX}
-            className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-              downloadSuccess
-                ? 'bg-emerald-600 text-white'
-                : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60'
-            }`}
-            title="Markierten Track als GPX herunterladen"
-          >
-            {downloadSuccess ? (
-              <CheckCircle2 className="w-3 h-3 text-white animate-pulse" />
-            ) : (
-              <Download className="w-3 h-3" />
-            )}
-          </button>
 
-          {/* Settings trigger */}
-          <button
-            onClick={() => setShowSettingsPopover(!showSettingsPopover)}
-            className={`p-1.5 rounded-lg transition-all ${
-              showSettingsPopover 
-                ? 'bg-indigo-600 text-white' 
-                : 'bg-white text-slate-650 border border-slate-200'
-            }`}
-            title="Anzeige-Einstellungen"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          </button>
+        {/* Center Pill Grab Handle */}
+        <button
+          type="button"
+          onClick={() => {
+            triggerHaptic('medium');
+            if (mobileProfileSnap === 'mini') onMobileProfileSnapChange?.('standard');
+            else if (mobileProfileSnap === 'standard') onMobileProfileSnapChange?.('expanded');
+            else onMobileProfileSnapChange?.('mini');
+          }}
+          className="w-10 h-1.5 bg-slate-300 dark:bg-slate-600 rounded-full hover:bg-slate-400 active:bg-slate-500 transition-colors mx-auto cursor-grab touch-manipulation my-auto"
+          title="Höhenprofil-Stufe umschalten"
+          aria-label="Höhenprofil-Stufe umschalten"
+        />
 
-          {/* Analyse */}
-          {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
-            <button 
-              onClick={onOpenAnalytics}
-              className="p-1.5 rounded-lg bg-amber-500 text-white"
-              title="Datenanalyse öffnen"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            </button>
-          )}
-
-          {/* Close/Minimize */}
+        <div className="flex items-center gap-1">
           {onCollapse && (
             <button
-              onClick={onCollapse}
-              className="p-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 transition-colors font-bold"
-              title="Ausblenden"
+              type="button"
+              onClick={() => {
+                triggerHaptic('light');
+                onCollapse();
+              }}
+              className="min-h-[30px] px-2 py-0.5 rounded-md text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer touch-manipulation"
+              title="Profil schließen"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              ✕ Schließen
             </button>
           )}
         </div>
       </div>
 
+      {/* Mobile/Tablet Compact Topbar */}
+      {mobileProfileSnap !== 'mini' && (
+        <div className="flex lg:hidden justify-between items-center mb-1.5 px-2 bg-slate-50/80 dark:bg-slate-850/80 py-1 rounded-xl border border-slate-200/60 dark:border-slate-800 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: track.color }}></div>
+            <span className="text-xs font-black text-slate-800 dark:text-slate-200 truncate max-w-[140px] sm:max-w-[200px]" title={track.name}>
+              {track.name}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {/* GPX Download */}
+            <button
+              onClick={handleDownloadGPX}
+              className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl transition-all cursor-pointer touch-manipulation active:scale-95 ${
+                downloadSuccess
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60'
+              }`}
+              title="Markierten Track als GPX herunterladen"
+            >
+              {downloadSuccess ? (
+                <CheckCircle2 className="w-4 h-4 text-white animate-pulse" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+            </button>
+
+            {/* Settings trigger */}
+            <button
+              onClick={() => setShowSettingsPopover(!showSettingsPopover)}
+              className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl transition-all touch-manipulation active:scale-95 ${
+                showSettingsPopover 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+              }`}
+              title="Anzeige-Einstellungen"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+
+            {/* Analyse */}
+            {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
+              <button 
+                onClick={onOpenAnalytics}
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition-colors touch-manipulation active:scale-95"
+                title="Datenanalyse öffnen"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              </button>
+            )}
+
+            {/* Close/Minimize */}
+            {onCollapse && (
+              <button
+                onClick={onCollapse}
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors touch-manipulation active:scale-95"
+                title="Ausblenden"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Floating Settings Popover for Mobile/Tablet */}
       {showSettingsPopover && (
-        <div className="absolute top-12 right-2 z-[2000] bg-white/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 shadow-2xl flex flex-col gap-3 w-64 text-left select-none font-sans">
-          <div className="flex items-center justify-between border-b pb-1.5">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-550">Anzeige-Optionen</span>
+        <div className="absolute top-12 right-2 z-[2000] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-3 w-68 text-left select-none font-sans text-slate-800 dark:text-slate-100">
+          <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-1.5">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">Anzeige & Werkzeuge</span>
             <button 
               onClick={() => setShowSettingsPopover(false)}
-              className="text-[11px] font-black text-slate-400 hover:text-slate-650 cursor-pointer p-0.5"
+              className="text-[11px] font-black text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-0.5"
             >
               ✕
             </button>
           </div>
           
-          {/* Tempo Slider */}
-          <div className="flex flex-col gap-1 bg-slate-50 p-2 rounded-xl border border-slate-100">
-            <div className="flex justify-between items-center text-[10px] font-bold text-slate-600">
-              <span>Überflug-Spezialtempo:</span>
-              <span className="text-indigo-650 font-black">{flySpeed}x</span>
+          {/* Pro Route Tools: Umkehren & Bereinigen */}
+          <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+            <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Routen-Werkzeuge:</span>
+            <div className="grid grid-cols-2 gap-1.5">
+              {onReverseTrack && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('medium');
+                    onReverseTrack(track.id);
+                  }}
+                  className="px-2 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-[10px] border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
+                  title="Streckenverlauf in Gegenrichtung umkehren"
+                >
+                  <RotateCcw className="w-3 h-3 text-indigo-500" />
+                  <span>Umkehren</span>
+                </button>
+              )}
+              {onSanitizeTrack && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('medium');
+                    onSanitizeTrack(track.id);
+                  }}
+                  className="px-2 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 font-bold text-[10px] border border-emerald-200 dark:border-emerald-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
+                  title="One-Click GPS-Ausreißer & Höhenglättung"
+                >
+                  <Sparkles className="w-3 h-3 text-emerald-500" />
+                  <span>Bereinigen</span>
+                </button>
+              )}
             </div>
-            <input 
-              type="range" 
-              min="0.5" 
-              max="10" 
-              step="0.5" 
-              value={flySpeed} 
-              onChange={(e) => onFlySpeedChange?.(parseFloat(e.target.value))}
-              className="w-full h-1 bg-indigo-150 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1"
-            />
+            {onShiftLoopStart && hoverInfo && (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic('success');
+                  const targetIdx = profileData.data.findIndex(p => Math.abs(p.dist - hoverInfo.dist) < 0.05);
+                  if (targetIdx !== -1) {
+                    onShiftLoopStart(track.id, targetIdx);
+                  }
+                }}
+                className="w-full mt-0.5 py-1 px-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold text-[9.5px] border border-indigo-200 dark:border-indigo-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95"
+              >
+                <Crosshair className="w-3 h-3 text-indigo-500" />
+                <span>Start auf km {(hoverInfo.dist / 1000).toFixed(1)} setzen</span>
+              </button>
+            )}
           </div>
 
           {/* Toggle series checkboxes */}
-          <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-500">
+          <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-700 dark:text-slate-300">
             <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-700">
               <input 
                 type="checkbox" 
@@ -1386,52 +1554,108 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </label>
         </div>
       )}
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold font-mono text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-100 shadow-sm">
+          <div className="flex items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full">
             {selectionBounds && selectedRegions.length > 0 ? (
               <>
                 <button 
                   onClick={(e) => { e.stopPropagation(); if (onSelection) onSelection(null); }}
-                  className="flex gap-1 items-center text-indigo-600 hover:bg-indigo-100 px-2 py-0.5 rounded transition-colors"
-                  title="Auswahl aufheben"
+                  className="flex gap-1 items-center text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 px-2.5 py-1 rounded-lg border border-indigo-200/70 dark:border-indigo-800/70 transition-colors cursor-pointer shrink-0 min-h-[36px]"
+                  title="Auswahl aufheben (Esc)"
                 >
-                  <span className="text-[16px]">✕</span> <span className="text-sm">AUSWAHL:</span>
+                  <span className="text-xs font-black">✕</span>
+                  <span className="text-[10px] font-sans font-extrabold uppercase tracking-wider">
+                    km {selectedStartKm.toFixed(1)}–{selectedEndKm.toFixed(1)}
+                  </span>
                 </button>
-                <span className="flex gap-1 items-center"><span className="text-blue-600 text-[16px]">↔</span> <span className="text-sm text-slate-700">{selectedDistance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}km</span></span>
-                <span className="flex gap-1 items-center"><span className="text-emerald-600 text-[16px]">▲</span> <span className="text-sm text-slate-700">{selectedAscent.toLocaleString('de-DE', { maximumFractionDigits: 0 })}m</span></span>
-                <span className="flex gap-1 items-center"><span className="text-rose-600 text-[16px]">▼</span> <span className="text-sm text-slate-700">{selectedDescent.toLocaleString('de-DE', { maximumFractionDigits: 0 })}m</span></span>
-                {selectionElapsedSecs > 0 && (
-                  <span className="flex gap-1 items-center"><span className="text-amber-600 text-[16px]">⚡</span> <span className="text-sm text-slate-700">{(selectedEnergy / selectionElapsedSecs).toLocaleString('de-DE', { maximumFractionDigits: 0 })}W</span></span>
+
+                <span className="flex gap-1 items-center text-slate-800 dark:text-slate-100 shrink-0" title="Distanz des markierten Abschnitts">
+                  <span className="text-blue-600 dark:text-blue-400">↔</span>
+                  <span>{selectedDistance.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</span>
+                </span>
+
+                <span className="flex gap-0.5 items-center text-emerald-700 dark:text-emerald-400 shrink-0" title="Anstieg im Abschnitt">
+                  <span>▲</span>
+                  <span>+{Math.round(selectedAscent)} m</span>
+                </span>
+
+                <span className="flex gap-0.5 items-center text-rose-700 dark:text-rose-400 shrink-0" title="Abstieg im Abschnitt">
+                  <span>▼</span>
+                  <span>-{Math.round(selectedDescent)} m</span>
+                </span>
+
+                <span className="flex gap-0.5 items-center px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-700/70 text-slate-800 dark:text-slate-200 text-[10px] shrink-0" title="Durchschnittliche Steigung im Abschnitt">
+                  <span>Ø {selectedAvgGrade >= 0 ? '+' : ''}{selectedAvgGrade.toFixed(1)}%</span>
+                </span>
+
+                {selectedVam !== null && selectedVam > 100 && (
+                  <span className="flex gap-0.5 items-center text-indigo-600 dark:text-indigo-400 text-[10px] shrink-0" title="Vertikale Steigrate (VAM)">
+                    <span>{selectedVam} Hm/h</span>
+                  </span>
+                )}
+
+                {selectedPaceStr && (
+                  <span className="flex gap-1 items-center px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 border border-teal-200/60 dark:border-teal-800/60 text-[10px] shrink-0" title="Durchschnittliche Pace & Geschwindigkeit im Abschnitt">
+                    <span>{isRunOrFit ? `${selectedPaceStr} (${selectedSpeedKmh.toFixed(1)} km/h)` : `${selectedSpeedKmh.toFixed(1)} km/h (${selectedPaceStr})`}</span>
+                  </span>
+                )}
+
+                {selectedAvgPower !== null && selectedAvgPower > 0 && (
+                  <span className="flex gap-0.5 items-center text-amber-600 dark:text-amber-400 text-[10px] shrink-0" title="Durchschnittliche Leistung im Abschnitt">
+                    <Zap className="w-3 h-3 fill-amber-500/20" />
+                    <span>{selectedAvgPower} W</span>
+                  </span>
+                )}
+
+                {selectedAvgHr !== null && selectedAvgHr > 0 && (
+                  <span className="flex gap-0.5 items-center text-rose-600 dark:text-rose-400 text-[10px] shrink-0" title="Durchschnittliche Herzfrequenz im Abschnitt">
+                    <Heart className="w-3 h-3 fill-rose-500/20" />
+                    <span>{selectedAvgHr} bpm</span>
+                  </span>
+                )}
+
+                {/* Action buttons: Extract Sub-Track & Crop Track */}
+                {(onExtractSubTrack || onCropTrack) && selectedEndKm - selectedStartKm >= 0.05 && (
+                  <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-slate-200 dark:border-slate-700 font-sans shrink-0">
+                    {onExtractSubTrack && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          triggerHaptic('medium');
+                          onExtractSubTrack(selectedStartKm, selectedEndKm);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10.5px] font-bold shadow-2xs transition-colors cursor-pointer min-h-[36px]"
+                        title="Markierten Abschnitt als neuen eigenständigen Track im Workspace anlegen"
+                      >
+                        <FilePlus className="w-3.5 h-3.5" />
+                        <span>Als Teil-Track</span>
+                      </button>
+                    )}
+                    {onCropTrack && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          triggerHaptic('medium');
+                          onCropTrack(selectedStartKm, selectedEndKm);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[10.5px] font-bold shadow-2xs transition-colors cursor-pointer min-h-[36px]"
+                        title="Aktuellen Track auf diesen markierten Abschnitt zuschneiden (Rückgängig mit Strg+Z möglich)"
+                      >
+                        <Scissors className="w-3.5 h-3.5" />
+                        <span>Zuschneiden</span>
+                      </button>
+                    )}
+                  </div>
                 )}
                 {showSelectedSurfaceStats && selectedSurfaceStats.length > 0 && (
-                  <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-200">
-                    <span className="text-slate-400">UNTERGRUND:</span>
-                    <div className="flex flex-col gap-1 w-48">
-                      <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+                  <div className="flex items-center gap-2 ml-1 pl-2 border-l border-slate-200 dark:border-slate-700">
+                    <span className="text-slate-400 text-[10px]">BELAG:</span>
+                    <div className="flex flex-col gap-0.5 w-36">
+                      <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
                         {selectedSurfaceStats.map((surface, idx) => {
                           const totalDist = selectedSurfaceStats.reduce((sum, s) => sum + s.distance, 0) || 1;
                           const pct = (surface.distance / totalDist) * 100;
-                          const getSurfColor = (s: string) => {
-                            switch (s) {
-                              case "Asphalt": return "#2563eb"; // Royal Blue
-                              case "Schotter": return "#d97706"; // Amber
-                              case "Waldweg": return "#16a34a"; // Forest Green
-                              case "Fahrradweg": return "#0284c7"; // Sky Blue
-                              case "Kopfsteinpflaster": return "#78350f"; // Brown
-                              case "Straße": return "#4f46e5"; // Indigo
-                              default: return "#64748b"; // Slate
-                            }
-                          };
-                          return (
-                            <div 
-                              key={idx} 
-                              style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
-                              title={`${surface.type} (${pct.toFixed(1)}%)`} 
-                            />
-                          );
-                        })}
-                      </div>
-                      <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                        {selectedSurfaceStats.map((surface, idx) => {
                           const getSurfColor = (s: string) => {
                             switch (s) {
                               case "Asphalt": return "#2563eb";
@@ -1444,18 +1668,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                             }
                           };
                           return (
-                            <span key={idx} className="text-[10px] text-slate-700 font-mono flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSurfColor(surface.type) }}></span>
-                              {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}km
-                            </span>
+                            <div 
+                              key={idx} 
+                              style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
+                              title={`${surface.type}: ${surface.distance.toFixed(1)} km (${pct.toFixed(0)}%)`} 
+                            />
                           );
                         })}
                       </div>
                     </div>
                     <button 
                       onClick={(e) => { e.stopPropagation(); setShowSelectedSurfaceStats(false); }}
-                      className="ml-1 text-slate-400 hover:text-slate-600 transition-colors"
-                      title="Ausblenden"
+                      className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                      title="Belag-Vorschau ausblenden"
                     >
                       ✕
                     </button>
@@ -1566,6 +1791,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             handleMouseUp();
           }}
           onMouseLeave={() => {
+            if (hoverRafRef.current !== null) {
+              cancelAnimationFrame(hoverRafRef.current);
+            }
             setHoverInfo(null);
             if (onHoverPoint) onHoverPoint(null);
             handleMouseUp();

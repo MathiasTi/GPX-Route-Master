@@ -4,7 +4,7 @@ import {
   X, Printer, Share2, Clipboard, Heart, Activity, Zap,
   Layers, Trophy, Calendar, Clock, Bike, AlertTriangle, Sparkles,
   Navigation, CheckCircle, RefreshCw, Droplets, Flame, ShieldAlert,
-  MapPin, Plus, Sliders, Info, ArrowUpRight, Gauge, ChevronRight, ChevronLeft,
+  MapPin, Plus, Sliders, Info, ArrowUpRight, Gauge, ChevronRight, ChevronLeft, ChevronDown,
   TrendingUp, Mountain, Compass, Crosshair, BookOpen, Table, FileText
 } from 'lucide-react';
 import { GPXTrack, TextMarker, MapLayer } from '../types';
@@ -12,13 +12,15 @@ import {
   performLocalIntensiveAnalysis,
   formatSecondsToTime,
   formatSecondsToDigital,
+  computeRealTrackSplits,
+  RealTrackSplit,
   IntensiveAnalysisResult,
   IntensiveAnalysisOptions,
   IntensiveClimb,
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
-import { calculateDistance, detectActivityType } from '../utils/gpxUtils';
+import { calculateDistance, detectActivityType, detectTrackPauses } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
@@ -328,7 +330,7 @@ const IntensiveElevationChart: React.FC<IntensiveElevationChartProps> = ({
   );
 };
 
-export type AnalysisTab = 'overview' | 'power' | 'climbs' | 'zones' | 'nutrition' | 'splits' | 'tactics' | 'rawdata' | 'report' | 'pois';
+export type AnalysisTab = 'overview' | 'power' | 'climbs' | 'zones' | 'nutrition' | 'splits' | 'tactics' | 'pauses' | 'rawdata' | 'report' | 'pois';
 
 export interface IntensiveTrackAnalysisModalProps {
   track: GPXTrack;
@@ -348,6 +350,8 @@ export interface IntensiveTrackAnalysisModalProps {
   onAddTextMarker?: (marker: Omit<TextMarker, 'id'>) => void;
   onSelectTrackPoint?: (lat: number, lng: number) => void;
   onOpenGlossary?: (metricId?: string) => void;
+  onReverseTrack?: (trackId: string) => void;
+  onSanitizeTrack?: (trackId: string) => void;
 }
 
 export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalProps> = ({
@@ -367,7 +371,9 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   onSelection,
   onAddTextMarker,
   onSelectTrackPoint,
-  onOpenGlossary
+  onOpenGlossary,
+  onReverseTrack,
+  onSanitizeTrack
 }) => {
   // Activity Configuration State
   const initialDetected = useMemo<'cycling' | 'running'>(() => {
@@ -401,6 +407,13 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const [addedPois, setAddedPois] = useState<Record<string, boolean>>({});
   const [highlightedClimbIndex, setHighlightedClimbIndex] = useState<number | null>(null);
   const [showClimbHighlights, setShowClimbHighlights] = useState<boolean>(true);
+  const [splitIntervalKm, setSplitIntervalKm] = useState<1 | 5 | 10>(1);
+  const [isMobileParamsExpanded, setIsMobileParamsExpanded] = useState<boolean>(false);
+
+  // Automatic Pause & Net Time Analysis
+  const pauseAnalysis = useMemo(() => {
+    return detectTrackPauses(track);
+  }, [track]);
 
   // Compute Analysis
   const analysis: IntensiveAnalysisResult = useMemo(() => {
@@ -417,6 +430,14 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       textMarkers
     );
   }, [track, activityType, subType, fitnessLevel, customFtp, customWeight, customTemp, textMarkers]);
+
+  const realSplits: RealTrackSplit[] = useMemo(() => {
+    return computeRealTrackSplits(
+      { ...track, activityType },
+      splitIntervalKm,
+      analysis.estimatedAverageSpeedKmh || estimatedSpeed
+    );
+  }, [track, activityType, splitIntervalKm, analysis.estimatedAverageSpeedKmh, estimatedSpeed]);
 
   // Downsample profile data for elevation & grade chart with climb mapping
   const elevationData = useMemo(() => {
@@ -676,8 +697,38 @@ GPX Route Master Pro`;
           </div>
         </div>
 
-        {/* Dynamic Parameter Ribbon */}
-        <div className="px-5 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs">
+        {/* Mobile Compact Parameter Ribbon (< 640px) */}
+        <div className="flex sm:hidden items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200/80 dark:border-slate-800 text-xs">
+          <div className="flex items-center gap-1.5 truncate">
+            <span className="font-bold flex items-center gap-1 text-slate-800 dark:text-slate-200 shrink-0">
+              {activityType === 'cycling' ? <Bike className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> : <Activity className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+              <span>
+                {activityType === 'cycling' 
+                  ? (subType === 'road' ? 'Rennrad' : subType === 'gravel' ? 'Gravel' : 'MTB') 
+                  : (subType === 'trail' ? 'Trail' : 'Lauf')}
+              </span>
+            </span>
+            <span className="text-slate-400">·</span>
+            <span className="text-slate-600 dark:text-slate-300 font-mono text-[11px] font-semibold truncate">
+              {activityType === 'cycling' ? `${customFtp}W` : fitnessLevel} · {customWeight}kg · {customTemp}°C
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              setIsMobileParamsExpanded(prev => !prev);
+            }}
+            className="flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800/60 shrink-0 cursor-pointer touch-manipulation active:scale-95 transition-transform"
+          >
+            <span>{isMobileParamsExpanded ? 'Weniger' : 'Parameter'}</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isMobileParamsExpanded ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
+
+        {/* Dynamic Parameter Ribbon (Desktop full, Mobile collapsible) */}
+        <div className={`${isMobileParamsExpanded ? 'flex' : 'hidden sm:flex'} px-3 sm:px-5 py-2.5 sm:py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-800 flex-wrap items-center justify-between gap-3 sm:gap-4 text-xs transition-all`}>
           <div className="flex flex-wrap items-center gap-3">
             {/* Activity Switch */}
             <div className="flex items-center bg-white dark:bg-slate-900 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700 shadow-2xs">
@@ -892,6 +943,26 @@ GPX Route Master Pro`;
           >
             <ShieldAlert className="w-4 h-4 text-emerald-500" />
             <span>Taktik & Pacing</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('pauses');
+            }}
+            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'pauses'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Clock className="w-4 h-4 text-amber-500" />
+            <span>Pausen & Stopps</span>
+            {pauseAnalysis.pauses.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                {pauseAnalysis.pauses.length}
+              </span>
+            )}
           </button>
 
           <button
@@ -1509,64 +1580,291 @@ GPX Route Master Pro`;
             </div>
           )}
 
-          {activeTab === 'splits' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Etappen-Splits & Zwischenzeiten
-                </h4>
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Berechnet auf Basis des Geländeprofils
-                </span>
-              </div>
+          {activeTab === 'splits' && (() => {
+            const isRunningMode = activityType === 'running';
+            const fullSplits = realSplits.filter(s => s.distanceKm >= splitIntervalKm * 0.65);
+            const poolForBest = fullSplits.length > 0 ? fullSplits : realSplits;
+            const fastestSplit = poolForBest.length > 0
+              ? poolForBest.reduce((best, s) => (s.avgSpeedKmh > best.avgSpeedKmh ? s : best), poolForBest[0])
+              : null;
+            const steepestClimbSplit = realSplits.length > 0
+              ? realSplits.reduce((steep, s) => (s.ascentMeters > steep.ascentMeters ? s : steep), realSplits[0])
+              : null;
+            const maxSpeedInSplits = realSplits.length > 0
+              ? Math.max(...realSplits.map(s => s.avgSpeedKmh), 1)
+              : 1;
+            const hasAnyHr = realSplits.some(s => s.avgHr !== undefined && s.avgHr > 0);
+            const hasAnyPower = realSplits.some(s => s.avgPower !== undefined && s.avgPower > 0);
+            const hasRealTiming = realSplits.some(s => s.isRealTiming);
 
-              <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-800">
-                    <tr>
-                      <th className="p-3">Kilometer</th>
-                      <th className="p-3">Abschnitt</th>
-                      <th className="p-3">Höhenmeter</th>
-                      <th className="p-3">Ø Steigung</th>
-                      <th className="p-3">Charakter</th>
-                      <th className="p-3">Abschnittszeit</th>
-                      <th className="p-3 text-right">Gesamtzeit</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                    {analysis.splits.map((split, i) => (
-                      <tr
-                        key={i}
-                        className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-800 dark:text-slate-200"
+            return (
+              <div className="space-y-4">
+                {/* Header & Interval Switcher */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-800">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
+                        Kilometer-Splits & Intervall-Analyse ({isRunningMode ? 'Lauf-Pace & km/h' : 'Radsport km/h & Pace'})
+                      </h4>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        hasRealTiming
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 border border-emerald-300/60 dark:border-emerald-800'
+                          : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/70 dark:text-indigo-300 border border-indigo-300/60 dark:border-indigo-800'
+                      }`}>
+                        {hasRealTiming ? 'Echte GPS/FIT-Zeitstempel' : 'Physik-Pacing-Prognose'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Klicke auf „Auf Karte", um den jeweiligen Kilometerabschnitt direkt im Karten- und Höhenprofil-Fokus zu markieren.
+                    </p>
+                  </div>
+
+                  {/* 1 km | 5 km | 10 km Switcher */}
+                  <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 self-start sm:self-auto shrink-0">
+                    {([1, 5, 10] as const).map((kmVal) => (
+                      <button
+                        key={kmVal}
+                        type="button"
+                        onClick={() => {
+                          triggerHaptic('light');
+                          setSplitIntervalKm(kmVal);
+                        }}
+                        className={`px-3 py-1 rounded-lg text-xs font-black font-mono tabular-nums transition-all cursor-pointer ${
+                          splitIntervalKm === kmVal
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        }`}
                       >
-                        <td className="p-3 font-bold text-indigo-600 dark:text-indigo-400">km {split.kmMarker}</td>
-                        <td className="p-3">+{split.splitDistanceKm} km</td>
-                        <td className="p-3">+{Math.round(split.splitAscentMeters)} m</td>
-                        <td className="p-3">{split.splitAvgGradePercent}%</td>
-                        <td className="p-3">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              split.splitAvgGradePercent > 5
-                                ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                                : split.splitAvgGradePercent > 1
-                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
-                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                        {kmVal} km
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Split KPI Summary Strip */}
+                {realSplits.length > 0 && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono tabular-nums">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-400 block">
+                        Schnellster Split
+                      </span>
+                      <div className="text-sm font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
+                        {fastestSplit
+                          ? isRunningMode
+                            ? `${fastestSplit.paceFormatted} /km (${fastestSplit.avgSpeedKmh} km/h)`
+                            : `${fastestSplit.avgSpeedKmh} km/h (${fastestSplit.paceFormatted} /km)`
+                          : '-'}
+                      </div>
+                      <span className="text-[10px] font-sans text-slate-500">
+                        {fastestSplit ? `Abschnitt #${fastestSplit.splitIndex} (km ${fastestSplit.startKm}–${fastestSplit.endKm})` : ''}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-400 block">
+                        Ø Strecken-Tempo / Pace
+                      </span>
+                      <div className="text-sm font-black text-indigo-600 dark:text-indigo-400 mt-0.5">
+                        {isRunningMode
+                          ? `${ computeRealTrackSplits({ ...track, activityType }, Math.max(10, splitIntervalKm) as 10, analysis.estimatedAverageSpeedKmh)[0]?.paceFormatted || '-:--' } /km`
+                          : `${analysis.estimatedAverageSpeedKmh} km/h`}
+                      </div>
+                      <span className="text-[10px] font-sans text-slate-500">
+                        {isRunningMode ? `Ø ${analysis.estimatedAverageSpeedKmh} km/h` : `${realSplits.length} Intervalle à ${splitIntervalKm} km`}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-400 block">
+                        Härtestes Berg-Intervall
+                      </span>
+                      <div className="text-sm font-black text-amber-600 dark:text-amber-400 mt-0.5">
+                        {steepestClimbSplit ? `+${steepestClimbSplit.ascentMeters} Hm (${steepestClimbSplit.avgGradePercent}%)` : '-'}
+                      </div>
+                      <span className="text-[10px] font-sans text-slate-500">
+                        {steepestClimbSplit ? `km ${steepestClimbSplit.startKm}–${steepestClimbSplit.endKm}` : ''}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-400 block">
+                        Intervalle Gesamt
+                      </span>
+                      <div className="text-sm font-black text-slate-800 dark:text-slate-100 mt-0.5">
+                        {realSplits.length} Splits
+                      </div>
+                      <span className="text-[10px] font-sans text-slate-500">
+                        Gesamtzeit {formatSecondsToTime(realSplits[realSplits.length - 1]?.cumulativeSeconds || 0)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Splits Table */}
+                <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
+                  <table className="w-full text-left text-xs font-mono tabular-nums">
+                    <thead className="bg-slate-100 dark:bg-slate-800/90 text-slate-600 dark:text-slate-300 font-sans font-bold border-b border-slate-200 dark:border-slate-800 text-[11px]">
+                      <tr>
+                        <th className="p-2.5"># / km</th>
+                        <th className="p-2.5">{isRunningMode ? 'Pace & Tempo' : 'Tempo & Pace'}</th>
+                        <th className="p-2.5 w-36 hidden md:table-cell">Intensitäts-Profil</th>
+                        <th className="p-2.5">±Hm / Ø %</th>
+                        {hasAnyHr && <th className="p-2.5">Ø Puls</th>}
+                        {hasAnyPower && <th className="p-2.5">Ø Watt</th>}
+                        <th className="p-2.5">Dauer</th>
+                        <th className="p-2.5">Kumuliert</th>
+                        <th className="p-2.5 text-right">Karten-Fokus</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-medium">
+                      {realSplits.map((split) => {
+                        const isFastest = fastestSplit && fastestSplit.splitIndex === split.splitIndex;
+                        const pctBar = Math.min(100, Math.max(12, Math.round((split.avgSpeedKmh / maxSpeedInSplits) * 100)));
+
+                        return (
+                          <tr
+                            key={split.splitIndex}
+                            className={`transition-colors text-slate-800 dark:text-slate-200 ${
+                              isFastest
+                                ? 'bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/35'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                             }`}
                           >
-                            {split.terrainType}
-                          </span>
-                        </td>
-                        <td className="p-3 font-semibold">{formatSecondsToDigital(split.estimatedSplitTimeSeconds)}</td>
-                        <td className="p-3 text-right font-black text-slate-900 dark:text-white">
-                          {formatSecondsToTime(split.cumulativeTimeSeconds)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            <td className="p-2.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-black text-indigo-600 dark:text-indigo-400">
+                                  #{split.splitIndex}
+                                </span>
+                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  {split.startKm.toFixed(1)}–{split.endKm.toFixed(1)} km
+                                </span>
+                                {isFastest && (
+                                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-sans text-[9px] font-black uppercase">
+                                    Best
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="p-2.5">
+                              {isRunningMode ? (
+                                <div>
+                                  <span className="font-black text-slate-900 dark:text-white">
+                                    {split.paceFormatted} /km
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 block">
+                                    {split.avgSpeedKmh.toFixed(1)} km/h
+                                  </span>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="font-black text-slate-900 dark:text-white">
+                                    {split.avgSpeedKmh.toFixed(1)} km/h
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 block">
+                                    {split.paceFormatted} min/km
+                                  </span>
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="p-2.5 hidden md:table-cell">
+                              <div className="w-full bg-slate-200/70 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    isFastest
+                                      ? 'bg-emerald-500'
+                                      : split.avgGradePercent > 4
+                                      ? 'bg-amber-500'
+                                      : 'bg-indigo-500'
+                                  }`}
+                                  style={{ width: `${pctBar}%` }}
+                                />
+                              </div>
+                              <span className="font-sans text-[9px] text-slate-400 block mt-0.5">
+                                {split.terrainType}
+                              </span>
+                            </td>
+
+                            <td className="p-2.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                                  +{split.ascentMeters}m
+                                </span>
+                                <span className="text-rose-500 dark:text-rose-400 text-[10px]">
+                                  -{split.descentMeters}m
+                                </span>
+                              </div>
+                              <span className={`text-[10px] font-bold ${
+                                split.avgGradePercent > 4
+                                  ? 'text-rose-500'
+                                  : split.avgGradePercent > 1
+                                  ? 'text-amber-500'
+                                  : 'text-slate-400'
+                              }`}>
+                                Ø {split.avgGradePercent >= 0 ? '+' : ''}{split.avgGradePercent}%
+                                {split.vam ? ` · ${split.vam} Hm/h` : ''}
+                              </span>
+                            </td>
+
+                            {hasAnyHr && (
+                              <td className="p-2.5">
+                                {split.avgHr ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-bold">
+                                    {split.avgHr} <span className="text-[10px] font-normal">bpm</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
+                              </td>
+                            )}
+
+                            {hasAnyPower && (
+                              <td className="p-2.5">
+                                {split.avgPower ? (
+                                  <span className="text-amber-600 dark:text-amber-400 font-bold">
+                                    {split.avgPower} <span className="text-[10px] font-normal">W</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
+                              </td>
+                            )}
+
+                            <td className="p-2.5 font-semibold">
+                              {formatSecondsToDigital(split.durationSeconds)}
+                            </td>
+
+                            <td className="p-2.5 font-black text-slate-900 dark:text-white">
+                              {formatSecondsToTime(split.cumulativeSeconds)}
+                            </td>
+
+                            <td className="p-2.5 text-right font-sans">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  triggerHaptic('light');
+                                  if (onSelection) {
+                                    onSelection(split.bounds);
+                                  }
+                                  onClose();
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/70 transition-colors cursor-pointer"
+                                title={`Kilometer-Abschnitt km ${split.startKm}–${split.endKm} auf Karte & im Höhenprofil markieren`}
+                              >
+                                <Crosshair className="w-3 h-3" />
+                                <span>Fokus</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {activeTab === 'tactics' && (
             <div className="space-y-4">
@@ -1614,6 +1912,180 @@ GPX Route Master Pro`;
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'pauses' && (
+            <div className="space-y-5">
+              {/* Top Banner & Pro Tools */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-amber-500" />
+                    Automatische Standzeit- & Netto-Zeit-Erkennung
+                  </h4>
+                  <p className="text-xs text-slate-700 dark:text-slate-300 mt-1">
+                    Erkennt GPS-Aufzeichnungslücken und Standphasen unter 1.6 km/h. Vergleicht Brutto-Gesamtzeit mit echter Netto-Bewegungszeit.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {onSanitizeTrack && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('medium');
+                        onSanitizeTrack(track.id);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer active:scale-95"
+                      title="1-Click Track-Sanitizer (GPS-Ausreißer & Glättung)"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Track bereinigen</span>
+                    </button>
+                  )}
+                  {onReverseTrack && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('medium');
+                        onReverseTrack(track.id);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                      title="Streckenrichtung umkehren"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-violet-500" />
+                      <span>Route umkehren</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* KPI Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Netto-Bewegung</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-slate-100 font-mono mt-1">
+                    {formatSecondsToTime(pauseAnalysis.netMovingSeconds || analysis.estimatedMovingTimeSeconds)}
+                  </div>
+                  <div className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">Reine Fahrzeit</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Brutto-Gesamtzeit</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-slate-100 font-mono mt-1">
+                    {formatSecondsToTime(pauseAnalysis.grossElapsedSeconds || analysis.estimatedElapsedTimeSeconds)}
+                  </div>
+                  <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 mt-0.5">Inkl. aller Pausen</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Stand- & Pausenzeit</div>
+                  <div className="text-lg font-black text-amber-600 dark:text-amber-400 font-mono mt-1">
+                    {formatSecondsToTime(pauseAnalysis.totalPauseSeconds)}
+                  </div>
+                  <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 mt-0.5">{pauseAnalysis.pauses.length} Stopps erkannt</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Bewegungsanteil</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-slate-100 font-mono mt-1">
+                    {pauseAnalysis.movingRatioPercent.toFixed(1)}%
+                  </div>
+                  <div className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 mt-0.5">Fahreffizienz</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Ø Netto-Tempo</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-slate-100 font-mono mt-1">
+                    {pauseAnalysis.averageMovingSpeedKmh > 0 ? pauseAnalysis.averageMovingSpeedKmh.toFixed(1) : analysis.estimatedAverageSpeedKmh.toFixed(1)} <span className="text-xs font-normal">km/h</span>
+                  </div>
+                  <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 mt-0.5">In Bewegung</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300">Ø Brutto-Tempo</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-slate-100 font-mono mt-1">
+                    {pauseAnalysis.averageGrossSpeedKmh > 0 ? pauseAnalysis.averageGrossSpeedKmh.toFixed(1) : (analysis.totalDistanceKm / (analysis.estimatedElapsedTimeSeconds / 3600)).toFixed(1)} <span className="text-xs font-normal">km/h</span>
+                  </div>
+                  <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 mt-0.5">Über Gesamtzeit</div>
+                </div>
+              </div>
+
+              {/* Pause List Table */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 space-y-3">
+                <h5 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200 flex items-center justify-between">
+                  <span>Erkannte Stopps & Stillstände ({pauseAnalysis.pauses.length})</span>
+                  <span className="text-[11px] font-normal text-slate-600 dark:text-slate-400">Klick auf Zeile zoomt zum Stopp auf der Karte</span>
+                </h5>
+
+                {pauseAnalysis.pauses.length === 0 ? (
+                  <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-xs">
+                    <CheckCircle className="w-8 h-8 text-emerald-500 mx-auto mb-2 opacity-80" />
+                    Keine signifikanten Standpausen oder Zeitlücken in diesem Track festgestellt.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase font-black text-[10px] border-b border-slate-200 dark:border-slate-700">
+                        <tr>
+                          <th className="py-2.5 px-3">#</th>
+                          <th className="py-2.5 px-3">Typ</th>
+                          <th className="py-2.5 px-3">Kilometer</th>
+                          <th className="py-2.5 px-3">Dauer</th>
+                          <th className="py-2.5 px-3">Höhe</th>
+                          <th className="py-2.5 px-3 text-right">Aktion</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-800 dark:text-slate-200 font-medium font-sans">
+                        {pauseAnalysis.pauses.map((p, idx) => (
+                          <tr 
+                            key={p.id}
+                            onClick={() => {
+                              triggerHaptic('light');
+                              onSelectTrackPoint?.(p.lat, p.lng);
+                            }}
+                            className="hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 cursor-pointer transition-colors"
+                          >
+                            <td className="py-2.5 px-3 font-bold font-mono">#{idx + 1}</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                p.type === 'stopped'
+                                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                  : 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                              }`}>
+                                {p.type === 'stopped' ? 'Standpause / Ampel' : 'Aufzeichnungslücke'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-900 dark:text-slate-100">
+                              km {p.startKm.toFixed(2)}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono font-bold text-amber-600 dark:text-amber-400">
+                              {formatSecondsToTime(p.durationSeconds)}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-slate-700 dark:text-slate-300">
+                              {Math.round(p.elevationM)} m
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  triggerHaptic('medium');
+                                  onSelectTrackPoint?.(p.lat, p.lng);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900 text-[10px] font-bold transition-all inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <Crosshair className="w-3 h-3" />
+                                <span>Auf Karte</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Database, Search, AlertCircle, CheckCircle, RefreshCw, 
   Activity, Calendar, Clock, Flame, Heart, MapPin, BarChart2, 
-  GitCompare, Plus, Check, Info, Filter, HelpCircle, ArrowUpRight, TrendingUp
+  GitCompare, Plus, Check, Info, Filter, HelpCircle, ArrowUpRight, TrendingUp, Key, Download
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -12,6 +12,7 @@ import {
 import { getApiUrl } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import { GarminActivitiesCalendar } from './GarminActivitiesCalendar';
+import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 
 interface GarminActivitiesAnalysisProps {
   onClose: () => void;
@@ -55,13 +56,17 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'compare' | 'calendar'>('calendar');
+  const [activeTab, setActiveTab] = useState<'overview' | 'compare' | 'calendar' | 'personal-api'>('calendar');
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'cycling' | 'running' | 'other'>('all');
   const [minDistance, setMinDistance] = useState<number | ''>('');
   const [maxDistance, setMaxDistance] = useState<number | ''>('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [minAscent, setMinAscent] = useState<number | ''>('');
+  const [downloadingFitId, setDownloadingFitId] = useState<string | null>(null);
 
   // Selected for comparison
   const [selectedToCompare, setSelectedToCompare] = useState<string[]>([]);
@@ -152,9 +157,35 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
       const matchesMinDist = minDistance === '' || act.distance >= minDistance;
       const matchesMaxDist = maxDistance === '' || act.distance <= maxDistance;
 
-      return matchesSearch && matchesType && matchesMinDist && matchesMaxDist;
+      // Date range & Ascent
+      const actDatePrefix = (act.date || '').substring(0, 10);
+      const matchesStartDate = !startDate || (actDatePrefix && actDatePrefix >= startDate);
+      const matchesEndDate = !endDate || (actDatePrefix && actDatePrefix <= endDate);
+      const matchesMinAscent = minAscent === '' || (act.ascent || 0) >= minAscent;
+
+      return matchesSearch && matchesType && matchesMinDist && matchesMaxDist && matchesStartDate && matchesEndDate && matchesMinAscent;
     });
-  }, [activities, searchQuery, typeFilter, minDistance, maxDistance]);
+  }, [activities, searchQuery, typeFilter, minDistance, maxDistance, startDate, endDate, minAscent]);
+
+  const handleDownloadFitForActivity = async (act: GarminActivity) => {
+    setDownloadingFitId(act.id);
+    setError(null);
+    try {
+      const res = await fetch(getApiUrl(`/api/garmin/personal/activity/${encodeURIComponent(act.id)}/fit`));
+      const json = await res.json();
+      if (json.success && json.pointsCount > 0) {
+        setSuccessMsg(`.FIT-Track für "${act.name}" geladen (${json.pointsCount} GPS-Punkte)`);
+        await fetchActivities();
+        setTimeout(() => setSuccessMsg(null), 3500);
+      } else {
+        setError(json.error || 'Kein .FIT GPS-Track über Garmin Personal API verfügbar.');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Fehler beim Abrufen der .FIT-Datei.');
+    } finally {
+      setDownloadingFitId(null);
+    }
+  };
 
   // Overall statistics of filtered activities
   const stats = useMemo(() => {
@@ -573,6 +604,19 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                 )}
               </div>
             </button>
+            <button
+              onClick={() => setActiveTab('personal-api')}
+              className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                activeTab === 'personal-api'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-500/10'
+                  : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+              }`}
+            >
+              <div className="flex items-center gap-1.5">
+                <Key className="w-4 h-4" />
+                <span>Personal API &amp; Cloud-Import</span>
+              </div>
+            </button>
           </div>
 
           <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
@@ -637,13 +681,37 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                   placeholder="Max"
                   className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/25 text-slate-700 dark:text-slate-200"
                 />
-                {(minDistance !== '' || maxDistance !== '' || searchQuery !== '' || typeFilter !== 'all') && (
+                <input
+                  type="number"
+                  value={minAscent}
+                  onChange={(e) => setMinAscent(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                  placeholder="Min Hm (m)"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/25 text-slate-700 dark:text-slate-200"
+                />
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  title="Von Datum"
+                  className="w-full px-2 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/25 text-slate-700 dark:text-slate-200"
+                />
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  title="Bis Datum"
+                  className="w-full px-2 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/25 text-slate-700 dark:text-slate-200"
+                />
+                {(minDistance !== '' || maxDistance !== '' || minAscent !== '' || startDate !== '' || endDate !== '' || searchQuery !== '' || typeFilter !== 'all') && (
                   <button
                     onClick={() => {
                       setSearchQuery('');
                       setTypeFilter('all');
                       setMinDistance('');
                       setMaxDistance('');
+                      setMinAscent('');
+                      setStartDate('');
+                      setEndDate('');
                     }}
                     className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 rounded-lg transition-colors cursor-pointer"
                     title="Filter zurücksetzen"
@@ -658,7 +726,13 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
 
         {/* Content area */}
         <div className="flex-1 overflow-y-auto p-6 bg-slate-50 dark:bg-slate-900/40">
-          {isLoading && activities.length === 0 ? (
+          {activeTab === 'personal-api' ? (
+            <GarminPersonalApiPanel
+              onDataSynced={fetchActivities}
+              onLoadTrack={onLoadTrack}
+              onCloseModal={onClose}
+            />
+          ) : isLoading && activities.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center space-y-3">
               <RefreshCw className="w-8 h-8 text-orange-500 animate-spin" />
               <p className="text-xs font-bold text-slate-500 dark:text-slate-400 animate-pulse">Lade Garmin-Aktivitäten aus SQLite...</p>
@@ -895,14 +969,31 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                   {formatSpeed(act.distance, act.duration, act.type)}
                                 </td>
                                 <td className="p-4 text-right" onClick={(e) => e.stopPropagation()}>
-                                  <button
-                                    onClick={() => handleLoadActivity(act)}
-                                    className="px-2.5 py-1 bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/30 dark:hover:bg-orange-950/50 text-orange-700 dark:text-orange-400 text-[10px] font-black uppercase rounded-lg border border-orange-200/30 dark:border-orange-900/20 transition-all flex items-center gap-1 ml-auto cursor-pointer"
-                                    title="Aktivität in den Karten-Workspace laden"
-                                  >
-                                    <ArrowUpRight className="w-3 h-3" />
-                                    Workspace
-                                  </button>
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDownloadFitForActivity(act)}
+                                      disabled={downloadingFitId === act.id}
+                                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-black uppercase rounded-lg border border-slate-200 dark:border-slate-700 transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                      title="Original .FIT GPS-Track über Garmin Personal API herunterladen"
+                                    >
+                                      {downloadingFitId === act.id ? (
+                                        <RefreshCw className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <Download className="w-3 h-3" />
+                                      )}
+                                      .FIT
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleLoadActivity(act)}
+                                      className="px-2.5 py-1 bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/30 dark:hover:bg-orange-950/50 text-orange-700 dark:text-orange-400 text-[10px] font-black uppercase rounded-lg border border-orange-200/30 dark:border-orange-900/20 transition-all flex items-center gap-1 cursor-pointer"
+                                      title="Aktivität in den Karten-Workspace laden"
+                                    >
+                                      <ArrowUpRight className="w-3 h-3" />
+                                      Workspace
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );

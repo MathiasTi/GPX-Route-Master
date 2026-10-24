@@ -18,11 +18,9 @@ interface Map3DProps {
   mapView: {lat: number, lng: number, zoom: number, pitch: number, bearing: number};
   onMapViewChange: (view: {lat: number, lng: number, zoom: number, pitch: number, bearing: number}) => void;
   estimatedSpeed?: number;
-  flySpeed?: number;
-  isFlying?: boolean;
 }
 
-const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMarkTrack, hoveredPoint, onHoverPoint, selectionBounds, onSelection, mapView, onMapViewChange, estimatedSpeed = 15, flySpeed = 1, isFlying = false }) => {
+const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMarkTrack, hoveredPoint, onHoverPoint, selectionBounds, onSelection, mapView, onMapViewChange, estimatedSpeed = 15 }) => {
   const mapRef = useRef<MapRef>(null);
   const layerConfig = MAP_LAYERS[activeLayer];
   const [pitch, setPitch] = useState(mapView.pitch);
@@ -32,11 +30,11 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
 
   // Sync internal state when external mapView changes significantly
   useEffect(() => {
-    if (!isFlying && !isInternalUpdateRef.current) {
+    if (!isInternalUpdateRef.current) {
       if (Math.abs(pitch - mapView.pitch) > 0.1) setPitch(mapView.pitch);
       if (Math.abs(bearing - mapView.bearing) > 0.1) setBearing(mapView.bearing);
     }
-  }, [mapView.pitch, mapView.bearing, isFlying]);
+  }, [mapView.pitch, mapView.bearing]);
 
   const mapStyle = useMemo(() => {
     const tileUrls = ['a', 'b', 'c'].map(s => layerConfig.url.replace('{s}', s));
@@ -191,59 +189,6 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
     }
   }, [selectionBounds]);
 
-  useEffect(() => {
-    if (isFlying && hoveredPoint && mapRef.current && markedTrackId) {
-      const map = mapRef.current.getMap();
-      if (!map) return;
-      const track = tracks.find(t => t.id === markedTrackId);
-      if (track) {
-        // Find current index to look ahead for bearing
-        const idx = track.points.findIndex(p => p.lat === hoveredPoint.lat && p.lng === hoveredPoint.lng);
-        let nextBearing = bearing;
-        
-        if (idx !== -1 && idx < track.points.length - 1) {
-          // Look ahead for bearing - dynamic based on speed to ensure smoothness
-          // We look ahead more points at higher speeds to maintain stable bearing
-          const lookAheadPoints = Math.max(10, Math.floor(15 * flySpeed)); 
-          const lookAheadIdx = Math.min(idx + lookAheadPoints, track.points.length - 1);
-          const lookAheadPoint = track.points[lookAheadIdx];
-          nextBearing = calculateBearing(hoveredPoint, lookAheadPoint);
-        }
-
-        // Avoid redundant easeTo calls if targets are nearly identical to save CPU and avoid flicker
-        const isSignificantChange = !lastTargetRef.current || 
-          Math.abs(lastTargetRef.current.lat - hoveredPoint.lat) > 0.00002 ||
-          Math.abs(lastTargetRef.current.lng - hoveredPoint.lng) > 0.00002 ||
-          Math.abs(lastTargetRef.current.bearing - nextBearing) > 0.5;
-
-        if (isSignificantChange) {
-          lastTargetRef.current = { lat: hoveredPoint.lat, lng: hoveredPoint.lng, bearing: nextBearing };
-          isInternalUpdateRef.current = true;
-          
-          // Use easeTo for cinematic movement
-          map.easeTo({
-            center: [hoveredPoint.lng, hoveredPoint.lat],
-            bearing: nextBearing,
-            pitch: 65, // Tilt for 3D effect
-            zoom: 16.5,
-            duration: 400, // Shorter duration for more responsive tracking at high speeds
-            easing: (t) => t // Linear easing for consistent flow during flight
-          });
-          
-          // Only update UI state occasionally or if significant to minimize re-renders
-          if (Math.abs(bearing - nextBearing) > 2.0) {
-            setBearing(nextBearing);
-          }
-          
-          // Reset internal update flag after a delay
-          const timeout = setTimeout(() => { 
-            isInternalUpdateRef.current = false; 
-          }, 450);
-          return () => clearTimeout(timeout);
-        }
-      }
-    }
-  }, [hoveredPoint, isFlying, markedTrackId, tracks]);
 
   useEffect(() => {
     // Wait for CSS transitions (like the elevation profile opening) to finish
@@ -339,12 +284,11 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         transformRequest={transformRequest as any}
         onError={handleMapError}
         onMove={(e) => {
-          if (isFlying) return;
           setPitch(e.viewState.pitch);
           setBearing(e.viewState.bearing);
         }}
         onMoveEnd={(e) => {
-          if (isFlying || isInternalUpdateRef.current) {
+          if (isInternalUpdateRef.current) {
             isInternalUpdateRef.current = false;
             return;
           }

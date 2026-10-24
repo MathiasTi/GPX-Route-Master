@@ -1816,9 +1816,12 @@ export const reverseTrack = (
   const realSurfaceStats = calculateSurfaceStatsFromPoints(reversedPoints);
   hydratePointsWithSurface(reversedPoints, realSurfaceStats, totalDist);
 
-  const newName = track.name.includes('(Umgekehrt)') 
-    ? track.name 
-    : `${track.name} (Umgekehrt)`;
+  let newName = track.name;
+  if (newName.includes(' (Umgekehrt)')) {
+    newName = newName.replace(' (Umgekehrt)', '');
+  } else {
+    newName = `${newName} (Umgekehrt)`;
+  }
 
   return {
     ...track,
@@ -2767,6 +2770,74 @@ export const splitTrackAtIndex = (
 };
 
 /**
+ * Extracts a sub-segment of a track between startDistKm and endDistKm into a new standalone GPXTrack
+ */
+export const sliceTrackRange = (
+  track: GPXTrack,
+  startDistKm: number,
+  endDistKm: number,
+  customName?: string,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): GPXTrack | null => {
+  if (!track || !track.points || track.points.length < 2) return null;
+  const minD = Math.max(0, Math.min(startDistKm, endDistKm));
+  const maxD = Math.min(track.distance || Infinity, Math.max(startDistKm, endDistKm));
+
+  if (maxD - minD < 0.05) return null;
+
+  let cumD = 0;
+  const ptsWithDist: { pt: GPXPoint; dist: number }[] = [];
+  ptsWithDist.push({ pt: track.points[0], dist: 0 });
+  for (let i = 1; i < track.points.length; i++) {
+    cumD += calculateDistance(track.points[i - 1], track.points[i]);
+    ptsWithDist.push({ pt: track.points[i], dist: cumD });
+  }
+
+  const slicedPts = ptsWithDist
+    .filter(p => p.dist >= minD - 0.03 && p.dist <= maxD + 0.03)
+    .map(p => ({ ...p.pt }));
+
+  if (slicedPts.length < 2) return null;
+
+  let dist = 0;
+  for (let j = 0; j < slicedPts.length - 1; j++) {
+    dist += calculateDistance(slicedPts[j], slicedPts[j + 1]);
+  }
+
+  const eleStats = calculateElevationStats(slicedPts);
+  const surfaceStats = calculateSurfaceStatsFromPoints(slicedPts);
+  hydratePointsWithSurface(slicedPts, surfaceStats, dist);
+
+  let duration: number | undefined = undefined;
+  const startTime = slicedPts[0]?.time ? toDate(slicedPts[0].time) : undefined;
+  const endTime = slicedPts[slicedPts.length - 1]?.time ? toDate(slicedPts[slicedPts.length - 1].time) : undefined;
+  if (startTime && endTime) {
+    duration = Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
+  }
+
+  const powerStats = calculatePowerStats(slicedPts, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  return {
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `track-sub-${Date.now()}`,
+    name: customName || `${track.name} (km ${minD.toFixed(1)}–${maxD.toFixed(1)})`,
+    points: slicedPts,
+    color: track.color,
+    distance: parseFloat(dist.toFixed(2)),
+    ascent: eleStats.ascent,
+    descent: eleStats.descent,
+    maxSlope: eleStats.maxSlope,
+    duration,
+    visible: true,
+    activityType: track.activityType,
+    powerStats,
+    surfaceStats,
+    hasTimestamps: slicedPts.some(p => p.time !== undefined)
+  };
+};
+
+/**
  * Adjusts timestamps in a track to close or reduce a time gap without splitting the track.
  */
 export const closeTimeGapInTrack = (
@@ -3281,6 +3352,327 @@ export const autoFixTrackValidation = (
     maxSlope: Number(maxSlope.toFixed(1)),
     climbs,
     powerStats
+  };
+};
+
+export interface DetectedPause {
+  id: string;
+  startIndex: number;
+  endIndex: number;
+  startKm: number;
+  durationSeconds: number;
+  lat: number;
+  lng: number;
+  elevationM: number;
+  type: 'stopped' | 'gap';
+}
+
+export interface TrackPauseAnalysis {
+  hasTimestamps: boolean;
+  grossElapsedSeconds: number;
+  netMovingSeconds: number;
+  totalPauseSeconds: number;
+  movingRatioPercent: number;
+  averageMovingSpeedKmh: number;
+  averageGrossSpeedKmh: number;
+  pauses: DetectedPause[];
+}
+
+export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
+  if (!track || !track.points || track.points.length < 2) {
+    return {
+      hasTimestamps: false,
+      grossElapsedSeconds: 0,
+      netMovingSeconds: 0,
+      totalPauseSeconds: 0,
+      movingRatioPercent: 100,
+      averageMovingSpeedKmh: 0,
+      averageGrossSpeedKmh: 0,
+      pauses: []
+    };
+  }
+
+  const points = track.points;
+  const hasTimes = points.filter(p => p.time !== undefined).length > points.length * 0.5;
+  const pauses: DetectedPause[] = [];
+
+  let grossElapsedSeconds = 0;
+  if (hasTimes) {
+    const firstTime = new Date(points.find(p => p.time)!.time!).getTime();
+    const lastTime = new Date([...points].reverse().find(p => p.time)!.time!).getTime();
+    grossElapsedSeconds = Math.max(0, Math.round((lastTime - firstTime) / 1000));
+  } else if (track.duration) {
+    grossElapsedSeconds = track.duration;
+  }
+
+  let totalPauseSeconds = 0;
+
+  if (hasTimes) {
+    let pauseStartIdx: number | null = null;
+    let accumulatedPauseTime = 0;
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+
+      if (!p1.time || !p2.time) continue;
+
+      const t1 = new Date(p1.time).getTime();
+      const t2 = new Date(p2.time).getTime();
+      const dtSec = Math.max(0, (t2 - t1) / 1000);
+      const distM = calculateDistance(p1, p2) * 1000;
+      const speedKmh = dtSec > 0 ? (distM / dtSec) * 3.6 : 0;
+
+      // Condition 1: Direct recording time gap (e.g. auto-pause on device >= 20s)
+      if (dtSec >= 20 && distM < 40) {
+        pauses.push({
+          id: `pause-gap-${i}`,
+          startIndex: i,
+          endIndex: i + 1,
+          startKm: p1.dist ? p1.dist / 1000 : 0,
+          durationSeconds: Math.round(dtSec),
+          lat: p1.lat,
+          lng: p1.lng,
+          elevationM: p1.ele ?? 0,
+          type: 'gap'
+        });
+        totalPauseSeconds += dtSec;
+        continue;
+      }
+
+      // Condition 2: Very slow creeping / standstill (speed < 1.6 km/h)
+      if (speedKmh < 1.6 && dtSec > 0) {
+        if (pauseStartIdx === null) {
+          pauseStartIdx = i;
+          accumulatedPauseTime = dtSec;
+        } else {
+          accumulatedPauseTime += dtSec;
+        }
+      } else {
+        if (pauseStartIdx !== null && accumulatedPauseTime >= 25) {
+          const sPt = points[pauseStartIdx];
+          pauses.push({
+            id: `pause-stop-${pauseStartIdx}`,
+            startIndex: pauseStartIdx,
+            endIndex: i,
+            startKm: sPt.dist ? sPt.dist / 1000 : 0,
+            durationSeconds: Math.round(accumulatedPauseTime),
+            lat: sPt.lat,
+            lng: sPt.lng,
+            elevationM: sPt.ele ?? 0,
+            type: 'stopped'
+          });
+          totalPauseSeconds += accumulatedPauseTime;
+        }
+        pauseStartIdx = null;
+        accumulatedPauseTime = 0;
+      }
+    }
+
+    if (pauseStartIdx !== null && accumulatedPauseTime >= 25) {
+      const sPt = points[pauseStartIdx];
+      pauses.push({
+        id: `pause-stop-${pauseStartIdx}`,
+        startIndex: pauseStartIdx,
+        endIndex: points.length - 1,
+        startKm: sPt.dist ? sPt.dist / 1000 : 0,
+        durationSeconds: Math.round(accumulatedPauseTime),
+        lat: sPt.lat,
+        lng: sPt.lng,
+        elevationM: sPt.ele ?? 0,
+        type: 'stopped'
+      });
+      totalPauseSeconds += accumulatedPauseTime;
+    }
+  }
+
+  totalPauseSeconds = Math.round(totalPauseSeconds);
+  const netMovingSeconds = Math.max(0, grossElapsedSeconds - totalPauseSeconds);
+  const movingRatioPercent = grossElapsedSeconds > 0
+    ? Math.min(100, Math.max(0, Math.round((netMovingSeconds / grossElapsedSeconds) * 100)))
+    : 100;
+
+  const averageMovingSpeedKmh = netMovingSeconds > 0
+    ? Number(((track.distance / (netMovingSeconds / 3600))).toFixed(1))
+    : 0;
+
+  const averageGrossSpeedKmh = grossElapsedSeconds > 0
+    ? Number(((track.distance / (grossElapsedSeconds / 3600))).toFixed(1))
+    : 0;
+
+  return {
+    hasTimestamps: hasTimes,
+    grossElapsedSeconds,
+    netMovingSeconds,
+    totalPauseSeconds,
+    movingRatioPercent,
+    averageMovingSpeedKmh,
+    averageGrossSpeedKmh,
+    pauses
+  };
+};
+
+
+export const shiftLoopStartTrack = (
+  track: GPXTrack,
+  targetPointIndex: number,
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): GPXTrack => {
+  if (!track || !track.points || track.points.length < 3) return track;
+  const idx = Math.max(0, Math.min(track.points.length - 1, targetPointIndex));
+  if (idx === 0) return track;
+
+  const rotatedPoints: GPXPoint[] = [
+    ...track.points.slice(idx).map(p => ({ ...p })),
+    ...track.points.slice(0, idx).map(p => ({ ...p }))
+  ];
+
+  // Recalculate distance
+  let cumMeters = 0;
+  rotatedPoints[0].dist = 0;
+  for (let i = 1; i < rotatedPoints.length; i++) {
+    cumMeters += calculateDistance(rotatedPoints[i - 1], rotatedPoints[i]) * 1000;
+    rotatedPoints[i].dist = cumMeters;
+  }
+  const totalDistKm = Number((cumMeters / 1000).toFixed(2));
+
+  // Timestamps
+  if (track.points.some(p => p.time)) {
+    const firstTime = track.points[0].time ? new Date(track.points[0].time).getTime() : Date.now();
+    let curTime = firstTime;
+    rotatedPoints[0].time = new Date(curTime);
+    for (let i = 1; i < rotatedPoints.length; i++) {
+      const dt = Math.max(1000, ((calculateDistance(rotatedPoints[i - 1], rotatedPoints[i]) / Math.max(5, estimatedSpeed)) * 3600 * 1000));
+      curTime += dt;
+      rotatedPoints[i].time = new Date(curTime);
+    }
+  }
+
+  const eleStats = calculateElevationStats(rotatedPoints);
+  const climbs = findClimbs(rotatedPoints);
+  const surfaceStats = calculateSurfaceStatsFromPoints(rotatedPoints);
+  hydratePointsWithSurface(rotatedPoints, surfaceStats, totalDistKm);
+  const powerStats = calculatePowerStats(rotatedPoints, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  return {
+    ...track,
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `track-shift-${Date.now()}`,
+    name: `${track.name} (Neuer Start)`,
+    points: rotatedPoints,
+    distance: totalDistKm,
+    ascent: eleStats.ascent,
+    descent: eleStats.descent,
+    maxSlope: eleStats.maxSlope,
+    climbs,
+    powerStats,
+    surfaceStats
+  };
+};
+
+export const sanitizeTrackAllInOne = (
+  track: GPXTrack,
+  options: { removeSpikes?: boolean; smoothElevation?: boolean; simplifyPoints?: boolean } = {
+    removeSpikes: true,
+    smoothElevation: true,
+    simplifyPoints: true
+  },
+  ftp: number = 250,
+  userWeight: number = 75,
+  estimatedSpeed: number = 20
+): {
+  sanitizedTrack: GPXTrack;
+  removedOutliers: number;
+  fixedSpikes: number;
+  reducedPoints: number;
+} => {
+  if (!track || !track.points || track.points.length < 3) {
+    return {
+      sanitizedTrack: track,
+      removedOutliers: 0,
+      fixedSpikes: 0,
+      reducedPoints: 0
+    };
+  }
+
+  let pts = track.points.map(p => ({ ...p }));
+  let removedOutliers = 0;
+  let fixedSpikes = 0;
+
+  // 1. Remove obvious coordinate teleport spikes / 0,0 island
+  if (options.removeSpikes !== false) {
+    const valid: GPXPoint[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      if (Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001) {
+        removedOutliers++;
+        continue;
+      }
+      if (i > 0 && i < pts.length - 1) {
+        const prev = pts[i - 1];
+        const next = pts[i + 1];
+        const d1 = calculateDistance(prev, p);
+        const d2 = calculateDistance(p, next);
+        const dBase = calculateDistance(prev, next);
+        if (d1 > 1.0 && d2 > 1.0 && dBase < 0.3) {
+          removedOutliers++;
+          continue;
+        }
+      }
+      valid.push(p);
+    }
+    pts = valid;
+  }
+
+  // 2. Smooth extreme vertical elevation spikes
+  if (options.smoothElevation !== false && pts.length > 3) {
+    const res = repairGradientAnomalies(pts);
+    pts = res.repairedPoints;
+    fixedSpikes = res.fixedCount;
+  }
+
+  // 3. Simplify collinear points with conservative epsilon (toleranceSq: 0.0000001 ~ 1.5m)
+  const preSimplifyCount = pts.length;
+  if (options.simplifyPoints !== false && pts.length > 50) {
+    pts = simplifyTrackPoints(pts, 0.0000001);
+  }
+  const reducedPoints = Math.max(0, preSimplifyCount - pts.length);
+
+  // Recalculate distance and statistics
+  let distance = 0;
+  pts[0].dist = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = calculateDistance(pts[i - 1], pts[i]);
+    distance += d;
+    pts[i].dist = distance * 1000;
+  }
+  const totalDistKm = Number(distance.toFixed(2));
+
+  const eleStats = calculateElevationStats(pts);
+  const climbs = findClimbs(pts);
+  const surfaceStats = calculateSurfaceStatsFromPoints(pts);
+  hydratePointsWithSurface(pts, surfaceStats, totalDistKm);
+  const powerStats = calculatePowerStats(pts, ftp, userWeight, estimatedSpeed, track.activityType);
+
+  const cleanName = track.name.includes('(Bereinigt)') ? track.name : `${track.name} (Bereinigt)`;
+
+  return {
+    sanitizedTrack: {
+      ...track,
+      name: cleanName,
+      points: pts,
+      distance: totalDistKm,
+      ascent: eleStats.ascent,
+      descent: eleStats.descent,
+      maxSlope: eleStats.maxSlope,
+      climbs,
+      powerStats,
+      surfaceStats
+    },
+    removedOutliers,
+    fixedSpikes,
+    reducedPoints
   };
 };
 

@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        hmr: false,
       },
       plugins: [
         react(), 
@@ -20,15 +21,18 @@ export default defineConfig(({ mode }) => {
         {
           name: 'html-transform-origin',
           transformIndexHtml(html, ctx: any) {
-            const host = ctx.req?.headers?.['x-forwarded-host'] || ctx.req?.headers?.host || '';
-            const proto = ctx.req?.headers?.['x-forwarded-proto'] || (ctx.req?.socket?.encrypted ? 'https' : 'http');
-            const origin = host && typeof host === 'string' && !host.includes('0.0.0.0') && !host.includes('localhost')
-              ? `${proto}://${host}`
+            const rawHost = String(ctx.req?.headers?.['x-forwarded-host'] || ctx.req?.headers?.host || '').split(',')[0].trim();
+            const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : '';
+            const rawProto = String(ctx.req?.headers?.['x-forwarded-proto'] || (ctx.req?.socket?.encrypted ? 'https' : 'http')).split(',')[0].trim().toLowerCase();
+            const safeProto = rawProto === 'https' ? 'https' : 'http';
+            const origin = safeHost && !safeHost.includes('0.0.0.0') && !safeHost.includes('localhost')
+              ? `${safeProto}://${safeHost}`
               : (process.env.APP_URL || env.APP_URL || '');
             if (origin && !origin.includes('google.com') && !origin.includes('ai.studio')) {
+              const serializedOrigin = JSON.stringify(origin).replace(/</g, '\\u003c');
               return html.replace(
                 '<head>',
-                `<head>\n    <script>window.__APP_ORIGIN__ = "${origin}";</script>`
+                `<head>\n    <script>window.__APP_ORIGIN__ = ${serializedOrigin};</script>`
               );
             }
             return html;

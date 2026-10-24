@@ -643,3 +643,214 @@ export function performLocalIntensiveAnalysis(
     poiRecommendations
   };
 }
+
+export interface RealTrackSplit {
+  splitIndex: number;
+  startKm: number;
+  endKm: number;
+  distanceKm: number;
+  durationSeconds: number;
+  cumulativeSeconds: number;
+  avgSpeedKmh: number;
+  paceFormatted: string;
+  ascentMeters: number;
+  descentMeters: number;
+  avgGradePercent: number;
+  avgHr?: number;
+  maxHr?: number;
+  avgPower?: number;
+  vam?: number;
+  terrainType: string;
+  isRealTiming: boolean;
+  bounds: {
+    minLat: number;
+    maxLat: number;
+    minLng: number;
+    maxLng: number;
+  };
+}
+
+function formatPaceMinKm(speedKmh: number): string {
+  if (!speedKmh || speedKmh <= 0.5 || !Number.isFinite(speedKmh)) return '-:--';
+  const totalSecPerKm = 3600 / speedKmh;
+  const mins = Math.floor(totalSecPerKm / 60);
+  const secs = Math.round(totalSecPerKm % 60);
+  if (secs === 60) {
+    return `${mins + 1}:00`;
+  }
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+/**
+ * Computes real or physics-modeled splits (1 km, 5 km, 10 km) in a single O(N) pass
+ * including bounding boxes for direct map zoom and elevation profile highlighting.
+ */
+export function computeRealTrackSplits(
+  track: GPXTrack,
+  intervalKm: 1 | 5 | 10 = 1,
+  fallbackSpeedKmh: number = 22
+): RealTrackSplit[] {
+  const points = track.points || [];
+  if (points.length < 2) return [];
+
+  const isCycling = (track.activityType || 'cycling') !== 'running';
+  const baseSpeed = fallbackSpeedKmh > 1 ? fallbackSpeedKmh : (isCycling ? 25 : 11);
+
+  const results: RealTrackSplit[] = [];
+  let accumDist = 0;
+  let splitStartDist = 0;
+  let nextSplitTarget = intervalKm;
+  let splitIdx = 1;
+
+  let splitAscent = 0;
+  let splitDescent = 0;
+  let splitTimeSec = 0;
+  let splitRealTimeCount = 0;
+  let cumulativeSec = 0;
+
+  let hrSum = 0;
+  let hrCount = 0;
+  let maxHr = 0;
+  let powerWeightedSum = 0;
+  let powerWeightSec = 0;
+
+  let minLat = points[0].lat;
+  let maxLat = points[0].lat;
+  let minLng = points[0].lng;
+  let maxLng = points[0].lng;
+  let startEle = points[0].ele ?? 0;
+
+  const finalizeSplit = (endDistKm: number, currentEle: number) => {
+    const distKm = Math.max(0.01, endDistKm - splitStartDist);
+    const gradePct = Number((((currentEle - startEle) / (distKm * 1000)) * 100).toFixed(1));
+
+    let durationSec = splitTimeSec;
+    const isReal = splitRealTimeCount > 0 && durationSec > 1;
+
+    if (!isReal) {
+      // Physics fallback based on gradient and activity type
+      let modeledSpeed = baseSpeed;
+      if (isCycling) {
+        if (gradePct > 6) modeledSpeed = Math.max(7, baseSpeed * (1 - gradePct * 0.075));
+        else if (gradePct > 1.5) modeledSpeed = Math.max(11, baseSpeed * (1 - gradePct * 0.055));
+        else if (gradePct < -2) modeledSpeed = Math.min(52, baseSpeed * 1.32);
+      } else {
+        const slopePenalty = gradePct > 0 ? 1 + gradePct * 0.045 : Math.max(0.82, 1 + gradePct * 0.018);
+        modeledSpeed = Math.max(4, baseSpeed / slopePenalty);
+      }
+      durationSec = Math.max(1, Math.round((distKm / modeledSpeed) * 3600));
+    }
+
+    cumulativeSec += durationSec;
+    const avgSpeedKmh = Number(((distKm / durationSec) * 3600).toFixed(1));
+    const paceFormatted = formatPaceMinKm(avgSpeedKmh);
+    const vam = durationSec > 10 && splitAscent > 3 ? Math.round((splitAscent / durationSec) * 3600) : 0;
+
+    let terrainType = 'Flach';
+    if (gradePct > 5) terrainType = 'Steiler Anstieg';
+    else if (gradePct > 1.5) terrainType = 'Anstieg';
+    else if (gradePct < -3) terrainType = 'Abfahrt';
+    else if (splitAscent > distKm * 18) terrainType = 'Wellig';
+
+    const latPad = Math.max((maxLat - minLat) * 0.12, 0.0012);
+    const lngPad = Math.max((maxLng - minLng) * 0.12, 0.0012);
+
+    results.push({
+      splitIndex: splitIdx++,
+      startKm: Number(splitStartDist.toFixed(2)),
+      endKm: Number(endDistKm.toFixed(2)),
+      distanceKm: Number(distKm.toFixed(2)),
+      durationSeconds: Math.round(durationSec),
+      cumulativeSeconds: Math.round(cumulativeSec),
+      avgSpeedKmh,
+      paceFormatted,
+      ascentMeters: Math.round(splitAscent),
+      descentMeters: Math.round(splitDescent),
+      avgGradePercent: gradePct,
+      avgHr: hrCount > 0 ? Math.round(hrSum / hrCount) : undefined,
+      maxHr: maxHr > 0 ? Math.round(maxHr) : undefined,
+      avgPower: powerWeightSec > 0 ? Math.round(powerWeightedSum / powerWeightSec) : undefined,
+      vam: vam > 0 ? vam : undefined,
+      terrainType,
+      isRealTiming: isReal,
+      bounds: {
+        minLat: minLat - latPad,
+        maxLat: maxLat + latPad,
+        minLng: minLng - lngPad,
+        maxLng: maxLng + lngPad
+      }
+    });
+  };
+
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const stepKm = calculateDistance(prev, curr);
+    accumDist += stepKm;
+
+    if (curr.lat < minLat) minLat = curr.lat;
+    if (curr.lat > maxLat) maxLat = curr.lat;
+    if (curr.lng < minLng) minLng = curr.lng;
+    if (curr.lng > maxLng) maxLng = curr.lng;
+
+    const eleDiff = (curr.ele ?? 0) - (prev.ele ?? 0);
+    if (eleDiff > 0) splitAscent += eleDiff;
+    else splitDescent += Math.abs(eleDiff);
+
+    let stepSec = 0;
+    if (prev.time && curr.time) {
+      const t1 = prev.time instanceof Date ? prev.time.getTime() : new Date(prev.time).getTime();
+      const t2 = curr.time instanceof Date ? curr.time.getTime() : new Date(curr.time).getTime();
+      if (!isNaN(t1) && !isNaN(t2) && t2 > t1) {
+        const dt = (t2 - t1) / 1000;
+        if (dt < 600) {
+          stepSec = dt;
+          splitTimeSec += dt;
+          splitRealTimeCount++;
+        }
+      }
+    }
+
+    if (curr.hr && curr.hr > 0) {
+      hrSum += curr.hr;
+      hrCount++;
+      if (curr.hr > maxHr) maxHr = curr.hr;
+    }
+
+    const ptPower = curr.power ?? prev.power;
+    if (ptPower !== undefined && ptPower >= 0) {
+      const w = stepSec > 0 ? stepSec : 1;
+      powerWeightedSum += ptPower * w;
+      powerWeightSec += w;
+    }
+
+    if (accumDist >= nextSplitTarget) {
+      finalizeSplit(accumDist, curr.ele ?? 0);
+      splitStartDist = accumDist;
+      nextSplitTarget += intervalKm;
+      splitAscent = 0;
+      splitDescent = 0;
+      splitTimeSec = 0;
+      splitRealTimeCount = 0;
+      hrSum = 0;
+      hrCount = 0;
+      maxHr = 0;
+      powerWeightedSum = 0;
+      powerWeightSec = 0;
+      minLat = curr.lat;
+      maxLat = curr.lat;
+      minLng = curr.lng;
+      maxLng = curr.lng;
+      startEle = curr.ele ?? 0;
+    }
+  }
+
+  // Remainder split at the end of the track if > 50 meters
+  if (accumDist - splitStartDist >= 0.05) {
+    const lastPt = points[points.length - 1];
+    finalizeSplit(accumDist, lastPt.ele ?? 0);
+  }
+
+  return results;
+}
+

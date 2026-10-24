@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, BarChart2, Compass, Activity, Focus } from 'lucide-react';
+import { Layers, BarChart2, Compass, Sparkles, Focus } from 'lucide-react';
 import { triggerHaptic } from '../../utils/haptics';
 
 export interface MobileThumbBarProps {
@@ -8,10 +8,12 @@ export interface MobileThumbBarProps {
   hasTrack: boolean;
   isProfileCollapsed: boolean;
   onToggleProfile: () => void;
+  mobileProfileSnap?: 'mini' | 'standard' | 'expanded';
   is3D: boolean;
   onToggle3D: () => void;
   onFitTrack: () => void;
   onOpenAnalytics: () => void;
+  isCockpitOpen?: boolean;
   trackCount?: number;
   visibleTrackCount?: number;
 }
@@ -22,10 +24,12 @@ export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
   hasTrack,
   isProfileCollapsed,
   onToggleProfile,
+  mobileProfileSnap,
   is3D,
   onToggle3D,
   onFitTrack,
   onOpenAnalytics,
+  isCockpitOpen = false,
   trackCount,
   visibleTrackCount
 }) => {
@@ -85,8 +89,15 @@ export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
         }`}
         title="Höhenprofil ein/ausblenden"
       >
-        <BarChart2 size={20} />
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Profil</span>
+        <div className="relative">
+          <BarChart2 size={20} />
+          {!isProfileCollapsed && hasTrack && (
+            <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-slate-900 animate-pulse" />
+          )}
+        </div>
+        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">
+          {!isProfileCollapsed && mobileProfileSnap ? (mobileProfileSnap === 'mini' ? 'Mini' : mobileProfileSnap === 'expanded' ? 'Profil+' : 'Profil') : 'Profil'}
+        </span>
       </button>
 
       {/* 3. Fit Map View */}
@@ -131,12 +142,13 @@ export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
         <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">3D</span>
       </button>
 
-      {/* 5. Analytics */}
+      {/* 5. Analysis Cockpit */}
       <button
         id="mobile-thumb-analytics"
         type="button"
         disabled={!hasTrack}
-        aria-label="Ausführliche Datenanalyse öffnen"
+        aria-label="Intensives Analyse-Cockpit öffnen"
+        aria-pressed={isCockpitOpen}
         onClick={() => {
           triggerHaptic('light');
           onOpenAnalytics();
@@ -144,12 +156,14 @@ export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
         className={`flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
           !hasTrack
             ? 'opacity-30 cursor-not-allowed text-slate-500'
+            : isCockpitOpen
+            ? 'text-purple-400 font-bold bg-purple-500/25 ring-1 ring-purple-400/40'
             : 'text-slate-300 hover:text-white hover:bg-white/5'
         }`}
-        title="Analyse öffnen"
+        title="Analyse-Cockpit öffnen"
       >
-        <Activity size={20} />
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Analyse</span>
+        <Sparkles size={20} className={isCockpitOpen ? 'text-amber-300' : ''} />
+        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Cockpit</span>
       </button>
     </nav>
   );

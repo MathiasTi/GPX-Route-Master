@@ -54,6 +54,7 @@ interface TrackItemProps {
   onOpenRawData?: (id: string) => void;
   onOpenTimeGapAnalysis?: (id: string) => void;
   onReverseTrack?: (id: string) => void;
+  onSanitizeTrack?: (id: string) => void;
   onOpenValidation?: (id: string) => void;
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
@@ -80,6 +81,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   onOpenRawData,
   onOpenTimeGapAnalysis,
   onReverseTrack,
+  onSanitizeTrack,
   onOpenValidation,
   onSelection
 }) => {
@@ -195,6 +197,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 </span>
               )}
 
+              {/* Quick Intensive Analysis Cockpit button */}
+              {onOpenIntensiveAnalysis && (
+                <button
+                  type="button"
+                  onClick={() => onOpenIntensiveAnalysis(track.id)}
+                  className="p-1 rounded-md border bg-purple-50 hover:bg-purple-100 text-purple-600 border-purple-200/60 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 dark:text-purple-400 dark:border-purple-900/50 transition-all cursor-pointer flex items-center justify-center"
+                  title="Analyse-Cockpit öffnen (Splits, Berge, Leistung, Zonen & Rohdaten)"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                </button>
+              )}
+
               {/* Quick eye visibility toggle */}
               <button 
                 type="button"
@@ -229,11 +243,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
           {/* Compact summary bar (Always visible to provide immediate overview) */}
           <div 
             onClick={handleToggleExpand}
-            className="flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-slate-400 pt-1.5 mt-1 border-t border-slate-100/60 dark:border-slate-800/60 cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+            className="flex items-center justify-between text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 pt-1.5 mt-1 border-t border-slate-100/60 dark:border-slate-800/60 cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
             title={expanded ? "Klicken zum Einklappen" : "Klicken zum Ausklappen der Details"}
           >
             <span className="font-bold text-slate-700 dark:text-slate-300">
-              {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
+              {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
             </span>
             <span>·</span>
             <span className="font-semibold text-emerald-600 dark:text-emerald-400">
@@ -247,15 +261,24 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
               )}
             </span>
+            <span>·</span>
+            <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+              {track.duration && track.duration > 0 ? (
+                track.activityType === 'running'
+                  ? formatPace(track.duration, track.distance)
+                  : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+              ) : (
+                track.activityType === 'running'
+                  ? getPaceString(estimatedSpeed)
+                  : `${estimatedSpeed} km/h`
+              )}
+            </span>
             {trackClimbs && trackClimbs.length > 0 && (
               <>
                 <span>·</span>
-                <span className="text-amber-600 dark:text-amber-400 font-semibold">{trackClimbs.length} ⛰️</span>
+                <span className="text-amber-600 dark:text-amber-400 font-semibold">{trackClimbs.length}⛰️</span>
               </>
             )}
-            <span className="text-[8.5px] font-sans font-bold text-blue-600 dark:text-blue-400 ml-1">
-              {expanded ? '▲' : '▼'}
-            </span>
           </div>
 
           {/* Expanded Content Section */}
@@ -353,11 +376,23 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <button 
                     type="button"
                     onClick={() => onReverseTrack(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
                     title="Streckenverlauf umkehren (Start/Ziel & Höhendaten tauschen)"
                   >
                     <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
                     <span>Umkehren</span>
+                  </button>
+                )}
+
+                {onSanitizeTrack && (
+                  <button 
+                    type="button"
+                    onClick={() => onSanitizeTrack(track.id)} 
+                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
+                    title="1-Click Track-Sanitizer (GPS-Ausreißer, Höhen-Spikes & Punkt-Reduktion)"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Bereinigen</span>
                   </button>
                 )}
 
@@ -804,6 +839,7 @@ interface SidebarProps {
   onOpenRawData?: (id: string) => void;
   onOpenTimeGapAnalysis?: (id?: string) => void;
   onReverseTrack?: (id: string) => void;
+  onSanitizeTrack?: (id: string) => void;
   onOpenValidation?: (id: string) => void;
   textMarkers: TextMarker[];
   onAddTextMarker: (marker: Omit<TextMarker, 'id'>) => void;
@@ -822,14 +858,6 @@ interface SidebarProps {
   onClearSelection?: () => void;
   isDark?: boolean;
   onToggleTheme?: () => void;
-  showCyclingHeatmap?: boolean;
-  setShowCyclingHeatmap?: (show: boolean) => void;
-  showRunningHeatmap?: boolean;
-  setShowRunningHeatmap?: (show: boolean) => void;
-  showDbCyclingHeatmap?: boolean;
-  setShowDbCyclingHeatmap?: (show: boolean) => void;
-  showDbRunningHeatmap?: boolean;
-  setShowDbRunningHeatmap?: (show: boolean) => void;
   onOpenShortcuts?: () => void;
   onToggleAllVisibility?: (makeAllVisible: boolean) => void;
   onFitVisibleTracks?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
@@ -887,6 +915,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenRawData,
   onOpenTimeGapAnalysis,
   onReverseTrack,
+  onSanitizeTrack,
   onOpenValidation,
   textMarkers,
   onAddTextMarker,
@@ -905,14 +934,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onClearSelection,
   isDark,
   onToggleTheme,
-  showCyclingHeatmap = false,
-  setShowCyclingHeatmap,
-  showRunningHeatmap = false,
-  setShowRunningHeatmap,
-  showDbCyclingHeatmap = false,
-  setShowDbCyclingHeatmap,
-  showDbRunningHeatmap = false,
-  setShowDbRunningHeatmap,
   onToggleAllVisibility,
   onFitVisibleTracks,
   onLoadReferenceTours
@@ -1375,99 +1396,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </section>
 
-            <section className="space-y-3">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Beliebtheits-Heatmap Overlays</h2>
-              <div className="space-y-2">
-                {setShowCyclingHeatmap && (
-                  <button
-                    onClick={() => setShowCyclingHeatmap(!showCyclingHeatmap)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
-                      showCyclingHeatmap 
-                        ? 'bg-amber-500/10 text-amber-600 border-amber-300 dark:border-amber-700/60 dark:text-amber-400' 
-                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">🚲</span>
-                      <span className="text-left leading-tight">Beliebte Radsport-Routen</span>
-                    </div>
-                    <div className="relative">
-                      <div className={`w-8 h-4 rounded-full transition-colors ${showCyclingHeatmap ? 'bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showCyclingHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                      </div>
-                    </div>
-                  </button>
-                )}
 
-                {setShowRunningHeatmap && (
-                  <button
-                    onClick={() => setShowRunningHeatmap(!showRunningHeatmap)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
-                      showRunningHeatmap 
-                        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-300 dark:border-emerald-700/60 dark:text-emerald-400' 
-                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">🏃</span>
-                      <span className="text-left leading-tight">Wander- & Laufrouten</span>
-                    </div>
-                    <div className="relative">
-                      <div className={`w-8 h-4 rounded-full transition-colors ${showRunningHeatmap ? 'bg-emerald-500' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showRunningHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                      </div>
-                    </div>
-                  </button>
-                )}
-              </div>
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Eigene Heatmaps (aus Datenbank)</h2>
-              <div className="space-y-2">
-                {setShowDbCyclingHeatmap && (
-                  <button
-                    onClick={() => setShowDbCyclingHeatmap(!showDbCyclingHeatmap)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
-                      showDbCyclingHeatmap 
-                        ? 'bg-blue-500/10 text-blue-600 border-blue-300 dark:border-blue-700/60 dark:text-blue-400' 
-                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">🚴</span>
-                      <span className="text-left leading-tight">Eigene Rad-Aktivitäten (DB)</span>
-                    </div>
-                    <div className="relative">
-                      <div className={`w-8 h-4 rounded-full transition-colors ${showDbCyclingHeatmap ? 'bg-blue-600' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showDbCyclingHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                      </div>
-                    </div>
-                  </button>
-                )}
-
-                {setShowDbRunningHeatmap && (
-                  <button
-                    onClick={() => setShowDbRunningHeatmap(!showDbRunningHeatmap)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer ${
-                      showDbRunningHeatmap 
-                        ? 'bg-rose-500/10 text-rose-600 border-rose-300 dark:border-rose-700/60 dark:text-rose-400' 
-                        : 'bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">🏃</span>
-                      <span className="text-left leading-tight">Eigene Lauf-Aktivitäten (DB)</span>
-                    </div>
-                    <div className="relative">
-                      <div className={`w-8 h-4 rounded-full transition-colors ${showDbRunningHeatmap ? 'bg-rose-600' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                        <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform shadow-sm ${showDbRunningHeatmap ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                      </div>
-                    </div>
-                  </button>
-                )}
-              </div>
-            </section>
 
             {tracks.some(t => !t.hasTimestamps) && (
               <section className="space-y-3">
@@ -1804,6 +1733,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onOpenRawData={onOpenRawData}
                             onOpenTimeGapAnalysis={onOpenTimeGapAnalysis}
                             onReverseTrack={onReverseTrack}
+                            onSanitizeTrack={onSanitizeTrack}
                             onOpenValidation={onOpenValidation}
                             onSelection={onSelection}
                           />

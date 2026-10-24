@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Database, Upload, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info,
-  FileText, Download, Zap
+  FileText, Download, Zap, Key
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -12,12 +12,13 @@ import {
 import { getApiUrl } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
+import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import { safeStringifyOrFallback } from '../domain/serialization/safeJson';
 
 interface GarminDashboardProps {
   onClose: () => void;
   onLoadTrack?: (track: any) => void;
-  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'diagnostics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress';
+  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'diagnostics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
   userWeight?: number;
   userAge?: number;
   userMaxHr?: number;
@@ -367,7 +368,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics' | 'personal-api'>(initialTab);
   const [isDragging, setIsDragging] = useState(false);
   const [dbUploadProgress, setDbUploadProgress] = useState<{ percentage: number; statusText: string } | null>(null);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
@@ -1195,23 +1196,38 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             <div className="min-w-0 flex-1">
               <h2 className="text-sm sm:text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2 truncate">
                 Garmin Fitness &amp; Gesundheit
-                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider hidden sm:inline-block">
-                  SQLite Kompatibel
+                  <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider hidden sm:inline-block">
+                  SQLite &amp; Personal API
                 </span>
               </h2>
               <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
-                Importiere und analysiere deine lokalen SQLite-Datenbanken aus <b>garmin-health-data</b> und <b>python-garminconnect</b>.
+                Importiere Aktivitäten (.FIT), GPS-Tracks &amp; Gesundheitsdaten direkt über die <b>Garmin Personal API</b> oder aus SQLite-Backups.
               </p>
             </div>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
-            title="Schließen"
-            aria-label="Schließen"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'personal-api'
+                  ? 'bg-orange-600 text-white shadow-sm'
+                  : 'bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/50 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800/60'
+              }`}
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zur Übersicht' : 'Garmin Personal API'}</span>
+              <span className="sm:hidden">API</span>
+            </button>
+            <button 
+              onClick={onClose}
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
+              title="Schließen"
+              aria-label="Schließen"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Content Area */}
@@ -1231,8 +1247,35 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           )}
 
           {/* Import Panel if no data imported yet */}
-          {(!data || (data.sleep.length === 0 && data.weight.length === 0 && data.rhr.length === 0 && data.steps.length === 0)) ? (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {(!data || (data.sleep.length === 0 && data.weight.length === 0 && data.rhr.length === 0 && data.steps.length === 0 && data.activities.length === 0)) ? (
+            activeTab === 'personal-api' ? (
+              <GarminPersonalApiPanel
+                onDataSynced={fetchHealthMetrics}
+                onLoadTrack={onLoadTrack}
+                onCloseModal={onClose}
+              />
+            ) : (
+            <div className="space-y-6">
+              <div className="p-5 rounded-3xl bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-slate-900 border border-orange-200 dark:border-orange-900/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                    <Key className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                    Direkt-Synchronisation über Garmin Connect Personal API
+                  </h3>
+                  <p className="text-xs text-slate-700 dark:text-slate-300">
+                    Verbinde deinen persönlichen Garmin API-Schlüssel, um Aktivitäten (inkl. .FIT GPS-Tracks) und Gesundheitsdaten direkt aus der Cloud herunterzuladen und zu durchsuchen.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('personal-api')}
+                  className="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-extrabold whitespace-nowrap cursor-pointer shadow-sm transition-all flex items-center gap-1.5"
+                >
+                  <Key className="w-4 h-4" />
+                  Personal API öffnen
+                </button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
               {/* Dropzone */}
               <div className="lg:col-span-6 flex flex-col">
                 <div 
@@ -1331,7 +1374,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                   </pre>
                 </div>
               </div>
+              </div>
             </div>
+            )
           ) : (
             /* Main Dashboard View */
             <div className="space-y-6">
@@ -1392,7 +1437,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'diagnostics'] as const).map((tab) => (
+                {(['overview', 'personal-api', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'diagnostics'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -1404,6 +1449,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                   >
                     {tab === 'overview' 
                       ? 'Übersicht' 
+                      : tab === 'personal-api'
+                      ? '🔑 Personal API & Cloud-Suche'
                       : tab === 'performance'
                       ? '⚡ Leistungs- & Fitness-Analyse'
                       : tab === 'activities' 
@@ -1430,6 +1477,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               {/* Dynamic Tab Panel */}
               <div className="bg-slate-50/40 dark:bg-slate-900/40 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 min-h-[380px] flex flex-col">
                 <AnimatePresence mode="wait">
+                  {/* Tab: PERSONAL API */}
+                  {activeTab === 'personal-api' && (
+                    <motion.div
+                      key="personal-api"
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="w-full flex-1 flex flex-col"
+                    >
+                      <GarminPersonalApiPanel
+                        onDataSynced={fetchHealthMetrics}
+                        onLoadTrack={onLoadTrack}
+                        onCloseModal={onClose}
+                      />
+                    </motion.div>
+                  )}
+
                   {/* Tab: PERFORMANCE ANALYSIS */}
                   {activeTab === 'performance' && (
                     <motion.div

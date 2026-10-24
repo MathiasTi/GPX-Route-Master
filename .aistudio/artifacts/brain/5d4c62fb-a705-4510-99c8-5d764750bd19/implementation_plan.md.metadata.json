@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementierungsplan zur vollständigen Entfernung der persistenten Garmin API-Key-Speicherung (ausschließlich nicht-persistenter Browser-Tab-RAM) sowie zur Behebung des HTTP 406 NotAcceptableException-Fehlers beim Garmin OAuth2 Token-Austausch.",
+  "updatedAt":  "2026-10-22T08:27:26.390803540Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

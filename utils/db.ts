@@ -625,6 +625,15 @@ function runInitDbStatements() {
         'Cleared 2-point Garmin seed stubs from points_json so straight-line endpoint stubs are never rendered as GPS tracks.'
       );
     }
+
+    const hasV293 = (checkMigration.get('2.9.3') as { count: number }).count > 0;
+    if (!hasV293) {
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.3',
+        new Date().toISOString(),
+        'Eigene Fitness & Gesundheit Seite, Git-Schutz für lokale SQLite-Datenbanken (.gitignore + Auto-Erstellung), Garmin 2-Punkte-Stub-Fix & lokales Start-Skript (start-local.sh).'
+      );
+    }
   } catch (e) {
     console.error('Failed to run 2.9.2 Garmin seed stub cleanup migration:', e);
   }

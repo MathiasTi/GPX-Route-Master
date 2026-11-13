@@ -1,7 +1,7 @@
 {
   "name": "gpx-route-master",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.9.3",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

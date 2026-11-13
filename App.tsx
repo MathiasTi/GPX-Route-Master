@@ -21,7 +21,7 @@ import { WeatherOverlay } from './components/WeatherOverlay';
 import { IntensiveTrackAnalysisModal, AnalysisTab } from './components/IntensiveTrackAnalysisModal';
 import { SportMetricsGlossaryModal } from './components/SportMetricsGlossaryModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
-import { GarminDashboard } from './components/GarminDashboard';
+import { GarminDashboard, GarminDashboardTab } from './components/GarminDashboard';
 import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
 import { MobileThumbBar } from './components/mobile/MobileThumbBar';
 import { MobileTelemetryPill } from './components/mobile/MobileTelemetryPill';
@@ -115,7 +115,13 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'map' | 'activities'>('map');
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'map' | 'activities' | 'fitness'>('map');
+  const [fitnessPageInitialTab, setFitnessPageInitialTab] = useState<GarminDashboardTab>('performance');
+  const openFitnessPage = useCallback((tab: GarminDashboardTab = 'performance') => {
+    setFitnessPageInitialTab(tab);
+    setIsMobileMenuOpen(false);
+    setActiveWorkspaceView('fitness');
+  }, []);
   const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
@@ -1427,11 +1433,16 @@ const App: React.FC = () => {
         return;
       }
 
-      // 'P' shortcut: Open Performance Analysis
+      // 'P' shortcut: Toggle Fitness & Performance Analysis Page
       if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         triggerHaptic('light');
-        setPerformanceAnalysisOpen(prev => !prev);
+        if (activeWorkspaceView === 'fitness') {
+          setActiveWorkspaceView('map');
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+        } else {
+          openFitnessPage('performance');
+        }
         return;
       }
 
@@ -1737,6 +1748,20 @@ const App: React.FC = () => {
                 </span>
               )}
             </button>
+
+            <button
+              type="button"
+              id="nav-tab-fitness-health"
+              onClick={() => openFitnessPage('performance')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeWorkspaceView === 'fitness'
+                  ? 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 shadow-2xs border border-slate-200/80 dark:border-slate-700'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              <Activity size={14} />
+              <span>Fitness &amp; Gesundheit</span>
+            </button>
           </nav>
         </div>
 
@@ -1754,8 +1779,10 @@ const App: React.FC = () => {
                 </>
               )}
             </>
+          ) : activeWorkspaceView === 'fitness' ? (
+            <span>Leistungs- &amp; Fitness-Analyse · Trends · Gesundheit</span>
           ) : (
-            <span>Hochgeschwindigkeits-Archiv · Volltext & Metriken</span>
+            <span>Hochgeschwindigkeits-Archiv · Volltext &amp; Metriken</span>
           )}
         </div>
 
@@ -1773,7 +1800,7 @@ const App: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setGarminHealthOpen(true)}
+            onClick={() => openFitnessPage('overview')}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             title="Garmin Connect Sync & Gesundheitsdaten"
           >
@@ -1873,11 +1900,29 @@ const App: React.FC = () => {
             onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
             onDatabaseCountChange={setCatalogTotalCount}
             onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-            onOpenGarminSync={() => setGarminHealthOpen(true)}
+            onOpenGarminSync={() => openFitnessPage('personal-api')}
             onBackToMap={() => {
               setActiveWorkspaceView('map');
               setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
             }}
+          />
+        )}
+
+        {/* Full-Screen Fitness & Health Workspace */}
+        {activeWorkspaceView === 'fitness' && (
+          <GarminDashboard
+            variant="page"
+            initialTab={fitnessPageInitialTab}
+            onLoadTrack={(tr) => {
+              handleLoadLibraryTrack(tr);
+              setActiveWorkspaceView('map');
+            }}
+            userWeight={userWeight}
+            userAge={userAge}
+            userMaxHr={userMaxHr}
+            ftp={ftp}
+            onUpdateFtp={setFtp}
+            onUpdateMaxHr={handleMaxHrChange}
           />
         )}
 
@@ -1929,18 +1974,12 @@ const App: React.FC = () => {
               setComparisonOpen(true);
               setIsMobileMenuOpen(false);
             }}
-            onOpenGarminHealth={() => {
-              setGarminHealthOpen(true);
-              setIsMobileMenuOpen(false);
-            }}
+            onOpenGarminHealth={() => openFitnessPage('overview')}
             onOpenGarminActivitiesAnalysis={() => {
               setGarminActivitiesAnalysisOpen(true);
               setIsMobileMenuOpen(false);
             }}
-            onOpenPerformanceAnalysis={() => {
-              setPerformanceAnalysisOpen(true);
-              setIsMobileMenuOpen(false);
-            }}
+            onOpenPerformanceAnalysis={() => openFitnessPage('performance')}
             onOpenTrainingZones={(id) => {
               handleOpenTrackAnalysis(id, 'zones');
               setIsMobileMenuOpen(false);

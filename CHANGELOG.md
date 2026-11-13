@@ -6,6 +6,21 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [2.9.3] - 2026-11-13
+
+### Eigene Fitness- & Gesundheits-Seite, DB-Schutz & Garmin GPS-Fix
+- **Eigene Vollbild-Seite „Fitness & Gesundheit“ (`App.tsx`, `components/GarminDashboard.tsx`)**:
+  - `GarminDashboard` unterstützt nun `variant="page"` für eine eigenständige Workspace-Ansicht neben *Karte* und *Aktivitäten*.
+  - Alle Tabs (*Leistungs- & Fitness-Analyse*, *Aktivitäten*, *Trends & Korrelationen*, *Schlaf*, *Gewicht*, *Ruhepuls*, *Schritte*, *Stress*, *Übersicht*, *Personal API*) sind direkt über die Hauptnavigation erreichbar.
+- **Lokale Datenbank vor Repo-Überschreibungen geschützt (`.gitignore`, `data/.gitkeep`)**:
+  - Live-SQLite-Dateien (`data/*.db`, `data/*.db-shm`, `data/*.db-wal`) werden nicht mehr in Git getrackt und von `.gitignore` ausgeschlossen; fehlt die DB lokal, erstellt `initDb()` automatisch eine frische `data/gpx_library.db`.
+- **Garmin GPX/Track-Rendering-Fix (`utils/garminPersonalApi.ts`, `utils/activityHydration.ts`, `utils/db.ts`, `components/ActivitiesManagerView.tsx`)**:
+  - 2-Punkte-`seedPoints`-Stubs beim Garmin-Sync entfernt; bestehende Stubs werden per Migration `2.9.2` bereinigt und beim Laden auf die Karte bei aktiver Garmin-API-Sitzung automatisch als vollständige `.FIT`-Routen nachgeladen.
+- **Lokales Start- & Test-Skript (`start-local.sh`)**:
+  - Einfacher lokaler Start (`./start-local.sh`) sowie Typecheck & Tests (`./start-local.sh --test`).
+
+---
+
 ## [2.7.8] - 2026-08-18
 
 ### Sport-Metriken Glossar & Interaktive Rechner (VAM, TSS, FTP, EF, VI, PMC)

@@ -14,10 +14,13 @@ import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } fr
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 
+export type GarminDashboardTab = 'overview' | 'performance' | 'activities' | 'analytics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
+
 interface GarminDashboardProps {
-  onClose: () => void;
+  onClose?: () => void;
   onLoadTrack?: (track: any) => void;
-  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
+  initialTab?: GarminDashboardTab;
+  variant?: 'modal' | 'page';
   userWeight?: number;
   userAge?: number;
   userMaxHr?: number;
@@ -356,6 +359,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   onClose, 
   onLoadTrack,
   initialTab = 'overview',
+  variant = 'modal',
   userWeight = 75,
   userAge = 35,
   userMaxHr = 185,
@@ -750,9 +754,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
 
   useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (variant !== 'modal') return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onClose?.();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -763,19 +772,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = originalOverflow;
     };
-  }, [onClose]);
+  }, [onClose, variant]);
 
-  return (
-    <div 
-      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
-      onClick={onClose}
-    >
+  const dashboardCard = (
       <motion.div 
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col cursor-default"
-        onClick={(e) => e.stopPropagation()}
+        initial={variant === 'modal' ? { opacity: 0, scale: 0.95, y: 15 } : false}
+        animate={variant === 'modal' ? { opacity: 1, scale: 1, y: 0 } : undefined}
+        exit={variant === 'modal' ? { opacity: 0, scale: 0.95, y: 15 } : undefined}
+        className={
+          variant === 'page'
+            ? 'flex-1 flex flex-col min-h-0 w-full bg-white dark:bg-slate-900 overflow-hidden cursor-default'
+            : 'relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col cursor-default'
+        }
+        onClick={variant === 'modal' ? (e) => e.stopPropagation() : undefined}
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 sm:p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0 gap-2">
@@ -809,14 +818,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zur Übersicht' : 'Garmin Personal API'}</span>
               <span className="sm:hidden">API</span>
             </button>
-            <button 
-              onClick={onClose}
-              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
-              title="Schließen"
-              aria-label="Schließen"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            {variant === 'modal' && onClose && (
+              <button 
+                onClick={onClose}
+                className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
+                title="Schließen"
+                aria-label="Schließen"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -1891,6 +1902,18 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           )}
         </div>
       </motion.div>
+  );
+
+  if (variant === 'page') {
+    return dashboardCard;
+  }
+
+  return (
+    <div 
+      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
+      onClick={onClose}
+    >
+      {dashboardCard}
     </div>
   );
 };

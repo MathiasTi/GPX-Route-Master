@@ -23,3 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 .garmin_secret.key
+
+# Local SQLite databases (auto-created at runtime if missing)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db.corrupt_*
+data/*.sqlite*

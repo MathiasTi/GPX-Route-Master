@@ -750,7 +750,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
               <div className="max-w-md space-y-1.5">
                 <h3 className="font-bold text-slate-850 dark:text-slate-200 text-base">Keine passenden Aktivitäten gefunden</h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Überprüfe deine Filter oder lade im <strong>Garmin Fitness & Gesundheit</strong>-Modul (über die Seitenleiste) deine Garmin-SQLite-Datenbankdatei (.db) hoch, falls noch keine Daten vorhanden sind.
+                  Überprüfe deine Filter oder synchronisiere deine Aktivitäten im Tab <strong>Garmin Personal API</strong> (oder über <strong>Garmin Fitness &amp; Gesundheit</strong>), falls noch keine Daten vorhanden sind.
                 </p>
               </div>
             </div>

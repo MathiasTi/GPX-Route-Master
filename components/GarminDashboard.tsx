@@ -1,24 +1,23 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  X, Database, Upload, AlertCircle, CheckCircle, RefreshCw, Trash2, 
+  X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info,
-  FileText, Download, Zap, Key
+  Zap, Key
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
   Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
-import { getApiUrl, apiFetch, getSessionToken } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
-import { safeStringifyOrFallback } from '../domain/serialization/safeJson';
 
 interface GarminDashboardProps {
   onClose: () => void;
   onLoadTrack?: (track: any) => void;
-  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'diagnostics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
+  initialTab?: 'overview' | 'performance' | 'activities' | 'analytics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
   userWeight?: number;
   userAge?: number;
   userMaxHr?: number;
@@ -368,20 +367,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'diagnostics' | 'personal-api'>(initialTab);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dbUploadProgress, setDbUploadProgress] = useState<{ percentage: number; statusText: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'personal-api'>(initialTab);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
-  const [localFiles, setLocalFiles] = useState<{ filename: string; path: string; size: number; mtime: string }[]>([]);
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
   const [selectedCorrelation, setSelectedCorrelation] = useState<'hr_speed' | 'speed_ascent' | 'hr_ascent'>('hr_speed');
-  
-  // Database deep diagnostics states
-  const [diagnosticFile, setDiagnosticFile] = useState<string>('');
-  const [diagnosticReport, setDiagnosticReport] = useState<any | null>(null);
-  const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
-  const [diagnoseError, setDiagnoseError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -392,87 +382,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
-
-  const handleRunDiagnosis = async (filepath: string) => {
-    setIsDiagnosing(true);
-    setDiagnoseError(null);
-    setDiagnosticFile(filepath);
-    setActiveTab('diagnostics');
-    try {
-      const res = await apiFetch(getApiUrl('/api/garmin/diagnose'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filepath })
-      });
-      const json = await res.json();
-      if (json.success) {
-        setDiagnosticReport(json.report);
-      } else {
-        setDiagnoseError(json.error || 'Diagnose fehlgeschlagen.');
-      }
-    } catch (err: any) {
-      setDiagnoseError(err.message || 'Netzwerkfehler bei der Diagnose.');
-    } finally {
-      setIsDiagnosing(false);
-    }
-  };
-
-  const handleDownloadDiagnosticReport = () => {
-    if (!diagnosticReport) return;
-    try {
-      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
-        safeStringifyOrFallback(diagnosticReport, '{}', null, 2)
-      )}`;
-      const downloadAnchor = document.createElement('a');
-      downloadAnchor.setAttribute('href', jsonString);
-      downloadAnchor.setAttribute('download', `garmin_diagnostics_${diagnosticReport.filename}.json`);
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
-    } catch (e) {
-      console.error('Failed to download diagnostic report:', e);
-    }
-  };
-  
-  // Server-side SQLite Import Debug Logs State
-  const [debugLogs, setDebugLogs] = useState<string[]>([]);
-  const [showLogs, setShowLogs] = useState<boolean>(false);
-  const [isRefreshingLogs, setIsRefreshingLogs] = useState<boolean>(false);
-
-  const fetchDebugLogs = async () => {
-    setIsRefreshingLogs(true);
-    try {
-      const res = await apiFetch(getApiUrl('/api/import-debug-logs'));
-      const json = await res.json();
-      if (json.success) {
-        setDebugLogs(json.logs || []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch debug logs', err);
-    } finally {
-      setIsRefreshingLogs(false);
-    }
-  };
-
-  const clearDebugLogs = async () => {
-    if (!window.confirm('Möchtest du das Server-Protokoll wirklich leeren?')) return;
-    try {
-      const res = await apiFetch(getApiUrl('/api/import-debug-logs/clear'), { method: 'POST' });
-      const json = await res.json();
-      if (json.success) {
-        setDebugLogs([]);
-      }
-    } catch (err) {
-      console.error('Failed to clear debug logs', err);
-    }
-  };
-
-  // Auto-fetch logs when showLogs is toggled
-  useEffect(() => {
-    if (showLogs) {
-      fetchDebugLogs();
-    }
-  }, [showLogs]);
 
   const activityPoints = useMemo(() => {
     return analyticsData?.activityCorrelations?.points || [];
@@ -611,19 +520,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       setError('Verbindung zum Server fehlgeschlagen.');
     } finally {
       setIsLoading(false);
-    }
-  }, []);
-
-  // Fetch workspace files list (bypasses browser upload limits for large databases)
-  const fetchLocalDbs = useCallback(async () => {
-    try {
-      const res = await apiFetch(getApiUrl('/api/list-local-dbs'));
-      const json = await res.json();
-      if (json.success && json.files) {
-        setLocalFiles(json.files);
-      }
-    } catch (err) {
-      console.error('Failed to load local DB files:', err);
     }
   }, []);
 
@@ -802,202 +698,13 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
   useEffect(() => {
     fetchHealthMetrics();
-    fetchLocalDbs();
-  }, [fetchHealthMetrics, fetchLocalDbs]);
+  }, [fetchHealthMetrics]);
 
   useEffect(() => {
     if (activeTab === 'analytics') {
       fetchAnalytics();
     }
   }, [activeTab, fetchAnalytics]);
-
-  // Handle SQLite File Import with Upload Progress Tracker
-  const handleFileUpload = async (file: File) => {
-    setError(null);
-    setSuccessMsg(null);
-
-    // Prevent direct HTTP upload of very large files to avoid network failure
-    const MAX_DIRECT_UPLOAD_SIZE = 150 * 1024 * 1024; // 150 MB
-    if (file.size > MAX_DIRECT_UPLOAD_SIZE) {
-      setDbUploadProgress(null);
-      setIsLoading(false);
-      setError(
-        <div className="space-y-3 p-2">
-          <div className="flex items-center gap-2 text-red-800 dark:text-red-400 font-bold text-base">
-            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
-            <span>Datenbank-Datei ist zu groß für den Web-Upload ({formatFileSize(file.size)})</span>
-          </div>
-          <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-            Dateien über 150 MB (wie deine 10 GB Garmin-Backup-Datei) können aufgrund von Browser- und Netzwerk-Timeouts der Cloud-Plattform nicht direkt über ein Web-Formular hochgeladen werden (dies bricht meist mit einem Netzwerkfehler ab).
-          </p>
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-red-200 dark:border-red-900/50 text-slate-700 dark:text-slate-300 text-xs space-y-2.5">
-            <p className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <Database className="w-4 h-4 text-orange-500" />
-              Einfache & stabile Lösung direkt im Workspace:
-            </p>
-            <ol className="list-decimal list-inside space-y-2 text-[11px]">
-              <li>
-                Ziehe deine Datei <code className="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono font-bold text-orange-600 dark:text-orange-400">{file.name}</code> links in den **Dateiexplorer von AI Studio** (oder nutze dort das Upload-Symbol).
-              </li>
-              <li>
-                Sobald der Upload im AI Studio-Dateiexplorer abgeschlossen ist (geht dank direkter Synchronisation absolut stabil), lade dieses Fenster einmal neu.
-              </li>
-              <li>
-                Die Datei wird automatisch erkannt und erscheint rechts in der Liste unter **'Lokale Dateien im Workspace'**.
-              </li>
-              <li>
-                Klicke dort einfach auf **'Importieren'** – der Server liest die 10 GB SQLite-Datei direkt von der Festplatte ein (Dauer: wenige Sekunden, 0% RAM-Belastung!).
-              </li>
-            </ol>
-          </div>
-        </div>
-      );
-      return;
-    }
-
-    setIsLoading(true);
-    setDbUploadProgress({ percentage: 0, statusText: 'Bereite Upload vor...' });
-
-    try {
-      const result = await new Promise<{ success: boolean; stats?: any; error?: string }>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', getApiUrl('/api/import-sqlite'), true);
-        xhr.withCredentials = true;
-        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-        const sessionToken = getSessionToken();
-        if (sessionToken) {
-          xhr.setRequestHeader('Authorization', `Bearer ${sessionToken}`);
-        }
-
-        // Track upload progress
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const percentage = Math.round((e.loaded / e.total) * 100);
-            setDbUploadProgress({
-              percentage,
-              statusText: percentage < 100 
-                ? `Datenbank-Upload läuft: ${percentage}%` 
-                : 'Upload abgeschlossen. Server importiert und analysiert Ihre Garmin-Daten...'
-            });
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const res = JSON.parse(xhr.responseText);
-              resolve(res);
-            } catch (err) {
-              resolve({ success: false, error: 'Ungültige Antwort vom Server beim Einlesen der Antwort.' });
-            }
-          } else {
-            try {
-              const res = JSON.parse(xhr.responseText);
-              resolve({ success: false, error: res.error || `Server-Fehler: Status ${xhr.status}` });
-            } catch (err) {
-              resolve({ success: false, error: `Der Server hat mit Statuscode ${xhr.status} geantwortet.` });
-            }
-          }
-        };
-
-        xhr.onerror = () => {
-          resolve({ success: false, error: 'Netzwerkfehler: Verbindung zum Server fehlgeschlagen. Bitte prüfen Sie Ihre Verbindung.' });
-        };
-
-        xhr.send(file);
-      });
-
-      if (result.success && result.stats) {
-        const s = result.stats;
-        setSuccessMsg(
-          `Erfolgreich importiert: ${s.sleep} Schlafdatensätze, ${s.weight} Gewichtseinträge, ${s.stress} Stresstage, ${s.rhr} Pulsdaten, ${s.steps} Schrittdaten & ${s.activities} Aktivitäten!`
-        );
-        fetchHealthMetrics();
-        fetchDebugLogs();
-        setShowLogs(true);
-      } else {
-        setError(result.error || 'Fehler beim Analysieren der SQLite-Datenbank.');
-        fetchDebugLogs();
-        setShowLogs(true);
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'Ein unerwarteter Fehler ist beim Hochladen aufgetreten.');
-    } finally {
-      setIsLoading(false);
-      setDbUploadProgress(null);
-    }
-  };
-
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const handleLocalDbImport = async (filepath: string) => {
-    setIsLoading(true);
-    setError(null);
-    setSuccessMsg(null);
-    try {
-      const res = await apiFetch(getApiUrl('/api/import-local-db'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filepath })
-      });
-      const json = await res.json();
-      if (json.success && json.stats) {
-        const s = json.stats;
-        setSuccessMsg(
-          `Erfolgreich aus lokaler Datei importiert: ${s.sleep} Schlafdatensätze, ${s.weight} Gewichtseinträge, ${s.stress} Stresstage, ${s.rhr} Pulsdaten, ${s.steps} Schrittdaten & ${s.activities} Aktivitäten!`
-        );
-        fetchHealthMetrics();
-        fetchDebugLogs();
-        setShowLogs(true);
-      } else {
-        setError(json.error || 'Fehler beim Importieren der lokalen Datenbank.');
-        fetchDebugLogs();
-        setShowLogs(true);
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError('Verbindung zum Server fehlgeschlagen.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const file = files[0];
-      if (file.name.endsWith('.db') || file.name.endsWith('.sqlite')) {
-        handleFileUpload(file);
-      } else {
-        setError('Bitte lade eine gültige SQLite-Datenbankdatei (.db oder .sqlite) hoch.');
-      }
-    }
-  };
-
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      handleFileUpload(files[0]);
-    }
-  };
 
   // Clear all data
   const handleClearData = async () => {
@@ -1040,85 +747,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     ? Math.round(data.sleep.reduce((acc, s) => acc + s.duration, 0) / data.sleep.length)
     : null;
 
-  const renderDebugTerminal = () => {
-    return (
-      <div className="border border-slate-200 dark:border-slate-800 rounded-3xl bg-white dark:bg-slate-900 overflow-hidden shadow-xs mt-6 text-left">
-        <button
-          type="button"
-          onClick={() => setShowLogs(!showLogs)}
-          className="w-full flex items-center justify-between p-5 text-left font-bold text-sm text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-850/35 transition-colors cursor-pointer"
-        >
-          <div className="flex items-center gap-2">
-            <span className="inline-flex rounded-full h-2 w-2 bg-orange-500" />
-            <span>Server-Import-Protokoll & Diagnose</span>
-          </div>
-          <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
-            <span>{showLogs ? 'Ausblenden' : 'Einblenden'}</span>
-            <span className="text-slate-300 dark:text-slate-700">|</span>
-            <span>{debugLogs.length} Einträge</span>
-          </div>
-        </button>
 
-        {showLogs && (
-          <div className="border-t border-slate-150 dark:border-slate-800/80 p-5 space-y-4 bg-slate-950 text-slate-200">
-            <div className="flex items-center justify-between text-xs pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-1.5 font-mono text-slate-400">
-                <span className="text-orange-500 font-extrabold">$</span>
-                <span>tail -f /var/log/garmin_import.log</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={fetchDebugLogs}
-                  disabled={isRefreshingLogs}
-                  className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded text-[10px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isRefreshingLogs ? 'animate-spin' : ''}`} />
-                  Aktualisieren
-                </button>
-                <button
-                  type="button"
-                  onClick={clearDebugLogs}
-                  className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-red-950 rounded text-[10px] font-bold text-red-450 flex items-center gap-1 cursor-pointer"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  Leeren
-                </button>
-              </div>
-            </div>
-
-            <div className="font-mono text-[10px] leading-relaxed max-h-80 overflow-y-auto space-y-1 pr-2 scrollbar-thin select-text">
-              {debugLogs.length === 0 ? (
-                <p className="text-slate-500 italic py-2">Keine Protokolleinträge vorhanden. Starte einen Import, um Logdaten zu generieren.</p>
-              ) : (
-                debugLogs.map((log, idx) => {
-                  let colorClass = "text-slate-300";
-                  if (log.includes("[FEHLER]") || log.includes("[Error]")) {
-                    colorClass = "text-red-400 font-bold";
-                  } else if (log.includes("[Warnung]") || log.includes("[Pivot-Warnung]")) {
-                    colorClass = "text-amber-400 font-semibold";
-                  } else if (log.includes("[Pivot-Erfolg]") || log.includes("[Pivot-Normalisiert-Punkt")) {
-                    colorClass = "text-emerald-400";
-                  } else if (log.includes("==== STARTE")) {
-                    colorClass = "text-orange-400 font-extrabold border-b border-orange-950 pb-1 mt-3 block";
-                  } else if (log.includes("[Pivot-Setup]")) {
-                    colorClass = "text-blue-400";
-                  } else if (log.includes("[Pivot-Diagnose]")) {
-                    colorClass = "text-cyan-400 font-medium";
-                  }
-                  return (
-                    <div key={idx} className={`${colorClass} whitespace-pre-wrap break-all`}>
-                      {log}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1148,47 +777,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         className="relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[88vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* DB Upload Progress Overlay */}
-        <AnimatePresence>
-          {dbUploadProgress && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
-            >
-              <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-150 dark:border-slate-800 space-y-6">
-                <div className="flex justify-center">
-                  <div className="relative flex items-center justify-center">
-                    <RefreshCw className="w-12 h-12 text-orange-500 animate-spin" />
-                    <span className="absolute text-[10px] font-bold text-slate-800 dark:text-slate-100">{dbUploadProgress.percentage}%</span>
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">Synchronisiere Garmin-Daten...</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed min-h-[3rem]">
-                    {dbUploadProgress.statusText}
-                  </p>
-                </div>
-
-                {/* Progress Bar */}
-                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-3.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
-                  <motion.div 
-                    className="bg-gradient-to-r from-orange-500 to-amber-500 h-full rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${dbUploadProgress.percentage}%` }}
-                    transition={{ duration: 0.1 }}
-                  />
-                </div>
-
-                <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
-                  Bitte lassen Sie dieses Fenster geöffnet, bis der Vorgang abgeschlossen ist.
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
         {/* Header */}
         <div className="flex items-center justify-between p-4 sm:p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0 gap-2">
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
@@ -1198,12 +786,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             <div className="min-w-0 flex-1">
               <h2 className="text-sm sm:text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2 truncate">
                 Garmin Fitness &amp; Gesundheit
-                  <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider hidden sm:inline-block">
-                  SQLite &amp; Personal API
+                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider hidden sm:inline-block">
+                  Personal API
                 </span>
               </h2>
               <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
-                Importiere Aktivitäten (.FIT), GPS-Tracks &amp; Gesundheitsdaten direkt über die <b>Garmin Personal API</b> oder aus SQLite-Backups.
+                Synchronisiere Aktivitäten (.FIT), GPS-Tracks &amp; Gesundheitsdaten direkt über die <b>Garmin Connect Personal API</b>.
               </p>
             </div>
           </div>
@@ -1248,16 +836,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             </div>
           )}
 
-          {/* Import Panel if no data imported yet */}
+          {/* Personal API Sync Panel if no data imported yet */}
           {(!data || (data.sleep.length === 0 && data.weight.length === 0 && data.rhr.length === 0 && data.steps.length === 0 && data.activities.length === 0)) ? (
-            activeTab === 'personal-api' ? (
-              <GarminPersonalApiPanel
-                onDataSynced={fetchHealthMetrics}
-                onLoadTrack={onLoadTrack}
-                onCloseModal={onClose}
-              />
-            ) : (
-            <div className="space-y-6">
+            <div className="space-y-5">
               <div className="p-5 rounded-3xl bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-slate-900 border border-orange-200 dark:border-orange-900/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
@@ -1265,120 +846,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     Direkt-Synchronisation über Garmin Connect Personal API
                   </h3>
                   <p className="text-xs text-slate-700 dark:text-slate-300">
-                    Verbinde deinen persönlichen Garmin API-Schlüssel, um Aktivitäten (inkl. .FIT GPS-Tracks) und Gesundheitsdaten direkt aus der Cloud herunterzuladen und zu durchsuchen.
+                    Verbinde deinen persönlichen Garmin API-Schlüssel, um Aktivitäten (inkl. .FIT GPS-Tracks) und Gesundheitsdaten direkt herunterzuladen.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('personal-api')}
-                  className="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-extrabold whitespace-nowrap cursor-pointer shadow-sm transition-all flex items-center gap-1.5"
-                >
-                  <Key className="w-4 h-4" />
-                  Personal API öffnen
-                </button>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-              {/* Dropzone */}
-              <div className="lg:col-span-6 flex flex-col">
-                <div 
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  className={`flex-1 min-h-[320px] border-2 border-dashed rounded-3xl flex flex-col items-center justify-center p-8 text-center transition-all ${
-                    isDragging 
-                      ? 'border-orange-500 bg-orange-50/20 dark:bg-orange-950/10 scale-[0.99]' 
-                      : 'border-slate-200 dark:border-slate-800 hover:border-slate-350 dark:hover:border-slate-700 bg-slate-50/50 dark:bg-slate-900/20'
-                  }`}
-                >
-                  <div className="p-4 bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 rounded-2xl mb-4">
-                    <Upload className="w-10 h-10 animate-bounce" />
-                  </div>
-                  <h3 className="text-base font-bold text-slate-800 dark:text-slate-200 mb-1">
-                    Ziehe deine Garmin SQLite-Datenbank hierher
-                  </h3>
-                  <p className="text-xs text-slate-400 dark:text-slate-500 max-w-sm mb-4">
-                    Unterstützt Dateien wie <code className="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded">garmin.db</code> (bis zu 300 MB).
-                  </p>
-                  
-                  <label className="px-5 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-sm font-bold shadow-md shadow-orange-100 cursor-pointer transition-all flex items-center gap-2">
-                    <Upload className="w-4 h-4" />
-                    Datei auswählen
-                    <input 
-                      type="file" 
-                      accept=".db,.sqlite" 
-                      onChange={handleFileInput} 
-                      className="hidden" 
-                    />
-                  </label>
-                </div>
-              </div>
-
-              {/* Workspace Direct Import & Docs */}
-              <div className="lg:col-span-6 bg-slate-50 dark:bg-slate-850 rounded-3xl p-6 border border-slate-100 dark:border-slate-800/60 flex flex-col justify-between space-y-6">
-                <div>
-                  <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 mb-2">
-                    <Database className="w-4 h-4 text-orange-500" />
-                    Lokale Dateien im Workspace (bis zu 10 GB)
-                  </h4>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
-                    Für extrem große Datenbanken (z.B. deine 10 GB Garmin-Backup-Datei) kannst du die Datei direkt im Workspace platzieren. Der Server liest sie ohne Browser-Upload direkt von der Festplatte ein.
-                  </p>
-                  
-                  {localFiles.length === 0 ? (
-                    <div className="p-4 bg-white dark:bg-slate-900 rounded-2xl border border-slate-150 dark:border-slate-800 text-center text-[11px] text-slate-500">
-                      Keine .db- oder .sqlite-Dateien im Workspace gefunden.
-                      <div className="mt-2 text-[10px] text-slate-400">
-                        Platziere deine <code className="bg-slate-200 dark:bg-slate-700 px-1 rounded">garmin.db</code> im Hauptverzeichnis des Projekts, um sie hier direkt zu importieren!
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
-                      {localFiles.map((f) => (
-                        <div key={f.path} className="flex items-center justify-between p-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-150 dark:border-slate-800 text-xs">
-                          <div className="truncate pr-2">
-                            <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>{f.filename}</p>
-                            <p className="text-[10px] text-slate-400">{formatFileSize(f.size)}</p>
-                          </div>
-                          <div className="flex gap-1.5 shrink-0">
-                            <button
-                              onClick={() => handleRunDiagnosis(f.path)}
-                              disabled={isDiagnosing}
-                              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1"
-                              title="Datenbankstruktur und Spalten diagnostizieren"
-                            >
-                              🔍 Diagnose
-                            </button>
-                            <button
-                              onClick={() => handleLocalDbImport(f.path)}
-                              disabled={isLoading}
-                              className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
-                            >
-                              Importieren
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-800/80">
-                  <h5 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1">
-                    <Info className="w-3.5 h-3.5 text-slate-400" />
-                    Wie erhalte ich das Garmin-Backup?
-                  </h5>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
-                    Führe das Open-Source-Tool <code className="bg-slate-150 dark:bg-slate-800 px-1 rounded text-orange-600 dark:text-orange-400">garmin-health-data</code> aus, um deine Daten in eine <code className="bg-slate-150 dark:bg-slate-800 px-1 rounded">garmin.db</code> Datei herunterzuladen:
-                  </p>
-                  <pre className="mt-1.5 p-1.5 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-lg text-[9px] font-mono overflow-x-auto text-slate-700 dark:text-slate-300">
-                    pip install garmin-health-data{"\n"}
-                    garmin-health-data --backup-dir ./backup
-                  </pre>
-                </div>
-              </div>
-              </div>
+              <GarminPersonalApiPanel
+                onDataSynced={fetchHealthMetrics}
+                onLoadTrack={onLoadTrack}
+                onCloseModal={onClose}
+              />
             </div>
-            )
           ) : (
             /* Main Dashboard View */
             <div className="space-y-6">
@@ -1439,7 +916,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'personal-api', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress', 'diagnostics'] as const).map((tab) => (
+                {(['overview', 'personal-api', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -1459,8 +936,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       ? 'Aktivitäten' 
                       : tab === 'analytics' 
                       ? 'Trends & Korrelationen 📊' 
-                      : tab === 'diagnostics'
-                      ? '🔍 Diagnosetool'
                       : tab === 'sleep'
                       ? 'Schlaf'
                       : tab === 'weight'
@@ -1567,58 +1042,25 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         </div>
                       </div>
 
-                      {/* Local Files in Workspace when data is loaded */}
-                      {localFiles.length > 0 && (
-                        <div className="p-4 bg-slate-100/40 dark:bg-slate-900/40 rounded-2xl border border-slate-200/50 dark:border-slate-800/80">
-                          <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 mb-2">
-                            <Database className="w-3.5 h-3.5 text-orange-500" />
-                            Lokale Dateien im Workspace (für große DBs bis zu 10 GB)
-                          </h5>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {localFiles.map((f) => (
-                              <div key={f.path} className="flex items-center justify-between p-2.5 bg-white dark:bg-slate-850 rounded-xl border border-slate-150 dark:border-slate-800 text-xs">
-                                <div className="truncate pr-2">
-                                  <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>{f.filename}</p>
-                                  <p className="text-[10px] text-slate-400">{formatFileSize(f.size)}</p>
-                                </div>
-                                <div className="flex gap-1.5 shrink-0">
-                                  <button
-                                    onClick={() => handleRunDiagnosis(f.path)}
-                                    disabled={isDiagnosing}
-                                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1"
-                                    title="Datenbankstruktur und Spalten diagnostizieren"
-                                  >
-                                    🔍 Diagnose
-                                  </button>
-                                  <button
-                                    onClick={() => handleLocalDbImport(f.path)}
-                                    disabled={isLoading}
-                                    className="shrink-0 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-all disabled:opacity-50"
-                                  >
-                                    Importieren
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Dropzone again to let them update existing db */}
+                      {/* Personal API sync & data reset footer */}
                       <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
-                          <Info className="w-4 h-4 text-slate-500" />
-                          Du kannst jederzeit eine neuere Datenbankdatei hochladen, um deine Daten zu aktualisieren.
+                          <Info className="w-4 h-4 text-slate-500 shrink-0" />
+                          <span>Aktualisiere deine Aktivitäten und Gesundheitswerte jederzeit direkt über die Garmin Connect Personal API.</span>
                         </div>
                         <div className="flex gap-2">
-                          <label className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-755 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1">
-                            <Upload className="w-3.5 h-3.5" />
-                            Neue DB importieren
-                            <input type="file" accept=".db,.sqlite" onChange={handleFileInput} className="hidden" />
-                          </label>
                           <button
+                            type="button"
+                            onClick={() => setActiveTab('personal-api')}
+                            className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/30 dark:hover:bg-orange-950/50 text-orange-700 dark:text-orange-300 border border-orange-200/70 dark:border-orange-800/60 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                            Über Personal API synchronisieren
+                          </button>
+                          <button
+                            type="button"
                             onClick={handleClearData}
-                            className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
+                            className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             Daten zurücksetzen
@@ -1805,7 +1247,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       <div className="flex items-center justify-between">
                         <div>
                           <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Importierte Aktivitäten</h4>
-                          <p className="text-xs text-slate-500">Eine Übersicht über deine Aktivitäten, die direkt aus deiner SQLite-Datenbank gelesen wurden.</p>
+                          <p className="text-xs text-slate-500">Eine Übersicht über deine über die Garmin Personal API synchronisierten Aktivitäten.</p>
                         </div>
                         <div className="flex items-center gap-2">
                           {activitySearchQuery && (
@@ -1951,7 +1393,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             Nicht genügend Daten für tiefe mathematische Korrelationen vorhanden oder Berechnungen laufen noch.
                           </p>
                           <p className="text-[10px] text-slate-400">
-                            Bitte importiere eine Garmin-Datenbank, die Schlaf-, Stress- und Aktivitätsdaten enthält.
+                            Bitte synchronisiere Garmin-Daten über die Personal API, die Schlaf-, Stress- und Aktivitätsdaten enthalten.
                           </p>
                         </div>
                       ) : (
@@ -2443,282 +1885,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </motion.div>
                   )}
 
-                  {activeTab === 'diagnostics' && (
-                    <motion.div
-                      key="diagnostics"
-                      initial={{ opacity: 0, y: 5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="space-y-6 flex-1"
-                    >
-                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800/80 pb-4">
-                        <div>
-                          <h4 className="text-sm font-black text-slate-850 dark:text-slate-100 flex items-center gap-2">
-                            <Database className="w-4 h-4 text-orange-500" />
-                            Garmin-Datenbank Diagnosezentrum & Inspektor
-                          </h4>
-                          <p className="text-xs text-slate-500">
-                            Analysiere Tabellenschemata, GPS-Spalten und Rohwerte, um Einleseprobleme präzise zu debuggen.
-                          </p>
-                        </div>
-                        {diagnosticReport && (
-                          <button
-                            onClick={handleDownloadDiagnosticReport}
-                            className="px-3.5 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            Diagnosebericht herunterladen (JSON)
-                          </button>
-                        )}
-                      </div>
-
-                      {isDiagnosing && (
-                        <div className="p-12 text-center bg-white dark:bg-slate-850 rounded-3xl border border-slate-150 dark:border-slate-800/80 flex flex-col items-center justify-center space-y-4">
-                          <RefreshCw className="w-8 h-8 text-orange-500 animate-spin" />
-                          <p className="text-xs text-slate-600 font-bold">Führe tiefe Datenbank-Strukturanalyse aus...</p>
-                          <p className="text-[10px] text-slate-400">Prüfe Tabellenschemata und min/max GPS-Wertebereiche.</p>
-                        </div>
-                      )}
-
-                      {diagnoseError && (
-                        <div className="p-5 bg-red-50 dark:bg-red-950/20 border border-red-150 dark:border-red-900/40 rounded-2xl flex gap-3">
-                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                          <div>
-                            <h5 className="text-xs font-bold text-red-800 dark:text-red-400">Diagnosefehler</h5>
-                            <p className="text-xs text-red-600 dark:text-red-300 mt-1">{diagnoseError}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {!isDiagnosing && !diagnosticReport && (
-                        <div className="p-12 text-center bg-white dark:bg-slate-850 rounded-3xl border border-slate-150 dark:border-slate-800/80 flex flex-col items-center justify-center space-y-3">
-                          <Info className="w-8 h-8 text-slate-400" />
-                          <p className="text-xs text-slate-500 font-bold max-w-sm leading-normal">
-                            Bisher wurde kein Diagnosebericht generiert.
-                          </p>
-                          <p className="text-[10px] text-slate-400 max-w-sm">
-                            Klicke in der Dateiliste auf <strong className="text-orange-500">🔍 Diagnose</strong> neben einer deiner SQLite-Dateien im Workspace, um eine vollständige Tiefenanalyse zu starten.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isDiagnosing && diagnosticReport && (
-                        <div className="space-y-6">
-                          {/* File metadata info */}
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Analysierte Datei</span>
-                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate block" title={diagnosticReport.filename}>
-                                {diagnosticReport.filename}
-                              </span>
-                            </div>
-                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Dateigröße</span>
-                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                                {formatFileSize(diagnosticReport.filesize)}
-                              </span>
-                            </div>
-                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Gefundene Tabellen</span>
-                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                                {diagnosticReport.tables.length} Tabellen
-                              </span>
-                            </div>
-                            <div className="p-3 bg-white dark:bg-slate-850 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                              <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-bold">Zeitpunkt</span>
-                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                                {new Date(diagnosticReport.timestamp).toLocaleTimeString('de-DE')} Uhr
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Key insights list */}
-                          <div className="p-5 bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3">
-                            <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                              <Sparkles className="w-3.5 h-3.5 text-orange-500" />
-                              Wichtigste Erkenntnisse & Strukturprüfungen
-                            </h5>
-                            <div className="space-y-2 pt-1">
-                              {diagnosticReport.insights.map((insight: string, idx: number) => {
-                                const isWarning = insight.toLowerCase().includes('warnung:');
-                                const isSuccess = insight.toLowerCase().includes('erkannt:') || insight.toLowerCase().includes('aktivitätstabelle \'');
-                                return (
-                                  <div 
-                                    key={idx} 
-                                    className={`p-2.5 rounded-xl border flex gap-2 text-[11px] leading-relaxed ${
-                                      isWarning 
-                                        ? 'bg-amber-50/40 dark:bg-amber-950/5 border-amber-200/50 dark:border-amber-900/30 text-amber-800 dark:text-amber-400' 
-                                        : isSuccess 
-                                        ? 'bg-emerald-50/40 dark:bg-emerald-950/5 border-emerald-200/50 dark:border-emerald-900/30 text-emerald-800 dark:text-emerald-400'
-                                        : 'bg-slate-50/40 dark:bg-slate-900/10 border-slate-150 dark:border-slate-800/80 text-slate-600 dark:text-slate-400'
-                                    }`}
-                                  >
-                                    {isWarning ? (
-                                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
-                                    ) : isSuccess ? (
-                                      <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500" />
-                                    ) : (
-                                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
-                                    )}
-                                    <span>{insight}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Coordinate Ranges & Table counts side-by-side */}
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            {/* Table row counts */}
-                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3">
-                              <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                                <Database className="w-3.5 h-3.5 text-slate-400" />
-                                Gefundene Datenbank-Tabellen
-                              </h5>
-                              <div className="max-h-[180px] overflow-y-auto pr-1 border border-slate-100 dark:border-slate-800/60 rounded-xl">
-                                <table className="w-full text-left border-collapse text-[11px]">
-                                  <thead>
-                                    <tr className="bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold border-b border-slate-100 dark:border-slate-800">
-                                      <th className="p-2">Tabellenname</th>
-                                      <th className="p-2 text-right">Zeilenanzahl</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {diagnosticReport.tables.map((t: any) => {
-                                      const isImportant = ["activity", "activities", "activity_ts_metric", "sleep", "weight", "steps", "stress", "rhr"].some(n => t.name.toLowerCase().includes(n));
-                                      return (
-                                        <tr 
-                                          key={t.name} 
-                                          className={`border-b border-slate-100 dark:border-slate-800/40 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 ${
-                                            isImportant ? 'font-semibold text-slate-800 dark:text-slate-100' : 'text-slate-500'
-                                          }`}
-                                        >
-                                          <td className="p-2 truncate max-w-[180px]" title={t.name}>{t.name}</td>
-                                          <td className="p-2 text-right">
-                                            {t.rows === -1 ? (
-                                              <span className="text-red-500">Fehler</span>
-                                            ) : (
-                                              t.rows.toLocaleString('de-DE')
-                                            )}
-                                          </td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-
-                            {/* Coordinate format analysis */}
-                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3 flex flex-col justify-between">
-                              <div>
-                                <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                                  <FileText className="w-3.5 h-3.5 text-slate-400" />
-                                  GPS-Koordinaten Wertebereiche
-                                </h5>
-                                <p className="text-[10px] text-slate-400 mt-1 leading-normal">
-                                  Prüft, ob Breitengrade in Grad (z.B. 48.13), Semicircles (z.B. 574293847) oder E7 vorliegen.
-                                </p>
-                              </div>
-
-                              <div className="space-y-2 pt-1">
-                                {Object.keys(diagnosticReport.coordinateAnalysis).length === 0 ? (
-                                  <div className="p-4 bg-slate-50 dark:bg-slate-900/20 text-center text-[10px] text-slate-400 rounded-xl">
-                                    Keine Koordinatendaten im Garmin-Zeitreihenformat gefunden.
-                                  </div>
-                                ) : (
-                                  ['latitude', 'longitude', 'elevation'].map((k) => {
-                                    const stats = diagnosticReport.coordinateAnalysis[k];
-                                    if (!stats) return null;
-                                    return (
-                                      <div key={k} className="p-2.5 bg-slate-50/40 dark:bg-slate-900/10 border border-slate-150 dark:border-slate-800/80 rounded-xl text-[10px] flex justify-between items-center">
-                                        <div>
-                                          <span className="font-extrabold capitalize text-slate-700 dark:text-slate-300">
-                                            {k === 'latitude' ? 'Breitengrad (Lat)' : k === 'longitude' ? 'Längengrad (Lng)' : 'Höhe (Ele)'}
-                                          </span>
-                                          <span className="text-[9px] text-slate-400 block mt-0.5">
-                                            {stats.count.toLocaleString('de-DE')} Datenpunkte gefunden
-                                          </span>
-                                        </div>
-                                        <div className="text-right font-mono text-[9px] text-slate-600 dark:text-slate-400">
-                                          <div>Min: <span className="font-bold text-slate-800 dark:text-slate-200">{stats.min !== null ? stats.min : 'n/a'}</span></div>
-                                          <div>Max: <span className="font-bold text-slate-800 dark:text-slate-200">{stats.max !== null ? stats.max : 'n/a'}</span></div>
-                                        </div>
-                                      </div>
-                                    );
-                                  })
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Data Samples Inspector */}
-                          {Object.keys(diagnosticReport.samples).length > 0 && (
-                            <div className="bg-white dark:bg-slate-850 p-5 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-4">
-                              <h5 className="text-xs font-black text-slate-850 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                                <FileText className="w-3.5 h-3.5 text-slate-400" />
-                                Rohdaten-Stichprobe (Erste Zeilen)
-                              </h5>
-                              
-                              <div className="space-y-4">
-                                {Object.keys(diagnosticReport.samples).map((tblName) => {
-                                  const sampleRows = diagnosticReport.samples[tblName];
-                                  if (!Array.isArray(sampleRows) || sampleRows.length === 0) return null;
-                                  
-                                  const keys = Object.keys(sampleRows[0]);
-                                  
-                                  return (
-                                    <div key={tblName} className="space-y-2 border-t border-slate-100 dark:border-slate-800/80 pt-3 first:border-0 first:pt-0">
-                                      <h6 className="text-[11px] font-extrabold text-orange-600 dark:text-orange-400 flex items-center gap-1">
-                                        <Database className="w-3 h-3" />
-                                        Tabelle: <span className="underline font-mono">{tblName}</span>
-                                      </h6>
-                                      
-                                      <div className="overflow-x-auto border border-slate-100 dark:border-slate-800/60 rounded-xl">
-                                        <table className="w-full text-left border-collapse text-[9px] font-mono whitespace-nowrap">
-                                          <thead>
-                                            <tr className="bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold border-b border-slate-100 dark:border-slate-800">
-                                              {keys.map(k => (
-                                                <th key={k} className="p-1.5 border-r border-slate-100 dark:border-slate-800">{k}</th>
-                                              ))}
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {sampleRows.map((row: any, rIdx: number) => (
-                                              <tr key={rIdx} className="border-b border-slate-100 dark:border-slate-800/40 hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
-                                                {keys.map(k => (
-                                                  <td key={k} className="p-1.5 border-r border-slate-100 dark:border-slate-800 max-w-[200px] truncate" title={String(row[k])}>
-                                                    {row[k] === null || row[k] === undefined ? (
-                                                      <span className="text-slate-300 italic">NULL</span>
-                                                    ) : typeof row[k] === 'object' ? (
-                                                      safeStringifyOrFallback(row[k], '{}')
-                                                    ) : (
-                                                      String(row[k])
-                                                    )}
-                                                  </td>
-                                                ))}
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
                 </AnimatePresence>
               </div>
             </div>
           )}
-          
-          {/* Real-time Server Import & Diagnostic Terminal */}
-          {renderDebugTerminal()}
         </div>
       </motion.div>
     </div>

@@ -20,7 +20,8 @@ import {
   MinusSquare,
   Calendar,
   Compass,
-  BarChart3
+  BarChart3,
+  Globe
 } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
@@ -49,6 +50,7 @@ export interface CatalogActivityItem {
   activityCategory: CatalogActivityCategory;
   timestampIso: string;
   monthKey: string;
+  country: string;
   distanceKm: number;
   ascentM: number;
   descentM: number;
@@ -65,6 +67,13 @@ export interface CatalogActivityItem {
 
 interface CatalogMonthSummary {
   monthKey: string;
+  count: number;
+  totalDistanceKm: number;
+  totalAscentM: number;
+}
+
+interface CatalogCountrySummary {
+  country: string;
   count: number;
   totalDistanceKm: number;
   totalAscentM: number;
@@ -218,6 +227,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | CatalogSource>('all');
   const [activityFilter, setActivityFilter] = useState<'all' | CatalogActivityCategory>('all');
+  const [countryFilter, setCountryFilter] = useState<string>('');
+  const [monthFilter, setMonthFilter] = useState<string>('');
   const [sortBy, setSortBy] = useState<CatalogSortBy>('date-desc');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [startDate, setStartDate] = useState('');
@@ -240,6 +251,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     libraryCount: 0
   });
   const [monthSummaries, setMonthSummaries] = useState<CatalogMonthSummary[]>([]);
+  const [countrySummaries, setCountrySummaries] = useState<CatalogCountrySummary[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -262,6 +274,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     activityType: 'cycling',
     date: '',
     location: '',
+    country: '',
     tags: '',
     description: ''
   });
@@ -326,6 +339,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
       q: debouncedQuery,
       source: sourceFilter,
       activityType: activityFilter,
+      country: countryFilter || undefined,
+      month: monthFilter || undefined,
       startDate: startDate || undefined,
       endDate: endDate || undefined,
       minDistance: minDistance !== '' ? Number(minDistance) : undefined,
@@ -338,6 +353,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     debouncedQuery,
     sourceFilter,
     activityFilter,
+    countryFilter,
+    monthFilter,
     startDate,
     endDate,
     minDistance,
@@ -362,6 +379,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     debouncedQuery.length > 0 ||
     sourceFilter !== 'all' ||
     activityFilter !== 'all' ||
+    countryFilter.length > 0 ||
+    monthFilter.length > 0 ||
     activeExtendedFilterCount > 0;
 
   const fetchCatalogPage = useCallback(
@@ -388,6 +407,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
         if (currentFilterParams.q) qs.set('q', currentFilterParams.q);
         if (currentFilterParams.source !== 'all') qs.set('source', currentFilterParams.source);
         if (currentFilterParams.activityType !== 'all') qs.set('activityType', currentFilterParams.activityType);
+        if (currentFilterParams.country) qs.set('country', currentFilterParams.country);
+        if (currentFilterParams.month) qs.set('month', currentFilterParams.month);
         if (currentFilterParams.startDate) qs.set('startDate', currentFilterParams.startDate);
         if (currentFilterParams.endDate) qs.set('endDate', currentFilterParams.endDate);
         if (currentFilterParams.minDistance !== undefined && !isNaN(currentFilterParams.minDistance)) {
@@ -440,6 +461,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
         setHasMore(Boolean(data.hasMore));
         if (data.summaryStats) setSummaryStats(data.summaryStats);
         if (Array.isArray(data.monthSummaries)) setMonthSummaries(data.monthSummaries);
+        if (Array.isArray(data.countrySummaries)) setCountrySummaries(data.countrySummaries);
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
         console.error('Catalog load error:', err);
@@ -757,6 +779,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
           : 'cycling',
       date: item.timestampIso ? item.timestampIso.slice(0, 19).replace('T', ' ') : '',
       location: item.location || '',
+      country: item.country || '',
       tags: item.tags.join(', '),
       description: item.description || ''
     });
@@ -783,6 +806,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
             activityType: editForm.activityType,
             date: editForm.date.trim() || undefined,
             location: editForm.location.trim(),
+            country: editForm.country.trim(),
             tags: splitTags,
             description: editForm.description.trim()
           })
@@ -839,6 +863,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     setDebouncedQuery('');
     setSourceFilter('all');
     setActivityFilter('all');
+    setCountryFilter('');
+    setMonthFilter('');
     setStartDate('');
     setEndDate('');
     setMinDistance('');
@@ -921,6 +947,36 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
               <option value="running">Laufen</option>
               <option value="hiking">Wandern</option>
               <option value="other">Sonstige</option>
+            </select>
+
+            {/* Country Filter */}
+            <select
+              value={countryFilter}
+              onChange={(e) => setCountryFilter(e.target.value)}
+              aria-label="Land filtern"
+              className="px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer max-w-[165px]"
+            >
+              <option value="">Alle Länder</option>
+              {countrySummaries.map((c) => (
+                <option key={c.country} value={c.country}>
+                  {c.country === '__unknown__' ? 'Ohne Land' : c.country} ({c.count.toLocaleString('de-DE')})
+                </option>
+              ))}
+            </select>
+
+            {/* Month Filter */}
+            <select
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+              aria-label="Monat filtern"
+              className="px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer max-w-[175px]"
+            >
+              <option value="">Alle Monate</option>
+              {monthSummaries.map((m) => (
+                <option key={m.monthKey} value={m.monthKey}>
+                  {formatMonthLabel(m.monthKey)} ({m.count.toLocaleString('de-DE')})
+                </option>
+              ))}
             </select>
 
             {/* Sort Order */}
@@ -1117,6 +1173,95 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Clickable Country & Month Breakdown Strips */}
+        {(countrySummaries.length > 0 || monthSummaries.length > 0) && (
+          <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800/80 flex flex-col gap-1.5 text-[11px]">
+            {countrySummaries.length > 0 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                <span className="inline-flex items-center gap-1 font-semibold text-slate-500 dark:text-slate-400 shrink-0 mr-0.5">
+                  <Globe size={12} />
+                  <span>Länder:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCountryFilter('')}
+                  className={`px-2 py-0.5 rounded-md border font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    countryFilter === ''
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Alle
+                </button>
+                {countrySummaries.slice(0, 10).map((c) => {
+                  const isActive = countryFilter === c.country;
+                  const label = c.country === '__unknown__' ? 'Ohne Land' : c.country;
+                  return (
+                    <button
+                      key={c.country}
+                      type="button"
+                      onClick={() => setCountryFilter(isActive ? '' : c.country)}
+                      title={`${label}: ${c.count.toLocaleString('de-DE')} Aktivitäten · ${c.totalDistanceKm.toFixed(1)} km · +${c.totalAscentM.toLocaleString('de-DE')} hm`}
+                      className={`px-2 py-0.5 rounded-md border font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer font-mono tabular-nums ${
+                        isActive
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className="font-sans">{label}</span>{' '}
+                      <span className={isActive ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-500'}>
+                        {c.count.toLocaleString('de-DE')}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {monthSummaries.length > 0 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                <span className="inline-flex items-center gap-1 font-semibold text-slate-500 dark:text-slate-400 shrink-0 mr-0.5">
+                  <Calendar size={12} />
+                  <span>Monate:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMonthFilter('')}
+                  className={`px-2 py-0.5 rounded-md border font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    monthFilter === ''
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Alle
+                </button>
+                {monthSummaries.slice(0, 8).map((m) => {
+                  const isActive = monthFilter === m.monthKey;
+                  const label = formatMonthLabel(m.monthKey);
+                  return (
+                    <button
+                      key={m.monthKey}
+                      type="button"
+                      onClick={() => setMonthFilter(isActive ? '' : m.monthKey)}
+                      title={`${label}: ${m.count.toLocaleString('de-DE')} Touren · ${m.totalDistanceKm.toFixed(1)} km · +${m.totalAscentM.toLocaleString('de-DE')} hm`}
+                      className={`px-2 py-0.5 rounded-md border font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer font-mono tabular-nums ${
+                        isActive
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className="font-sans">{label}</span>{' '}
+                      <span className={isActive ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-500'}>
+                        {m.count.toLocaleString('de-DE')}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Inline Status / Error Banner */}
@@ -1401,13 +1546,28 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                       </button>
                     </div>
 
-                    <div className="font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">
-                      {row.count.toLocaleString('de-DE')} Touren ·{' '}
-                      {row.totalDistanceKm.toLocaleString('de-DE', {
-                        minimumFractionDigits: 1,
-                        maximumFractionDigits: 1
-                      })}{' '}
-                      km · +{row.totalAscentM.toLocaleString('de-DE')} hm
+                    <div className="flex items-center gap-3 whitespace-nowrap shrink-0">
+                      <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                        {row.count.toLocaleString('de-DE')} Touren ·{' '}
+                        {row.totalDistanceKm.toLocaleString('de-DE', {
+                          minimumFractionDigits: 1,
+                          maximumFractionDigits: 1
+                        })}{' '}
+                        km · +{row.totalAscentM.toLocaleString('de-DE')} hm
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setMonthFilter((prev) => (prev === row.monthKey ? '' : row.monthKey))
+                        }
+                        className={`px-2 py-0.5 rounded-md border text-[11px] font-semibold transition-colors cursor-pointer ${
+                          monthFilter === row.monthKey
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-white dark:bg-slate-950 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-400'
+                        }`}
+                      >
+                        {monthFilter === row.monthKey ? 'Monatsfilter aktiv' : 'Monat filtern'}
+                      </button>
                     </div>
                   </div>
                 );
@@ -1418,7 +1578,8 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
               const isOnMap = activeWorkspaceIds.has(item.workspaceTrackId);
               const dt = formatDateTimeCompact(item.timestampIso);
               const subDetails = [
-                item.location,
+                item.country,
+                item.location && item.location !== item.country ? item.location : '',
                 item.tags.slice(0, 2).join(', '),
                 item.originalFilename
               ]
@@ -1714,33 +1875,73 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                 </div>
               </div>
 
-              {editingItem.source === 'garmin' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Ort
+                    Land
                   </label>
                   <input
                     type="text"
-                    value={editForm.location}
-                    onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))}
-                    placeholder="z. B. Dortmund"
+                    list="catalog-known-countries"
+                    value={editForm.country}
+                    onChange={(e) => setEditForm((f) => ({ ...f, country: e.target.value }))}
+                    placeholder="z. B. Deutschland (leer = Auto)"
                     className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
                   />
+                  <datalist id="catalog-known-countries">
+                    {Array.from(
+                      new Set([
+                        ...countrySummaries
+                          .map((c) => c.country)
+                          .filter((c) => c && c !== '__unknown__'),
+                        'Deutschland',
+                        'Österreich',
+                        'Schweiz',
+                        'Italien',
+                        'Frankreich',
+                        'Spanien',
+                        'Niederlande',
+                        'Belgien',
+                        'Luxemburg',
+                        'Portugal',
+                        'Großbritannien',
+                        'Norwegen',
+                        'Schweden'
+                      ])
+                    ).map((countryName) => (
+                      <option key={countryName} value={countryName} />
+                    ))}
+                  </datalist>
                 </div>
-              ) : (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Tags (kommagetrennt)
-                  </label>
-                  <input
-                    type="text"
-                    value={editForm.tags}
-                    onChange={(e) => setEditForm((f) => ({ ...f, tags: e.target.value }))}
-                    placeholder="Alpen, Tempo, Training"
-                    className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
-                  />
-                </div>
-              )}
+
+                {editingItem.source === 'garmin' ? (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Ort
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.location}
+                      onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))}
+                      placeholder="z. B. Dortmund"
+                      className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Tags (kommagetrennt)
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.tags}
+                      onChange={(e) => setEditForm((f) => ({ ...f, tags: e.target.value }))}
+                      placeholder="Alpen, Tempo, Training"
+                      className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                )}
+              </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">

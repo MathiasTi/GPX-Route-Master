@@ -306,12 +306,102 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
       `Expected repairStoredActivityDates to restore Pottrunde date to 2025-05-18, got ${repairedLegacyItem?.timestampIso}`
     );
 
+    // 11. Test offline Country resolution, FTS5 trigram compound search, Country & Month query filters, and manual Country override
+    assert(
+      repairedLegacyItem?.country === 'Deutschland',
+      `Expected Dortmund GPX Pottrunde to auto-resolve to Deutschland, got "${repairedLegacyItem?.country}"`
+    );
+    assert(
+      indoorCatalog.items[0]?.country === 'Deutschland',
+      `Expected GPS-less Dortmund Rollentraining to auto-resolve via location to Deutschland, got "${indoorCatalog.items[0]?.country}"`
+    );
+
+    saveTrack(
+      {
+        id: 'france-alpe-dhuez',
+        name: "Alpe d'Huez Bergankunft",
+        distance: 62.0,
+        ascent: 1850,
+        descent: 1100,
+        activityType: 'cycling',
+        dateCreated: '2025-07-19',
+        points: [
+          { lat: 45.092, lng: 6.068, ele: 740 },
+          { lat: 45.091, lng: 6.071, ele: 1850 }
+        ]
+      },
+      testUser
+    );
+    saveGarminActivity(
+      'garmin-stelvio-italy',
+      'Passo dello Stelvio',
+      'cycling',
+      '2025-07-22 09:00:00',
+      48.5,
+      10800,
+      1950,
+      1950,
+      2400,
+      152,
+      'Königsetappe Südtirol',
+      'Bormio',
+      JSON.stringify([
+        { lat: 46.528, lng: 10.453, ele: 1900 },
+        { lat: 46.530, lng: 10.456, ele: 2758 }
+      ]),
+      testUser
+    );
+
+    // FTS5 trigram substring match on German compound word ('runde' inside 'Pottrunde') & 2-char fallback
+    const compoundMatch = queryActivitiesCatalog({ q: 'runde' }, testUser);
+    assert(
+      compoundMatch.items.some((i) => i.id === 'pottrunde-legacy-import-bug'),
+      'Expected FTS5 trigram search for "runde" to match "Pottrunde"'
+    );
+
+    // Country filter + preserve sibling countrySummaries for switcher
+    const franceOnly = queryActivitiesCatalog({ country: 'Frankreich' }, testUser);
+    assert(franceOnly.totalCount === 1 && franceOnly.items[0].id === 'france-alpe-dhuez', `Expected 1 France entry, got ${franceOnly.totalCount}`);
+    assert(
+      franceOnly.countrySummaries.some((c) => c.country === 'Italien') &&
+        franceOnly.countrySummaries.some((c) => c.country === 'Deutschland'),
+      'Expected countrySummaries facet to keep all matching countries while country filter is active'
+    );
+
+    // Month filter + combined Country + Month query
+    const july2025All = queryActivitiesCatalog({ month: '2025-07' }, testUser);
+    assert(july2025All.totalCount === 2, `Expected 2 activities in 2025-07 (Frankreich + Italien), got ${july2025All.totalCount}`);
+    const july2025Italy = queryActivitiesCatalog({ month: '2025-07', country: 'Italien' }, testUser);
+    assert(
+      july2025Italy.totalCount === 1 && july2025Italy.items[0].id === 'garmin-stelvio-italy',
+      `Expected 1 Italian activity in 2025-07, got ${july2025Italy.totalCount}`
+    );
+
+    // Manual inline country override
+    const countryOverrideOk = updateCatalogActivityMetadata(
+      'garmin',
+      'garmin-stelvio-italy',
+      {
+        name: 'Passo dello Stelvio',
+        country: 'Schweiz'
+      },
+      testUser
+    );
+    assert(countryOverrideOk, 'Expected manual country override update to succeed');
+    const switzerlandQuery = queryActivitiesCatalog({ country: 'Schweiz' }, testUser);
+    assert(
+      switzerlandQuery.totalCount === 1 && switzerlandQuery.items[0].id === 'garmin-stelvio-italy',
+      `Expected updated activity to appear under Schweiz query, got ${switzerlandQuery.totalCount}`
+    );
+
     // Clean up extra test rows
     db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);
     db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(testUser);
+    db.prepare('DELETE FROM activities_catalog_fts WHERE user_id = ?').run(testUser);
+    db.prepare('DELETE FROM activities_catalog WHERE user_id = ?').run(testUser);
 
     console.log(
-      `✅ Activities Catalog tests passed (1,501 rows seeded in ${seedMs.toFixed(1)}ms, metadata query in ${queryMs.toFixed(1)}ms + GPS/Date integrity checks)`
+      `✅ Activities Catalog tests passed (1,501 rows seeded in ${seedMs.toFixed(1)}ms, metadata query in ${queryMs.toFixed(1)}ms + Country/Month/FTS5/GPS checks)`
     );
     return true;
   } catch (err) {
@@ -319,6 +409,8 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     try {
       db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);
       db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(testUser);
+      db.prepare('DELETE FROM activities_catalog_fts WHERE user_id = ?').run(testUser);
+      db.prepare('DELETE FROM activities_catalog WHERE user_id = ?').run(testUser);
     } catch {}
     return false;
   }

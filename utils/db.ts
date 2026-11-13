@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
 import { getCuratedSeedTours } from './seedTours';
+import { resolveActivityCountry, normalizeCountryLabel } from './countryLookup';
 
 // Store the SQLite database file in a data directory for clean docker volume persistence
 const dbDir = path.join(process.cwd(), 'data');
@@ -24,7 +25,8 @@ function configureDbPragmas(database: Database.Database): void {
     database.pragma('synchronous = NORMAL');
     database.pragma('busy_timeout = 5000');
     database.pragma('temp_store = MEMORY');
-    database.pragma('cache_size = -20000');
+    database.pragma('cache_size = -64000');
+    database.pragma('mmap_size = 268435456');
   } catch (err: any) {
     console.warn('[SQLite PRAGMA] Warning configuring performance pragmas:', err.message);
   }
@@ -170,6 +172,7 @@ export interface DbTrackRecord {
   color?: string;
   has_timestamps?: number;
   raw_file_json?: string;
+  country?: string;
 }
 
 export function initDb() {
@@ -311,6 +314,9 @@ function ensureCoreSchema() {
     db.exec(`ALTER TABLE tracks ADD COLUMN user_id TEXT DEFAULT 'default'`);
   } catch (e) {}
   try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN country TEXT DEFAULT ''`);
+  } catch (e) {}
+  try {
     db.exec(`ALTER TABLE garmin_activities ADD COLUMN description TEXT`);
   } catch (e) {}
   try {
@@ -321,6 +327,9 @@ function ensureCoreSchema() {
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE garmin_activities ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN country TEXT DEFAULT ''`);
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE garmin_sleep ADD COLUMN user_id TEXT DEFAULT 'default'`);
@@ -349,11 +358,58 @@ function ensureCoreSchema() {
     db.exec(`UPDATE garmin_steps SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
   } catch (e) {}
 
-  // Create performance indexes to speed up name, description, and location searches
+  // Materialized metadata-only catalog table + FTS5 full-text index for sub-millisecond queries
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS activities_catalog (
+        key TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        raw_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        raw_type TEXT NOT NULL,
+        activity_category TEXT NOT NULL,
+        timestamp_iso TEXT NOT NULL,
+        timestamp_sort TEXT NOT NULL,
+        month_key TEXT NOT NULL,
+        country TEXT NOT NULL DEFAULT '',
+        distance_km REAL NOT NULL DEFAULT 0,
+        ascent_m REAL NOT NULL DEFAULT 0,
+        descent_m REAL NOT NULL DEFAULT 0,
+        duration_sec REAL NOT NULL DEFAULT 0,
+        avg_hr REAL,
+        calories REAL,
+        location TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '',
+        original_filename TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT '#3b82f6',
+        has_gps INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS activities_catalog_fts USING fts5(
+        key UNINDEXED,
+        user_id UNINDEXED,
+        name,
+        location,
+        country,
+        description,
+        tags,
+        original_filename,
+        raw_type,
+        tokenize='trigram case_sensitive 0'
+      );
+    `);
+  } catch (e) {
+    console.error('Failed to create activities_catalog / FTS5 schema:', e);
+  }
+
+  // Create performance indexes to speed up name, description, location, country, month, and catalog searches
   try {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_name ON garmin_activities(name)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_description ON garmin_activities(description)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_location ON garmin_activities(location)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_country ON garmin_activities(country)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_date ON garmin_activities(date)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_type ON garmin_activities(type)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_id ON garmin_activities(user_id)`);
@@ -361,9 +417,17 @@ function ensureCoreSchema() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_type_dist ON garmin_activities(user_id, type, distance)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_description ON tracks(description)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_country ON tracks(country)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks(user_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_date ON tracks(user_id, date_created DESC)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_type_dist ON tracks(user_id, activity_type, distance)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_sort ON activities_catalog(user_id, timestamp_sort DESC, name COLLATE NOCASE ASC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_country_sort ON activities_catalog(user_id, country, timestamp_sort DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_month_sort ON activities_catalog(user_id, month_key, timestamp_sort DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_source_sort ON activities_catalog(user_id, source, timestamp_sort DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_cat_dist ON activities_catalog(user_id, activity_category, distance_km)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_user_gps_sort ON activities_catalog(user_id, has_gps, timestamp_sort DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ac_source_raw ON activities_catalog(source, raw_id, user_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)`);
   } catch (e) {
     console.error('Failed to create database indexes:', e);
@@ -565,6 +629,29 @@ function runInitDbStatements() {
     console.error('Failed to run 2.9.1 activity date repair migration:', e);
   }
 
+  // One-time backfill migration (2.9.2): Backfill offline countries, build materialized activities_catalog + FTS5 index, and optimize SQLite
+  try {
+    const checkMigration = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasV292 = (checkMigration.get('2.9.2') as { count: number }).count > 0;
+    if (!hasV292) {
+      const rebuilt = rebuildActivitiesCatalog();
+      console.log(
+        `[DB Migration 2.9.2] Built indexed activities_catalog + FTS5 (${rebuilt.indexedCount} entries, ${rebuilt.countriesResolved} countries resolved).`
+      );
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.2',
+        new Date().toISOString(),
+        'SQLite Speed Engine & Country/Month Querying: Added materialized activities_catalog index table, FTS5 full-text search, memory-mapped PRAGMAs, and fast offline Country resolution.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.2 catalog/FTS5 migration:', e);
+  }
+
+  try {
+    db.pragma('optimize');
+  } catch {}
+
   console.log('SQLite database initialized successfully at', dbPath);
 }
 
@@ -709,6 +796,9 @@ export function repairStoredActivityDates(): { repairedTracks: number; repairedG
     });
 
     repairTrx();
+    if (repairedTracks > 0 || repairedGarmin > 0) {
+      rebuildActivitiesCatalog();
+    }
     return { repairedTracks, repairedGarmin };
   });
 }
@@ -987,6 +1077,7 @@ export function saveTrack(track: {
   color?: string;
   hasTimestamps?: boolean;
   rawFileDetails?: any;
+  country?: string;
 }, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
@@ -998,9 +1089,9 @@ export function saveTrack(track: {
         id, name, distance, ascent, descent, duration, activity_type,
         description, tags, date_created, points_json, power_stats_json,
         surface_stats_json, climbs_json, original_filename, max_slope,
-        color, has_timestamps, raw_file_json, user_id
+        color, has_timestamps, raw_file_json, user_id, country
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `);
 
@@ -1018,6 +1109,14 @@ export function saveTrack(track: {
       isVirtualHint
     );
     const dateStr = explicitDate || inferredDate || new Date().toISOString().split('T')[0];
+
+    const resolvedCountry = resolveActivityCountry({
+      explicitCountry: track.country,
+      points: track.points,
+      name: track.name,
+      tags: tagsStr,
+      isVirtual: isVirtualHint
+    });
 
     statement.run(
       scopedId,
@@ -1039,8 +1138,11 @@ export function saveTrack(track: {
       track.color || null,
       track.hasTimestamps ? 1 : 0,
       track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null,
-      uid
+      uid,
+      resolvedCountry
     );
+
+    syncCatalogEntryForLibraryTrack(scopedId, uid);
 
     return cleanRawId;
   });
@@ -1120,27 +1222,51 @@ export function updateTrackMetadata(id: string, metadata: {
   tags?: string;
   activityType?: string;
   dateCreated?: string;
+  country?: string;
 }, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
     const cleanId = stripScopedKey(id, uid);
     const scopedId = toScopedKey(cleanId, uid);
-    const statement = db.prepare(`
-      UPDATE tracks 
-      SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
-      WHERE (id = ? OR id = ?) AND user_id = ?
-    `);
 
-    statement.run(
-      metadata.name,
-      metadata.description || '',
-      metadata.tags || '',
-      metadata.activityType || 'cycling',
-      metadata.dateCreated || new Date().toISOString().split('T')[0],
-      scopedId,
-      cleanId,
-      uid
-    );
+    if (metadata.country !== undefined) {
+      const cleanCountry = normalizeCountryLabel(metadata.country);
+      const statement = db.prepare(`
+        UPDATE tracks 
+        SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?, country = ?
+        WHERE (id = ? OR id = ?) AND user_id = ?
+      `);
+      statement.run(
+        metadata.name,
+        metadata.description || '',
+        metadata.tags || '',
+        metadata.activityType || 'cycling',
+        metadata.dateCreated || new Date().toISOString().split('T')[0],
+        cleanCountry,
+        scopedId,
+        cleanId,
+        uid
+      );
+    } else {
+      const statement = db.prepare(`
+        UPDATE tracks 
+        SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
+        WHERE (id = ? OR id = ?) AND user_id = ?
+      `);
+      statement.run(
+        metadata.name,
+        metadata.description || '',
+        metadata.tags || '',
+        metadata.activityType || 'cycling',
+        metadata.dateCreated || new Date().toISOString().split('T')[0],
+        scopedId,
+        cleanId,
+        uid
+      );
+    }
+
+    syncCatalogEntryForLibraryTrack(scopedId, uid);
+    syncCatalogEntryForLibraryTrack(cleanId, uid);
   });
 }
 
@@ -1151,6 +1277,10 @@ export function deleteTrack(id: string, userId: string = 'default'): boolean {
     const scopedId = toScopedKey(cleanId, uid);
     const statement = db.prepare('DELETE FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
     const info = statement.run(scopedId, cleanId, uid);
+    if (info.changes > 0) {
+      deleteCatalogRow('library', scopedId, uid);
+      deleteCatalogRow('library', cleanId, uid);
+    }
     return info.changes > 0;
   });
 }
@@ -1160,6 +1290,8 @@ export function clearAllTracks(userId: string = 'default'): number {
     const uid = normalizeUserId(userId);
     const count = (db.prepare('SELECT COUNT(*) as count FROM tracks WHERE user_id = ?').get(uid) as { count: number }).count;
     db.prepare('DELETE FROM tracks WHERE user_id = ?').run(uid);
+    db.prepare(`DELETE FROM activities_catalog_fts WHERE user_id = ? AND key LIKE 'library:%'`).run(uid);
+    db.prepare(`DELETE FROM activities_catalog WHERE user_id = ? AND source = 'library'`).run(uid);
     return count;
   });
 }
@@ -1282,16 +1414,23 @@ export function saveGarminActivity(
   id: string, name: string, type: string, date: string,
   distance: number, duration: number, ascent?: number, descent?: number,
   calories?: number, avgHr?: number, description?: string, location?: string,
-  pointsJson?: string, userId: string = 'default'
+  pointsJson?: string, userId: string = 'default', country?: string
 ) {
   const uid = normalizeUserId(userId);
   const cleanId = stripScopedKey(id, uid);
   const scopedId = toScopedKey(cleanId, uid);
   const finalPointsJson = pointsJson || null;
+  const resolvedCountry = resolveActivityCountry({
+    explicitCountry: country,
+    pointsJson: finalPointsJson,
+    location,
+    name,
+    isVirtual: !finalPointsJson || finalPointsJson.length <= 20
+  });
 
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, points_json, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_activities (id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, points_json, user_id, country)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     scopedId, name, type, date, distance, duration, 
@@ -1302,8 +1441,11 @@ export function saveGarminActivity(
     description || null, 
     location || null,
     finalPointsJson,
-    uid
+    uid,
+    resolvedCountry
   );
+
+  syncCatalogEntryForGarminActivity(scopedId, uid);
 }
 
 export function claimUnassignedGarminDataForUser(userId?: string): void {
@@ -1334,6 +1476,8 @@ export function claimUnassignedGarminDataForUser(userId?: string): void {
       }
     });
     trx();
+    rebuildActivitiesCatalog(uid);
+    rebuildActivitiesCatalog('default');
   });
 }
 
@@ -1355,6 +1499,7 @@ export interface DbGarminActivityRecord {
   max_slope?: number;
   points_json?: string;
   user_id?: string;
+  country?: string;
 }
 
 export interface GarminSearchFilterOptions {
@@ -1517,6 +1662,8 @@ export function clearHealthMetrics(userId: string = 'default') {
   db.prepare('DELETE FROM garmin_rhr WHERE user_id = ?').run(uid);
   db.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(uid);
   db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(uid);
+  db.prepare(`DELETE FROM activities_catalog_fts WHERE user_id = ? AND key LIKE 'garmin:%'`).run(uid);
+  db.prepare(`DELETE FROM activities_catalog WHERE user_id = ? AND source = 'garmin'`).run(uid);
 }
 
 export function runInTransaction(fn: () => void) {
@@ -1657,7 +1804,7 @@ export function getAllSettings(userId: string = 'default'): Record<string, strin
 }
 
 // ============================================================================
-// HIGH-SPEED UNIFIED ACTIVITIES CATALOG (METADATA-ONLY QUERIES & BULK OPS)
+// HIGH-SPEED UNIFIED ACTIVITIES CATALOG (INDEXED TABLE + FTS5 + BULK OPS)
 // ============================================================================
 
 export type CatalogSource = 'library' | 'garmin';
@@ -1674,6 +1821,8 @@ export interface CatalogQueryOptions {
   q?: string;
   source?: 'all' | CatalogSource;
   activityType?: 'all' | CatalogActivityCategory;
+  country?: string;
+  month?: string;
   startDate?: string;
   endDate?: string;
   minDistance?: number;
@@ -1695,6 +1844,7 @@ export interface CatalogActivityItem {
   activityCategory: CatalogActivityCategory;
   timestampIso: string;
   monthKey: string;
+  country: string;
   distanceKm: number;
   ascentM: number;
   descentM: number;
@@ -1716,6 +1866,13 @@ export interface CatalogMonthSummary {
   totalAscentM: number;
 }
 
+export interface CatalogCountrySummary {
+  country: string;
+  count: number;
+  totalDistanceKm: number;
+  totalAscentM: number;
+}
+
 export interface CatalogQueryResult {
   items: CatalogActivityItem[];
   totalCount: number;
@@ -1729,6 +1886,7 @@ export interface CatalogQueryResult {
     libraryCount: number;
   };
   monthSummaries: CatalogMonthSummary[];
+  countrySummaries: CatalogCountrySummary[];
 }
 
 export interface CatalogActivityRef {
@@ -1736,103 +1894,464 @@ export interface CatalogActivityRef {
   id: string;
 }
 
-const CATALOG_UNIFIED_CTE = `
-  WITH unified_catalog AS (
-    SELECT
-      'library' AS source,
-      id AS raw_id,
-      COALESCE(NULLIF(TRIM(name), ''), 'Unbenannte Route') AS name,
-      COALESCE(activity_type, 'cycling') AS raw_type,
-      CASE
-        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%run%' OR LOWER(COALESCE(activity_type, '')) LIKE '%lauf%' OR LOWER(COALESCE(activity_type, '')) LIKE '%jog%' THEN 'running'
-        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%hike%' OR LOWER(COALESCE(activity_type, '')) LIKE '%walk%' OR LOWER(COALESCE(activity_type, '')) LIKE '%wander%' THEN 'hiking'
-        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%cycle%' OR LOWER(COALESCE(activity_type, '')) LIKE '%bike%' OR LOWER(COALESCE(activity_type, '')) LIKE '%rad%' OR LOWER(COALESCE(activity_type, '')) LIKE '%gravel%' OR LOWER(COALESCE(activity_type, '')) LIKE '%mtb%' THEN 'cycling'
-        ELSE 'other'
-      END AS activity_category,
-      COALESCE(NULLIF(TRIM(date_created), ''), '') AS timestamp_iso,
-      REPLACE(SUBSTR(COALESCE(NULLIF(TRIM(date_created), ''), '1970-01-01 00:00:00'), 1, 19), 'T', ' ') AS timestamp_sort,
-      CASE
-        WHEN LENGTH(TRIM(COALESCE(date_created, ''))) >= 7 AND SUBSTR(TRIM(date_created), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
-        THEN SUBSTR(TRIM(date_created), 1, 7)
-        ELSE 'unknown'
-      END AS month_key,
-      COALESCE(distance, 0) AS distance_km,
-      COALESCE(ascent, 0) AS ascent_m,
-      COALESCE(descent, 0) AS descent_m,
-      COALESCE(duration, 0) AS duration_sec,
-      NULL AS avg_hr,
-      NULL AS calories,
-      '' AS location,
-      COALESCE(description, '') AS description,
-      COALESCE(tags, '') AS tags,
-      COALESCE(original_filename, '') AS original_filename,
-      COALESCE(color, '#3b82f6') AS color,
-      CASE
-        WHEN points_json IS NOT NULL
-          AND length(points_json) > 20
-          AND LOWER(COALESCE(tags, '')) NOT LIKE '%indoor/virtuell%'
-          AND LOWER(COALESCE(raw_file_json, '')) NOT LIKE '%"isvirtual":true%'
-          AND (NOT json_valid(points_json) OR json_array_length(points_json) >= 2)
-        THEN 1
-        ELSE 0
-      END AS has_gps
-    FROM tracks
-    WHERE user_id = ?
+function classifyActivityCategory(rawType: string, name: string = ''): CatalogActivityCategory {
+  const combined = `${rawType || ''} ${name || ''}`.toLowerCase();
+  if (combined.includes('hike') || combined.includes('walk') || combined.includes('wander')) {
+    return 'hiking';
+  }
+  if (combined.includes('run') || combined.includes('lauf') || combined.includes('jog')) {
+    return 'running';
+  }
+  if (
+    combined.includes('cycle') ||
+    combined.includes('bike') ||
+    combined.includes('rad') ||
+    combined.includes('gravel') ||
+    combined.includes('mtb')
+  ) {
+    return 'cycling';
+  }
+  return 'other';
+}
 
-    UNION ALL
+function computeTimestampFields(rawDate?: string | null): {
+  timestampIso: string;
+  timestampSort: string;
+  monthKey: string;
+} {
+  const trimmed = typeof rawDate === 'string' ? rawDate.trim() : '';
+  const timestampIso = trimmed || '';
+  const sortBase = (trimmed || '1970-01-01 00:00:00').slice(0, 19).replace('T', ' ');
+  const timestampSort = sortBase.length === 10 ? `${sortBase} 00:00:00` : sortBase;
+  const monthKey =
+    trimmed.length >= 7 && /^\d{4}-\d{2}/.test(trimmed) ? trimmed.slice(0, 7) : 'unknown';
+  return { timestampIso, timestampSort, monthKey };
+}
 
-    SELECT
-      'garmin' AS source,
-      id AS raw_id,
-      COALESCE(NULLIF(TRIM(name), ''), 'Garmin Aktivität') AS name,
-      COALESCE(type, 'cycling') AS raw_type,
-      CASE
-        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%hike%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%walk%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%wander%' THEN 'hiking'
-        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%run%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%lauf%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%jog%' THEN 'running'
-        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%cycle%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%bike%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%rad%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%gravel%'
-          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%mtb%' THEN 'cycling'
-        ELSE 'other'
-      END AS activity_category,
-      COALESCE(NULLIF(TRIM(date), ''), '') AS timestamp_iso,
-      REPLACE(SUBSTR(COALESCE(NULLIF(TRIM(date), ''), '1970-01-01 00:00:00'), 1, 19), 'T', ' ') AS timestamp_sort,
-      CASE
-        WHEN LENGTH(TRIM(COALESCE(date, ''))) >= 7 AND SUBSTR(TRIM(date), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
-        THEN SUBSTR(TRIM(date), 1, 7)
-        ELSE 'unknown'
-      END AS month_key,
-      COALESCE(distance, 0) AS distance_km,
-      COALESCE(ascent, 0) AS ascent_m,
-      COALESCE(descent, 0) AS descent_m,
-      COALESCE(duration, 0) AS duration_sec,
-      avg_hr,
-      calories,
-      COALESCE(location, '') AS location,
-      COALESCE(description, '') AS description,
-      '' AS tags,
-      '' AS original_filename,
-      '#f97316' AS color,
-      CASE
-        WHEN points_json IS NOT NULL
-          AND length(points_json) > 20
-          AND (NOT json_valid(points_json) OR json_array_length(points_json) >= 2)
-        THEN 1
-        ELSE 0
-      END AS has_gps
-    FROM garmin_activities
-    WHERE user_id = ?
-  )
-`;
+function computeHasGpsFlag(pointsJson?: string | null, tags?: string | null, rawFileJson?: string | null): number {
+  if (!pointsJson || typeof pointsJson !== 'string' || pointsJson.length <= 20) return 0;
+  if (tags && tags.toLowerCase().includes('indoor/virtuell')) return 0;
+  if (rawFileJson && rawFileJson.toLowerCase().includes('"isvirtual":true')) return 0;
+  try {
+    const parsed = JSON.parse(pointsJson);
+    if (Array.isArray(parsed)) {
+      return parsed.length >= 2 ? 1 : 0;
+    }
+    if (parsed && typeof parsed === 'object') {
+      const arrayKey = Object.keys(parsed).find((k) => Array.isArray((parsed as any)[k]));
+      if (arrayKey) {
+        return (parsed as any)[arrayKey].length >= 2 ? 1 : 0;
+      }
+    }
+    return 0;
+  } catch {
+    return pointsJson.length > 20 ? 1 : 0;
+  }
+}
 
-function buildCatalogWhereClause(options: CatalogQueryOptions): { whereSql: string; params: any[] } {
-  const conditions: string[] = [];
-  const params: any[] = [];
+interface CatalogRowInsert {
+  key: string;
+  source: CatalogSource;
+  rawId: string;
+  userId: string;
+  name: string;
+  rawType: string;
+  activityCategory: CatalogActivityCategory;
+  timestampIso: string;
+  timestampSort: string;
+  monthKey: string;
+  country: string;
+  distanceKm: number;
+  ascentM: number;
+  descentM: number;
+  durationSec: number;
+  avgHr: number | null;
+  calories: number | null;
+  location: string;
+  description: string;
+  tags: string;
+  originalFilename: string;
+  color: string;
+  hasGps: number;
+}
+
+function upsertCatalogRow(row: CatalogRowInsert): void {
+  const catalogKey = `${row.source}:${row.rawId}`;
+  db.prepare(`
+    INSERT OR REPLACE INTO activities_catalog (
+      key, source, raw_id, user_id, name, raw_type, activity_category,
+      timestamp_iso, timestamp_sort, month_key, country, distance_km, ascent_m,
+      descent_m, duration_sec, avg_hr, calories, location, description, tags,
+      original_filename, color, has_gps
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    catalogKey,
+    row.source,
+    row.rawId,
+    row.userId,
+    row.name,
+    row.rawType,
+    row.activityCategory,
+    row.timestampIso,
+    row.timestampSort,
+    row.monthKey,
+    row.country,
+    row.distanceKm,
+    row.ascentM,
+    row.descentM,
+    row.durationSec,
+    row.avgHr,
+    row.calories,
+    row.location,
+    row.description,
+    row.tags,
+    row.originalFilename,
+    row.color,
+    row.hasGps
+  );
+
+  db.prepare(`DELETE FROM activities_catalog_fts WHERE key = ?`).run(catalogKey);
+  db.prepare(`
+    INSERT INTO activities_catalog_fts (
+      key, user_id, name, location, country, description, tags, original_filename, raw_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    catalogKey,
+    row.userId,
+    row.name,
+    row.location,
+    row.country,
+    row.description,
+    row.tags,
+    row.originalFilename,
+    row.rawType
+  );
+}
+
+function deleteCatalogRow(source: CatalogSource, rawId: string, uid: string): void {
+  const key = `${source}:${rawId}`;
+  db.prepare(`DELETE FROM activities_catalog_fts WHERE key = ? AND user_id = ?`).run(key, uid);
+  db.prepare(`DELETE FROM activities_catalog WHERE key = ? AND user_id = ?`).run(key, uid);
+}
+
+function buildLibraryCatalogRow(r: any): CatalogRowInsert {
+  const uid = normalizeUserId(r.user_id);
+  const name = String(r.name || '').trim() || 'Unbenannte Route';
+  const rawType = String(r.activity_type || 'cycling');
+  const tags = String(r.tags || '');
+  const hasGps = computeHasGpsFlag(r.points_json, tags, r.raw_file_json);
+  const { timestampIso, timestampSort, monthKey } = computeTimestampFields(r.date_created);
+  const country = resolveActivityCountry({
+    explicitCountry: r.country,
+    pointsJson: hasGps ? r.points_json : null,
+    name,
+    tags,
+    isVirtual: hasGps === 0
+  });
+
+  return {
+    key: `library:${r.id}`,
+    source: 'library',
+    rawId: r.id,
+    userId: uid,
+    name,
+    rawType,
+    activityCategory: classifyActivityCategory(rawType),
+    timestampIso,
+    timestampSort,
+    monthKey,
+    country,
+    distanceKm: Number(r.distance || 0),
+    ascentM: Number(r.ascent || 0),
+    descentM: Number(r.descent || 0),
+    durationSec: Number(r.duration || 0),
+    avgHr: null,
+    calories: null,
+    location: '',
+    description: String(r.description || ''),
+    tags,
+    originalFilename: String(r.original_filename || ''),
+    color: String(r.color || '#3b82f6'),
+    hasGps
+  };
+}
+
+function buildGarminCatalogRow(r: any): CatalogRowInsert {
+  const uid = normalizeUserId(r.user_id);
+  const name = String(r.name || '').trim() || 'Garmin Aktivität';
+  const rawType = String(r.type || 'cycling');
+  const hasGps = computeHasGpsFlag(r.points_json, '', '');
+  const { timestampIso, timestampSort, monthKey } = computeTimestampFields(r.date);
+  const location = String(r.location || '');
+  const country = resolveActivityCountry({
+    explicitCountry: r.country,
+    pointsJson: hasGps ? r.points_json : null,
+    location,
+    name,
+    isVirtual: hasGps === 0
+  });
+
+  return {
+    key: `garmin:${r.id}`,
+    source: 'garmin',
+    rawId: r.id,
+    userId: uid,
+    name,
+    rawType,
+    activityCategory: classifyActivityCategory(rawType, name),
+    timestampIso,
+    timestampSort,
+    monthKey,
+    country,
+    distanceKm: Number(r.distance || 0),
+    ascentM: Number(r.ascent || 0),
+    descentM: Number(r.descent || 0),
+    durationSec: Number(r.duration || 0),
+    avgHr: r.avg_hr !== null && r.avg_hr !== undefined ? Number(r.avg_hr) : null,
+    calories: r.calories !== null && r.calories !== undefined ? Number(r.calories) : null,
+    location,
+    description: String(r.description || ''),
+    tags: '',
+    originalFilename: '',
+    color: '#f97316',
+    hasGps
+  };
+}
+
+export function syncCatalogEntryForLibraryTrack(rawId: string, userId: string = 'default'): void {
+  const uid = normalizeUserId(userId);
+  const row = db
+    .prepare(
+      `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags,
+              date_created, original_filename, color, points_json, raw_file_json, user_id, country
+       FROM tracks WHERE id = ? AND user_id = ?`
+    )
+    .get(rawId, uid) as any;
+  if (!row) return;
+  const catalogRow = buildLibraryCatalogRow(row);
+  if ((!row.country || row.country === '') && catalogRow.country) {
+    db.prepare(`UPDATE tracks SET country = ? WHERE id = ? AND user_id = ?`).run(catalogRow.country, rawId, uid);
+  }
+  upsertCatalogRow(catalogRow);
+}
+
+export function syncCatalogEntryForGarminActivity(rawId: string, userId: string = 'default'): void {
+  const uid = normalizeUserId(userId);
+  const row = db
+    .prepare(
+      `SELECT id, name, type, date, distance, duration, ascent, descent, calories, avg_hr,
+              description, location, points_json, user_id, country
+       FROM garmin_activities WHERE id = ? AND user_id = ?`
+    )
+    .get(rawId, uid) as any;
+  if (!row) return;
+  const catalogRow = buildGarminCatalogRow(row);
+  if ((!row.country || row.country === '') && catalogRow.country) {
+    db.prepare(`UPDATE garmin_activities SET country = ? WHERE id = ? AND user_id = ?`).run(catalogRow.country, rawId, uid);
+  }
+  upsertCatalogRow(catalogRow);
+}
+
+export function rebuildActivitiesCatalog(targetUserId?: string): { indexedCount: number; countriesResolved: number } {
+  return executeWithCorruptionRecovery(() => {
+    const uidFilter = targetUserId ? normalizeUserId(targetUserId) : null;
+    let indexedCount = 0;
+    let countriesResolved = 0;
+
+    const libRows = (uidFilter
+      ? db
+          .prepare(
+            `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags,
+                    date_created, original_filename, color, points_json, raw_file_json, user_id, country
+             FROM tracks WHERE user_id = ?`
+          )
+          .all(uidFilter)
+      : db
+          .prepare(
+            `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags,
+                    date_created, original_filename, color, points_json, raw_file_json, user_id, country
+             FROM tracks`
+          )
+          .all()) as any[];
+
+    const garminRows = (uidFilter
+      ? db
+          .prepare(
+            `SELECT id, name, type, date, distance, duration, ascent, descent, calories, avg_hr,
+                    description, location, points_json, user_id, country
+             FROM garmin_activities WHERE user_id = ?`
+          )
+          .all(uidFilter)
+      : db
+          .prepare(
+            `SELECT id, name, type, date, distance, duration, ascent, descent, calories, avg_hr,
+                    description, location, points_json, user_id, country
+             FROM garmin_activities`
+          )
+          .all()) as any[];
+
+    const trx = db.transaction(() => {
+      if (uidFilter) {
+        db.prepare(`DELETE FROM activities_catalog_fts WHERE user_id = ?`).run(uidFilter);
+        db.prepare(`DELETE FROM activities_catalog WHERE user_id = ?`).run(uidFilter);
+      } else {
+        db.prepare(`DELETE FROM activities_catalog_fts`).run();
+        db.prepare(`DELETE FROM activities_catalog`).run();
+      }
+
+      const insertCatalogStmt = db.prepare(`
+        INSERT OR REPLACE INTO activities_catalog (
+          key, source, raw_id, user_id, name, raw_type, activity_category,
+          timestamp_iso, timestamp_sort, month_key, country, distance_km, ascent_m,
+          descent_m, duration_sec, avg_hr, calories, location, description, tags,
+          original_filename, color, has_gps
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const insertFtsStmt = db.prepare(`
+        INSERT INTO activities_catalog_fts (
+          key, user_id, name, location, country, description, tags, original_filename, raw_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const updateTrackCountryStmt = db.prepare(`UPDATE tracks SET country = ? WHERE id = ?`);
+      const updateGarminCountryStmt = db.prepare(`UPDATE garmin_activities SET country = ? WHERE id = ?`);
+
+      for (const r of libRows) {
+        const cRow = buildLibraryCatalogRow(r);
+        if ((!r.country || r.country === '') && cRow.country) {
+          updateTrackCountryStmt.run(cRow.country, r.id);
+          countriesResolved++;
+        }
+        insertCatalogStmt.run(
+          cRow.key,
+          cRow.source,
+          cRow.rawId,
+          cRow.userId,
+          cRow.name,
+          cRow.rawType,
+          cRow.activityCategory,
+          cRow.timestampIso,
+          cRow.timestampSort,
+          cRow.monthKey,
+          cRow.country,
+          cRow.distanceKm,
+          cRow.ascentM,
+          cRow.descentM,
+          cRow.durationSec,
+          cRow.avgHr,
+          cRow.calories,
+          cRow.location,
+          cRow.description,
+          cRow.tags,
+          cRow.originalFilename,
+          cRow.color,
+          cRow.hasGps
+        );
+        insertFtsStmt.run(
+          cRow.key,
+          cRow.userId,
+          cRow.name,
+          cRow.location,
+          cRow.country,
+          cRow.description,
+          cRow.tags,
+          cRow.originalFilename,
+          cRow.rawType
+        );
+        indexedCount++;
+      }
+
+      for (const r of garminRows) {
+        const cRow = buildGarminCatalogRow(r);
+        if ((!r.country || r.country === '') && cRow.country) {
+          updateGarminCountryStmt.run(cRow.country, r.id);
+          countriesResolved++;
+        }
+        insertCatalogStmt.run(
+          cRow.key,
+          cRow.source,
+          cRow.rawId,
+          cRow.userId,
+          cRow.name,
+          cRow.rawType,
+          cRow.activityCategory,
+          cRow.timestampIso,
+          cRow.timestampSort,
+          cRow.monthKey,
+          cRow.country,
+          cRow.distanceKm,
+          cRow.ascentM,
+          cRow.descentM,
+          cRow.durationSec,
+          cRow.avgHr,
+          cRow.calories,
+          cRow.location,
+          cRow.description,
+          cRow.tags,
+          cRow.originalFilename,
+          cRow.color,
+          cRow.hasGps
+        );
+        insertFtsStmt.run(
+          cRow.key,
+          cRow.userId,
+          cRow.name,
+          cRow.location,
+          cRow.country,
+          cRow.description,
+          cRow.tags,
+          cRow.originalFilename,
+          cRow.rawType
+        );
+        indexedCount++;
+      }
+    });
+
+    trx();
+    return { indexedCount, countriesResolved };
+  });
+}
+
+function ensureCatalogForUser(uid: string): void {
+  const catRow = db.prepare(`SELECT 1 FROM activities_catalog WHERE user_id = ? LIMIT 1`).get(uid);
+  if (catRow) return;
+  const hasTrack = db.prepare(`SELECT 1 FROM tracks WHERE user_id = ? LIMIT 1`).get(uid);
+  const hasGarmin = db.prepare(`SELECT 1 FROM garmin_activities WHERE user_id = ? LIMIT 1`).get(uid);
+  if (hasTrack || hasGarmin) {
+    rebuildActivitiesCatalog(uid);
+  }
+}
+
+function buildCatalogFtsTokens(rawQuery: string): { ftsQuery: string | null; shortTokens: string[] } {
+  const tokens = rawQuery
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const ftsTokens: string[] = [];
+  const shortTokens: string[] = [];
+  for (const t of tokens) {
+    const cleaned = t.replace(/"/g, '');
+    if (cleaned.length >= 3) {
+      ftsTokens.push(`"${cleaned}"`);
+    } else if (cleaned.length > 0) {
+      shortTokens.push(cleaned);
+    }
+  }
+  return {
+    ftsQuery: ftsTokens.length > 0 ? ftsTokens.join(' ') : null,
+    shortTokens
+  };
+}
+
+function buildCatalogWhereClause(
+  options: CatalogQueryOptions,
+  uid: string,
+  omitDimensions?: { country?: boolean; month?: boolean }
+): { whereSql: string; params: any[] } {
+  const conditions: string[] = [`user_id = ?`];
+  const params: any[] = [uid];
 
   if (options.source === 'library' || options.source === 'garmin') {
     conditions.push(`source = ?`);
@@ -1849,15 +2368,44 @@ function buildCatalogWhereClause(options: CatalogQueryOptions): { whereSql: stri
     params.push(options.activityType);
   }
 
+  if (!omitDimensions?.country && typeof options.country === 'string' && options.country.trim().length > 0) {
+    const cleanCountry = options.country.trim();
+    if (cleanCountry === '__unknown__' || cleanCountry.toLowerCase() === 'unknown') {
+      conditions.push(`country = ''`);
+    } else {
+      conditions.push(`country = ?`);
+      params.push(normalizeCountryLabel(cleanCountry));
+    }
+  }
+
+  if (!omitDimensions?.month && typeof options.month === 'string' && options.month.trim().length > 0) {
+    const cleanMonth = options.month.trim();
+    if (cleanMonth === 'unknown') {
+      conditions.push(`month_key = 'unknown'`);
+    } else if (/^\d{4}-\d{2}$/.test(cleanMonth)) {
+      conditions.push(`month_key = ?`);
+      params.push(cleanMonth);
+    } else if (/^\d{4}$/.test(cleanMonth)) {
+      conditions.push(`month_key LIKE ?`);
+      params.push(`${cleanMonth}-%`);
+    }
+  }
+
   const rawQuery = typeof options.q === 'string' ? options.q.trim().slice(0, 160) : '';
   if (rawQuery) {
-    const tokens = rawQuery.split(/\s+/).filter(Boolean).slice(0, 8);
-    for (const token of tokens) {
-      const pattern = `%${token.toLowerCase()}%`;
+    const { ftsQuery, shortTokens } = buildCatalogFtsTokens(rawQuery);
+    if (ftsQuery) {
       conditions.push(
-        `(LOWER(name) LIKE ? OR LOWER(location) LIKE ? OR LOWER(description) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(original_filename) LIKE ? OR LOWER(raw_type) LIKE ?)`
+        `key IN (SELECT key FROM activities_catalog_fts WHERE activities_catalog_fts MATCH ? AND user_id = ?)`
       );
-      params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+      params.push(ftsQuery, uid);
+    }
+    for (const shortTok of shortTokens) {
+      const pattern = `%${shortTok.toLowerCase()}%`;
+      conditions.push(
+        `(LOWER(name) LIKE ? OR LOWER(location) LIKE ? OR LOWER(country) LIKE ? OR LOWER(description) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(original_filename) LIKE ? OR LOWER(raw_type) LIKE ?)`
+      );
+      params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
     }
   }
 
@@ -1890,7 +2438,7 @@ function buildCatalogWhereClause(options: CatalogQueryOptions): { whereSql: stri
     conditions.push(`has_gps = 1`);
   }
 
-  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const whereSql = `WHERE ${conditions.join(' AND ')}`;
   return { whereSql, params };
 }
 
@@ -1915,13 +2463,10 @@ function getCatalogOrderBySql(sortBy?: CatalogSortBy): string {
 export function getTotalCatalogCount(userId: string = 'default'): number {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
+    ensureCatalogForUser(uid);
     const row = db
-      .prepare(
-        `SELECT
-          (SELECT COUNT(*) FROM tracks WHERE user_id = ?) +
-          (SELECT COUNT(*) FROM garmin_activities WHERE user_id = ?) AS total`
-      )
-      .get(uid, uid) as { total: number } | undefined;
+      .prepare(`SELECT COUNT(*) AS total FROM activities_catalog WHERE user_id = ?`)
+      .get(uid) as { total: number } | undefined;
     return Number(row?.total || 0);
   });
 }
@@ -1932,51 +2477,65 @@ export function queryActivitiesCatalog(
 ): CatalogQueryResult {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
+    ensureCatalogForUser(uid);
+
     const limit = Math.min(500, Math.max(10, Math.round(Number(options.limit || 150))));
     const offset = Math.max(0, Math.round(Number(options.offset || 0)));
 
-    const { whereSql, params } = buildCatalogWhereClause(options);
+    const { whereSql, params } = buildCatalogWhereClause(options, uid);
+    const { whereSql: monthFacetWhere, params: monthFacetParams } = buildCatalogWhereClause(options, uid, { month: true });
+    const { whereSql: countryFacetWhere, params: countryFacetParams } = buildCatalogWhereClause(options, uid, { country: true });
     const orderBySql = getCatalogOrderBySql(options.sortBy);
-    const baseParams = [uid, uid, ...params];
 
     const databaseTotalCount = getTotalCatalogCount(uid);
 
     const summaryRow = db
       .prepare(
-        `${CATALOG_UNIFIED_CTE}
-         SELECT
+        `SELECT
            COUNT(*) AS total_count,
            COALESCE(SUM(distance_km), 0) AS total_distance_km,
            COALESCE(SUM(ascent_m), 0) AS total_ascent_m,
            COALESCE(SUM(duration_sec), 0) AS total_duration_sec,
            COALESCE(SUM(CASE WHEN source = 'garmin' THEN 1 ELSE 0 END), 0) AS garmin_count,
            COALESCE(SUM(CASE WHEN source = 'library' THEN 1 ELSE 0 END), 0) AS library_count
-         FROM unified_catalog
+         FROM activities_catalog
          ${whereSql}`
       )
-      .get(...baseParams) as any;
+      .get(...params) as any;
 
     const totalCount = Number(summaryRow?.total_count || 0);
 
     const monthRows = db
       .prepare(
-        `${CATALOG_UNIFIED_CTE}
-         SELECT
+        `SELECT
            month_key,
            COUNT(*) AS count,
            COALESCE(SUM(distance_km), 0) AS total_distance_km,
            COALESCE(SUM(ascent_m), 0) AS total_ascent_m
-         FROM unified_catalog
-         ${whereSql}
+         FROM activities_catalog
+         ${monthFacetWhere}
          GROUP BY month_key
          ORDER BY month_key DESC`
       )
-      .all(...baseParams) as any[];
+      .all(...monthFacetParams) as any[];
+
+    const countryRows = db
+      .prepare(
+        `SELECT
+           CASE WHEN country = '' THEN '__unknown__' ELSE country END AS country_key,
+           COUNT(*) AS count,
+           COALESCE(SUM(distance_km), 0) AS total_distance_km,
+           COALESCE(SUM(ascent_m), 0) AS total_ascent_m
+         FROM activities_catalog
+         ${countryFacetWhere}
+         GROUP BY country_key
+         ORDER BY count DESC, country_key ASC`
+      )
+      .all(...countryFacetParams) as any[];
 
     const rawItems = db
       .prepare(
-        `${CATALOG_UNIFIED_CTE}
-         SELECT
+        `SELECT
            source,
            raw_id,
            name,
@@ -1984,6 +2543,7 @@ export function queryActivitiesCatalog(
            activity_category,
            timestamp_iso,
            month_key,
+           country,
            distance_km,
            ascent_m,
            descent_m,
@@ -1996,12 +2556,12 @@ export function queryActivitiesCatalog(
            original_filename,
            color,
            has_gps
-         FROM unified_catalog
+         FROM activities_catalog
          ${whereSql}
          ORDER BY ${orderBySql}
          LIMIT ? OFFSET ?`
       )
-      .all(...baseParams, limit, offset) as any[];
+      .all(...params, limit, offset) as any[];
 
     const items: CatalogActivityItem[] = rawItems.map((r) => {
       const cleanId = stripScopedKey(String(r.raw_id || ''), uid);
@@ -2024,6 +2584,7 @@ export function queryActivitiesCatalog(
         activityCategory: (r.activity_category || 'other') as CatalogActivityCategory,
         timestampIso: String(r.timestamp_iso || ''),
         monthKey: String(r.month_key || 'unknown'),
+        country: String(r.country || ''),
         distanceKm: Number(r.distance_km || 0),
         ascentM: Math.round(Number(r.ascent_m || 0)),
         descentM: Math.round(Number(r.descent_m || 0)),
@@ -2056,6 +2617,12 @@ export function queryActivitiesCatalog(
         count: Number(m.count || 0),
         totalDistanceKm: Number(m.total_distance_km || 0),
         totalAscentM: Math.round(Number(m.total_ascent_m || 0))
+      })),
+      countrySummaries: countryRows.map((c) => ({
+        country: String(c.country_key || '__unknown__'),
+        count: Number(c.count || 0),
+        totalDistanceKm: Number(c.total_distance_km || 0),
+        totalAscentM: Math.round(Number(c.total_ascent_m || 0))
       }))
     };
   });
@@ -2068,20 +2635,20 @@ export function getFilteredActivityRefs(
 ): CatalogActivityRef[] {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
-    const { whereSql, params } = buildCatalogWhereClause(options);
+    ensureCatalogForUser(uid);
+    const { whereSql, params } = buildCatalogWhereClause(options, uid);
     const orderBySql = getCatalogOrderBySql(options.sortBy);
     const safeLimit = Math.min(20000, Math.max(1, Math.round(maxLimit)));
 
     const rows = db
       .prepare(
-        `${CATALOG_UNIFIED_CTE}
-         SELECT source, raw_id
-         FROM unified_catalog
+        `SELECT source, raw_id
+         FROM activities_catalog
          ${whereSql}
          ORDER BY ${orderBySql}
          LIMIT ?`
       )
-      .all(uid, uid, ...params, safeLimit) as { source: CatalogSource; raw_id: string }[];
+      .all(...params, safeLimit) as { source: CatalogSource; raw_id: string }[];
 
     return rows.map((r) => ({
       source: r.source,
@@ -2139,6 +2706,7 @@ export function updateCatalogActivityMetadata(
     activityType?: string;
     date?: string;
     location?: string;
+    country?: string;
   },
   userId: string = 'default'
 ): boolean {
@@ -2148,41 +2716,89 @@ export function updateCatalogActivityMetadata(
     const scopedId = toScopedKey(cleanId, uid);
 
     if (source === 'library') {
-      const info = db
-        .prepare(
-          `UPDATE tracks
-           SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
-           WHERE (id = ? OR id = ?) AND user_id = ?`
-        )
-        .run(
-          metadata.name,
-          metadata.description ?? '',
-          metadata.tags ?? '',
-          metadata.activityType || 'cycling',
-          metadata.date || new Date().toISOString().split('T')[0],
-          scopedId,
-          cleanId,
-          uid
-        );
+      const hasExplicitCountry = metadata.country !== undefined;
+      const normalizedCountry = hasExplicitCountry ? normalizeCountryLabel(metadata.country) : undefined;
+      const info = hasExplicitCountry
+        ? db
+            .prepare(
+              `UPDATE tracks
+               SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?, country = ?
+               WHERE (id = ? OR id = ?) AND user_id = ?`
+            )
+            .run(
+              metadata.name,
+              metadata.description ?? '',
+              metadata.tags ?? '',
+              metadata.activityType || 'cycling',
+              metadata.date || new Date().toISOString().split('T')[0],
+              normalizedCountry || '',
+              scopedId,
+              cleanId,
+              uid
+            )
+        : db
+            .prepare(
+              `UPDATE tracks
+               SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
+               WHERE (id = ? OR id = ?) AND user_id = ?`
+            )
+            .run(
+              metadata.name,
+              metadata.description ?? '',
+              metadata.tags ?? '',
+              metadata.activityType || 'cycling',
+              metadata.date || new Date().toISOString().split('T')[0],
+              scopedId,
+              cleanId,
+              uid
+            );
+      if (info.changes > 0) {
+        syncCatalogEntryForLibraryTrack(scopedId, uid);
+        syncCatalogEntryForLibraryTrack(cleanId, uid);
+      }
       return info.changes > 0;
     }
 
-    const info = db
-      .prepare(
-        `UPDATE garmin_activities
-         SET name = ?, description = ?, type = ?, date = ?, location = ?
-         WHERE (id = ? OR id = ?) AND user_id = ?`
-      )
-      .run(
-        metadata.name,
-        metadata.description ?? null,
-        metadata.activityType || 'cycling',
-        metadata.date || new Date().toISOString().slice(0, 19).replace('T', ' '),
-        metadata.location ?? null,
-        scopedId,
-        cleanId,
-        uid
-      );
+    const hasExplicitCountry = metadata.country !== undefined;
+    const normalizedCountry = hasExplicitCountry ? normalizeCountryLabel(metadata.country) : undefined;
+    const info = hasExplicitCountry
+      ? db
+          .prepare(
+            `UPDATE garmin_activities
+             SET name = ?, description = ?, type = ?, date = ?, location = ?, country = ?
+             WHERE (id = ? OR id = ?) AND user_id = ?`
+          )
+          .run(
+            metadata.name,
+            metadata.description ?? null,
+            metadata.activityType || 'cycling',
+            metadata.date || new Date().toISOString().slice(0, 19).replace('T', ' '),
+            metadata.location ?? null,
+            normalizedCountry || '',
+            scopedId,
+            cleanId,
+            uid
+          )
+      : db
+          .prepare(
+            `UPDATE garmin_activities
+             SET name = ?, description = ?, type = ?, date = ?, location = ?
+             WHERE (id = ? OR id = ?) AND user_id = ?`
+          )
+          .run(
+            metadata.name,
+            metadata.description ?? null,
+            metadata.activityType || 'cycling',
+            metadata.date || new Date().toISOString().slice(0, 19).replace('T', ' '),
+            metadata.location ?? null,
+            scopedId,
+            cleanId,
+            uid
+          );
+    if (info.changes > 0) {
+      syncCatalogEntryForGarminActivity(scopedId, uid);
+      syncCatalogEntryForGarminActivity(cleanId, uid);
+    }
     return info.changes > 0;
   });
 }
@@ -2199,6 +2815,8 @@ export function bulkDeleteCatalogActivities(
     const trx = db.transaction((items: CatalogActivityRef[]) => {
       const delLib = db.prepare('DELETE FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
       const delGarmin = db.prepare('DELETE FROM garmin_activities WHERE (id = ? OR id = ?) AND user_id = ?');
+      const delCat = db.prepare('DELETE FROM activities_catalog WHERE key = ? AND user_id = ?');
+      const delFts = db.prepare('DELETE FROM activities_catalog_fts WHERE key = ? AND user_id = ?');
 
       for (const item of items) {
         if (!item || !item.id) continue;
@@ -2206,8 +2824,16 @@ export function bulkDeleteCatalogActivities(
         const scopedId = toScopedKey(cleanId, uid);
         if (item.source === 'library') {
           deletedCount += delLib.run(scopedId, cleanId, uid).changes;
+          delCat.run(`library:${scopedId}`, uid);
+          delCat.run(`library:${cleanId}`, uid);
+          delFts.run(`library:${scopedId}`, uid);
+          delFts.run(`library:${cleanId}`, uid);
         } else if (item.source === 'garmin') {
           deletedCount += delGarmin.run(scopedId, cleanId, uid).changes;
+          delCat.run(`garmin:${scopedId}`, uid);
+          delCat.run(`garmin:${cleanId}`, uid);
+          delFts.run(`garmin:${scopedId}`, uid);
+          delFts.run(`garmin:${cleanId}`, uid);
         }
       }
     });

@@ -1,5 +1,6 @@
 
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue, TextMarker } from '../types';
+import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { validateTrackStartPoint } from './startPointValidator';
 export { validateTrackStartPoint };
 
@@ -83,6 +84,38 @@ export const interpolateMissingElevations = (points: GPXPoint[]): void => {
 export const sanitizeGPXPoints = (points: GPXPoint[]): GPXPoint[] => {
   if (!points || points.length === 0) return points;
 
+  // Filter out invalid coordinates (NaN, out-of-bounds, Null Island) and isolated impossible GPS spikes
+  const validCoordPoints = points.filter(p => {
+    if (!p) return false;
+    const lat = Number(p.lat);
+    const lng = Number(p.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return false;
+    if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return false;
+    return true;
+  });
+
+  // Remove isolated 1-2 point GPS teleport glitches (jumping > 0.5 km at > 150 km/h and snapping right back)
+  const despiked: GPXPoint[] = [];
+  for (let i = 0; i < validCoordPoints.length; i++) {
+    const curr = validCoordPoints[i];
+    if (despiked.length > 0 && i + 1 < validCoordPoints.length) {
+      const prev = despiked[despiked.length - 1];
+      const next = validCoordPoints[i + 1];
+      const dPrevCurr = calculateDistance(prev, curr);
+      const dPrevNext = calculateDistance(prev, next);
+      if (dPrevCurr > 0.5 && dPrevNext < 0.3) {
+        const tPrev = toValidTimestampMs(prev.time);
+        const tCurr = toValidTimestampMs(curr.time);
+        const dtHours = tPrev !== undefined && tCurr !== undefined ? Math.max(1 / 3600, Math.abs(tCurr - tPrev) / 3600000) : 1 / 3600;
+        if (dPrevCurr / dtHours > 150) {
+          continue;
+        }
+      }
+    }
+    despiked.push(curr);
+  }
+
   const isInvalidHr = (hr: number | undefined): boolean => {
     if (hr === undefined || isNaN(hr)) return false;
     return hr === 255 || hr >= 230 || hr <= 30;
@@ -98,7 +131,7 @@ export const sanitizeGPXPoints = (points: GPXPoint[]): GPXPoint[] => {
     return cad >= 250 || cad < 0;
   };
 
-  const sanitized = points.map(p => ({ ...p }));
+  const sanitized = despiked.map(p => ({ ...p }));
 
   const interpolateKey = (key: 'hr' | 'power' | 'cadence', isInvalidFn: (val: number | undefined) => boolean) => {
     for (let i = 0; i < sanitized.length; i++) {
@@ -1458,8 +1491,45 @@ export const validateGPX = (xmlString: string): { isValid: boolean; error?: stri
   }
 };
 
-export const detectActivityType = (points: GPXPoint[], name: string, fileName: string): 'cycling' | 'running' => {
+export const detectActivityType = (
+  points: GPXPoint[],
+  name: string,
+  fileName: string,
+  explicitSport?: string
+): 'cycling' | 'running' => {
+  const sportLower = (explicitSport || '').toLowerCase();
+  if (sportLower) {
+    if (
+      sportLower.includes('cycl') ||
+      sportLower.includes('rad') ||
+      sportLower.includes('bike') ||
+      sportLower.includes('gravel') ||
+      sportLower.includes('mtb') ||
+      sportLower.includes('biking')
+    ) {
+      return 'cycling';
+    }
+    if (
+      sportLower.includes('run') ||
+      sportLower.includes('lauf') ||
+      sportLower.includes('jog') ||
+      sportLower.includes('walk') ||
+      sportLower.includes('hik') ||
+      sportLower.includes('wander')
+    ) {
+      return 'running';
+    }
+  }
+
   const combined = (name + " " + fileName).toLowerCase();
+  const cyclingKeywords = [
+    'cycling', 'cycle', 'bike', 'biking', 'radfahren', 'radtour', 'rennrad',
+    'gravel', 'mtb', 'mountainbike', 'ebike', 'e-bike', 'pedelec', 'bikepacking'
+  ];
+  for (const kw of cyclingKeywords) {
+    if (combined.includes(kw)) return 'cycling';
+  }
+
   const keywords = [
     'run', 'lauf', 'jog', 'walk', 'hiking', 'running', 'laufen', 'jogging',
     'spazier', 'wander', 'pace', 'lauft', 'marathon', 'halbmarathon', 'trail',
@@ -1509,6 +1579,8 @@ export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boo
   if (!Array.isArray(pts) || pts.length < 2) return false;
 
   let validCount = 0;
+  let firstValid: { lat: number; lng: number } | null = null;
+  let lastValid: { lat: number; lng: number } | null = null;
   let minLat = Infinity;
   let maxLat = -Infinity;
   let minLng = Infinity;
@@ -1524,6 +1596,8 @@ export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boo
     if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) continue;
 
     validCount++;
+    if (!firstValid) firstValid = { lat, lng };
+    lastValid = { lat, lng };
     if (lat < minLat) minLat = lat;
     if (lat > maxLat) maxLat = lat;
     if (lng < minLng) minLng = lng;
@@ -1532,6 +1606,10 @@ export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boo
 
   if (validCount < 2) return false;
   if (Math.abs(maxLat - minLat) < 1e-6 && Math.abs(maxLng - minLng) < 1e-6) {
+    return false;
+  }
+  // Reject 2-point straight-line seed stubs spanning > 1 km regardless of timestamps/elevation
+  if (validCount === 2 && firstValid && lastValid && calculateDistance(firstValid, lastValid) > 1.0) {
     return false;
   }
   return true;
@@ -1671,7 +1749,16 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     } else {
       activityType = detectActivityType(points, activityName, fileName);
     }
-    const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(points);
+    const { ascent, descent, maxSlope, totalDist: rawTotalDist } = calculateElevationStats(points);
+    const activeStats = computeActiveTrackStats(points);
+    const totalDist =
+      activeStats.hasTimestamps &&
+      activeStats.pauseDurationSeconds > 0 &&
+      activeStats.activeDistanceKm > 0.05 &&
+      activeStats.rawDistanceKm - activeStats.activeDistanceKm > 0.02
+        ? activeStats.activeDistanceKm
+        : rawTotalDist;
+
     const powerStats = calculatePowerStats(points, 250, 75, 15, activityType);
     
     const realSurfaceStats = calculateSurfaceStatsFromPoints(points);
@@ -1683,14 +1770,10 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     let duration: number | undefined;
     const trackHasTimestamps = points.some(p => p.time !== undefined);
     if (trackHasTimestamps && points.length > 1) {
-      const firstTime = points.find(p => p.time !== undefined)?.time;
-      const lastTime = [...points].reverse().find(p => p.time !== undefined)?.time;
-      if (firstTime && lastTime) {
-        const fDate = toDate(firstTime);
-        const lDate = toDate(lastTime);
-        if (fDate && lDate) {
-          duration = (lDate.getTime() - fDate.getTime()) / 1000;
-        }
+      if (activeStats.activeDurationSeconds > 0) {
+        duration = activeStats.activeDurationSeconds;
+      } else if (activeStats.grossElapsedSeconds > 0) {
+        duration = activeStats.grossElapsedSeconds;
       }
     }
 
@@ -2307,7 +2390,16 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     }
 
     const activityType = detectActivityType(sanitizedPoints, activityName, fileName);
-    const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(sanitizedPoints);
+    const { ascent, descent, maxSlope, totalDist: rawTotalDist } = calculateElevationStats(sanitizedPoints);
+    const activeStats = computeActiveTrackStats(sanitizedPoints);
+    const totalDist =
+      activeStats.hasTimestamps &&
+      activeStats.pauseDurationSeconds > 0 &&
+      activeStats.activeDistanceKm > 0.05 &&
+      activeStats.rawDistanceKm - activeStats.activeDistanceKm > 0.02
+        ? activeStats.activeDistanceKm
+        : rawTotalDist;
+
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
     
     const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
@@ -2318,14 +2410,10 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     
     let duration: number | undefined;
     if (hasTimestamps && sanitizedPoints.length > 1) {
-      const firstTime = sanitizedPoints.find(p => p.time !== undefined)?.time;
-      const lastTime = [...sanitizedPoints].reverse().find(p => p.time !== undefined)?.time;
-      if (firstTime && lastTime) {
-        const fDate = toDate(firstTime);
-        const lDate = toDate(lastTime);
-        if (fDate && lDate) {
-          duration = (lDate.getTime() - fDate.getTime()) / 1000;
-        }
+      if (activeStats.activeDurationSeconds > 0) {
+        duration = activeStats.activeDurationSeconds;
+      } else if (activeStats.grossElapsedSeconds > 0) {
+        duration = activeStats.grossElapsedSeconds;
       }
     }
 
@@ -3064,28 +3152,39 @@ const simplifiedPointCache = new Map<string, { count: number; simplified: GPXPoi
 
 /**
  * Retrieves simplified track points using LRU/Map memoization cache.
+ * Uses fine GPS tolerance (~1.1 m) first and steps up gently only when needed
+ * to fit `targetMaxPoints`, preserving tight mountain switchbacks.
  */
-export const getCachedSimplifiedPoints = (trackId: string, points: GPXPoint[], targetMaxPoints: number = 1500): GPXPoint[] => {
+export const getCachedSimplifiedPoints = (trackId: string, points: GPXPoint[], targetMaxPoints: number = 2500): GPXPoint[] => {
   if (!points || points.length <= targetMaxPoints) return points || [];
 
-  const cacheKey = `${trackId}-${points.length}`;
+  const first = points[0];
+  const mid = points[Math.floor(points.length / 2)];
+  const last = points[points.length - 1];
+  const coordSig = `${first.lat.toFixed(4)},${first.lng.toFixed(4)}|${mid.lat.toFixed(4)},${mid.lng.toFixed(4)}|${last.lat.toFixed(4)},${last.lng.toFixed(4)}`;
+  const cacheKey = `${trackId}-${points.length}-${targetMaxPoints}-${coordSig}`;
   const cached = simplifiedPointCache.get(cacheKey);
   if (cached && cached.count === points.length) {
     return cached.simplified;
   }
 
-  // Calculate tolerance based on point count ratio
-  const ratio = points.length / targetMaxPoints;
-  const toleranceSq = Math.min(0.000005, 0.0000001 * ratio * ratio);
+  // Start at sub-2m visual accuracy (1e-10 deg^2 ~ 1.1m) and relax only if still above targetMaxPoints
+  let toleranceSq = 1e-10;
+  let simplified = simplifyTrackPoints(points, toleranceSq);
+  const maxToleranceSq = 1e-7; // ~35m upper bound so hairpins stay recognizable
+  let attempts = 0;
+  while (simplified.length > targetMaxPoints && toleranceSq < maxToleranceSq && attempts < 6) {
+    toleranceSq = Math.min(maxToleranceSq, toleranceSq * 2.5);
+    simplified = simplifyTrackPoints(points, toleranceSq);
+    attempts++;
+  }
 
-  const simplified = simplifyTrackPoints(points, toleranceSq);
-  
   // Keep cache small
   if (simplifiedPointCache.size > 50) {
     const firstKey = simplifiedPointCache.keys().next().value;
     if (firstKey) simplifiedPointCache.delete(firstKey);
   }
-  
+
   simplifiedPointCache.set(cacheKey, { count: points.length, simplified });
   return simplified;
 };
@@ -3468,6 +3567,128 @@ export interface DetectedPause {
   type: 'stopped' | 'gap';
 }
 
+export interface ActiveTrackStats {
+  hasTimestamps: boolean;
+  medianDtSec: number;
+  grossElapsedSeconds: number;
+  activeDurationSeconds: number;
+  pauseDurationSeconds: number;
+  activeDistanceKm: number;
+  rawDistanceKm: number;
+}
+
+/**
+ * Computes the median positive sampling interval (in seconds) across trackpoints.
+ */
+export function estimateMedianSamplingIntervalSec(points: GPXPoint[]): number {
+  if (!points || points.length < 3) return 0;
+  const dts: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    const t1 = toValidTimestampMs(points[i - 1].time);
+    const t2 = toValidTimestampMs(points[i].time);
+    if (t1 !== undefined && t2 !== undefined && t2 > t1) {
+      const dt = (t2 - t1) / 1000;
+      if (dt > 0 && dt <= 60) {
+        dts.push(dt);
+      }
+    }
+  }
+  if (dts.length === 0) return 0;
+  dts.sort((a, b) => a - b);
+  return dts[Math.floor(dts.length / 2)];
+}
+
+/**
+ * Determines whether a consecutive point transition represents a device pause / timer-stop gap
+ * (including interval rests where the athlete walks between efforts while the watch timer is paused).
+ */
+export function isRecordingPauseGap(dtSec: number, distKm: number, medianDtSec: number): boolean {
+  if (!Number.isFinite(dtSec) || dtSec <= 0) return false;
+  const distM = distKm * 1000;
+  if (dtSec >= 20 && distM < 40) return true;
+  const impliedSpeedKmh = (distKm / dtSec) * 3600;
+  if (medianDtSec > 0 && medianDtSec <= 6 && dtSec >= Math.max(15, medianDtSec * 5) && impliedSpeedKmh < 10.0) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Computes gross elapsed duration, active moving duration, pause duration, and pause-free distance.
+ */
+export function computeActiveTrackStats(points: GPXPoint[]): ActiveTrackStats {
+  if (!points || points.length < 2) {
+    return {
+      hasTimestamps: false,
+      medianDtSec: 0,
+      grossElapsedSeconds: 0,
+      activeDurationSeconds: 0,
+      pauseDurationSeconds: 0,
+      activeDistanceKm: 0,
+      rawDistanceKm: 0
+    };
+  }
+
+  let timestampCount = 0;
+  let firstMs: number | undefined;
+  let lastMs: number | undefined;
+  for (const p of points) {
+    const ms = toValidTimestampMs(p.time);
+    if (ms !== undefined) {
+      timestampCount++;
+      if (firstMs === undefined) firstMs = ms;
+      lastMs = ms;
+    }
+  }
+
+  const hasTimestamps = timestampCount > points.length * 0.5 && firstMs !== undefined && lastMs !== undefined;
+  const grossElapsedSeconds = hasTimestamps && firstMs !== undefined && lastMs !== undefined
+    ? Math.max(0, Math.round((lastMs - firstMs) / 1000))
+    : 0;
+  const medianDtSec = hasTimestamps ? estimateMedianSamplingIntervalSec(points) : 0;
+
+  let activeDurationSeconds = 0;
+  let pauseDurationSeconds = 0;
+  let activeDistanceKm = 0;
+  let rawDistanceKm = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const p1 = points[i - 1];
+    const p2 = points[i];
+    const stepKm = calculateDistance(p1, p2);
+    rawDistanceKm += stepKm;
+
+    if (!hasTimestamps) {
+      activeDistanceKm += stepKm;
+      continue;
+    }
+
+    const t1 = toValidTimestampMs(p1.time);
+    const t2 = toValidTimestampMs(p2.time);
+    if (t1 !== undefined && t2 !== undefined && t2 >= t1) {
+      const dtSec = (t2 - t1) / 1000;
+      if (isRecordingPauseGap(dtSec, stepKm, medianDtSec)) {
+        pauseDurationSeconds += dtSec;
+        continue;
+      }
+      activeDurationSeconds += dtSec;
+      activeDistanceKm += stepKm;
+    } else {
+      activeDistanceKm += stepKm;
+    }
+  }
+
+  return {
+    hasTimestamps,
+    medianDtSec,
+    grossElapsedSeconds,
+    activeDurationSeconds: Math.round(activeDurationSeconds),
+    pauseDurationSeconds: Math.round(pauseDurationSeconds),
+    activeDistanceKm,
+    rawDistanceKm
+  };
+}
+
 export interface TrackPauseAnalysis {
   hasTimestamps: boolean;
   grossElapsedSeconds: number;
@@ -3499,38 +3720,66 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
 
   let grossElapsedSeconds = 0;
   if (hasTimes) {
-    const firstTime = new Date(points.find(p => p.time)!.time!).getTime();
-    const lastTime = new Date([...points].reverse().find(p => p.time)!.time!).getTime();
-    grossElapsedSeconds = Math.max(0, Math.round((lastTime - firstTime) / 1000));
+    const firstMs = toValidTimestampMs(points.find(p => p.time)?.time);
+    const lastMs = toValidTimestampMs([...points].reverse().find(p => p.time)?.time);
+    if (firstMs !== undefined && lastMs !== undefined) {
+      grossElapsedSeconds = Math.max(0, Math.round((lastMs - firstMs) / 1000));
+    }
   } else if (track.duration) {
     grossElapsedSeconds = track.duration;
   }
 
   let totalPauseSeconds = 0;
+  let activeDistKm = 0;
+  let rawDistKm = 0;
 
   if (hasTimes) {
+    const medianDtSec = estimateMedianSamplingIntervalSec(points);
     let pauseStartIdx: number | null = null;
     let accumulatedPauseTime = 0;
 
     for (let i = 0; i < points.length - 1; i++) {
       const p1 = points[i];
       const p2 = points[i + 1];
+      const distKm = calculateDistance(p1, p2);
+      rawDistKm += distKm;
 
-      if (!p1.time || !p2.time) continue;
+      const t1 = toValidTimestampMs(p1.time);
+      const t2 = toValidTimestampMs(p2.time);
+      if (t1 === undefined || t2 === undefined) {
+        activeDistKm += distKm;
+        continue;
+      }
 
-      const t1 = new Date(p1.time).getTime();
-      const t2 = new Date(p2.time).getTime();
       const dtSec = Math.max(0, (t2 - t1) / 1000);
-      const distM = calculateDistance(p1, p2) * 1000;
+      const distM = distKm * 1000;
       const speedKmh = dtSec > 0 ? (distM / dtSec) * 3.6 : 0;
 
-      // Condition 1: Direct recording time gap (e.g. auto-pause on device >= 20s)
-      if (dtSec >= 20 && distM < 40) {
+      // Condition 1: Direct recording time gap (auto-pause or manual timer stop)
+      if (isRecordingPauseGap(dtSec, distKm, medianDtSec)) {
+        if (pauseStartIdx !== null && accumulatedPauseTime >= 25) {
+          const sPt = points[pauseStartIdx];
+          pauses.push({
+            id: `pause-stop-${pauseStartIdx}`,
+            startIndex: pauseStartIdx,
+            endIndex: i,
+            startKm: Number(activeDistKm.toFixed(2)),
+            durationSeconds: Math.round(accumulatedPauseTime),
+            lat: sPt.lat,
+            lng: sPt.lng,
+            elevationM: sPt.ele ?? 0,
+            type: 'stopped'
+          });
+          totalPauseSeconds += accumulatedPauseTime;
+        }
+        pauseStartIdx = null;
+        accumulatedPauseTime = 0;
+
         pauses.push({
           id: `pause-gap-${i}`,
           startIndex: i,
           endIndex: i + 1,
-          startKm: p1.dist ? p1.dist / 1000 : 0,
+          startKm: p1.dist ? p1.dist / 1000 : Number(activeDistKm.toFixed(2)),
           durationSeconds: Math.round(dtSec),
           lat: p1.lat,
           lng: p1.lng,
@@ -3540,6 +3789,8 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
         totalPauseSeconds += dtSec;
         continue;
       }
+
+      activeDistKm += distKm;
 
       // Condition 2: Very slow creeping / standstill (speed < 1.6 km/h)
       if (speedKmh < 1.6 && dtSec > 0) {
@@ -3556,7 +3807,7 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
             id: `pause-stop-${pauseStartIdx}`,
             startIndex: pauseStartIdx,
             endIndex: i,
-            startKm: sPt.dist ? sPt.dist / 1000 : 0,
+            startKm: sPt.dist ? sPt.dist / 1000 : Number(activeDistKm.toFixed(2)),
             durationSeconds: Math.round(accumulatedPauseTime),
             lat: sPt.lat,
             lng: sPt.lng,
@@ -3576,7 +3827,7 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
         id: `pause-stop-${pauseStartIdx}`,
         startIndex: pauseStartIdx,
         endIndex: points.length - 1,
-        startKm: sPt.dist ? sPt.dist / 1000 : 0,
+        startKm: sPt.dist ? sPt.dist / 1000 : Number(activeDistKm.toFixed(2)),
         durationSeconds: Math.round(accumulatedPauseTime),
         lat: sPt.lat,
         lng: sPt.lng,
@@ -3585,6 +3836,9 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
       });
       totalPauseSeconds += accumulatedPauseTime;
     }
+  } else {
+    activeDistKm = track.distance || 0;
+    rawDistKm = activeDistKm;
   }
 
   totalPauseSeconds = Math.round(totalPauseSeconds);
@@ -3593,12 +3847,18 @@ export const detectTrackPauses = (track: GPXTrack): TrackPauseAnalysis => {
     ? Math.min(100, Math.max(0, Math.round((netMovingSeconds / grossElapsedSeconds) * 100)))
     : 100;
 
+  // Prefer active/watch distance over phantom distance summed across paused GPS gaps
+  const effectiveDistanceKm =
+    hasTimes && activeDistKm > 0.05 && rawDistKm - activeDistKm > 0.02
+      ? (track.distance > 0 && track.distance <= activeDistKm + 0.03 ? track.distance : activeDistKm)
+      : (track.distance || activeDistKm);
+
   const averageMovingSpeedKmh = netMovingSeconds > 0
-    ? Number(((track.distance / (netMovingSeconds / 3600))).toFixed(1))
+    ? Number(((effectiveDistanceKm / (netMovingSeconds / 3600))).toFixed(1))
     : 0;
 
   const averageGrossSpeedKmh = grossElapsedSeconds > 0
-    ? Number(((track.distance / (grossElapsedSeconds / 3600))).toFixed(1))
+    ? Number(((effectiveDistanceKm / (grossElapsedSeconds / 3600))).toFixed(1))
     : 0;
 
   return {

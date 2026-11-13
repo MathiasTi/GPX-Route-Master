@@ -205,16 +205,6 @@ export function isTwoPointSeedStub(points: any[], distanceKm: number): boolean {
   if (!Array.isArray(points) || points.length !== 2 || distanceKm <= 1.0) {
     return false;
   }
-  const hasTelemetry = points.some(
-    (p) =>
-      p &&
-      (p.time !== undefined ||
-        p.hr !== undefined ||
-        p.power !== undefined ||
-        p.cadence !== undefined ||
-        p.speed !== undefined)
-  );
-  if (hasTelemetry) return false;
 
   const p0 = extractPointCoordinates(points[0]);
   const p1 = extractPointCoordinates(points[1]);

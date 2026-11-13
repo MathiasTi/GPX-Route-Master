@@ -20,7 +20,7 @@ import {
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
-import { calculateDistance, detectActivityType, detectTrackPauses } from '../utils/gpxUtils';
+import { calculateDistance, detectActivityType, detectTrackPauses, formatPace, getPaceString } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
@@ -485,7 +485,7 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📏 Distanz: ${analysis.totalDistanceKm} km | ⛰️ Höhenmeter: +${Math.round(analysis.totalAscentMeters)}m / -${Math.round(analysis.totalDescentMeters)}m${climbsSummary}
 ⏱️ Geschätzte ${activityType === 'running' ? 'Laufzeit' : 'Fahrzeit'}: ${formatSecondsToTime(analysis.estimatedMovingTimeSeconds)} (Brutto: ${formatSecondsToTime(analysis.estimatedElapsedTimeSeconds)})
-🚀 ${activityType === 'running' ? `Ø-Pace: ${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km (Tempo: ${analysis.estimatedAverageSpeedKmh} km/h)` : `Ø-Geschwindigkeit: ${analysis.estimatedAverageSpeedKmh} km/h`}
+🚀 ${activityType === 'running' ? `Ø-Pace: ${formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm)} (Tempo: ${analysis.estimatedAverageSpeedKmh} km/h)` : `Ø-Geschwindigkeit: ${analysis.estimatedAverageSpeedKmh} km/h`}
 🔥 Kalorienverbrauch: ${analysis.totalCaloriesKcal} kcal (${analysis.carbsBurnedGrams}g KH / ${analysis.fatBurnedGrams}g Fett)
 💧 Flüssigkeitsbedarf: ${analysis.totalFluidRecommendedLiters} Liter | 🧂 Natrium: ~${analysis.sodiumRecommendedMg} mg
 🎯 Schwierigkeitsgrad: ${analysis.difficultyScore}/10
@@ -1047,7 +1047,7 @@ GPX Route Master Pro`;
                   <div className="text-xl font-black text-slate-900 dark:text-white">
                     {activityType === 'running' ? (
                       <>
-                        {(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} <span className="text-xs font-normal text-slate-400">min/km</span>
+                        {formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm).replace(' min/km', '')} <span className="text-xs font-normal text-slate-400">min/km</span>
                       </>
                     ) : (
                       <>
@@ -1058,7 +1058,7 @@ GPX Route Master Pro`;
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                     {activityType === 'running'
                       ? `Tempo: ${analysis.estimatedAverageSpeedKmh} km/h`
-                      : `Pace: ${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km`}
+                      : `Pace: ${formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm)}`}
                   </div>
                 </div>
 
@@ -1666,7 +1666,9 @@ GPX Route Master Pro`;
                       </span>
                       <div className="text-sm font-black text-indigo-600 dark:text-indigo-400 mt-0.5">
                         {isRunningMode
-                          ? `${ computeRealTrackSplits({ ...track, activityType }, Math.max(10, splitIntervalKm) as 10, analysis.estimatedAverageSpeedKmh)[0]?.paceFormatted || '-:--' } /km`
+                          ? (track.duration && track.distance > 0
+                              ? formatPace(track.duration, track.distance).replace(' min/km', ' /km')
+                              : getPaceString(analysis.estimatedAverageSpeedKmh).replace(' min/km', ' /km'))
                           : `${analysis.estimatedAverageSpeedKmh} km/h`}
                       </div>
                       <span className="text-[10px] font-sans text-slate-500">

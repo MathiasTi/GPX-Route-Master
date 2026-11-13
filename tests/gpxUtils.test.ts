@@ -10,8 +10,17 @@ import {
   analyzeTrackValidation,
   autoFixTrackValidation,
   exportToGPX,
-  downloadTrackAsGPX
+  downloadTrackAsGPX,
+  computeActiveTrackStats,
+  detectTrackPauses,
+  formatPace,
+  getCachedSimplifiedPoints,
+  hasRealGpsData,
+  sanitizeGPXPoints,
+  detectActivityType
 } from '../utils/gpxUtils';
+import { isTwoPointSeedStub } from '../utils/activityHydration';
+import { computeRealTrackSplits } from '../utils/intensiveAnalysis';
 import { GPXTrack, GPXPoint, TextMarker } from '../types';
 
 export function runGpxUtilsTests() {
@@ -256,6 +265,131 @@ export function runGpxUtilsTests() {
   assert(exportedXml.includes('<gpxtpx:atemp>18.5</gpxtpx:atemp>'), 'GPX export preserves temperature telemetry');
   assert(exportedXml.includes('<name>Wasserstelle Passhöhe</name>'), 'GPX export preserves waypoints / text markers');
   assert((exportedXml.match(/<trkseg>/g) || []).length === 2, 'GPX export segments track into 2 clean segments across time gap');
+
+  // --- Interval Pause Detection & Active Pace Tests ---
+  const intervalPts: GPXPoint[] = [];
+  const startEpoch = Date.parse('2026-11-12T17:33:42Z');
+  let cursorMs = startEpoch;
+  let latCursor = 51.49289;
+  // 1s = 3.35m (~12.06 km/h -> 4:58/km): ~0.00003013 deg lat per second
+  const dLatPerSec = 0.00003013;
+
+  // Segment 1: 650s (~2.18 km)
+  for (let i = 0; i <= 650; i++) {
+    intervalPts.push({ lat: latCursor, lng: 7.46417, ele: 100, time: new Date(cursorMs) });
+    if (i < 650) {
+      cursorMs += 1000;
+      latCursor += dLatPerSec;
+    }
+  }
+  // Long stationary pause (817s) + 3 interval walking rests (90s, ~118m shift while timer paused)
+  const pauseDurations = [817, 90, 91, 91];
+  const intervalLengths = [160, 160, 160, 180];
+  for (let seg = 0; seg < pauseDurations.length; seg++) {
+    cursorMs += pauseDurations[seg] * 1000;
+    // Simulate walking ~118m back while watch is paused (for interval rests)
+    if (seg > 0) {
+      latCursor -= 0.00106;
+    }
+    for (let j = 0; j < intervalLengths[seg]; j++) {
+      intervalPts.push({ lat: latCursor, lng: 7.46417, ele: 100, time: new Date(cursorMs) });
+      if (j < intervalLengths[seg] - 1) {
+        cursorMs += 1000;
+        latCursor += dLatPerSec;
+      }
+    }
+  }
+
+  const activeIntervalStats = computeActiveTrackStats(intervalPts);
+  assert(
+    Math.abs(activeIntervalStats.pauseDurationSeconds - 1089) <= 2,
+    `computeActiveTrackStats detects all 4 interval pauses (expected ~1089s, got ${activeIntervalStats.pauseDurationSeconds}s)`
+  );
+  assert(
+    activeIntervalStats.rawDistanceKm - activeIntervalStats.activeDistanceKm > 0.30,
+    `computeActiveTrackStats excludes paused walk-back jumps from active distance (${activeIntervalStats.activeDistanceKm.toFixed(3)} vs raw ${activeIntervalStats.rawDistanceKm.toFixed(3)})`
+  );
+
+  const syntheticIntervalTrack: GPXTrack = {
+    id: 'interval-test',
+    name: 'Interval Run',
+    points: intervalPts,
+    color: '#2563eb',
+    distance: activeIntervalStats.activeDistanceKm,
+    ascent: 0,
+    descent: 0,
+    maxSlope: 0,
+    visible: true,
+    activityType: 'running',
+    duration: activeIntervalStats.activeDurationSeconds
+  };
+  const intervalPauseSummary = detectTrackPauses(syntheticIntervalTrack);
+  assert(
+    intervalPauseSummary.pauses.length === 4,
+    `detectTrackPauses detects all 4 interval pause gaps (found ${intervalPauseSummary.pauses.length})`
+  );
+  assert(
+    formatPace(activeIntervalStats.activeDurationSeconds, activeIntervalStats.activeDistanceKm) === '4:59 min/km' ||
+    formatPace(activeIntervalStats.activeDurationSeconds, activeIntervalStats.activeDistanceKm) === '4:58 min/km',
+    `Active pace excludes interval rests (${formatPace(activeIntervalStats.activeDurationSeconds, activeIntervalStats.activeDistanceKm)})`
+  );
+  const splits = computeRealTrackSplits(syntheticIntervalTrack, 10, 12.0);
+  assert(
+    splits.length === 1 && Math.abs(splits[0].durationSeconds - activeIntervalStats.activeDurationSeconds) <= 2,
+    `computeRealTrackSplits excludes paused rest time from split duration (${splits[0]?.durationSeconds}s)`
+  );
+
+  // --- Dense Switchback Preservation, 2-Point Stubs, Spike Filtering & FIT Sport Tests ---
+  const switchbackPts: GPXPoint[] = [];
+  for (let i = 0; i < 4000; i++) {
+    // 40 switchbacks (~150m wide) across 4 km climb
+    const progress = i / 3999;
+    const lat = 46.53 + progress * 0.03;
+    const lng = 10.45 + Math.sin(progress * Math.PI * 40) * 0.0012;
+    switchbackPts.push({ lat, lng, ele: 1800 + progress * 900, time: new Date(startEpoch + i * 2000) });
+  }
+  const simplifiedSwitchbacks = getCachedSimplifiedPoints('stelvio-switchback-test', switchbackPts, 2500);
+  assert(
+    simplifiedSwitchbacks.length >= 250,
+    `getCachedSimplifiedPoints preserves switchbacks instead of collapsing (${simplifiedSwitchbacks.length} pts kept)`
+  );
+
+  const stubWithTelemetry = [
+    { lat: 46.8119, lng: 11.2458, ele: 680, time: '2026-09-01T08:00:00Z' },
+    { lat: 46.6182, lng: 10.5934, ele: 910, time: '2026-09-01T14:00:00Z' }
+  ];
+  assert(
+    isTwoPointSeedStub(stubWithTelemetry, 69.8),
+    'isTwoPointSeedStub rejects 2-point >1km straight-line stub even when timestamps exist'
+  );
+  assert(
+    !hasRealGpsData({ id: 'stub-telemetry', points: stubWithTelemetry as any, visible: true }),
+    'hasRealGpsData rejects 2-point >1km straight-line stub even when timestamps exist'
+  );
+
+  const glitchTrackPts: GPXPoint[] = [
+    { lat: 46.620, lng: 10.590, ele: 900, time: new Date(startEpoch) },
+    { lat: 46.6202, lng: 10.5902, ele: 902, time: new Date(startEpoch + 2000) },
+    { lat: 46.8119, lng: 11.2458, ele: 680, time: new Date(startEpoch + 4000) }, // 54km spike in 2s!
+    { lat: 46.6204, lng: 10.5904, ele: 905, time: new Date(startEpoch + 6000) },
+    { lat: 0, lng: 0, ele: 0, time: new Date(startEpoch + 8000) } // Null Island
+  ];
+  const cleanedGlitch = sanitizeGPXPoints(glitchTrackPts);
+  assert(
+    cleanedGlitch.length === 3,
+    `sanitizeGPXPoints strips GPS teleport spike and Null Island point (kept ${cleanedGlitch.length} of 5)`
+  );
+
+  const slowClimbPts: GPXPoint[] = Array.from({ length: 12 }, (_, idx) => ({
+    lat: 46.53 + idx * 0.0001,
+    lng: 10.45,
+    ele: 2000 + idx * 10,
+    time: new Date(startEpoch + idx * 5000) // ~8 km/h climb
+  }));
+  assert(
+    detectActivityType(slowClimbPts, '02.09.2026, 08:13 (46.62, 10.59)', '24209581585.fit', 'Radfahren (cycling)') === 'cycling',
+    'detectActivityType honors explicit FIT cycling sport on slow alpine climbs'
+  );
 
   console.log(`\n📊 Test Summary: ${passed} passed, ${failed} failed.\n`);
   return failed === 0;

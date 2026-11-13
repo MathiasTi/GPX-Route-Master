@@ -2,6 +2,7 @@ import React from 'react';
 import { Printer, Download, MapPin, Calendar, Clock, Mountain, TrendingUp, Flame, Droplets, CheckCircle2, Shield } from 'lucide-react';
 import { GPXTrack } from '../../types';
 import { IntensiveAnalysisResult, formatSecondsToTime } from '../../utils/intensiveAnalysis';
+import { formatPace } from '../../utils/gpxUtils';
 import { triggerHaptic } from '../../utils/haptics';
 
 interface PrintReportTabProps {
@@ -99,7 +100,7 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
             </span>
             <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono">
               {isRun 
-                ? `${(60 / analysis.estimatedAverageSpeedKmh).toFixed(2)} min/km` 
+                ? formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm)
                 : `${analysis.estimatedAverageSpeedKmh} km/h`}
             </span>
           </div>

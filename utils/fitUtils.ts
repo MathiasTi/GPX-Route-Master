@@ -1,5 +1,5 @@
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
+import { calculateElevationStats, computeActiveTrackStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
 
 const HIGH_CONTRAST_COLORS = [
   '#2563eb', // Velo Royal Blue
@@ -2254,9 +2254,13 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
                 if (!isNaN(candidate.getTime()) && candidate.getUTCFullYear() >= 1995) {
                   sessionStartTime = candidate;
                 }
-              } else if (field.recordNumber === 8) metaTotalTime = parseFloat(val);
-              else if (field.recordNumber === 9) metaTotalDist = parseFloat(val);
-              else if (field.recordNumber === 28) {
+              } else if (field.recordNumber === 8 && typeof val === 'number' && val !== 0xFFFFFFFF) {
+                // FIT specification: session.total_timer_time has scale 1000 (milliseconds -> seconds)
+                metaTotalTime = val / 1000;
+              } else if (field.recordNumber === 9 && typeof val === 'number' && val !== 0xFFFFFFFF) {
+                // FIT specification: session.total_distance has scale 100 (centimeters -> meters)
+                metaTotalDist = val / 100;
+              } else if (field.recordNumber === 28) {
                 const sName = String(val).trim();
                 if (sName && !/session\s+\d+/i.test(sName)) fitName = sName;
               } else if (field.recordNumber === 83) {
@@ -2336,12 +2340,25 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             }
 
             let hasValidCoords = false;
-            if (lat !== undefined && lng !== undefined && lat !== 0x7FFFFFFF && lng !== 0x7FFFFFFF) {
+            if (
+              lat !== undefined &&
+              lng !== undefined &&
+              lat !== 0x7FFFFFFF &&
+              lng !== 0x7FFFFFFF &&
+              lat !== -2147483648 &&
+              lng !== -2147483648
+            ) {
               // Convert semicircles to degrees if necessary
               if (Math.abs(lat) > 180) lat = lat * (180 / Math.pow(2, 31));
               if (Math.abs(lng) > 180) lng = lng * (180 / Math.pow(2, 31));
 
-              if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001 && !(lat === 0 && lng === 0)) {
+              if (
+                Number.isFinite(lat) &&
+                Number.isFinite(lng) &&
+                Math.abs(lat) <= 90 &&
+                Math.abs(lng) <= 180 &&
+                !(Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001)
+              ) {
                 points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed });
                 hasValidCoords = true;
               }
@@ -2361,8 +2378,12 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           } else if (globalMsgNum === 12) {
             if (metaSport) sportName = getSportLabel(metaSport);
           } else if (globalMsgNum === 18) {
-            if (metaTotalTime !== undefined) sessionDuration = metaTotalTime;
-            if (metaTotalDist !== undefined) sessionDistance = metaTotalDist;
+            if (metaTotalTime !== undefined && Number.isFinite(metaTotalTime) && metaTotalTime > 0) {
+              sessionDuration = (sessionDuration ?? 0) + metaTotalTime;
+            }
+            if (metaTotalDist !== undefined && Number.isFinite(metaTotalDist) && metaTotalDist > 0) {
+              sessionDistance = (sessionDistance ?? 0) + metaTotalDist;
+            }
             if (metaComment) fitNotes = metaComment;
           } else if (globalMsgNum === 34) {
             if (metaComment) fitNotes = metaComment;
@@ -2485,21 +2506,36 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       }
     }
 
-    const { ascent, descent, maxSlope, totalDist } = calculateElevationStats(sanitizedPoints);
-    const activityType = detectActivityType(sanitizedPoints, name, fileName);
+    const { ascent, descent, maxSlope, totalDist: rawTotalDist } = calculateElevationStats(sanitizedPoints);
+    const activeStats = computeActiveTrackStats(sanitizedPoints);
+    // Prefer FIT session distance (watch/sensor distance excluding paused walks) or pause-free GPS distance
+    const sessionDistKm = sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : undefined;
+    const gpsDistKm =
+      activeStats.hasTimestamps &&
+      activeStats.pauseDurationSeconds > 0 &&
+      activeStats.activeDistanceKm > 0.05 &&
+      activeStats.rawDistanceKm - activeStats.activeDistanceKm > 0.02
+        ? activeStats.activeDistanceKm
+        : rawTotalDist;
+    const totalDist = sessionDistKm && sessionDistKm > 0 ? sessionDistKm : gpsDistKm;
+
+    const activityType = detectActivityType(sanitizedPoints, name, fileName, sportName);
     const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
     const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
     const surfaceStats = realSurfaceStats;
     hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
     const climbs = findClimbs(sanitizedPoints);
     
+    // Prefer FIT session.total_timer_time (active timer duration), then pause-free active time, then gross elapsed
     let duration: number | undefined;
     const hasTimestamps = sanitizedPoints.some(p => p.time !== undefined);
-    if (hasTimestamps && sanitizedPoints.length > 1) {
-      const firstTime = sanitizedPoints.find(p => p.time !== undefined)?.time;
-      const lastTime = [...sanitizedPoints].reverse().find(p => p.time !== undefined)?.time;
-      if (firstTime && lastTime) {
-        duration = (lastTime.getTime() - firstTime.getTime()) / 1000;
+    if (sessionDuration !== undefined && sessionDuration > 0) {
+      duration = Math.round(sessionDuration * 10) / 10;
+    } else if (hasTimestamps && sanitizedPoints.length > 1) {
+      if (activeStats.activeDurationSeconds > 0) {
+        duration = activeStats.activeDurationSeconds;
+      } else if (activeStats.grossElapsedSeconds > 0) {
+        duration = activeStats.grossElapsedSeconds;
       }
     }
 

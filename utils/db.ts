@@ -634,6 +634,21 @@ function runInitDbStatements() {
         'Eigene Fitness & Gesundheit Seite, Git-Schutz für lokale SQLite-Datenbanken (.gitignore + Auto-Erstellung), Garmin 2-Punkte-Stub-Fix & lokales Start-Skript (start-local.sh).'
       );
     }
+
+    const hasV294 = (checkMigration.get('2.9.4') as { count: number }).count > 0;
+    if (!hasV294) {
+      const repairedStubs = repairGarminSeedPointStubs();
+      if (repairedStubs > 0) {
+        console.log(
+          `[DB Migration 2.9.4] Cleared ${repairedStubs} timestamped 2-point Garmin GPS seed stub(s) so straight-line stubs are never rendered on the map.`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.4',
+        new Date().toISOString(),
+        'Fix map polyline oversimplification on dense FIT tracks, reject timestamped 2-point straight-line stubs & GPS spikes, and honor FIT sport metadata.'
+      );
+    }
   } catch (e) {
     console.error('Failed to run 2.9.2 Garmin seed stub cleanup migration:', e);
   }
@@ -836,7 +851,7 @@ export function repairStoredActivityDates(): { repairedTracks: number; repairedG
 export function repairGarminSeedPointStubs(): number {
   return executeWithCorruptionRecovery(() => {
     const rows = db
-      .prepare('SELECT id, distance, points_json FROM garmin_activities WHERE points_json IS NOT NULL AND length(points_json) < 400')
+      .prepare('SELECT id, distance, points_json FROM garmin_activities WHERE points_json IS NOT NULL AND length(points_json) < 1000')
       .all() as { id: string; distance: number; points_json: string }[];
 
     const clearStmt = db.prepare('UPDATE garmin_activities SET points_json = NULL WHERE id = ?');
@@ -848,16 +863,6 @@ export function repairGarminSeedPointStubs(): number {
         if (!Array.isArray(pts) || pts.length === 0 || pts.length > 2) {
           continue;
         }
-        const hasTelemetry = pts.some(
-          (p: any) =>
-            p &&
-            (p.time !== undefined ||
-              p.hr !== undefined ||
-              p.power !== undefined ||
-              p.cadence !== undefined ||
-              p.speed !== undefined)
-        );
-        if (hasTelemetry) continue;
 
         if (pts.length === 1) {
           clearStmt.run(row.id);
@@ -865,21 +870,19 @@ export function repairGarminSeedPointStubs(): number {
           continue;
         }
 
-        if (row.distance > 1.0) {
-          const lat0 = Number(pts[0]?.lat);
-          const lng0 = Number(pts[0]?.lng);
-          const lat1 = Number(pts[1]?.lat);
-          const lng1 = Number(pts[1]?.lng);
-          if (
-            Number.isFinite(lat0) &&
-            Number.isFinite(lng0) &&
-            Number.isFinite(lat1) &&
-            Number.isFinite(lng1) &&
-            calculateDistance({ lat: lat0, lng: lng0 }, { lat: lat1, lng: lng1 }) > 1.0
-          ) {
-            clearStmt.run(row.id);
-            cleared++;
-          }
+        const lat0 = Number(pts[0]?.lat);
+        const lng0 = Number(pts[0]?.lng);
+        const lat1 = Number(pts[1]?.lat);
+        const lng1 = Number(pts[1]?.lng);
+        if (
+          Number.isFinite(lat0) &&
+          Number.isFinite(lng0) &&
+          Number.isFinite(lat1) &&
+          Number.isFinite(lng1) &&
+          calculateDistance({ lat: lat0, lng: lng0 }, { lat: lat1, lng: lng1 }) > 1.0
+        ) {
+          clearStmt.run(row.id);
+          cleared++;
         }
       } catch {
         // Ignore invalid JSON

@@ -9,7 +9,10 @@ import {
   detectImpossibleGradientAnomalies, 
   GradientAnomaly,
   filterElevationProfile,
-  ElevationFilterStrength
+  ElevationFilterStrength,
+  estimateMedianSamplingIntervalSec,
+  isRecordingPauseGap,
+  computeActiveTrackStats
 } from '../utils/gpxUtils';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/telemetry/pointMetricsEngine';
@@ -276,9 +279,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       surface: pointsToUse[0].surface
     });
 
+    const profileMedianDtSec = estimateMedianSamplingIntervalSec(pointsToUse);
+
     for (let i = 1; i < pointsToUse.length; i++) {
       const distStep = calculateDistance(pointsToUse[i - 1], pointsToUse[i]);
-      totalDist += distStep;
+      const tPrev = toValidTimestampMs(pointsToUse[i - 1].time);
+      const tCurr = toValidTimestampMs(pointsToUse[i].time);
+      const dtSec = tPrev !== undefined && tCurr !== undefined && tCurr > tPrev ? (tCurr - tPrev) / 1000 : 0;
+      const isPause = dtSec > 0 && isRecordingPauseGap(dtSec, distStep, profileMedianDtSec);
+      if (!isPause) {
+        totalDist += distStep;
+      }
       
       const ele = pointsToUse[i].ele;
 
@@ -426,14 +437,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     let duration: number | undefined;
     const hasTimestamps = track.points.some(p => p.time !== undefined);
-    if (hasTimestamps && track.points.length > 1) {
-      const firstTime = track.points.find(p => p.time !== undefined)?.time;
-      const lastTime = [...track.points].reverse().find(p => p.time !== undefined)?.time;
-      const firstMs = toValidTimestampMs(firstTime);
-      const lastMs = toValidTimestampMs(lastTime);
-      if (firstMs !== undefined && lastMs !== undefined && lastMs >= firstMs) {
-        duration = (lastMs - firstMs) / 1000;
-      }
+    const activeTrackStats = hasTimestamps ? computeActiveTrackStats(track.points) : null;
+    if (track.duration && track.duration > 0) {
+      duration = track.duration;
+    } else if (activeTrackStats && activeTrackStats.activeDurationSeconds > 0) {
+      duration = activeTrackStats.activeDurationSeconds;
+    } else if (activeTrackStats && activeTrackStats.grossElapsedSeconds > 0) {
+      duration = activeTrackStats.grossElapsedSeconds;
     } else {
       duration = (totalDist / estimatedSpeed) * 3600;
     }
@@ -837,6 +847,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   let selectedHrCount = 0;
 
   if (selectionBounds) {
+    const selectionMedianDtSec = estimateMedianSamplingIntervalSec(track.points || []);
+
     for (let i = 0; i < data.length; i++) {
       const p = data[i];
       const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
@@ -874,12 +886,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             else selectedDescent += Math.abs(diff);
             selectedDistance += (p.dist - prevP.dist);
 
-            // Time-weighted power calculation
+            // Time-weighted power & active pace calculation (skip pause/timer-stop gaps)
             const pMs = toValidTimestampMs(p.time);
             const prevMs = toValidTimestampMs(prevP.time);
             if (pMs !== undefined && prevMs !== undefined) {
               const dt = (pMs - prevMs) / 1000;
-              if (dt > 0 && dt < 300) { // Ignore gaps > 5 mins
+              const segKm = Math.max(0, p.dist - prevP.dist);
+              if (dt > 0 && dt < 300 && !isRecordingPauseGap(dt, segKm, selectionMedianDtSec)) {
                 selectedEnergy += (prevP.power ?? 0) * dt;
                 selectionElapsedSecs += dt;
               }

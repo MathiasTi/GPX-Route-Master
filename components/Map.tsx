@@ -1031,14 +1031,16 @@ const Map: React.FC<MapProps> = ({
               if (!p) return null;
               const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
               const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-              if (isNaN(latVal) || isNaN(lngVal)) return null;
+              if (!Number.isFinite(latVal) || !Number.isFinite(lngVal)) return null;
+              if (Math.abs(latVal) > 90 || Math.abs(lngVal) > 180) return null;
+              if (Math.abs(latVal) < 0.0001 && Math.abs(lngVal) < 0.0001) return null;
               return { ...p, lat: latVal, lng: lngVal };
             })
             .filter((p): p is GPXPoint => p !== null);
           
           if (validPoints.length === 0) return null;
 
-          const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 1500);
+          const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 2500);
           const positions = renderPoints.map(p => [p.lat, p.lng] as [number, number]);
           
           let selectedPolylines: [number, number][][] = [];

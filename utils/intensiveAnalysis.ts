@@ -1,5 +1,13 @@
 import { GPXTrack, GPXPoint, TextMarker } from '../types';
-import { calculateDistance, findClimbs, getActiveClimbCriteria } from './gpxUtils';
+import {
+  calculateDistance,
+  findClimbs,
+  getActiveClimbCriteria,
+  estimateMedianSamplingIntervalSec,
+  isRecordingPauseGap,
+  computeActiveTrackStats,
+  detectTrackPauses
+} from './gpxUtils';
 
 export interface IntensiveClimb {
   index: number;
@@ -198,7 +206,17 @@ export function performLocalIntensiveAnalysis(
 
   // Calculate cumulative distances
   const cumDists = calculateCumulativeDistances(points);
-  const totalDist = cumDists.length > 0 ? cumDists[cumDists.length - 1] : track.distance || 0;
+  const rawTotalDist = cumDists.length > 0 ? cumDists[cumDists.length - 1] : track.distance || 0;
+  const activeStats = computeActiveTrackStats(points);
+  const pauseStats = detectTrackPauses(track);
+  const totalDist =
+    activeStats.hasTimestamps &&
+    activeStats.pauseDurationSeconds > 0 &&
+    activeStats.activeDistanceKm > 0.05
+      ? (track.distance && track.distance > 0 && track.distance <= activeStats.activeDistanceKm + 0.05
+          ? track.distance
+          : activeStats.activeDistanceKm)
+      : (track.distance && track.distance > 0 ? track.distance : rawTotalDist);
 
   let totalAscent = 0;
   let totalDescent = 0;
@@ -315,10 +333,29 @@ export function performLocalIntensiveAnalysis(
     totalMovingSeconds = Math.round((totalDist / (isCycling ? 24 : 10)) * 3600);
   }
 
-  // Elapsed time with rest factor
-  const restFactor = totalDist > 80 ? 1.15 : totalDist > 40 ? 1.08 : 1.04;
-  const totalElapsedSeconds = Math.round(totalMovingSeconds * restFactor);
-  const avgSpeedKmh = Number((totalDist / (totalMovingSeconds / 3600)).toFixed(1));
+  // Prefer authentic recorded moving time & distance over physics estimates when telemetry timestamps exist
+  const hasRecordedTiming = pauseStats.hasTimestamps && (pauseStats.netMovingSeconds > 0 || (track.duration !== undefined && track.duration > 0));
+  let totalElapsedSeconds: number;
+  if (hasRecordedTiming) {
+    const useActiveOverGross =
+      pauseStats.totalPauseSeconds > 0 &&
+      pauseStats.netMovingSeconds > 0 &&
+      (!track.duration || track.duration >= pauseStats.grossElapsedSeconds - 2);
+    totalMovingSeconds = useActiveOverGross
+      ? pauseStats.netMovingSeconds
+      : (track.duration && track.duration > 0 ? track.duration : pauseStats.netMovingSeconds);
+    totalElapsedSeconds = Math.max(Math.round(totalMovingSeconds), pauseStats.grossElapsedSeconds || Math.round(totalMovingSeconds));
+  } else if (track.duration && track.duration > 0) {
+    totalMovingSeconds = track.duration;
+    totalElapsedSeconds = Math.round(track.duration);
+  } else {
+    // Elapsed time with rest factor for planned routes without recorded timestamps
+    const restFactor = totalDist > 80 ? 1.15 : totalDist > 40 ? 1.08 : 1.04;
+    totalElapsedSeconds = Math.round(totalMovingSeconds * restFactor);
+  }
+  const avgSpeedKmh = totalMovingSeconds > 0
+    ? Number((totalDist / (totalMovingSeconds / 3600)).toFixed(1))
+    : 0;
 
   // Energy & Nutrition Calculations
   // Cycling: 1 Watt for 1 second = 1 Joule = 0.239 cal / gross human mechanical efficiency (~22%) -> 1 kJ work ~ 1.08 kcal
@@ -782,10 +819,34 @@ export function computeRealTrackSplits(
     });
   };
 
+  const medianDtSec = estimateMedianSamplingIntervalSec(points);
+
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const curr = points[i];
     const stepKm = calculateDistance(prev, curr);
+
+    let stepSec = 0;
+    let isPauseGap = false;
+    if (prev.time && curr.time) {
+      const t1 = prev.time instanceof Date ? prev.time.getTime() : new Date(prev.time).getTime();
+      const t2 = curr.time instanceof Date ? curr.time.getTime() : new Date(curr.time).getTime();
+      if (!isNaN(t1) && !isNaN(t2) && t2 > t1) {
+        const dt = (t2 - t1) / 1000;
+        if (dt >= 600 || isRecordingPauseGap(dt, stepKm, medianDtSec)) {
+          isPauseGap = true;
+        } else {
+          stepSec = dt;
+          splitTimeSec += dt;
+          splitRealTimeCount++;
+        }
+      }
+    }
+
+    if (isPauseGap) {
+      continue;
+    }
+
     accumDist += stepKm;
 
     if (curr.lat < minLat) minLat = curr.lat;
@@ -796,20 +857,6 @@ export function computeRealTrackSplits(
     const eleDiff = (curr.ele ?? 0) - (prev.ele ?? 0);
     if (eleDiff > 0) splitAscent += eleDiff;
     else splitDescent += Math.abs(eleDiff);
-
-    let stepSec = 0;
-    if (prev.time && curr.time) {
-      const t1 = prev.time instanceof Date ? prev.time.getTime() : new Date(prev.time).getTime();
-      const t2 = curr.time instanceof Date ? curr.time.getTime() : new Date(curr.time).getTime();
-      if (!isNaN(t1) && !isNaN(t2) && t2 > t1) {
-        const dt = (t2 - t1) / 1000;
-        if (dt < 600) {
-          stepSec = dt;
-          splitTimeSec += dt;
-          splitRealTimeCount++;
-        }
-      }
-    }
 
     if (curr.hr && curr.hr > 0) {
       hrSum += curr.hr;

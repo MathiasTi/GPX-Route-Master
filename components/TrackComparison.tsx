@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { X, Trophy, Zap, Heart, Clock, TrendingUp, TrendingDown, ArrowLeftRight, Activity, Percent, Compass, Navigation, Dumbbell, Flame, AlertCircle } from 'lucide-react';
 import { GPXTrack, GPXPoint } from '../types';
-import { calculateDistance, formatPace, getPaceString } from '../utils/gpxUtils';
+import { calculateDistance, formatPace, getPaceString, computeActiveTrackStats, estimateMedianSamplingIntervalSec, isRecordingPauseGap } from '../utils/gpxUtils';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 interface TrackComparisonProps {
@@ -29,6 +29,80 @@ function samplePoints<T>(points: T[], limit: number): T[] {
   return result;
 }
 
+function computeComparisonTrackStats(
+  track: GPXTrack | undefined,
+  estimatedSpeed: number,
+  userWeight: number
+) {
+  if (!track) return null;
+  const points = track.points;
+  const elevations = points.filter(p => p.ele !== undefined).map(p => p.ele!);
+  const hasElevation = elevations.length > 0;
+  const maxEle = hasElevation ? Math.max(...elevations) : 0;
+  const minEle = hasElevation ? Math.min(...elevations) : 0;
+  const avgEle = hasElevation ? elevations.reduce((a, b) => a + b, 0) / elevations.length : 0;
+
+  const hrs = points.filter(p => p.hr !== undefined).map(p => p.hr!);
+  const maxHr = hrs.length > 0 ? Math.max(...hrs) : 0;
+  const avgHr = hrs.length > 0 ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
+
+  const cadences = points.filter(p => p.cadence !== undefined && p.cadence > 0).map(p => p.cadence!);
+  const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0;
+
+  const activeStats = computeActiveTrackStats(points);
+  const medianDtSec = estimateMedianSamplingIntervalSec(points);
+  const speedPoints: number[] = [];
+
+  for (let i = 1; i < points.length; i++) {
+    const p1 = points[i - 1];
+    const p2 = points[i];
+    const distStep = calculateDistance(p1, p2);
+    if (p1.time && p2.time) {
+      const dt = (new Date(p2.time).getTime() - new Date(p1.time).getTime()) / 1000;
+      if (dt > 0 && dt < 120 && !isRecordingPauseGap(dt, distStep, medianDtSec)) {
+        const s = distStep / (dt / 3600);
+        if (s > 1 && s < 120) {
+          speedPoints.push(s);
+        }
+      }
+    }
+  }
+
+  const effectiveDistance =
+    track.distance > 0
+      ? (activeStats.hasTimestamps && activeStats.pauseDurationSeconds > 0 && activeStats.activeDistanceKm > 0.05 && track.distance > activeStats.activeDistanceKm + 0.05
+          ? activeStats.activeDistanceKm
+          : track.distance)
+      : activeStats.activeDistanceKm;
+
+  const durationSecs =
+    track.duration && track.duration > 0
+      ? (activeStats.hasTimestamps && activeStats.pauseDurationSeconds > 0 && activeStats.activeDurationSeconds > 0 && track.duration >= activeStats.grossElapsedSeconds - 2
+          ? activeStats.activeDurationSeconds
+          : track.duration)
+      : (activeStats.activeDurationSeconds || (effectiveDistance / estimatedSpeed) * 3600);
+
+  const avgSpeed = durationSecs > 0 ? (effectiveDistance / (durationSecs / 3600)) : estimatedSpeed;
+  const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
+
+  const isRunning = track.activityType === 'running';
+  let met = 4;
+  if (isRunning) {
+    if (avgSpeed > 12) met = 12.5;
+    else if (avgSpeed > 10) met = 11;
+    else if (avgSpeed > 8) met = 9;
+    else met = 8;
+  } else {
+    if (avgSpeed > 30) met = 12;
+    else if (avgSpeed > 25) met = 10;
+    else if (avgSpeed > 20) met = 8;
+    else if (avgSpeed > 15) met = 6;
+  }
+
+  const calories = Math.round(met * userWeight * (durationSecs / 3600));
+  return { hasElevation, maxEle, minEle, avgEle, maxHr, avgHr, avgCadence, avgSpeed, maxSpeed, calories, durationSecs };
+}
+
 export const TrackComparison: React.FC<TrackComparisonProps> = ({
   tracks,
   onClose,
@@ -43,155 +117,8 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
   const track1 = useMemo(() => tracks.find(t => t.id === track1Id), [tracks, track1Id]);
   const track2 = useMemo(() => tracks.find(t => t.id === track2Id), [tracks, track2Id]);
 
-  const stats1 = useMemo(() => {
-    if (!track1) return null;
-    const points = track1.points;
-    const hasElevation = points.some(p => p.ele !== undefined);
-    
-    const elevations = points.filter(p => p.ele !== undefined).map(p => p.ele!);
-    const maxEle = elevations.length > 0 ? Math.max(...elevations) : 0;
-    const minEle = elevations.length > 0 ? Math.min(...elevations) : 0;
-    const avgEle = elevations.length > 0 ? elevations.reduce((a, b) => a + b, 0) / elevations.length : 0;
-
-    const hrs = points.filter(p => p.hr !== undefined).map(p => p.hr!);
-    const maxHr = hrs.length > 0 ? Math.max(...hrs) : 0;
-    const avgHr = hrs.length > 0 ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
-
-    const cadences = points.filter(p => p.cadence !== undefined && p.cadence > 0).map(p => p.cadence!);
-    const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0;
-
-    let totalDist = 0;
-    let totalMovingTime = 0;
-    const speedPoints: number[] = [];
-    
-    for (let i = 1; i < points.length; i++) {
-      const p1 = points[i - 1];
-      const p2 = points[i];
-      const distStep = calculateDistance(p1, p2);
-      totalDist += distStep;
-
-      if (p1.time && p2.time) {
-        const dt = (new Date(p2.time).getTime() - new Date(p1.time).getTime()) / 1000;
-        if (dt > 0 && dt < 120) {
-          totalMovingTime += dt;
-          const s = distStep / (dt / 3600);
-          if (s > 1 && s < 120) {
-            speedPoints.push(s);
-          }
-        }
-      }
-    }
-
-    const durationSecs = track1.duration || totalMovingTime || (track1.distance / estimatedSpeed) * 3600;
-    const avgSpeed = durationSecs > 0 ? (track1.distance / (durationSecs / 3600)) : estimatedSpeed;
-    const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
-
-    const isRunning = track1?.activityType === 'running';
-    let met = 4;
-    if (isRunning) {
-      if (avgSpeed > 12) met = 12.5;
-      else if (avgSpeed > 10) met = 11;
-      else if (avgSpeed > 8) met = 9;
-      else met = 8;
-    } else {
-      if (avgSpeed > 30) met = 12;
-      else if (avgSpeed > 25) met = 10;
-      else if (avgSpeed > 20) met = 8;
-      else if (avgSpeed > 15) met = 6;
-    }
-    
-    const durationHours = durationSecs / 3600;
-    const calories = Math.round(met * userWeight * durationHours);
-
-    return {
-      hasElevation,
-      maxEle,
-      minEle,
-      avgEle,
-      maxHr,
-      avgHr,
-      avgCadence,
-      avgSpeed,
-      maxSpeed,
-      calories,
-      durationSecs
-    };
-  }, [track1, estimatedSpeed, userWeight]);
-
-  const stats2 = useMemo(() => {
-    if (!track2) return null;
-    const points = track2.points;
-    const hasElevation = points.some(p => p.ele !== undefined);
-    
-    const elevations = points.filter(p => p.ele !== undefined).map(p => p.ele!);
-    const maxEle = elevations.length > 0 ? Math.max(...elevations) : 0;
-    const minEle = elevations.length > 0 ? Math.min(...elevations) : 0;
-    const avgEle = elevations.length > 0 ? elevations.reduce((a, b) => a + b, 0) / elevations.length : 0;
-
-    const hrs = points.filter(p => p.hr !== undefined).map(p => p.hr!);
-    const maxHr = hrs.length > 0 ? Math.max(...hrs) : 0;
-    const avgHr = hrs.length > 0 ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
-
-    const cadences = points.filter(p => p.cadence !== undefined && p.cadence > 0).map(p => p.cadence!);
-    const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0;
-
-    let totalDist = 0;
-    let totalMovingTime = 0;
-    const speedPoints: number[] = [];
-    
-    for (let i = 1; i < points.length; i++) {
-      const p1 = points[i - 1];
-      const p2 = points[i];
-      const distStep = calculateDistance(p1, p2);
-      totalDist += distStep;
-
-      if (p1.time && p2.time) {
-        const dt = (new Date(p2.time).getTime() - new Date(p1.time).getTime()) / 1000;
-        if (dt > 0 && dt < 120) {
-          totalMovingTime += dt;
-          const s = distStep / (dt / 3600);
-          if (s > 1 && s < 120) {
-            speedPoints.push(s);
-          }
-        }
-      }
-    }
-
-    const durationSecs = track2.duration || totalMovingTime || (track2.distance / estimatedSpeed) * 3600;
-    const avgSpeed = durationSecs > 0 ? (track2.distance / (durationSecs / 3600)) : estimatedSpeed;
-    const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
-
-    const isRunning = track2?.activityType === 'running';
-    let met = 4;
-    if (isRunning) {
-      if (avgSpeed > 12) met = 12.5;
-      else if (avgSpeed > 10) met = 11;
-      else if (avgSpeed > 8) met = 9;
-      else met = 8;
-    } else {
-      if (avgSpeed > 30) met = 12;
-      else if (avgSpeed > 25) met = 10;
-      else if (avgSpeed > 20) met = 8;
-      else if (avgSpeed > 15) met = 6;
-    }
-    
-    const durationHours = durationSecs / 3600;
-    const calories = Math.round(met * userWeight * durationHours);
-
-    return {
-      hasElevation,
-      maxEle,
-      minEle,
-      avgEle,
-      maxHr,
-      avgHr,
-      avgCadence,
-      avgSpeed,
-      maxSpeed,
-      calories,
-      durationSecs
-    };
-  }, [track2, estimatedSpeed, userWeight]);
+  const stats1 = useMemo(() => computeComparisonTrackStats(track1, estimatedSpeed, userWeight), [track1, estimatedSpeed, userWeight]);
+  const stats2 = useMemo(() => computeComparisonTrackStats(track2, estimatedSpeed, userWeight), [track2, estimatedSpeed, userWeight]);
 
   // Detailed sport modalities identification
   const isRun1 = track1?.activityType === 'running';

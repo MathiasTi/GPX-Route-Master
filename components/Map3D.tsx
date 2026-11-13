@@ -220,7 +220,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             geometry: {
               type: 'LineString' as const,
               coordinates: track.points
-                .filter(p => p && p.lng !== undefined && p.lat !== undefined)
+                .filter(p => p && Number.isFinite(p.lat) && Number.isFinite(p.lng) && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180 && !(Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001))
                 .map(p => [p.lng, p.lat])
             }
           }
@@ -231,7 +231,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
       if (track.id === markedTrackId && selectionBounds) {
         let currentLine: number[][] = [];
         track.points.forEach(p => {
-          if (!p || p.lat === undefined || p.lng === undefined) return;
+          if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lng) || Math.abs(p.lat) > 90 || Math.abs(p.lng) > 180 || (Math.abs(p.lat) < 0.0001 && Math.abs(p.lng) < 0.0001)) return;
           const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
                            p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
           if (inBounds) {

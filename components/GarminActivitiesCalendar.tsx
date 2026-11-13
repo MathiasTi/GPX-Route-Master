@@ -1,10 +1,28 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Calendar, Download, FileText, Check, MapPin, 
   ArrowLeft, ArrowRight, Activity, Clock, Flame, 
   Heart, ArrowUpRight, Info, HelpCircle, FileSpreadsheet, FileCode, Sliders, Bell
 } from 'lucide-react';
 import { motion } from 'motion/react';
+
+function extractDatePrefix(dateStr: string | undefined): string {
+  if (!dateStr) return '';
+  return String(dateStr).trim().slice(0, 10);
+}
+
+function parseSafeActivityDate(dateStr: string | undefined): Date | null {
+  if (!dateStr) return null;
+  const normalized = String(dateStr).trim().replace(' ', 'T');
+  const d = new Date(normalized);
+  if (!isNaN(d.getTime())) return d;
+  const prefix = extractDatePrefix(dateStr);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(prefix)) {
+    const [y, m, day] = prefix.split('-').map(Number);
+    return new Date(y, m - 1, day, 12, 0, 0);
+  }
+  return null;
+}
 
 interface GarminActivity {
   id: string;
@@ -47,25 +65,19 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
   activities, 
   onLoadActivity 
 }) => {
-  // Use metadata-provided current date as reference, or maximum activity date
+  // Use latest activity date as reference, or current date
   const referenceDate = useMemo(() => {
-    // 2026-07-15 is the user's current sandbox time, let's use that as primary reference for "last 30 days"
-    const metaDate = new Date("2026-07-15T04:43:32-07:00");
-    
-    // Self-healing check: if activities are historical (e.g. from 2024 or 2025), let's set the reference to the latest activity date
+    const now = new Date();
     if (activities.length > 0) {
-      const sorted = [...activities]
-        .filter(a => a.date)
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      if (sorted.length > 0) {
-        const latestActDate = new Date(sorted[0].date);
-        // If the latest activity is older than the sandbox time, use the latest activity's date so the user gets relevant "last 30 days"
-        if (latestActDate.getTime() > metaDate.getTime() || (metaDate.getTime() - latestActDate.getTime()) > 60 * 24 * 60 * 60 * 1000) {
-          return latestActDate;
-        }
+      const validDates = activities
+        .map(a => parseSafeActivityDate(a.date))
+        .filter((d): d is Date => d !== null)
+        .sort((a, b) => b.getTime() - a.getTime());
+      if (validDates.length > 0) {
+        return validDates[0];
       }
     }
-    return metaDate;
+    return now;
   }, [activities]);
 
   // Compute 30 days window start
@@ -78,9 +90,8 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
   // Filter activities in the last 30 days for top-bar statistics
   const last30DaysActivities = useMemo(() => {
     return activities.filter(act => {
-      if (!act.date) return false;
-      const actDate = new Date(act.date);
-      return actDate >= thirtyDaysAgo && actDate <= referenceDate;
+      const actDate = parseSafeActivityDate(act.date);
+      return actDate !== null && actDate >= thirtyDaysAgo && actDate <= referenceDate;
     });
   }, [activities, thirtyDaysAgo, referenceDate]);
 
@@ -90,6 +101,13 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
   const [selectedDayStr, setSelectedDayStr] = useState<string | null>(
     referenceDate.toISOString().split('T')[0]
   );
+
+  // Sync displayed month to the latest activity's month when activities finish loading
+  useEffect(() => {
+    setCurrentYear(referenceDate.getFullYear());
+    setCurrentMonth(referenceDate.getMonth());
+    setSelectedDayStr(referenceDate.toISOString().split('T')[0]);
+  }, [referenceDate]);
   
   // Export Konfigurator States
   const [exportFormat, setExportFormat] = useState<'ics' | 'csv' | 'md' | 'json'>('ics');
@@ -121,8 +139,8 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
   const activitiesByDate = useMemo(() => {
     const map = new Map<string, GarminActivity[]>();
     activities.forEach(act => {
-      if (!act.date) return;
-      const dStr = act.date.split('T')[0];
+      const dStr = extractDatePrefix(act.date);
+      if (!dStr) return;
       const existing = map.get(dStr) || [];
       existing.push(act);
       map.set(dStr, existing);
@@ -271,7 +289,7 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
     
     // Generate clean filename
     const sanitizedName = (act.name || 'aktivitaet').toLowerCase().replace(/[^a-z0-9]/g, '_');
-    link.setAttribute('download', `garmin_${act.date.split('T')[0]}_${sanitizedName}.ics`);
+    link.setAttribute('download', `garmin_${extractDatePrefix(act.date)}_${sanitizedName}.ics`);
     
     document.body.appendChild(link);
     link.click();
@@ -289,7 +307,7 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
     const headers = ["ID", "Datum", "Name", "Sportart", "Distanz (km)", "Dauer (Sekunden)", "Dauer (Formatiert)", "Kalorien (kcal)", "Puls (Avg)", "Ort", "Beschreibung"];
     const rows = acts.map(act => [
       act.id,
-      act.date.split('T')[0],
+      extractDatePrefix(act.date),
       `"${(act.name || '').replace(/"/g, '""')}"`,
       act.type || 'Aktivität',
       act.distance.toFixed(2),
@@ -344,11 +362,11 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
     ];
     
     // Sort chronologically
-    const sortedActs = [...acts].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const sortedActs = [...acts].sort((a, b) => (parseSafeActivityDate(a.date)?.getTime() || 0) - (parseSafeActivityDate(b.date)?.getTime() || 0));
     
     sortedActs.forEach(act => {
       const typeStr = isRunningType(act.type, act.name) ? '🏃 Laufen' : isCyclingType(act.type, act.name) ? '🚴 Radsport' : '⏱️ Andere';
-      mdLines.push(`| ${act.date.split('T')[0]} | ${typeStr} | ${act.name || 'Einheit'} | ${act.distance.toFixed(2)} km | ${formatDurationText(act.duration)} | ${act.avg_hr ? `${act.avg_hr} bpm` : '-'} | ${act.location || '-'} |`);
+      mdLines.push(`| ${extractDatePrefix(act.date)} | ${typeStr} | ${act.name || 'Einheit'} | ${act.distance.toFixed(2)} km | ${formatDurationText(act.duration)} | ${act.avg_hr ? `${act.avg_hr} bpm` : '-'} | ${act.location || '-'} |`);
     });
     
     mdLines.push(
@@ -394,16 +412,14 @@ export const GarminActivitiesCalendar: React.FC<GarminActivitiesCalendarProps> =
     if (rangeType === 'all') return acts;
     if (rangeType === '30days') {
       return acts.filter(act => {
-        if (!act.date) return false;
-        const actDate = new Date(act.date);
-        return actDate >= thirtyDaysAgo && actDate <= referenceDate;
+        const actDate = parseSafeActivityDate(act.date);
+        return actDate !== null && actDate >= thirtyDaysAgo && actDate <= referenceDate;
       });
     }
     if (rangeType === 'current_month') {
       return acts.filter(act => {
-        if (!act.date) return false;
-        const actDate = new Date(act.date);
-        return actDate.getFullYear() === currentYear && actDate.getMonth() === currentMonth;
+        const actDate = parseSafeActivityDate(act.date);
+        return actDate !== null && actDate.getFullYear() === currentYear && actDate.getMonth() === currentMonth;
       });
     }
     return acts;

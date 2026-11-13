@@ -64,12 +64,28 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   const [deleteSyncedDataWithKey, setDeleteSyncedDataWithKey] = useState(false);
   const [isSyncingActivities, setIsSyncingActivities] = useState(false);
   const [isSyncingHealth, setIsSyncingHealth] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{
+    active: boolean;
+    phase: string;
+    message: string;
+    percent: number;
+    updatedAt?: string;
+    stats: {
+      newActivities: number;
+      updatedActivities: number;
+      skippedDuplicates: number;
+      fitDownloaded: number;
+      fitRepaired: number;
+      fitFailed: number;
+      healthDays: number;
+    };
+  } | null>(null);
   const [downloadingFitId, setDownloadingFitId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null);
 
   // Unified Search & Explorer state
   const [explorerMode, setExplorerMode] = useState<'activities' | 'health'>('activities');
-  const [healthCategory, setHealthCategory] = useState<'sleep' | 'rhr' | 'stress' | 'steps' | 'weight'>('sleep');
+  const [healthCategory, setHealthCategory] = useState<'sleep' | 'rhr' | 'stress' | 'steps'>('sleep');
   const [searchQuery, setSearchQuery] = useState('');
   const [sportFilter, setSportFilter] = useState<'all' | 'cycling' | 'running' | 'hiking'>('all');
   const [minDistance, setMinDistance] = useState<string>('');
@@ -84,8 +100,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
     rhr: any[];
     stress: any[];
     steps: any[];
-    weight: any[];
-  }>({ sleep: [], rhr: [], stress: [], steps: [], weight: [] });
+  }>({ sleep: [], rhr: [], stress: [], steps: [] });
 
   const skipNextStatusRefreshRef = useRef(false);
 
@@ -140,8 +155,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
             sleep: Array.isArray(json.health.sleep) ? json.health.sleep : [],
             rhr: Array.isArray(json.health.rhr) ? json.health.rhr : [],
             stress: Array.isArray(json.health.stress) ? json.health.stress : [],
-            steps: Array.isArray(json.health.steps) ? json.health.steps : [],
-            weight: Array.isArray(json.health.weight) ? json.health.weight : []
+            steps: Array.isArray(json.health.steps) ? json.health.steps : []
           });
         }
       }
@@ -167,6 +181,31 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   useEffect(() => {
     executeSearch();
   }, [executeSearch]);
+
+  useEffect(() => {
+    if (!isSyncingActivities && !isSyncingHealth) return;
+    let cancelled = false;
+
+    const pollProgress = async () => {
+      try {
+        const res = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress'));
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled && json?.success && json.progress) {
+          setSyncProgress(json.progress);
+        }
+      } catch {
+        // Ignore transient polling errors
+      }
+    };
+
+    pollProgress();
+    const timer = window.setInterval(pollProgress, 450);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isSyncingActivities, isSyncingHealth]);
 
   const applyDatePreset = (days: number) => {
     const end = new Date();
@@ -357,10 +396,22 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       });
       const json = await res.json();
       if (json.success) {
+        const parts = [
+          `${json.newActivities ?? json.syncedCount ?? 0} neu`,
+          `${json.updatedActivities ?? 0} aktualisiert`,
+          `${json.skippedDuplicates ?? 0} Dupletten übersprungen`,
+          `${json.fitDownloadedCount ?? 0} FIT-Routen dekodiert`
+        ];
+        if ((json.fitRepairedCount ?? 0) > 0) {
+          parts.push(`${json.fitRepairedCount} FIT-Dateien repariert`);
+        }
         setFeedback({
           type: 'success',
-          message: `${json.syncedCount} Aktivitäten synchronisiert (${json.fitDownloadedCount} FIT-Routen direkt dekodiert).`
+          message: `Aktivitäten-Sync abgeschlossen: ${parts.join(' · ')}.`
         });
+        const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
+        const progJson = progRes ? await progRes.json().catch(() => null) : null;
+        if (progJson?.success && progJson.progress) setSyncProgress(progJson.progress);
         await fetchStatus();
         await executeSearch();
         onDataSynced?.();
@@ -387,7 +438,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       if (json.success) {
         setFeedback({
           type: 'success',
-          message: `Gesundheitsdaten synchronisiert: ${json.sleepCount} Schlaf, ${json.rhrCount} Ruhepuls, ${json.stressCount} Stress, ${json.stepsCount} Schritte, ${json.weightCount} Gewicht.`
+          message: `Gesundheitsdaten synchronisiert: ${json.sleepCount} Schlaf, ${json.rhrCount} Ruhepuls, ${json.stressCount} Stress, ${json.stepsCount} Schritte.`
         });
         await fetchStatus();
         await executeSearch();
@@ -425,7 +476,9 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       if (actJson.success || healthJson.success) {
         const parts: string[] = [];
         if (actJson.success) {
-          parts.push(`${actJson.syncedCount} Aktivitäten (${actJson.fitDownloadedCount} FIT)`);
+          const dupNote = (actJson.skippedDuplicates ?? 0) > 0 ? `, ${actJson.skippedDuplicates} Dupletten übersprungen` : '';
+          const repNote = (actJson.fitRepairedCount ?? 0) > 0 ? `, ${actJson.fitRepairedCount} FIT repariert` : '';
+          parts.push(`${actJson.syncedCount} Aktivitäten (${actJson.fitDownloadedCount} FIT${dupNote}${repNote})`);
         }
         if (healthJson.success) {
           parts.push(`${healthJson.sleepCount} Schlaf · ${healthJson.rhrCount} RHR · ${healthJson.stepsCount} Schritte`);
@@ -434,6 +487,9 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
           type: 'success',
           message: `Komplett-Synchronisation abgeschlossen: ${parts.join(' | ')}`
         });
+        const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
+        const progJson = progRes ? await progRes.json().catch(() => null) : null;
+        if (progJson?.success && progJson.progress) setSyncProgress(progJson.progress);
         await fetchStatus();
         await executeSearch();
         onDataSynced?.();
@@ -467,9 +523,15 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
               time: pt.time ? new Date(pt.time) : undefined
             }))
           };
+          const repairNote =
+            json.integrityStatus === 'repaired' && Array.isArray(json.repairedIssues) && json.repairedIssues.length > 0
+              ? ` · Automatisch repariert (${json.repairedIssues.join(', ')})`
+              : json.sourceFormat === 'json_details'
+              ? ' · JSON-Stream-Fallback'
+              : '';
           setFeedback({
-            type: 'success',
-            message: `FIT-Strecke "${hydratedTrack.name}" (${json.pointsCount} GPS-Punkte) geladen.`
+            type: json.integrityStatus === 'repaired' ? 'warning' : 'success',
+            message: `FIT-Strecke "${hydratedTrack.name}" (${json.pointsCount} GPS-Punkte${repairNote}) geladen.`
           });
           onLoadTrack?.(hydratedTrack);
           onCloseModal?.();
@@ -545,11 +607,8 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
     const avgSteps = searchedHealth.steps.length > 0
       ? Math.round(searchedHealth.steps.reduce((acc, s) => acc + Number(s.steps || 0), 0) / searchedHealth.steps.length)
       : null;
-    const latestWeight = searchedHealth.weight.length > 0
-      ? Number(searchedHealth.weight[0].weight).toFixed(1)
-      : null;
 
-    return { avgRhr, avgSleepMin, avgStress, avgSteps, latestWeight };
+    return { avgRhr, avgSleepMin, avgStress, avgSteps };
   }, [searchedHealth]);
 
   return (
@@ -899,6 +958,71 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
             <span>Nur Gesundheitsdaten abrufen</span>
           </button>
         </div>
+
+        {/* Live Cloud Sync Status Card */}
+        {(isSyncingActivities || isSyncingHealth || syncProgress) && (
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-100 min-w-0">
+                {isSyncingActivities || isSyncingHealth || syncProgress?.active ? (
+                  <RefreshCw className="w-4 h-4 text-sky-500 animate-spin shrink-0" />
+                ) : syncProgress?.phase === 'error' ? (
+                  <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                ) : (
+                  <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0" />
+                )}
+                <span className="truncate">
+                  {syncProgress?.message || 'Synchronisiere mit Garmin Connect Cloud...'}
+                </span>
+              </div>
+              <span className="text-xs font-mono font-bold text-sky-600 dark:text-sky-400 shrink-0">
+                {Math.min(100, Math.max(0, syncProgress?.percent ?? (isSyncingActivities || isSyncingHealth ? 15 : 100)))}%
+              </span>
+            </div>
+
+            <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 rounded-full ${
+                  syncProgress?.phase === 'error'
+                    ? 'bg-red-500'
+                    : syncProgress?.phase === 'done' && !isSyncingActivities && !isSyncingHealth
+                    ? 'bg-emerald-500'
+                    : 'bg-sky-500'
+                }`}
+                style={{
+                  width: `${Math.min(100, Math.max(5, syncProgress?.percent ?? (isSyncingActivities || isSyncingHealth ? 15 : 100)))}%`
+                }}
+              />
+            </div>
+
+            {syncProgress?.stats && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+                <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
+                  Neu: {syncProgress.stats.newActivities}
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300">
+                  Aktualisiert: {syncProgress.stats.updatedActivities}
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+                  Dupletten übersprungen: {syncProgress.stats.skippedDuplicates}
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300">
+                  FIT dekodiert: {syncProgress.stats.fitDownloaded}
+                </span>
+                {syncProgress.stats.fitRepaired > 0 && (
+                  <span className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300">
+                    FIT repariert: {syncProgress.stats.fitRepaired}
+                  </span>
+                )}
+                {syncProgress.stats.healthDays > 0 && (
+                  <span className="px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300">
+                    Health-Tage: {syncProgress.stats.healthDays}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Section 3: Unified Search & Filter Explorer */}
@@ -1127,7 +1251,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
           /* Health Metrics Explorer */
           <div className="space-y-4">
             {/* Summary KPI Row */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 font-mono tabular-nums">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
               <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
                 <div className="text-xs font-sans font-semibold text-slate-700 dark:text-slate-300">Ø Schlafdauer</div>
                 <div className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
@@ -1169,16 +1293,6 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                   {searchedHealth.steps.length} Tage erfasst
                 </div>
               </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
-                <div className="text-xs font-sans font-semibold text-slate-700 dark:text-slate-300">Aktuelles Gewicht</div>
-                <div className="text-base font-bold text-sky-600 dark:text-sky-400 mt-0.5">
-                  {healthSummaryStats.latestWeight ? `${healthSummaryStats.latestWeight} kg` : '—'}
-                </div>
-                <div className="text-[11px] font-sans text-slate-600 dark:text-slate-400">
-                  {searchedHealth.weight.length} Messungen
-                </div>
-              </div>
             </div>
 
             {/* Category Selector */}
@@ -1187,8 +1301,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                 { id: 'sleep', label: `Schlaf (${searchedHealth.sleep.length})` },
                 { id: 'rhr', label: `Ruhepuls (${searchedHealth.rhr.length})` },
                 { id: 'stress', label: `Stress (${searchedHealth.stress.length})` },
-                { id: 'steps', label: `Schritte (${searchedHealth.steps.length})` },
-                { id: 'weight', label: `Gewicht (${searchedHealth.weight.length})` }
+                { id: 'steps', label: `Schritte (${searchedHealth.steps.length})` }
               ].map((cat) => (
                 <button
                   key={cat.id}
@@ -1239,14 +1352,6 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                       <th className="py-2.5 px-3 text-right">Distanz (km)</th>
                     </tr>
                   )}
-                  {healthCategory === 'weight' && (
-                    <tr>
-                      <th className="py-2.5 px-3">Datum</th>
-                      <th className="py-2.5 px-3 text-right">Gewicht (kg)</th>
-                      <th className="py-2.5 px-3 text-right">BMI</th>
-                      <th className="py-2.5 px-3 text-right">Körperfett (%)</th>
-                    </tr>
-                  )}
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-800 dark:text-slate-200">
                   {healthCategory === 'sleep' &&
@@ -1289,17 +1394,6 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                         </td>
                         <td className="py-2 px-3 text-right">{row.calories ? `${Math.round(row.calories)} kcal` : '—'}</td>
                         <td className="py-2 px-3 text-right">{row.distance ? `${Number(row.distance).toFixed(2)} km` : '—'}</td>
-                      </tr>
-                    ))}
-                  {healthCategory === 'weight' &&
-                    searchedHealth.weight.map((row: any, i: number) => (
-                      <tr key={`${row.date}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-2 px-3">{row.date}</td>
-                        <td className="py-2 px-3 text-right font-semibold text-sky-600 dark:text-sky-400">
-                          {Number(row.weight || 0).toFixed(1)} kg
-                        </td>
-                        <td className="py-2 px-3 text-right">{row.bmi ? Number(row.bmi).toFixed(1) : '—'}</td>
-                        <td className="py-2 px-3 text-right">{row.body_fat ? `${Number(row.body_fat).toFixed(1)} %` : '—'}</td>
                       </tr>
                     ))}
                 </tbody>

@@ -9,8 +9,11 @@ import {
   bulkDeleteCatalogActivities,
   repairStoredActivityDates,
   repairGarminSeedPointStubs,
+  findExistingActivityDuplicate,
+  deduplicateGarminAndLibraryTracks,
   db
 } from '../utils/db';
+import { parseFIT } from '../utils/fitUtils';
 import { hydrateGarminActivityPayload, hydrateLibraryTrackPayload } from '../utils/activityHydration';
 import { hasRealGpsData, parseGPXStream } from '../utils/gpxUtils';
 
@@ -439,6 +442,133 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     assert(
       afterStubRepair.items[0]?.hasGps === false,
       'Expected cleared 2-point Garmin stub to have hasGps === false in catalog'
+    );
+
+    // 1) Duplicate detection test (ID & timestamp/distance/duration fingerprint)
+    saveGarminActivity(
+      'garmin-dup-999',
+      'Morgenrunde Tirol',
+      'cycling',
+      '2026-09-05T08:30:00Z',
+      42.5,
+      5400,
+      820,
+      815,
+      1100,
+      148,
+      'Test',
+      'Innsbruck',
+      JSON.stringify([
+        { lat: 47.2692, lng: 11.4041, ele: 574 },
+        { lat: 47.2705, lng: 11.4082, ele: 580 },
+        { lat: 47.2720, lng: 11.4125, ele: 590 }
+      ]),
+      testUser
+    );
+    const dupById = findExistingActivityDuplicate(
+      { id: 'garmin-dup-999', date: '2026-09-05T08:30:00Z', distanceKm: 42.5, durationSec: 5400 },
+      testUser
+    );
+    assert(
+      dupById.matched && dupById.hasDetailedGps === true,
+      'Expected findExistingActivityDuplicate to match by ID with detailed GPS'
+    );
+    const dupByFingerprint = findExistingActivityDuplicate(
+      { id: 'different-sync-id-123', date: '2026-09-05T08:30:45Z', distanceKm: 42.52, durationSec: 5410 },
+      testUser
+    );
+    assert(
+      dupByFingerprint.matched && dupByFingerprint.existingId === 'garmin-dup-999',
+      `Expected fingerprint duplicate match to resolve to garmin-dup-999, got ${dupByFingerprint.existingId}`
+    );
+
+    // 2) FIT corruption salvage & auto-repair test (unfinalized dataSize=0 + truncated trailing record)
+    const buildCorruptFitBuffer = (): ArrayBuffer => {
+      const bytes: number[] = [];
+      // 14-byte FIT header with dataSize = 0 (unfinalized) and '.FIT' signature
+      bytes.push(14, 0x20, 0x00, 0x08, 0, 0, 0, 0, 0x2e, 0x46, 0x49, 0x54, 0, 0);
+      // Definition message for globalMsg 20 (record): localMsg 0, 3 fields (lat sint32, lng sint32, alt uint16)
+      bytes.push(0x40, 0x00, 0x00, 20, 0, 3);
+      bytes.push(0, 4, 0x85); // position_lat
+      bytes.push(1, 4, 0x85); // position_long
+      bytes.push(2, 2, 0x84); // altitude
+      const pushInt32LE = (v: number) => {
+        const b = new ArrayBuffer(4);
+        new DataView(b).setInt32(0, v, true);
+        bytes.push(...new Uint8Array(b));
+      };
+      const pushUint16LE = (v: number) => {
+        const b = new ArrayBuffer(2);
+        new DataView(b).setUint16(0, v, true);
+        bytes.push(...new Uint8Array(b));
+      };
+      const degToSemi = (deg: number) => Math.round((deg * Math.pow(2, 31)) / 180);
+      // 3 valid record points in Innsbruck
+      for (let i = 0; i < 3; i++) {
+        bytes.push(0x00); // data record localMsg 0
+        pushInt32LE(degToSemi(47.2692 + i * 0.001));
+        pushInt32LE(degToSemi(11.4041 + i * 0.001));
+        pushUint16LE(Math.round((580 + i * 5 + 500) * 5));
+      }
+      // Truncated trailing data record (only header + 3 bytes instead of 11)
+      bytes.push(0x00, 0x11, 0x22, 0x33);
+      return new Uint8Array(bytes).buffer;
+    };
+    const repairedFit = await parseFIT(buildCorruptFitBuffer(), 'corrupt_unfinalized.fit');
+    assert(repairedFit !== null && repairedFit.points.length === 3, `Expected parseFIT to salvage 3 points from unfinalized/truncated FIT, got ${repairedFit?.points.length}`);
+    const fitMeta = (repairedFit?.rawFileDetails?.metadata || {}) as any;
+    assert(
+      fitMeta.integrityStatus === 'repaired' && Array.isArray(fitMeta.repairedIssues) && fitMeta.repairedIssues.length >= 2,
+      `Expected repaired integrityStatus and issues on salvaged FIT, got ${JSON.stringify(fitMeta)}`
+    );
+
+    // 3) Library vs Garmin deduplication test (UUID tracks row matching garmin_activities merges GPS & removes duplicate)
+    saveGarminActivity(
+      'garmin-merge-777',
+      'Kufstein Gravel',
+      'cycling',
+      '2026-09-10T09:00:00Z',
+      38.4,
+      4800,
+      610,
+      610,
+      950,
+      142,
+      'Gravel',
+      'Kufstein',
+      undefined,
+      testUser
+    );
+    saveTrack(
+      {
+        id: 'uuid-dup-track-777',
+        name: 'Kufstein Gravel',
+        distance: 38.4,
+        ascent: 610,
+        descent: 610,
+        duration: 4800,
+        activityType: 'cycling',
+        dateCreated: '2026-09-10T09:00:00Z',
+        originalFilename: 'garmin_garmin-merge-777.fit',
+        points: [
+          { lat: 47.583, lng: 12.169, ele: 499 },
+          { lat: 47.586, lng: 12.174, ele: 510 },
+          { lat: 47.590, lng: 12.180, ele: 525 }
+        ]
+      },
+      testUser
+    );
+    const dedupRes = deduplicateGarminAndLibraryTracks(testUser);
+    assert(
+      dedupRes.removedCount >= 1 && dedupRes.gpsMergedCount >= 1,
+      `Expected deduplicateGarminAndLibraryTracks to remove duplicate track and merge GPS, got ${JSON.stringify(dedupRes)}`
+    );
+    const afterDedupQuery = queryActivitiesCatalog({ q: 'Kufstein Gravel' }, testUser);
+    assert(
+      afterDedupQuery.totalCount === 1 &&
+        afterDedupQuery.items[0]?.source === 'garmin' &&
+        afterDedupQuery.items[0]?.hasGps === true,
+      `Expected 1 merged garmin entry with GPS after dedup, got ${JSON.stringify(afterDedupQuery.items)}`
     );
 
     // Clean up extra test rows

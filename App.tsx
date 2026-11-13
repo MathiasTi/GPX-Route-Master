@@ -38,7 +38,6 @@ const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'activities',
   'analytics',
   'sleep',
-  'weight',
   'rhr',
   'steps',
   'stress'
@@ -1280,7 +1279,7 @@ const App: React.FC = () => {
 
   const handleLoadCatalogTracksToMap = useCallback((
     loadedTracks: GPXTrack[],
-    options?: { jumpToMap?: boolean; fitToTracks?: boolean }
+    options?: { jumpToMap?: boolean; fitToTracks?: boolean; openStatsModal?: boolean }
   ) => {
     if (!loadedTracks || loadedTracks.length === 0) return;
 
@@ -1328,11 +1327,14 @@ const App: React.FC = () => {
       setIsProfileCollapsed(false);
     }
 
-    if (options?.jumpToMap !== false) {
-      navigateWorkspace('map');
-    }
-
     const gpsTracks = hydratedPrepared.filter((tr) => hasRealGpsData(tr));
+
+    if (options?.jumpToMap !== false && !options?.openStatsModal && gpsTracks.length > 0) {
+      navigateWorkspace('map');
+    } else if (options?.openStatsModal || gpsTracks.length === 0) {
+      setIntensiveAnalysisTab('overview');
+      setIntensiveAnalysisOpen(true);
+    }
 
     if (options?.fitToTracks !== false && gpsTracks.length > 0) {
       let minLat = Infinity;
@@ -1977,7 +1979,12 @@ const App: React.FC = () => {
             onTabChange={handleFitnessTabChange}
             onLoadTrack={(tr) => {
               handleLoadLibraryTrack(tr);
-              navigateWorkspace('map');
+              if (hasRealGpsData(tr)) {
+                navigateWorkspace('map');
+              } else {
+                setIntensiveAnalysisTab('overview');
+                setIntensiveAnalysisOpen(true);
+              }
             }}
             onDataSynced={refreshCatalogTotalCount}
             userWeight={userWeight}

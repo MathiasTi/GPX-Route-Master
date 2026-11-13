@@ -15,7 +15,9 @@ import {
   saveRhr,
   saveSteps,
   runInTransaction,
-  getGarminActivityById
+  getGarminActivityById,
+  findExistingActivityDuplicate,
+  backfillMissingHealthMetricsFromExistingData
 } from './db';
 import { parseFIT } from './fitUtils';
 import { parseGPX, calculateElevationStats, calculatePowerStats, findClimbs, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
@@ -32,6 +34,94 @@ interface EphemeralTokenVerificationMeta {
 
 let ephemeralVerifiedMeta: EphemeralTokenVerificationMeta | null = null;
 let legacySecretsPurged = false;
+
+export type GarminSyncPhase =
+  | 'idle'
+  | 'auth'
+  | 'activities_list'
+  | 'fit_download'
+  | 'health_dailies'
+  | 'health_sleep'
+  | 'health_weight'
+  | 'done'
+  | 'error';
+
+export interface GarminSyncProgress {
+  active: boolean;
+  phase: GarminSyncPhase;
+  message: string;
+  percent: number;
+  updatedAt: string;
+  stats: {
+    newActivities: number;
+    updatedActivities: number;
+    skippedDuplicates: number;
+    fitDownloaded: number;
+    fitRepaired: number;
+    fitFailed: number;
+    healthDays: number;
+  };
+}
+
+let activeSyncJobs = 0;
+let syncProgressState: GarminSyncProgress = {
+  active: false,
+  phase: 'idle',
+  message: 'Bereit für Synchronisation',
+  percent: 0,
+  updatedAt: new Date().toISOString(),
+  stats: {
+    newActivities: 0,
+    updatedActivities: 0,
+    skippedDuplicates: 0,
+    fitDownloaded: 0,
+    fitRepaired: 0,
+    fitFailed: 0,
+    healthDays: 0
+  }
+};
+
+export function getGarminSyncProgress(): GarminSyncProgress {
+  return {
+    ...syncProgressState,
+    stats: { ...syncProgressState.stats }
+  };
+}
+
+function resetSyncProgressIfIdle() {
+  if (activeSyncJobs === 0) {
+    syncProgressState = {
+      active: true,
+      phase: 'auth',
+      message: 'Verbinde mit Garmin Connect Cloud...',
+      percent: 5,
+      updatedAt: new Date().toISOString(),
+      stats: {
+        newActivities: 0,
+        updatedActivities: 0,
+        skippedDuplicates: 0,
+        fitDownloaded: 0,
+        fitRepaired: 0,
+        fitFailed: 0,
+        healthDays: 0
+      }
+    };
+  }
+}
+
+function updateSyncProgress(
+  patch: Partial<Omit<GarminSyncProgress, 'stats'>> & { stats?: Partial<GarminSyncProgress['stats']> }
+) {
+  syncProgressState = {
+    ...syncProgressState,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+    stats: {
+      ...syncProgressState.stats,
+      ...(patch.stats || {})
+    }
+  };
+}
 
 /**
  * Ensures any legacy persisted Garmin API keys or keyfiles from older versions
@@ -423,6 +513,21 @@ export async function getGarminBearerToken(overrideApiKey?: string, overrideBase
   throw new Error('Garmin Token-Service hat kein gültiges OAuth2 Access-Token zurückgegeben.');
 }
 
+function isEmptyGarminPayload(parsed: any): boolean {
+  if (parsed === null || parsed === undefined) return true;
+  if (Array.isArray(parsed)) return parsed.length === 0;
+  if (typeof parsed === 'object') {
+    const keys = Object.keys(parsed);
+    if (keys.length === 0) return true;
+    const arrayKeys = ['dailies', 'stressDetails', 'userMetrics', 'data', 'sleeps', 'dateWeightList', 'bodyComps'];
+    const hasKnownArray = arrayKeys.some((k) => Array.isArray(parsed[k]));
+    if (hasKnownArray && arrayKeys.every((k) => !Array.isArray(parsed[k]) || parsed[k].length === 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function fetchGarminJsonWithFallback(
   urls: string[],
   accessToken: string,
@@ -430,6 +535,7 @@ async function fetchGarminJsonWithFallback(
 ): Promise<{ data: any; usedUrl: string }> {
   const errors: string[] = [];
   let allNotFound = true;
+  let lastEmptyResult: { data: any; usedUrl: string } | null = null;
 
   for (const url of urls) {
     const controller = new AbortController();
@@ -449,13 +555,19 @@ async function fetchGarminJsonWithFallback(
       if (res.ok) {
         const text = await res.text();
         if (!text || !text.trim()) {
-          return { data: [], usedUrl: url };
+          lastEmptyResult = { data: [], usedUrl: url };
+          continue;
         }
         try {
           const parsed = JSON.parse(text);
+          if (isEmptyGarminPayload(parsed)) {
+            lastEmptyResult = { data: parsed, usedUrl: url };
+            continue;
+          }
           return { data: parsed, usedUrl: url };
         } catch {
-          return { data: [], usedUrl: url };
+          lastEmptyResult = { data: [], usedUrl: url };
+          continue;
         }
       } else {
         if (res.status !== 404 && res.status !== 204) {
@@ -474,6 +586,10 @@ async function fetchGarminJsonWithFallback(
       allNotFound = false;
       errors.push(`${url}: ${e?.message || 'Netzwerkfehler'}`);
     }
+  }
+
+  if (lastEmptyResult) {
+    return lastEmptyResult;
   }
 
   if (options?.allowNotFoundAsEmpty && allNotFound) {
@@ -645,6 +761,8 @@ export async function downloadAndParseGarminActivityFit(
   track: GPXTrack;
   pointsCount: number;
   sourceFormat: 'fit' | 'gpx' | 'json_details';
+  integrityStatus: 'valid' | 'repaired' | 'fallback';
+  repairedIssues: string[];
 }> {
   const cleanId = String(activityId).trim().replace(/^garmin-act-/, '');
   const { baseUrl } = getActiveGarminApiKey(options?.overrideApiKey);
@@ -699,6 +817,9 @@ export async function downloadAndParseGarminActivityFit(
       sourceFormat = 'fit';
       const arrayBuf = fitBuffer.buffer.slice(fitBuffer.byteOffset, fitBuffer.byteOffset + fitBuffer.byteLength);
       parsedTrack = await parseFIT(arrayBuf as ArrayBuffer, `garmin_${cleanId}.fit`);
+      if (!parsedTrack || !parsedTrack.points || parsedTrack.points.length === 0) {
+        throw new Error('FIT-Datei korrupt oder ohne verwertbare Datensätze');
+      }
     }
   } catch {
     // Fallback to JSON activity details if binary FIT endpoint is unavailable for this activity
@@ -816,7 +937,7 @@ export async function downloadAndParseGarminActivityFit(
     compactPoints ? JSON.stringify(compactPoints) : existingRecord?.points_json || undefined
   );
 
-  if (options?.saveToWorkspaceTracks !== false) {
+  if (options?.saveToWorkspaceTracks === true) {
     try {
       saveTrack({
         ...parsedTrack,
@@ -829,10 +950,21 @@ export async function downloadAndParseGarminActivityFit(
     }
   }
 
+  const fitMeta = (parsedTrack.rawFileDetails?.metadata || {}) as any;
+  const repairedIssues: string[] = Array.isArray(fitMeta.repairedIssues) ? fitMeta.repairedIssues : [];
+  const integrityStatus: 'valid' | 'repaired' | 'fallback' =
+    sourceFormat === 'json_details' || parsedTrack.isVirtual
+      ? 'fallback'
+      : repairedIssues.length > 0 || fitMeta.integrityStatus === 'repaired'
+      ? 'repaired'
+      : 'valid';
+
   return {
     track: parsedTrack,
     pointsCount: parsedTrack.isVirtual ? 0 : parsedTrack.points.length,
-    sourceFormat
+    sourceFormat,
+    integrityStatus,
+    repairedIssues
   };
 }
 
@@ -848,155 +980,259 @@ export async function syncGarminPersonalActivities(options: {
   overrideApiKey?: string;
 }): Promise<{
   syncedCount: number;
+  newActivities: number;
+  updatedActivities: number;
+  skippedDuplicates: number;
   fitDownloadedCount: number;
+  fitRepairedCount: number;
+  fitFailedCount: number;
   activities: any[];
   endpointUsed: string;
 }> {
-  const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
-  const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
+  resetSyncProgressIfIdle();
+  activeSyncJobs++;
+  try {
+    updateSyncProgress({
+      active: true,
+      phase: 'auth',
+      message: 'Prüfe OAuth2-Token & lade Aktivitätenliste...',
+      percent: 10
+    });
+    const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
+    const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
 
-  const end = options.endDate || new Date().toISOString().slice(0, 10);
-  const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
-  const limit = Math.min(200, Math.max(1, Number(options.limit || 50)));
+    const end = options.endDate || new Date().toISOString().slice(0, 10);
+    const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+    const limit = Math.min(200, Math.max(1, Number(options.limit || 50)));
 
-  const startEpochSec = Math.floor(new Date(`${start}T00:00:00Z`).getTime() / 1000);
-  const endEpochSec = Math.floor(new Date(`${end}T23:59:59Z`).getTime() / 1000);
+    const startEpochSec = Math.floor(new Date(`${start}T00:00:00Z`).getTime() / 1000);
+    const endEpochSec = Math.floor(new Date(`${end}T23:59:59Z`).getTime() / 1000);
 
-  const candidateUrls = [
-    `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${limit}`,
-    `${baseUrl}/activitylist-service/activities/search/activities?start=0&limit=${limit}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
-    `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
-  ];
+    const candidateUrls = [
+      `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${limit}`,
+      `${baseUrl}/activitylist-service/activities/search/activities?start=0&limit=${limit}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
+      `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
+    ];
 
-  const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken);
+    updateSyncProgress({
+      phase: 'activities_list',
+      message: `Rufe Aktivitäten (${start} bis ${end}) ab...`,
+      percent: 25
+    });
 
-  const rawList: any[] = Array.isArray(rawPayload)
-    ? rawPayload
-    : Array.isArray(rawPayload?.activities)
-    ? rawPayload.activities
-    : Array.isArray(rawPayload?.activityList)
-    ? rawPayload.activityList
-    : Array.isArray(rawPayload?.data)
-    ? rawPayload.data
-    : [];
+    const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken);
 
-  const normalizedActivities: any[] = [];
+    const rawList: any[] = Array.isArray(rawPayload)
+      ? rawPayload
+      : Array.isArray(rawPayload?.activities)
+      ? rawPayload.activities
+      : Array.isArray(rawPayload?.activityList)
+      ? rawPayload.activityList
+      : Array.isArray(rawPayload?.data)
+      ? rawPayload.data
+      : [];
 
-  runInTransaction(() => {
-    for (const item of rawList) {
-      const id = String(item.activityId || item.id || item.summaryId || `${Date.now()}-${Math.random()}`);
-      const name = String(item.activityName || item.name || item.activityType?.typeKey || 'Garmin Aktivität');
-      const sportType = normalizeGarminSportType(item.activityType || item.sportType || item.type);
+    const normalizedActivities: any[] = [];
+    let newActivities = 0;
+    let updatedActivities = 0;
+    let skippedDuplicates = 0;
 
-      const rawDate =
-        item.startTimeLocal ||
-        item.startTimeGMT ||
-        (item.startTimeInSeconds ? new Date(item.startTimeInSeconds * 1000).toISOString() : null) ||
-        item.date ||
-        new Date().toISOString();
+    runInTransaction(() => {
+      for (const item of rawList) {
+        const id = String(item.activityId || item.id || item.summaryId || `${Date.now()}-${Math.random()}`);
+        const name = String(item.activityName || item.name || item.activityType?.typeKey || 'Garmin Aktivität');
+        const sportType = normalizeGarminSportType(item.activityType || item.sportType || item.type);
 
-      // Garmin API returns distance in meters
-      const rawDist = Number(item.distance ?? item.distanceInMeters ?? 0);
-      const distanceKm = rawDist > 300 ? Number((rawDist / 1000).toFixed(2)) : Number(rawDist.toFixed(2));
+        const rawDate =
+          item.startTimeLocal ||
+          item.startTimeGMT ||
+          (item.startTimeInSeconds ? new Date(item.startTimeInSeconds * 1000).toISOString() : null) ||
+          item.date ||
+          new Date().toISOString();
 
-      const durationSec = Math.round(Number(item.duration ?? item.durationInSeconds ?? item.movingDuration ?? 0));
-      const ascentM = item.elevationGain !== undefined
-        ? Math.round(Number(item.elevationGain))
-        : item.totalElevationGainInMeters !== undefined
-        ? Math.round(Number(item.totalElevationGainInMeters))
-        : undefined;
-      const descentM = item.elevationLoss !== undefined
-        ? Math.round(Number(item.elevationLoss))
-        : item.totalElevationLossInMeters !== undefined
-        ? Math.round(Number(item.totalElevationLossInMeters))
-        : undefined;
-      const calories = item.calories !== undefined
-        ? Math.round(Number(item.calories))
-        : item.activeKilocalories !== undefined
-        ? Math.round(Number(item.activeKilocalories))
-        : undefined;
-      const avgHr = item.averageHR !== undefined
-        ? Math.round(Number(item.averageHR))
-        : item.averageHeartRateInBeatsPerMinute !== undefined
-        ? Math.round(Number(item.averageHeartRateInBeatsPerMinute))
-        : undefined;
+        // Garmin API returns distance in meters
+        const rawDist = Number(item.distance ?? item.distanceInMeters ?? 0);
+        const distanceKm = rawDist > 300 ? Number((rawDist / 1000).toFixed(2)) : Number(rawDist.toFixed(2));
 
-      const location = item.locationName || item.location || undefined;
-      const description = item.description || undefined;
+        const durationSec = Math.round(Number(item.duration ?? item.durationInSeconds ?? item.movingDuration ?? 0));
+        const ascentM = item.elevationGain !== undefined
+          ? Math.round(Number(item.elevationGain))
+          : item.totalElevationGainInMeters !== undefined
+          ? Math.round(Number(item.totalElevationGainInMeters))
+          : undefined;
+        const descentM = item.elevationLoss !== undefined
+          ? Math.round(Number(item.elevationLoss))
+          : item.totalElevationLossInMeters !== undefined
+          ? Math.round(Number(item.totalElevationLossInMeters))
+          : undefined;
+        const calories = item.calories !== undefined
+          ? Math.round(Number(item.calories))
+          : item.activeKilocalories !== undefined
+          ? Math.round(Number(item.activeKilocalories))
+          : undefined;
+        const avgHr = item.averageHR !== undefined
+          ? Math.round(Number(item.averageHR))
+          : item.averageHeartRateInBeatsPerMinute !== undefined
+          ? Math.round(Number(item.averageHeartRateInBeatsPerMinute))
+          : undefined;
 
-      // Preserve existing points_json only if it holds a real multi-point GPS track (never 2-point stubs)
-      const existing = getGarminActivityById(id);
-      let pointsJson = hasDetailedGpsPointsJson(existing?.points_json) ? existing?.points_json : undefined;
+        const location = item.locationName || item.location || undefined;
+        const description = item.description || undefined;
 
-      if (!pointsJson && Array.isArray(item.samples)) {
-        const pts = extractPointsFromGarminDetailsJson(item);
-        if (pts.length > 2) {
-          pointsJson = JSON.stringify(pts);
-        }
-      }
-
-      saveGarminActivity(
-        id,
-        name,
-        sportType,
-        String(rawDate),
-        distanceKm,
-        durationSec,
-        ascentM,
-        descentM,
-        calories,
-        avgHr,
-        description,
-        location,
-        pointsJson
-      );
-
-      normalizedActivities.push({
-        id,
-        name,
-        type: sportType,
-        date: String(rawDate),
-        distance: distanceKm,
-        duration: durationSec,
-        ascent: ascentM,
-        descent: descentM,
-        calories,
-        avg_hr: avgHr,
-        location,
-        description,
-        hasGps: hasDetailedGpsPointsJson(pointsJson)
-      });
-    }
-  });
-
-  let fitDownloadedCount = 0;
-  if (options.downloadFitRoutes && normalizedActivities.length > 0) {
-    // Download FIT files for top 10 most recent activities lacking detailed GPS to avoid gateway timeouts
-    const batch = normalizedActivities.filter((a) => !a.hasGps).slice(0, 10);
-    for (const act of batch) {
-      try {
-        await downloadAndParseGarminActivityFit(act.id, {
-          saveToWorkspaceTracks: true,
-          overrideApiKey: options.overrideApiKey,
-          accessToken
+        // 2-stage duplicate check (ID + Timestamp/Distance/Duration fingerprint across garmin_activities & tracks)
+        const dupMatch = findExistingActivityDuplicate({
+          id,
+          date: String(rawDate),
+          distanceKm,
+          durationSec,
+          name
         });
-        fitDownloadedCount++;
-        act.hasGps = true;
-      } catch {
-        // Continue with remaining activities if an indoor workout has no FIT GPS file
+
+        let samplePointsJson: string | undefined;
+        if (Array.isArray(item.samples)) {
+          const pts = extractPointsFromGarminDetailsJson(item);
+          if (pts.length > 2) {
+            samplePointsJson = JSON.stringify(pts);
+          }
+        }
+
+        if (dupMatch.matched && dupMatch.hasDetailedGps) {
+          skippedDuplicates++;
+          continue;
+        }
+
+        const targetId = dupMatch.matched && dupMatch.source === 'garmin' && dupMatch.existingId
+          ? dupMatch.existingId
+          : id;
+
+        const existing = getGarminActivityById(targetId);
+        const pointsJson = hasDetailedGpsPointsJson(existing?.points_json)
+          ? existing?.points_json
+          : samplePointsJson;
+
+        if (dupMatch.matched) {
+          updatedActivities++;
+        } else {
+          newActivities++;
+        }
+
+        saveGarminActivity(
+          targetId,
+          name,
+          sportType,
+          String(rawDate),
+          distanceKm,
+          durationSec,
+          ascentM,
+          descentM,
+          calories,
+          avgHr,
+          description,
+          location,
+          pointsJson
+        );
+
+        normalizedActivities.push({
+          id: targetId,
+          name,
+          type: sportType,
+          date: String(rawDate),
+          distance: distanceKm,
+          duration: durationSec,
+          ascent: ascentM,
+          descent: descentM,
+          calories,
+          avg_hr: avgHr,
+          location,
+          description,
+          hasGps: hasDetailedGpsPointsJson(pointsJson)
+        });
       }
+    });
+
+    updateSyncProgress({
+      phase: 'fit_download',
+      message: `${newActivities} neu, ${updatedActivities} aktualisiert, ${skippedDuplicates} Dupletten übersprungen.`,
+      percent: 45,
+      stats: {
+        newActivities,
+        updatedActivities,
+        skippedDuplicates
+      }
+    });
+
+    let fitDownloadedCount = 0;
+    let fitRepairedCount = 0;
+    let fitFailedCount = 0;
+
+    if (options.downloadFitRoutes && normalizedActivities.length > 0) {
+      const batch = normalizedActivities.filter((a) => !a.hasGps).slice(0, 10);
+      for (let i = 0; i < batch.length; i++) {
+        const act = batch[i];
+        const pct = 45 + Math.round(((i + 1) / Math.max(1, batch.length)) * 45);
+        updateSyncProgress({
+          phase: 'fit_download',
+          message: `Lade & prüfe FIT-Datei ${i + 1}/${batch.length}: ${act.name}`,
+          percent: pct
+        });
+        try {
+          const fitRes = await downloadAndParseGarminActivityFit(act.id, {
+            // Avoid creating redundant garmin-fit-* rows in tracks; store GPS directly on garmin_activities
+            saveToWorkspaceTracks: false,
+            overrideApiKey: options.overrideApiKey,
+            accessToken
+          });
+          fitDownloadedCount++;
+          if (fitRes.integrityStatus === 'repaired') {
+            fitRepairedCount++;
+          }
+          act.hasGps = fitRes.pointsCount > 0;
+        } catch {
+          fitFailedCount++;
+        }
+        updateSyncProgress({
+          stats: {
+            fitDownloaded: fitDownloadedCount,
+            fitRepaired: fitRepairedCount,
+            fitFailed: fitFailedCount
+          }
+        });
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    saveSetting('garmin_personal_last_sync_at', nowIso);
+
+    return {
+      syncedCount: newActivities + updatedActivities,
+      newActivities,
+      updatedActivities,
+      skippedDuplicates,
+      fitDownloadedCount,
+      fitRepairedCount,
+      fitFailedCount,
+      activities: normalizedActivities,
+      endpointUsed: usedUrl
+    };
+  } catch (err: any) {
+    updateSyncProgress({
+      phase: 'error',
+      message: err?.message || 'Aktivitäten-Sync fehlgeschlagen'
+    });
+    throw err;
+  } finally {
+    activeSyncJobs = Math.max(0, activeSyncJobs - 1);
+    if (activeSyncJobs === 0 && syncProgressState.phase !== 'error') {
+      updateSyncProgress({
+        active: false,
+        phase: 'done',
+        percent: 100,
+        message: 'Cloud-Synchronisation abgeschlossen.'
+      });
+    } else if (activeSyncJobs === 0) {
+      updateSyncProgress({ active: false });
     }
   }
-
-  const nowIso = new Date().toISOString();
-  saveSetting('garmin_personal_last_sync_at', nowIso);
-
-  return {
-    syncedCount: normalizedActivities.length,
-    fitDownloadedCount,
-    activities: normalizedActivities,
-    endpointUsed: usedUrl
-  };
 }
 
 /**
@@ -1013,8 +1249,17 @@ export async function syncGarminPersonalHealth(options: {
   stepsCount: number;
   weightCount: number;
 }> {
-  const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
-  const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
+  resetSyncProgressIfIdle();
+  activeSyncJobs++;
+  try {
+    updateSyncProgress({
+      active: true,
+      phase: 'health_dailies',
+      message: 'Synchronisiere Tageswerte (Schritte, Ruhepuls, Stress)...',
+      percent: Math.max(syncProgressState.percent, 20)
+    });
+    const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
+    const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
 
   const end = options.endDate || new Date().toISOString().slice(0, 10);
   const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
@@ -1028,32 +1273,73 @@ export async function syncGarminPersonalHealth(options: {
   let stepsCount = 0;
   let weightCount = 0;
 
-  // 1. Fetch Dailies (Steps, RHR, Stress, Calories)
-  try {
-    const dailiesUrls = [
-      `${baseUrl}/usersummary-service/usersummary/daily?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
-      `${baseUrl}/usersummary-service/usersummary/daily/${encodeURIComponent(start)}/${encodeURIComponent(end)}`,
-      `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(start)}/${encodeURIComponent(end)}`,
-      `${baseUrl}/usersummary-service/stats/stress/daily/${encodeURIComponent(start)}/${encodeURIComponent(end)}`,
-      `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(start)}?untilDate=${encodeURIComponent(end)}`,
-      `${baseUrl}/wellness-api/rest/dailies?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`,
-      `${baseUrl}/personal-api/dailies?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`
-    ];
-    const { data: dailiesPayload } = await fetchGarminJsonWithFallback(dailiesUrls, accessToken, { allowNotFoundAsEmpty: true });
-    const dailiesList: any[] = Array.isArray(dailiesPayload)
-      ? dailiesPayload
-      : Array.isArray(dailiesPayload?.dailies)
-      ? dailiesPayload.dailies
-      : Array.isArray(dailiesPayload?.userMetrics)
-      ? dailiesPayload.userMetrics
-      : Array.isArray(dailiesPayload?.allMetrics?.metricsMap?.WELLNESS_TOTAL_STEPS)
-      ? dailiesPayload.allMetrics.metricsMap.WELLNESS_TOTAL_STEPS
-      : Array.isArray(dailiesPayload?.data)
-      ? dailiesPayload.data
-      : [];
+  // 1. Fetch Dailies (Steps, RHR, Stress, Calories) in <= 20-day chunks (Garmin limits daily stats to 28 days)
+  const buildDateChunks = (sStr: string, eStr: string, maxDays = 20): Array<{ chunkStart: string; chunkEnd: string; chunkStartSec: number; chunkEndSec: number }> => {
+    const chunks: Array<{ chunkStart: string; chunkEnd: string; chunkStartSec: number; chunkEndSec: number }> = [];
+    const sDate = new Date(`${sStr}T00:00:00Z`);
+    const eDate = new Date(`${eStr}T00:00:00Z`);
+    if (isNaN(sDate.getTime()) || isNaN(eDate.getTime()) || sDate > eDate) {
+      return [{ chunkStart: sStr, chunkEnd: eStr, chunkStartSec: startEpochSec, chunkEndSec: endEpochSec }];
+    }
+    let cursor = new Date(sDate);
+    while (cursor <= eDate) {
+      const chunkEndDt = new Date(cursor);
+      chunkEndDt.setUTCDate(chunkEndDt.getUTCDate() + maxDays - 1);
+      if (chunkEndDt > eDate) chunkEndDt.setTime(eDate.getTime());
+      const cStart = cursor.toISOString().slice(0, 10);
+      const cEnd = chunkEndDt.toISOString().slice(0, 10);
+      chunks.push({
+        chunkStart: cStart,
+        chunkEnd: cEnd,
+        chunkStartSec: Math.floor(new Date(`${cStart}T00:00:00Z`).getTime() / 1000),
+        chunkEndSec: Math.floor(new Date(`${cEnd}T23:59:59Z`).getTime() / 1000)
+      });
+      cursor = new Date(chunkEndDt);
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return chunks;
+  };
 
+  const extractDailiesList = (payload: any): any[] => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.dailies)) return payload.dailies;
+    if (Array.isArray(payload?.stressDetails)) return payload.stressDetails;
+    if (Array.isArray(payload?.userMetrics)) return payload.userMetrics;
+    const metricsMap = payload?.allMetrics?.metricsMap;
+    if (metricsMap && typeof metricsMap === 'object') {
+      const byDate = new Map<string, any>();
+      const mergeMetricArray = (arr: any[], fieldName: string) => {
+        if (!Array.isArray(arr)) return;
+        for (const entry of arr) {
+          const dStr = String(entry?.calendarDate || entry?.date || '').slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) continue;
+          const prev = byDate.get(dStr) || { calendarDate: dStr };
+          if (entry?.value !== undefined && entry?.value !== null) {
+            prev[fieldName] = entry.value;
+          }
+          byDate.set(dStr, { ...prev, ...entry });
+        }
+      };
+      mergeMetricArray(metricsMap.WELLNESS_TOTAL_STEPS, 'totalSteps');
+      mergeMetricArray(metricsMap.WELLNESS_RESTING_HEART_RATE, 'restingHeartRate');
+      mergeMetricArray(metricsMap.WELLNESS_AVERAGE_STRESS, 'averageStressLevel');
+      mergeMetricArray(metricsMap.WELLNESS_TOTAL_CALORIES, 'totalKilocalories');
+      mergeMetricArray(metricsMap.WELLNESS_TOTAL_DISTANCE, 'totalDistanceMeters');
+      if (byDate.size > 0) return Array.from(byDate.values());
+    }
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (payload && typeof payload === 'object' && (payload.calendarDate || payload.date || payload.startTimeInSeconds)) {
+      return [payload];
+    }
+    return [];
+  };
+
+  const ingestDailiesList = (list: any[], metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto') => {
+    if (list.length === 0) return;
     runInTransaction(() => {
-      for (const d of dailiesList) {
+      for (const raw of list) {
+        if (!raw || typeof raw !== 'object') continue;
+        const d = raw.values && typeof raw.values === 'object' ? { ...raw, ...raw.values } : raw;
         const dateStr = String(
           d.calendarDate ||
           d.date ||
@@ -1061,7 +1347,15 @@ export async function syncGarminPersonalHealth(options: {
         ).slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
-        const steps = Number(d.totalSteps ?? d.steps ?? d.value ?? 0);
+        const steps = Number(
+          d.totalSteps ??
+          d.steps ??
+          (metricHint === 'steps' ? d.value : undefined) ??
+          (metricHint === 'auto' && d.restingHeartRate === undefined && d.rhr === undefined && d.averageStressLevel === undefined && d.overallStressLevel === undefined
+            ? d.value
+            : undefined) ??
+          0
+        );
         const calories = Number(d.totalKilocalories ?? d.activeKilocalories ?? d.calories ?? 0) || undefined;
         const distMeters = Number(d.totalDistanceMeters ?? d.distanceInMeters ?? d.distance ?? 0);
         const distKm = distMeters > 100 ? Number((distMeters / 1000).toFixed(2)) : distMeters || undefined;
@@ -1071,19 +1365,90 @@ export async function syncGarminPersonalHealth(options: {
           stepsCount++;
         }
 
-        const rhr = Number(d.restingHeartRateInBeatsPerMinute ?? d.restingHeartRate ?? d.rhr ?? 0);
+        const rhr = Number(
+          d.restingHeartRateInBeatsPerMinute ??
+          d.restingHeartRate ??
+          d.restingHeartRateValue ??
+          d.currentDayRestingHeartRate ??
+          d.rhr ??
+          (metricHint === 'rhr' ? d.value : undefined) ??
+          0
+        );
         if (!isNaN(rhr) && rhr >= 30 && rhr <= 140) {
           saveRhr(dateStr, Math.round(rhr));
           rhrCount++;
         }
 
-        const avgStress = Number(d.averageStressLevel ?? d.overallStressLevel ?? d.avg_stress ?? 0);
+        let avgStress = Number(
+          d.averageStressLevel ??
+          d.overallStressLevel ??
+          d.avgStressLevel ??
+          d.avg_stress ??
+          (metricHint === 'stress' ? d.value : undefined) ??
+          0
+        );
+        if ((!avgStress || isNaN(avgStress) || avgStress <= 0) && d.timeOffsetStressLevelValues && typeof d.timeOffsetStressLevelValues === 'object') {
+          const validStressVals = Object.values(d.timeOffsetStressLevelValues)
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v) && v >= 0 && v <= 100);
+          if (validStressVals.length > 0) {
+            avgStress = validStressVals.reduce((sum, v) => sum + v, 0) / validStressVals.length;
+          }
+        }
         if (!isNaN(avgStress) && avgStress > 0 && avgStress <= 100) {
           saveStress(dateStr, Math.round(avgStress));
           stressCount++;
         }
       }
     });
+  };
+
+  try {
+    const chunks = buildDateChunks(start, end, 20);
+    for (const { chunkStart, chunkEnd, chunkStartSec, chunkEndSec } of chunks) {
+      const dailiesUrls = [
+        `${baseUrl}/usersummary-service/usersummary/daily?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/usersummary-service/usersummary/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/wellness-api/rest/dailies?uploadStartTimeInSeconds=${chunkStartSec}&uploadEndTimeInSeconds=${chunkEndSec}`,
+        `${baseUrl}/personal-api/dailies?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`
+      ];
+      const { data: dailiesPayload } = await fetchGarminJsonWithFallback(dailiesUrls, accessToken, { allowNotFoundAsEmpty: true });
+      ingestDailiesList(extractDailiesList(dailiesPayload), 'auto');
+    }
+
+    if (stepsCount === 0) {
+      for (const { chunkStart, chunkEnd } of chunks) {
+        const stepsFallbackUrls = [
+          `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
+          `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`
+        ];
+        const { data: stepsPayload } = await fetchGarminJsonWithFallback(stepsFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
+        ingestDailiesList(extractDailiesList(stepsPayload), 'steps');
+      }
+    }
+
+    if (rhrCount === 0) {
+      for (const { chunkStart, chunkEnd } of chunks) {
+        const rhrFallbackUrls = [
+          `${baseUrl}/usersummary-service/stats/rhr/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
+          `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`
+        ];
+        const { data: rhrPayload } = await fetchGarminJsonWithFallback(rhrFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
+        ingestDailiesList(extractDailiesList(rhrPayload), 'rhr');
+      }
+    }
+
+    if (stressCount === 0) {
+      for (const { chunkStart, chunkEnd, chunkStartSec, chunkEndSec } of chunks) {
+        const stressFallbackUrls = [
+          `${baseUrl}/usersummary-service/stats/stress/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
+          `${baseUrl}/wellness-api/rest/stressDetails?uploadStartTimeInSeconds=${chunkStartSec}&uploadEndTimeInSeconds=${chunkEndSec}`
+        ];
+        const { data: stressPayload } = await fetchGarminJsonWithFallback(stressFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
+        ingestDailiesList(extractDailiesList(stressPayload), 'stress');
+      }
+    }
   } catch (e: any) {
     if (e?.message?.includes('404') || e?.message?.includes('NOT_FOUND')) {
       console.log('[Garmin Personal API] Keine Dailies-Einträge in Garmin Cloud für diesen Zeitraum.');
@@ -1141,6 +1506,18 @@ export async function syncGarminPersonalHealth(options: {
           awakeSec > 600 ? Math.round(awakeSec / 60) : Math.round(awakeSec) || undefined
         );
         sleepCount++;
+
+        const sleepRhr = Number(s.restingHeartRate ?? dto.restingHeartRate ?? 0);
+        if (!isNaN(sleepRhr) && sleepRhr >= 30 && sleepRhr <= 140) {
+          saveRhr(dateStr, Math.round(sleepRhr));
+          rhrCount++;
+        }
+
+        const sleepStress = Number(dto.avgSleepStress ?? s.avgSleepStress ?? 0);
+        if (!isNaN(sleepStress) && sleepStress > 0 && sleepStress <= 100) {
+          saveStress(dateStr, Math.round(sleepStress));
+          stressCount++;
+        }
       }
     });
   } catch (e: any) {
@@ -1201,13 +1578,40 @@ export async function syncGarminPersonalHealth(options: {
     }
   }
 
-  saveSetting('garmin_personal_last_sync_at', new Date().toISOString());
+    if (rhrCount === 0 || stressCount === 0 || stepsCount === 0) {
+      backfillMissingHealthMetricsFromExistingData();
+    }
 
-  return {
-    sleepCount,
-    rhrCount,
-    stressCount,
-    stepsCount,
-    weightCount
-  };
+    saveSetting('garmin_personal_last_sync_at', new Date().toISOString());
+    const healthDays = Math.max(sleepCount, rhrCount, stressCount, stepsCount, weightCount);
+    updateSyncProgress({
+      stats: { healthDays }
+    });
+
+    return {
+      sleepCount,
+      rhrCount,
+      stressCount,
+      stepsCount,
+      weightCount
+    };
+  } catch (err: any) {
+    updateSyncProgress({
+      phase: 'error',
+      message: err?.message || 'Gesundheitsdaten-Sync fehlgeschlagen'
+    });
+    throw err;
+  } finally {
+    activeSyncJobs = Math.max(0, activeSyncJobs - 1);
+    if (activeSyncJobs === 0 && syncProgressState.phase !== 'error') {
+      updateSyncProgress({
+        active: false,
+        phase: 'done',
+        percent: 100,
+        message: 'Cloud-Synchronisation abgeschlossen.'
+      });
+    } else if (activeSyncJobs === 0) {
+      updateSyncProgress({ active: false });
+    }
+  }
 }

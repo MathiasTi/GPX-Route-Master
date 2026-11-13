@@ -309,6 +309,7 @@ export default function FitnessPerformanceAnalysis({
       const powerVals = points.map(p => p.power).filter(p => p !== undefined && p !== null);
       const hrVals = points.map(p => p.hr).filter(p => p !== undefined && p !== null);
       
+      const safeDuration = Number.isFinite(Number(act.duration)) && Number(act.duration) > 0 ? Number(act.duration) : 0;
       let calculatedTss = 0;
       let calculatedNp = 0;
       let calculatedIf = 0.7;
@@ -340,7 +341,7 @@ export default function FitnessPerformanceAnalysis({
         calculatedVi = avgPower > 0 ? calculatedNp / avgPower : 1.0;
         
         calculatedIf = ftp > 0 ? calculatedNp / ftp : 0.7;
-        calculatedTss = ftp > 0 ? ((act.duration * calculatedNp * calculatedIf) / (ftp * 3600)) * 100 : 60;
+        calculatedTss = ftp > 0 ? ((safeDuration * calculatedNp * calculatedIf) / (ftp * 3600)) * 100 : 60;
 
         // Sliding window peaks for Power Duration MMP (1s, 5s, 15s, 1m, 5m, 20m, 1h)
         const durations = [1, 5, 15, 60, 300, 1200, 3600];
@@ -360,20 +361,22 @@ export default function FitnessPerformanceAnalysis({
         // TRIMP or hrTSS approximation
         const avgHr = act.avg_hr || (hrVals.reduce((a, b) => a + b, 0) / hrVals.length);
         const lthr = maxHr * 0.85; // Est Lactate Threshold HR
-        calculatedIf = avgHr / lthr;
-        const durationHours = act.duration / 3600;
+        calculatedIf = lthr > 0 ? avgHr / lthr : 0.7;
+        const durationHours = safeDuration / 3600;
         // hrTSS estimate
         calculatedTss = durationHours * Math.pow(calculatedIf, 2) * 100;
       } else {
         // Default estimate based on type
         const isCycling = isCyclingType(act.type, act.name);
         const intensity = isCycling ? 45 : 65; 
-        calculatedTss = (act.duration / 3600) * intensity;
+        calculatedTss = (safeDuration / 3600) * intensity;
       }
+
+      const safeTss = Number.isFinite(calculatedTss) && calculatedTss >= 0 ? Math.round(calculatedTss) : 0;
 
       return {
         ...act,
-        tss: Math.round(calculatedTss),
+        tss: safeTss,
         np: calculatedNp,
         intensityFactor: calculatedIf,
         variabilityIndex: calculatedVi,
@@ -654,64 +657,83 @@ export default function FitnessPerformanceAnalysis({
 
   // Scientific Fitness Model (CTL / ATL / TSB) daily calculation (filtered by sport)
   const fitnessTrendData = useMemo(() => {
-    if (sportFilteredActivities.length === 0) return [];
+    const normalizeIsoDate = (raw: unknown): string | null => {
+      if (typeof raw !== 'string') return null;
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const prefixMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (prefixMatch) {
+        const d = new Date(`${prefixMatch[1]}T00:00:00Z`);
+        return Number.isNaN(d.getTime()) ? null : prefixMatch[1];
+      }
+      const parsed = new Date(trimmed);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+    };
 
-    // Sort ascending by date to calculate timeline chronologically
-    const sortedActs = [...sportFilteredActivities].sort((a, b) => a.date.localeCompare(b.date));
-    
+    const sortedActs = sportFilteredActivities
+      .map(act => ({
+        date: normalizeIsoDate(act.date),
+        tss: Number.isFinite(act.tss) && act.tss >= 0 ? act.tss : 0
+      }))
+      .filter((act): act is { date: string; tss: number } => Boolean(act.date))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (sortedActs.length === 0) return [];
+
     const firstDateStr = sortedActs[0].date;
     const lastDateStr = sortedActs[sortedActs.length - 1].date;
-    
-    const start = new Date(firstDateStr);
-    const end = new Date(lastDateStr);
-    
-    // Add 7 days cushion before first activity and after last activity to smooth out
-    start.setDate(start.getDate() - 30); // 30 days buffer to let CTL ramp up
-    end.setDate(end.getDate() + 3);
+
+    const start = new Date(`${firstDateStr}T00:00:00Z`);
+    const end = new Date(`${lastDateStr}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+
+    // 30 days buffer before first activity to let CTL ramp up, 3 days after last activity
+    start.setUTCDate(start.getUTCDate() - 30);
+    end.setUTCDate(end.getUTCDate() + 3);
+
+    const bufferCutoff = new Date(start);
+    bufferCutoff.setUTCDate(bufferCutoff.getUTCDate() + 25);
+    const bufferCutoffStr = bufferCutoff.toISOString().slice(0, 10);
 
     const dateList: string[] = [];
-    let current = new Date(start);
+    const current = new Date(start);
     while (current <= end) {
-      dateList.push(current.toISOString().split('T')[0]);
-      current.setDate(current.getDate() + 1);
+      dateList.push(current.toISOString().slice(0, 10));
+      current.setUTCDate(current.getUTCDate() + 1);
     }
 
-    // Map of date -> total TSS
+    // Map of YYYY-MM-DD -> total TSS
     const dailyTssMap: Record<string, number> = {};
     dateList.forEach(d => { dailyTssMap[d] = 0; });
-    
+
     sortedActs.forEach(act => {
-      if (dailyTssMap[act.date] !== undefined) {
-        dailyTssMap[act.date] += act.tss;
-      } else {
-        dailyTssMap[act.date] = act.tss;
-      }
+      dailyTssMap[act.date] = (dailyTssMap[act.date] || 0) + act.tss;
     });
 
     // Run Banister EWMA Filter
     let ctl = 0;
     let atl = 0;
-    
+
     const ctlLambda = Math.exp(-1 / 42);
     const atlLambda = Math.exp(-1 / 7);
 
     return dateList.map(date => {
       const tss = dailyTssMap[date] || 0;
-      
+
       const prevCtl = ctl;
       const prevAtl = atl;
 
       ctl = prevCtl * ctlLambda + tss * (1 - ctlLambda);
       atl = prevAtl * atlLambda + tss * (1 - atlLambda);
-      
+
       // TSB is Form at the start of the day (yesterday's balance)
       const tsb = prevCtl - prevAtl;
-      
+
       // Acute to Chronic Workload Ratio (ACWR): Sweet spot is 0.8 - 1.3, danger > 1.5
       const acwr = prevCtl > 10 ? prevAtl / prevCtl : 1.0;
 
       // Format date for display (de-DE)
-      const dObj = new Date(date);
+      const dObj = new Date(`${date}T12:00:00Z`);
       const formattedDate = dObj.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
 
       return {
@@ -723,12 +745,7 @@ export default function FitnessPerformanceAnalysis({
         tsb: Math.round(tsb),
         acwr: parseFloat(acwr.toFixed(2))
       };
-    }).filter(d => {
-      // Filter out the initial 25 days of buffering so the user doesn't see synthetic zero ramp-up
-      const bufferCutoff = new Date(start);
-      bufferCutoff.setDate(bufferCutoff.getDate() + 25);
-      return new Date(d.date) >= bufferCutoff;
-    });
+    }).filter(d => d.date >= bufferCutoffStr);
   }, [sportFilteredActivities]);
 
   // Current Fitness values (last day in timeline)
@@ -1555,7 +1572,7 @@ export default function FitnessPerformanceAnalysis({
             </div>
 
             <div className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 px-2.5 py-1 rounded-lg font-medium border border-indigo-100/50 dark:border-indigo-900/30">
-              Körpergewicht: <span className="font-extrabold">{userWeight} kg</span> | Alter: <span className="font-extrabold">{userAge} Jahre</span>
+              Alter: <span className="font-extrabold">{userAge} Jahre</span>
             </div>
           </div>
 
@@ -1822,51 +1839,58 @@ export default function FitnessPerformanceAnalysis({
                       Trainingsstress-Verlauf & Formkurve (CTL / ATL / TSB)
                     </h3>
                     
-                    <div className="h-80 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
-                          data={fitnessTrendData}
-                          margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                        >
-                          <defs>
-                            <linearGradient id="colorCtl" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorAtl" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.15}/>
-                              <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorTsb" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15}/>
-                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-                          <XAxis 
-                            dataKey="formattedDate" 
-                            stroke="#888888" 
-                            fontSize={10}
-                            tickLine={false} 
-                          />
-                          <YAxis 
-                            stroke="#888888" 
-                            fontSize={10}
-                            tickLine={false}
-                          />
-                          <Tooltip 
-                            contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.95)', border: 'none', borderRadius: '12px', fontSize: '11px', color: '#fff' }}
-                            labelStyle={{ fontWeight: 'bold', color: '#94a3b8' }}
-                          />
-                          <Legend wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }} />
-                          <Area type="monotone" name="Fitness (CTL)" dataKey="ctl" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorCtl)" />
-                          <Area type="monotone" name="Erschöpfung (ATL)" dataKey="atl" stroke="#f43f5e" strokeWidth={1.5} fillOpacity={1} fill="url(#colorAtl)" />
-                          <Area type="monotone" name="Form (TSB)" dataKey="tsb" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorTsb)" />
-                          <ReferenceLine y={0} stroke="#475569" strokeDasharray="3 3" />
-                          <ReferenceLine y={-30} label={{ value: 'Überlastungsgrenze', fill: '#f43f5e', fontSize: 9, position: 'bottom' }} stroke="#f43f5e" strokeDasharray="3 3" opacity={0.3} />
-                          <ReferenceLine y={10} label={{ value: 'Frischegrenze', fill: '#10b981', fontSize: 9, position: 'top' }} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                    <div className="h-80 w-full min-w-0">
+                      {fitnessTrendData.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-1">
+                          <span>Keine Trainingsstress-Daten für den gewählten Sport-Filter vorhanden.</span>
+                          <span>Synchronisiere Garmin-Aktivitäten oder wechsle den Filter oben (Alle / Laufen / Radfahren).</span>
+                        </div>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={320} minWidth={0}>
+                          <AreaChart
+                            data={fitnessTrendData}
+                            margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                          >
+                            <defs>
+                              <linearGradient id="colorCtl" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorAtl" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.15}/>
+                                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorTsb" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15}/>
+                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+                            <XAxis 
+                              dataKey="formattedDate" 
+                              stroke="#888888" 
+                              fontSize={10}
+                              tickLine={false} 
+                            />
+                            <YAxis 
+                              stroke="#888888" 
+                              fontSize={10}
+                              tickLine={false}
+                            />
+                            <Tooltip 
+                              contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.95)', border: 'none', borderRadius: '12px', fontSize: '11px', color: '#fff' }}
+                              labelStyle={{ fontWeight: 'bold', color: '#94a3b8' }}
+                            />
+                            <Legend wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }} />
+                            <Area type="monotone" name="Fitness (CTL)" dataKey="ctl" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorCtl)" />
+                            <Area type="monotone" name="Erschöpfung (ATL)" dataKey="atl" stroke="#f43f5e" strokeWidth={1.5} fillOpacity={1} fill="url(#colorAtl)" />
+                            <Area type="monotone" name="Form (TSB)" dataKey="tsb" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorTsb)" />
+                            <ReferenceLine y={0} stroke="#475569" strokeDasharray="3 3" />
+                            <ReferenceLine y={-30} label={{ value: 'Überlastungsgrenze', fill: '#f43f5e', fontSize: 9, position: 'bottom' }} stroke="#f43f5e" strokeDasharray="3 3" opacity={0.3} />
+                            <ReferenceLine y={10} label={{ value: 'Frischegrenze', fill: '#10b981', fontSize: 9, position: 'top' }} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      )}
                     </div>
                   </div>
 

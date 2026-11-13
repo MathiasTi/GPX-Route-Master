@@ -58,6 +58,7 @@ import {
   validateGarminBaseUrl,
   getGarminBearerToken,
   syncGarminPersonalActivities,
+  getGarminSyncProgress,
   syncGarminPersonalHealth,
   downloadAndParseGarminActivityFit
 } from "./utils/garminPersonalApi.js";
@@ -2489,6 +2490,14 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  // GET /api/garmin/personal/sync-progress: Live progress status for active Cloud Sync
+  app.get("/api/garmin/personal/sync-progress", (_req, res) => {
+    res.json({
+      success: true,
+      progress: getGarminSyncProgress()
+    });
+  });
+
   // POST /api/garmin/personal/sync-activities: Pull activities and optional .FIT routes from Garmin Personal API
   app.post("/api/garmin/personal/sync-activities", async (req, res) => {
     try {
@@ -2546,14 +2555,16 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         return res.status(400).json({ success: false, error: "Ungültige Aktivitäts-ID" });
       }
       const result = await downloadAndParseGarminActivityFit(activityId, {
-        saveToWorkspaceTracks: true,
+        saveToWorkspaceTracks: false,
         overrideApiKey: headerKey
       });
       res.json({
         success: true,
         track: result.track,
         pointsCount: result.pointsCount,
-        sourceFormat: result.sourceFormat
+        sourceFormat: result.sourceFormat,
+        integrityStatus: result.integrityStatus,
+        repairedIssues: result.repairedIssues
       });
     } catch (err: any) {
       console.error("[Garmin Personal API] FIT download error:", err);
@@ -3067,7 +3078,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: true },
       appType: "spa",
     });
     app.use(vite.middlewares);

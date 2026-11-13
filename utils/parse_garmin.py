@@ -627,6 +627,63 @@ def main():
                 sys.stderr.write(f"[Steps-Import] Schrittdaten erfolgreich aggregiert. Tage: {steps_imported}\n")
             except Exception as e:
                 sys.stderr.write(f"[Steps-Import-Fehler] Fehler: {e}\n")
+
+        # 4b. RESTING HEART RATE & DAILY SUMMARY FALLBACKS
+        for rhr_tbl in ("resting_hr", "rhr", "daily_summary"):
+            if rhr_tbl not in t_names:
+                continue
+            try:
+                src_cursor.execute(f"PRAGMA table_info({rhr_tbl})")
+                cols = [c[1] for c in src_cursor.fetchall()]
+                date_col = next((c for c in ("day", "calendar_date", "date", "timestamp") if c in cols), None)
+                rhr_col = next((c for c in ("resting_heart_rate", "resting_hr", "rhr_avg", "rhr", "value") if c in cols), None)
+                if date_col and rhr_col:
+                    src_cursor.execute(f"SELECT {date_col}, {rhr_col} FROM {rhr_tbl}")
+                    added_rhr = 0
+                    for row in src_cursor.fetchall():
+                        date_val = format_to_local_date_string(row[date_col])
+                        if not date_val or row[rhr_col] is None:
+                            continue
+                        try:
+                            rhr_val = float(row[rhr_col])
+                            if not math.isnan(rhr_val) and 25 <= rhr_val <= 180:
+                                dest_cursor.execute(
+                                    "INSERT OR REPLACE INTO garmin_rhr (date, rhr) VALUES (?, ?)",
+                                    (date_val, rhr_val)
+                                )
+                                rhr_imported += 1
+                                added_rhr += 1
+                        except Exception:
+                            pass
+                    if added_rhr > 0:
+                        sys.stderr.write(f"[RHR-Import] Ruhepuls aus '{rhr_tbl}' importiert: {added_rhr}\n")
+
+                if rhr_tbl == "daily_summary" and steps_imported == 0:
+                    steps_col = next((c for c in ("steps", "total_steps") if c in cols), None)
+                    cal_col = next((c for c in ("calories_total", "total_calories", "calories") if c in cols), None)
+                    dist_col = next((c for c in ("distance", "total_distance") if c in cols), None)
+                    if date_col and steps_col:
+                        sel_cols = [date_col, steps_col] + ([cal_col] if cal_col else []) + ([dist_col] if dist_col else [])
+                        src_cursor.execute(f"SELECT {', '.join(sel_cols)} FROM daily_summary")
+                        for row in src_cursor.fetchall():
+                            date_val = format_to_local_date_string(row[date_col])
+                            if not date_val or row[steps_col] is None:
+                                continue
+                            try:
+                                s_val = int(float(row[steps_col]))
+                                c_val = float(row[cal_col]) if cal_col and row[cal_col] is not None else None
+                                d_val = float(row[dist_col]) if dist_col and row[dist_col] is not None else None
+                                if s_val >= 0:
+                                    dest_cursor.execute("""
+                                        INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance)
+                                        VALUES (?, ?, ?, ?)
+                                    """, (date_val, s_val, c_val, d_val))
+                                    steps_imported += 1
+                            except Exception:
+                                pass
+                        sys.stderr.write(f"[Steps-Import] Schrittdaten aus 'daily_summary' importiert: {steps_imported}\n")
+            except Exception as e:
+                sys.stderr.write(f"[RHR/Summary-Import-Fehler] ({rhr_tbl}): {e}\n")
                 
         # 5. ACTIVITIES (activity)
         if "activity" in t_names:

@@ -34,6 +34,7 @@ import {
   tryFetchGarminFitTrack
 } from '../utils/garminClient';
 import { getSessionGarminKey } from '../utils/garminSessionKey';
+import { hasRealGpsData } from '../utils/gpxUtils';
 
 export type CatalogSource = 'library' | 'garmin';
 export type CatalogActivityCategory = 'cycling' | 'running' | 'hiking' | 'other';
@@ -115,7 +116,7 @@ export interface ActivitiesManagerViewProps {
   ftp: number;
   userWeight: number;
   estimatedSpeed: number;
-  onLoadTracksToMap: (tracks: GPXTrack[], options?: { jumpToMap?: boolean; fitToTracks?: boolean }) => void;
+  onLoadTracksToMap: (tracks: GPXTrack[], options?: { jumpToMap?: boolean; fitToTracks?: boolean; openStatsModal?: boolean }) => void;
   onActivityMetadataUpdated?: (workspaceTrackId: string, updates: { name: string; activityType: 'cycling' | 'running'; description?: string; tags?: string[] }) => void;
   onDatabaseCountChange?: (totalCount: number) => void;
   onOpenUploadPicker?: () => void;
@@ -725,7 +726,12 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
           return;
         }
 
-        onLoadTracksToMap(hydratedTracks, { jumpToMap: true, fitToTracks: true });
+        const hasAnyGps = hydratedTracks.some((tr) => hasRealGpsData(tr));
+        onLoadTracksToMap(hydratedTracks, {
+          jumpToMap: hasAnyGps,
+          fitToTracks: hasAnyGps,
+          openStatsModal: !hasAnyGps
+        });
         if (data.truncatedCount && data.truncatedCount > 0) {
           setStatusBanner({
             text: `Maximal 50 Aktivitäten gleichzeitig auf der Karte geladen (${data.truncatedCount} übersprungen).`,

@@ -88,18 +88,33 @@ const COUNTRY_POLYGONS: CountryPolygonDef[] = [
       [47.05, 9.53],
       [47.55, 9.65],
       [47.56, 10.55],
-      [47.39, 11.40],
-      [47.75, 12.90],
+      [47.42, 10.98],
+      [47.39, 11.27],
+      [47.59, 11.63],
+      [47.66, 12.22],
+      [47.68, 12.45],
+      [47.82, 12.98],
+      [47.94, 12.94],
+      [48.26, 13.03],
+      [48.46, 13.43],
       [48.58, 13.78],
       [49.02, 15.02],
       [48.80, 16.95],
       [48.00, 17.16],
+      [47.70, 17.07],
       [46.85, 16.10],
+      [46.68, 16.00],
       [46.63, 14.95],
-      [46.40, 13.72],
-      [46.68, 12.40],
-      [47.05, 12.15],
-      [46.85, 10.49]
+      [46.52, 13.72],
+      [46.60, 13.00],
+      [46.74, 12.40],
+      [46.92, 12.15],
+      [47.00, 11.51],
+      [46.87, 11.08],
+      [46.79, 10.75],
+      [46.85, 10.49],
+      [46.86, 10.12],
+      [46.97, 9.90]
     ]
   },
   {
@@ -432,7 +447,7 @@ function normalizeCoordValue(val: number): number {
   return val;
 }
 
-function extractFirstValidGpsPoint(points?: any[] | null, pointsJson?: string | null): { lat: number; lng: number } | null {
+function extractSampledGpsPoints(points?: any[] | null, pointsJson?: string | null): Array<{ lat: number; lng: number }> {
   let arr = Array.isArray(points) ? points : null;
   if ((!arr || arr.length === 0) && typeof pointsJson === 'string' && pointsJson.length > 10) {
     try {
@@ -444,16 +459,14 @@ function extractFirstValidGpsPoint(points?: any[] | null, pointsJson?: string | 
         if (key) arr = parsed[key];
       }
     } catch {
-      return null;
+      return [];
     }
   }
 
-  if (!arr || arr.length < 2) return null;
+  if (!arr || arr.length < 2) return [];
 
-  const limit = Math.min(arr.length, 25);
-  for (let i = 0; i < limit; i++) {
-    const p = arr[i];
-    if (!p) continue;
+  const parsePoint = (p: any): { lat: number; lng: number } | null => {
+    if (!p) return null;
     let rawLat: number | undefined;
     let rawLng: number | undefined;
 
@@ -473,7 +486,7 @@ function extractFirstValidGpsPoint(points?: any[] | null, pointsJson?: string | 
       }
     }
 
-    if (rawLat === undefined || rawLng === undefined) continue;
+    if (rawLat === undefined || rawLng === undefined) return null;
     const lat = normalizeCoordValue(rawLat);
     const lng = normalizeCoordValue(rawLng);
 
@@ -486,9 +499,34 @@ function extractFirstValidGpsPoint(points?: any[] | null, pointsJson?: string | 
     ) {
       return { lat, lng };
     }
+    return null;
+  };
+
+  // Sample up to 9 evenly distributed points across the track so border-crossing tours resolve accurately
+  const sampleCount = Math.min(arr.length, 9);
+  const sampled: Array<{ lat: number; lng: number }> = [];
+  const seenIndices = new Set<number>();
+
+  for (let s = 0; s < sampleCount; s++) {
+    const idx = sampleCount === 1 ? 0 : Math.round((s * (arr.length - 1)) / (sampleCount - 1));
+    if (seenIndices.has(idx)) continue;
+    seenIndices.add(idx);
+    const pt = parsePoint(arr[idx]);
+    if (pt) sampled.push(pt);
   }
 
-  return null;
+  if (sampled.length === 0) {
+    const fallbackLimit = Math.min(arr.length, 25);
+    for (let i = 0; i < fallbackLimit; i++) {
+      const pt = parsePoint(arr[i]);
+      if (pt) {
+        sampled.push(pt);
+        break;
+      }
+    }
+  }
+
+  return sampled;
 }
 
 export function lookupCountryByCoordinates(lat: number, lng: number): string {
@@ -605,10 +643,24 @@ export function resolveActivityCountry(input: CountryResolveInput): string {
   if (explicit) return explicit;
 
   if (!input.isVirtual) {
-    const pt = extractFirstValidGpsPoint(input.points, input.pointsJson);
-    if (pt) {
-      const geoCountry = lookupCountryByCoordinates(pt.lat, pt.lng);
-      if (geoCountry) return geoCountry;
+    const pts = extractSampledGpsPoints(input.points, input.pointsJson);
+    if (pts.length > 0) {
+      const counts = new Map<string, number>();
+      for (const pt of pts) {
+        const geoCountry = lookupCountryByCoordinates(pt.lat, pt.lng);
+        if (geoCountry) {
+          counts.set(geoCountry, (counts.get(geoCountry) || 0) + 1);
+        }
+      }
+      let bestCountry = '';
+      let bestCount = 0;
+      for (const [country, count] of counts.entries()) {
+        if (count > bestCount) {
+          bestCount = count;
+          bestCountry = country;
+        }
+      }
+      if (bestCountry) return bestCountry;
     }
   }
 

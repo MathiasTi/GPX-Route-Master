@@ -249,20 +249,36 @@ export const detectImpossibleGradientAnomalies = (
 
       const isNeedleSummit = gradUp > 20 && gradDown < -20 && (filledEle[c] - filledEle[prevIdx] >= 12) && (filledEle[c] - filledEle[nextIdx] >= 12);
       const isNeedleAbyss = gradUp < -20 && gradDown > 20 && (filledEle[prevIdx] - filledEle[c] >= 12) && (filledEle[nextIdx] - filledEle[c] >= 12);
+      const isUpwardReversal = (isNeedleSummit || gradientDelta > maxGradientDelta) && (gradUp > 20 && gradDown < -20);
+      const isDownwardReversal = (isNeedleAbyss || -gradientDelta > maxGradientDelta) && (gradUp < -20 && gradDown > 20);
 
-      if ((isNeedleSummit || isNeedleAbyss || gradientDelta > maxGradientDelta) && (gradUp > 20 && gradDown < -20)) {
-        // Expand backwards to base of the climb if continuous ascent
-        while (prevIdx > 0 && filledEle[prevIdx - 1] < filledEle[prevIdx] && (cumDistKm[c] - cumDistKm[prevIdx - 1]) * 1000 <= 250) {
-          prevIdx--;
-        }
-        // Expand forwards to base of descent if continuous descent
-        while (nextIdx < points.length - 1 && filledEle[nextIdx + 1] < filledEle[nextIdx] && (cumDistKm[nextIdx + 1] - cumDistKm[c]) * 1000 <= 250) {
-          nextIdx++;
+      if (isUpwardReversal || isDownwardReversal) {
+        if (isUpwardReversal) {
+          // Expand backwards to base of the climb if continuous ascent
+          while (prevIdx > 0 && filledEle[prevIdx - 1] < filledEle[prevIdx] && (cumDistKm[c] - cumDistKm[prevIdx - 1]) * 1000 <= 250) {
+            prevIdx--;
+          }
+          // Expand forwards to base of descent if continuous descent
+          while (nextIdx < points.length - 1 && filledEle[nextIdx + 1] < filledEle[nextIdx] && (cumDistKm[nextIdx + 1] - cumDistKm[c]) * 1000 <= 250) {
+            nextIdx++;
+          }
+        } else {
+          // Expand backwards to top of drop if continuous descent into abyss
+          while (prevIdx > 0 && filledEle[prevIdx - 1] > filledEle[prevIdx] && (cumDistKm[c] - cumDistKm[prevIdx - 1]) * 1000 <= 250) {
+            prevIdx--;
+          }
+          // Expand forwards to top of recovery if continuous ascent out of abyss
+          while (nextIdx < points.length - 1 && filledEle[nextIdx + 1] > filledEle[nextIdx] && (cumDistKm[nextIdx + 1] - cumDistKm[c]) * 1000 <= 250) {
+            nextIdx++;
+          }
         }
 
         const totalDistMeters = Math.round((cumDistKm[nextIdx] - cumDistKm[prevIdx]) * 1000);
         const alreadyCovered = anomalies.some(a => (c >= a.startIndex && c <= a.endIndex) || (prevIdx <= a.endIndex && nextIdx >= a.startIndex));
         if (!alreadyCovered) {
+          const eleDiffPeak = isUpwardReversal
+            ? Math.round(filledEle[c] - Math.min(filledEle[prevIdx], filledEle[nextIdx]))
+            : -Math.round(Math.max(filledEle[prevIdx], filledEle[nextIdx]) - filledEle[c]);
           anomalies.push({
             id: `summit-anomaly-${prevIdx}-${nextIdx}`,
             startIndex: prevIdx,
@@ -274,12 +290,12 @@ export const detectImpossibleGradientAnomalies = (
             peakEle: Math.round(filledEle[c]),
             peakIndex: c,
             gradient: parseFloat(gradUp.toFixed(1)),
-            gradientDelta: parseFloat(gradientDelta.toFixed(1)),
+            gradientDelta: parseFloat(Math.abs(gradientDelta).toFixed(1)),
             distanceMeters: totalDistMeters,
-            eleChangeMeters: Math.round(filledEle[c] - Math.min(filledEle[prevIdx], filledEle[nextIdx])),
+            eleChangeMeters: eleDiffPeak,
             type: 'summit_anomaly',
             severity: 'error',
-            description: `Fehlerhafte Gipfelspitze: Extreme Richtungsänderung der Steigung (Δ ${gradientDelta.toFixed(0)}%, +${Math.round(gradUp)}% ➔ ${Math.round(gradDown)}%) auf nur ${totalDistMeters}m`
+            description: `Fehlerhafte Gipfelspitze: Extreme Richtungsänderung der Steigung (Δ ${Math.abs(gradientDelta).toFixed(0)}%, ${gradUp > 0 ? '+' : ''}${Math.round(gradUp)}% ➔ ${gradDown > 0 ? '+' : ''}${Math.round(gradDown)}%) auf nur ${totalDistMeters}m`
           });
         }
       }
@@ -370,71 +386,180 @@ export const repairGradientAnomalies = (
     return { repairedPoints: points.map(p => ({ ...p })), fixedCount: 0 };
   }
 
-  const detected = anomalies && anomalies.length > 0 ? anomalies : detectImpossibleGradientAnomalies(points);
-  if (detected.length === 0) {
+  const initialDetected = anomalies && anomalies.length > 0 ? anomalies : detectImpossibleGradientAnomalies(points);
+  if (initialDetected.length === 0) {
     return { repairedPoints: points.map(p => ({ ...p })), fixedCount: 0 };
   }
 
+  const n = points.length;
   const repairedPoints = points.map(p => ({ ...p }));
   interpolateMissingElevations(repairedPoints);
 
   // Cumulative distance array for distance-weighted interpolation
-  const cumDistMeters = new Float64Array(points.length);
+  const cumDistMeters = new Float64Array(n);
   cumDistMeters[0] = 0;
-  for (let i = 1; i < points.length; i++) {
+  for (let i = 1; i < n; i++) {
     cumDistMeters[i] = cumDistMeters[i - 1] + calculateDistance(points[i - 1], points[i]) * 1000;
   }
 
   let fixedCount = 0;
+  const maxAllowedSlope = 0.25; // 25% max repaired gradient (safely below 35% and 40% thresholds)
 
-  for (const anomaly of detected) {
-    let sIdx = Math.max(0, anomaly.startIndex);
-    let eIdx = Math.min(points.length - 1, anomaly.endIndex);
-    if (eIdx <= sIdx) continue;
+  for (let pass = 0; pass < 6; pass++) {
+    const currentAnomalies = pass === 0 ? initialDetected : detectImpossibleGradientAnomalies(repairedPoints);
+    if (currentAnomalies.length === 0) break;
 
-    // If anomaly is a direct adjacent jump (e.g. 1-step cliff), expand window so the spike point is interpolated
-    if (eIdx - sIdx === 1) {
-      if (eIdx < points.length - 1) {
-        eIdx = Math.min(points.length - 1, eIdx + 1);
-      } else if (sIdx > 0) {
-        sIdx = Math.max(0, sIdx - 1);
-      }
-    }
-
-    const startEle = repairedPoints[sIdx].ele ?? 0;
-    const endEle = repairedPoints[eIdx].ele ?? 0;
-    const totalSpanDist = cumDistMeters[eIdx] - cumDistMeters[sIdx];
-
-    if (totalSpanDist <= 0) {
-      for (let k = sIdx + 1; k < eIdx; k++) {
-        repairedPoints[k].ele = startEle;
-      }
-    } else {
-      // Smoothstep interpolation for natural curvature without sharp kinks
-      for (let k = sIdx + 1; k < eIdx; k++) {
-        const segDist = cumDistMeters[k] - cumDistMeters[sIdx];
-        const t = Math.max(0, Math.min(1, segDist / totalSpanDist));
-        const smoothT = t * t * (3 - 2 * t);
-        repairedPoints[k].ele = Number((startEle + (endEle - startEle) * smoothT).toFixed(1));
-      }
-    }
-
-    // Safety pass: clamp any remaining excessive gradient jump on repaired points to realistic slope
-    for (let k = sIdx; k < eIdx; k++) {
-      const stepMeters = cumDistMeters[k + 1] - cumDistMeters[k];
-      if (stepMeters > 0) {
-        const maxDelta = stepMeters * 0.35; // 35% max realistic slope
-        const curDelta = (repairedPoints[k + 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
-        if (Math.abs(curDelta) > maxDelta && Math.abs(curDelta) > 5) {
-          repairedPoints[k + 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+    // Sort by startIndex and merge nearby/overlapping anomalies (e.g. entry + exit cliffs of a plateau spike)
+    const sorted = [...currentAnomalies].sort((a, b) => a.startIndex - b.startIndex);
+    const mergedSpans: { startIndex: number; endIndex: number }[] = [];
+    for (const a of sorted) {
+      const s = Math.max(0, Math.min(n - 1, a.startIndex));
+      const e = Math.max(0, Math.min(n - 1, a.endIndex));
+      if (mergedSpans.length === 0) {
+        mergedSpans.push({ startIndex: s, endIndex: e });
+      } else {
+        const last = mergedSpans[mergedSpans.length - 1];
+        const gapMeters = cumDistMeters[s] - cumDistMeters[last.endIndex];
+        if (s <= last.endIndex + 10 || gapMeters <= 250) {
+          last.endIndex = Math.max(last.endIndex, e);
+        } else {
+          mergedSpans.push({ startIndex: s, endIndex: e });
         }
       }
     }
 
-    fixedCount++;
+    for (const span of mergedSpans) {
+      // Step at least 1 index outside the anomaly when possible so endpoints do not sit on the spike point itself
+      let sIdx = span.startIndex > 0 ? span.startIndex - 1 : 0;
+      let eIdx = span.endIndex < n - 1 ? span.endIndex + 1 : n - 1;
+      if (eIdx <= sIdx) continue;
+
+      // Expand [sIdx, eIdx] outward until the linear bridging slope is <= maxAllowedSlope
+      // and the immediate outer steps at sIdx and eIdx are also realistic.
+      while (sIdx > 0 || eIdx < n - 1) {
+        const spanDist = cumDistMeters[eIdx] - cumDistMeters[sIdx];
+        const eleDiff = Math.abs((repairedPoints[eIdx].ele ?? 0) - (repairedPoints[sIdx].ele ?? 0));
+        const bridgeSlopeOk = spanDist > 0.5 && eleDiff / spanDist <= maxAllowedSlope;
+
+        let leftOk = true;
+        if (sIdx > 0) {
+          const dLeft = Math.max(1, cumDistMeters[sIdx] - cumDistMeters[sIdx - 1]);
+          const diffLeft = Math.abs((repairedPoints[sIdx].ele ?? 0) - (repairedPoints[sIdx - 1].ele ?? 0));
+          if (diffLeft / dLeft > 0.30 && diffLeft >= 8) leftOk = false;
+        }
+
+        let rightOk = true;
+        if (eIdx < n - 1) {
+          const dRight = Math.max(1, cumDistMeters[eIdx + 1] - cumDistMeters[eIdx]);
+          const diffRight = Math.abs((repairedPoints[eIdx + 1].ele ?? 0) - (repairedPoints[eIdx].ele ?? 0));
+          if (diffRight / dRight > 0.30 && diffRight >= 8) rightOk = false;
+        }
+
+        if (bridgeSlopeOk && leftOk && rightOk) break;
+
+        if (!leftOk && sIdx > 0) {
+          sIdx--;
+        } else if (!rightOk && eIdx < n - 1) {
+          eIdx++;
+        } else {
+          if (sIdx > 0) sIdx--;
+          if (eIdx < n - 1) eIdx++;
+        }
+      }
+
+      const startEle = repairedPoints[sIdx].ele ?? 0;
+      const endEle = repairedPoints[eIdx].ele ?? 0;
+      const totalSpanDist = cumDistMeters[eIdx] - cumDistMeters[sIdx];
+      const absSpanDiff = Math.abs(endEle - startEle);
+
+      if (totalSpanDist > 0 && absSpanDiff / totalSpanDist <= maxAllowedSlope) {
+        // Linear distance-weighted interpolation across [sIdx, eIdx] without altering sIdx or eIdx
+        for (let k = sIdx + 1; k < eIdx; k++) {
+          const segDist = cumDistMeters[k] - cumDistMeters[sIdx];
+          const t = Math.max(0, Math.min(1, segDist / totalSpanDist));
+          repairedPoints[k].ele = Number((startEle + (endEle - startEle) * t).toFixed(1));
+        }
+      } else {
+        // Whole track or boundary-attached barometric offset where total available distance is shorter than needed
+        // Anchor on the clean side and propagate a smooth 25% slope limit all the way to the track boundary
+        const leftCleanCount = span.startIndex;
+        const rightCleanCount = n - 1 - span.endIndex;
+        if (leftCleanCount >= rightCleanCount && span.startIndex > 0) {
+          const anchorIdx = span.startIndex;
+          for (let k = anchorIdx; k < n - 1; k++) {
+            const stepMeters = Math.max(0, cumDistMeters[k + 1] - cumDistMeters[k]);
+            const maxDelta = stepMeters * maxAllowedSlope;
+            const curDelta = (repairedPoints[k + 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+            if (Math.abs(curDelta) > maxDelta) {
+              repairedPoints[k + 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+            }
+          }
+          for (let k = anchorIdx; k > 0; k--) {
+            const stepMeters = Math.max(0, cumDistMeters[k] - cumDistMeters[k - 1]);
+            const maxDelta = stepMeters * maxAllowedSlope;
+            const curDelta = (repairedPoints[k - 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+            if (Math.abs(curDelta) > maxDelta) {
+              repairedPoints[k - 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+            }
+          }
+        } else {
+          const anchorIdx = Math.min(n - 1, span.endIndex);
+          for (let k = anchorIdx; k > 0; k--) {
+            const stepMeters = Math.max(0, cumDistMeters[k] - cumDistMeters[k - 1]);
+            const maxDelta = stepMeters * maxAllowedSlope;
+            const curDelta = (repairedPoints[k - 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+            if (Math.abs(curDelta) > maxDelta) {
+              repairedPoints[k - 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+            }
+          }
+          for (let k = anchorIdx; k < n - 1; k++) {
+            const stepMeters = Math.max(0, cumDistMeters[k + 1] - cumDistMeters[k]);
+            const maxDelta = stepMeters * maxAllowedSlope;
+            const curDelta = (repairedPoints[k + 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+            if (Math.abs(curDelta) > maxDelta) {
+              repairedPoints[k + 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+            }
+          }
+        }
+      }
+
+      if (pass === 0) {
+        fixedCount++;
+      }
+    }
   }
 
-  return { repairedPoints, fixedCount };
+  // Final safety guarantee: if any sharp reversal or residual cliff still triggers detectImpossibleGradientAnomalies,
+  // apply local moving average / forward slope clamp until 0 anomalies remain.
+  let safetyIter = 0;
+  while (safetyIter < 5) {
+    const remaining = detectImpossibleGradientAnomalies(repairedPoints);
+    if (remaining.length === 0) break;
+    for (const rem of remaining) {
+      const s = Math.max(0, rem.startIndex - 2);
+      const e = Math.min(n - 1, rem.endIndex + 2);
+      const sEle = repairedPoints[s].ele ?? 0;
+      const eEle = repairedPoints[e].ele ?? 0;
+      const spanD = cumDistMeters[e] - cumDistMeters[s];
+      for (let k = s + 1; k < e; k++) {
+        const t = spanD > 0 ? (cumDistMeters[k] - cumDistMeters[s]) / spanD : 0.5;
+        repairedPoints[k].ele = Number((sEle + (eEle - sEle) * t).toFixed(1));
+      }
+    }
+    if (safetyIter >= 2) {
+      for (let k = 0; k < n - 1; k++) {
+        const stepMeters = Math.max(0, cumDistMeters[k + 1] - cumDistMeters[k]);
+        const maxDelta = stepMeters * 0.22;
+        const curDelta = (repairedPoints[k + 1].ele ?? 0) - (repairedPoints[k].ele ?? 0);
+        if (Math.abs(curDelta) > maxDelta) {
+          repairedPoints[k + 1].ele = Number(((repairedPoints[k].ele ?? 0) + Math.sign(curDelta) * maxDelta).toFixed(1));
+        }
+      }
+    }
+    safetyIter++;
+  }
+
+  return { repairedPoints, fixedCount: Math.max(1, fixedCount) };
 };
 
 /**
@@ -3504,8 +3629,11 @@ export const autoFixTrackValidation = (
     }
   }
 
-  // 4. Linearly interpolate missing elevations
+  // 4. Linearly interpolate missing elevations and repair impossible gradient / cliff spikes
   interpolateMissingElevations(validPoints);
+  if (validPoints.length >= 3) {
+    validPoints = repairGradientAnomalies(validPoints).repairedPoints;
+  }
 
   // 5. Recalculate track distance, ascent, descent, maxSlope
   let distance = 0;
@@ -3997,6 +4125,9 @@ export const sanitizeTrackAllInOne = (
   const preSimplifyCount = pts.length;
   if (options.simplifyPoints !== false && pts.length > 50) {
     pts = simplifyTrackPoints(pts, 0.0000001);
+    if (options.smoothElevation !== false && pts.length > 3) {
+      pts = repairGradientAnomalies(pts).repairedPoints;
+    }
   }
   const reducedPoints = Math.max(0, preSimplifyCount - pts.length);
 

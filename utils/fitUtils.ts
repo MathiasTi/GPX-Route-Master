@@ -1997,6 +1997,27 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
 
     let pointer = 0;
     let littleEndian = true;
+    const repairedIssues: string[] = [];
+    const addRepairIssue = (msg: string) => {
+      if (!repairedIssues.includes(msg)) repairedIssues.push(msg);
+    };
+
+    // Scan for leading junk bytes before '.FIT' signature if byte 8..11 is not '.FIT'
+    if (fit.byteLength >= 12) {
+      const initialSig = String.fromCharCode(...new Uint8Array(arrayBuffer.slice(8, 12)));
+      if (initialSig !== '.FIT') {
+        const scanLimit = Math.min(512, fit.byteLength - 12);
+        for (let offset = 1; offset <= scanLimit; offset++) {
+          const sig = String.fromCharCode(...new Uint8Array(arrayBuffer.slice(offset + 8, offset + 12)));
+          const hdrSize = fit.getUint8(offset);
+          if (sig === '.FIT' && hdrSize >= 12 && offset + hdrSize <= fit.byteLength) {
+            pointer = offset;
+            addRepairIssue('Führende Müll-Bytes vor FIT-Header übersprungen');
+            break;
+          }
+        }
+      }
+    }
 
     while (pointer < fit.byteLength - 2) {
       if (pointer + 12 > fit.byteLength) break;
@@ -2011,11 +2032,17 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       const profileVersion = fit.getUint16(pointer + 2, littleEndian);
       const dataSize = fit.getUint32(pointer + 4, littleEndian);
       const dataSignature = String.fromCharCode(...new Uint8Array(arrayBuffer.slice(pointer + 8, pointer + 12)));
+      if (dataSignature !== '.FIT') {
+        if (pointer === 0) break;
+        break;
+      }
 
       let startOfDataRecords = pointer + headerSize;
       let endOfDataRecords = startOfDataRecords + dataSize;
-      if (endOfDataRecords > fit.byteLength - 2) {
-        endOfDataRecords = fit.byteLength - 2;
+      if (dataSize === 0 || endOfDataRecords > fit.byteLength) {
+        // Unfinalized (dataSize === 0) or truncated FIT file: salvage all intact records up to EOF
+        endOfDataRecords = fit.byteLength;
+        addRepairIssue('Unfinalisierter oder abgeschnittener FIT-Header repariert');
       }
 
       pointer = startOfDataRecords;
@@ -2074,6 +2101,16 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           if (!recordTemplate) {
             pointer++;
             continue;
+          }
+
+          const expectedDataBytes =
+            recordTemplate.fields.reduce((sum, f) => sum + f.size, 0) +
+            (recordTemplate.developerFields
+              ? recordTemplate.developerFields.reduce((sum, f) => sum + f.size, 0)
+              : 0);
+          if (pointer + 1 + expectedDataBytes > endOfDataRecords || pointer + 1 + expectedDataBytes > fit.byteLength) {
+            addRepairIssue('Abgeschnittener Datensatz am Dateiende verworfen');
+            break;
           }
 
           let recordPointer = pointer + 1;
@@ -2312,6 +2349,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             if (recordHeader.timestampOffset < (latestTimestamp & 0x0000001F)) {
               realTimestamp += 0x20;
             }
+            latestTimestamp = realTimestamp;
             time = new Date((realTimestamp + 631065600) * 1000);
           }
 
@@ -2406,6 +2444,42 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     }
 
     let sanitizedPoints = sanitizeGPXPoints(points);
+    if (sanitizedPoints.length < points.length) {
+      addRepairIssue(`${points.length - sanitizedPoints.length} fehlerhafte GPS-Punkte (Null-Island/Ausreißer) entfernt`);
+    }
+
+    // Repair unrealistic elevation spikes (< -430m or > 8900m)
+    let eleSpikeRepaired = false;
+    for (const p of sanitizedPoints) {
+      if (p.ele !== undefined && p.ele !== null && (!Number.isFinite(p.ele) || p.ele < -430 || p.ele > 8900)) {
+        p.ele = undefined as any;
+        eleSpikeRepaired = true;
+      }
+    }
+    if (eleSpikeRepaired) {
+      addRepairIssue('Unrealistische Höhenausreißer geglättet');
+    }
+
+    // Repair non-monotonic (backwards jumping) timestamps
+    let lastValidTimeMs = -Infinity;
+    let timeRepaired = false;
+    for (let i = 0; i < sanitizedPoints.length; i++) {
+      const t = sanitizedPoints[i].time;
+      if (t instanceof Date && !isNaN(t.getTime())) {
+        const ms = t.getTime();
+        if (ms < lastValidTimeMs) {
+          sanitizedPoints[i].time = new Date(lastValidTimeMs + 1000);
+          lastValidTimeMs += 1000;
+          timeRepaired = true;
+        } else {
+          lastValidTimeMs = ms;
+        }
+      }
+    }
+    if (timeRepaired) {
+      addRepairIssue('Rückwärts springende Zeitstempel korrigiert');
+    }
+
     let isVirtual = false;
 
     if (sanitizedPoints.length === 0) {
@@ -2579,8 +2653,10 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           sessionDistance,
           lapCount,
           isVirtual,
+          integrityStatus: repairedIssues.length > 0 ? 'repaired' : 'valid',
+          repairedIssues,
           rawRecords: rawRecordsForMeta
-        }
+        } as any
       }
     };
   } catch (error) {

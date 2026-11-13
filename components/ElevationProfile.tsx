@@ -1739,6 +1739,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          setActiveAnomalyId(null);
                           onRepairAnomalies(track.id);
                         }}
                         className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded-lg font-bold text-[10px] shadow-sm transition-colors cursor-pointer"

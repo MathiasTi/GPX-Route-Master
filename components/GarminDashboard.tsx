@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
-  Heart, Moon, Sparkles, Footprints, Flame, Scale, TrendingUp, Info,
+  Heart, Moon, Sparkles, Footprints, Flame, TrendingUp, Info,
   Zap, Key
 } from 'lucide-react';
 import { 
@@ -23,7 +23,6 @@ export type GarminDashboardTab =
   | 'activities'
   | 'analytics'
   | 'sleep'
-  | 'weight'
   | 'rhr'
   | 'steps'
   | 'stress'
@@ -223,6 +222,41 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     return { running, cycling, other };
   }, [chartData]);
 
+  const rhrData = useMemo(() => {
+    if (!Array.isArray(data?.rhr)) return [];
+    return data.rhr
+      .map((d: any) => ({
+        date: typeof d?.date === 'string' ? d.date : String(d?.date || ''),
+        rhr: Number(d?.rhr)
+      }))
+      .filter((d) => Boolean(d.date) && Number.isFinite(d.rhr) && d.rhr > 0);
+  }, [data?.rhr]);
+
+  const stepsData = useMemo(() => {
+    if (!Array.isArray(data?.steps)) return [];
+    return data.steps
+      .map((d: any) => {
+        const steps = Number(d?.steps);
+        const caloriesRaw = d?.calories !== undefined && d?.calories !== null ? Number(d.calories) : undefined;
+        return {
+          date: typeof d?.date === 'string' ? d.date : String(d?.date || ''),
+          steps,
+          calories: caloriesRaw !== undefined && Number.isFinite(caloriesRaw) && caloriesRaw >= 0 ? caloriesRaw : undefined
+        };
+      })
+      .filter((d) => Boolean(d.date) && Number.isFinite(d.steps) && d.steps >= 0);
+  }, [data?.steps]);
+
+  const stressData = useMemo(() => {
+    if (!Array.isArray(data?.stress)) return [];
+    return data.stress
+      .map((d: any) => ({
+        date: typeof d?.date === 'string' ? d.date : String(d?.date || ''),
+        avg_stress: Number(d?.avg_stress ?? d?.averageStressLevel ?? d?.stressLevel)
+      }))
+      .filter((d) => Boolean(d.date) && Number.isFinite(d.avg_stress) && d.avg_stress >= 0);
+  }, [data?.stress]);
+
   const getCorrBadgeColor = (r: number) => {
     const absR = Math.abs(r);
     if (absR > 0.5) return 'bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/30';
@@ -394,12 +428,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   };
 
   // Stats calculation
-  const latestWeight = data?.weight && data.weight.length > 0 ? data.weight[data.weight.length - 1] : null;
-  const avgRhr = data?.rhr && data.rhr.length > 0 
-    ? Math.round(data.rhr.reduce((acc, r) => acc + r.rhr, 0) / data.rhr.length) 
+  const avgRhr = rhrData.length > 0
+    ? Math.round(rhrData.reduce((acc, r) => acc + r.rhr, 0) / rhrData.length)
     : null;
-  const avgSteps = data?.steps && data.steps.length > 0
-    ? Math.round(data.steps.reduce((acc, s) => acc + s.steps, 0) / data.steps.length)
+  const avgSteps = stepsData.length > 0
+    ? Math.round(stepsData.reduce((acc, s) => acc + s.steps, 0) / stepsData.length)
     : null;
   const avgSleep = data?.sleep && data.sleep.length > 0
     ? Math.round(data.sleep.reduce((acc, s) => acc + s.duration, 0) / data.sleep.length)
@@ -502,7 +535,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           )}
 
           {/* Personal API Sync Panel if no data imported yet */}
-          {(!data || (data.sleep.length === 0 && data.weight.length === 0 && data.rhr.length === 0 && data.steps.length === 0 && data.activities.length === 0)) ? (
+          {(!data || (data.sleep.length === 0 && data.stress.length === 0 && data.rhr.length === 0 && data.steps.length === 0 && data.activities.length === 0)) ? (
             <div className="space-y-5">
               <div className="p-5 rounded-3xl bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-slate-900 border border-orange-200 dark:border-orange-900/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -526,7 +559,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             <div className="space-y-6">
               {/* Bento-Grid Quick Stats (only shown on overview tab) */}
               {activeTab === 'overview' && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 {/* Steps */}
                 <div className="bg-emerald-50/40 dark:bg-emerald-950/10 p-5 rounded-2xl border border-emerald-100/40 dark:border-emerald-900/20 flex items-center gap-4">
                   <div className="p-3 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 rounded-xl">
@@ -536,19 +569,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider block">Ø Schritte / Tag</span>
                     <span className="text-lg font-black text-slate-800 dark:text-slate-100">
                       {avgSteps ? avgSteps.toLocaleString('de-DE') : '-'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Weight */}
-                <div className="bg-blue-50/40 dark:bg-blue-950/10 p-5 rounded-2xl border border-blue-100/40 dark:border-blue-900/20 flex items-center gap-4">
-                  <div className="p-3 bg-blue-100 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 rounded-xl">
-                    <Scale className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider block">Letztes Gewicht</span>
-                    <span className="text-lg font-black text-slate-800 dark:text-slate-100">
-                      {latestWeight ? `${latestWeight.weight.toFixed(1)} kg` : '-'}
                     </span>
                   </div>
                 </div>
@@ -583,7 +603,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'personal-api', 'performance', 'calendar', 'compare', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress'] as const).map((tab) => (
+                {(['overview', 'personal-api', 'performance', 'calendar', 'compare', 'activities', 'analytics', 'sleep', 'rhr', 'steps', 'stress'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => handleSelectTab(tab)}
@@ -609,8 +629,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       ? 'Trends & Korrelationen 📊' 
                       : tab === 'sleep'
                       ? 'Schlaf'
-                      : tab === 'weight'
-                      ? 'Gewicht'
                       : tab === 'rhr'
                       ? 'Ruhepuls'
                       : tab === 'steps'
@@ -697,16 +715,40 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <span>Ruhepuls Trend (bpm)</span>
                             <Heart className="w-3.5 h-3.5 text-rose-500" />
                           </h4>
-                          <div className="h-48 w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <LineChart data={data?.rhr.slice(-30)}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                                <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                                <YAxis domain={['dataMin - 5', 'dataMax + 5']} stroke="#94a3b8" fontSize={9} />
-                                <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                                <Line type="monotone" dataKey="rhr" name="Ruhepuls" stroke="#e11d48" strokeWidth={3} dot={false} />
-                              </LineChart>
-                            </ResponsiveContainer>
+                          <div className="h-48 w-full min-w-0">
+                            {rhrData.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                                <span>Keine Ruhepuls-Daten vorhanden.</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveTab('personal-api')}
+                                  className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                                >
+                                  Über Garmin Personal API synchronisieren
+                                </button>
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                <LineChart data={rhrData.slice(-30)}>
+                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                  <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                                  <YAxis
+                                    domain={[(min: number) => Math.max(25, Math.floor(min - 5)), (max: number) => Math.ceil(max + 5)]}
+                                    stroke="#94a3b8"
+                                    fontSize={9}
+                                  />
+                                  <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                                  <Line
+                                    type="monotone"
+                                    dataKey="rhr"
+                                    name="Ruhepuls"
+                                    stroke="#e11d48"
+                                    strokeWidth={3}
+                                    dot={rhrData.slice(-30).length <= 3 ? { r: 4, fill: '#e11d48' } : false}
+                                  />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            )}
                           </div>
                         </div>
 
@@ -716,16 +758,29 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <span>Tägliche Schritte</span>
                             <Footprints className="w-3.5 h-3.5 text-emerald-500" />
                           </h4>
-                          <div className="h-48 w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <BarChart data={data?.steps.slice(-15)}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                                <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                                <YAxis stroke="#94a3b8" fontSize={9} />
-                                <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                                <Bar dataKey="steps" name="Schritte" fill="#10b981" radius={[4, 4, 0, 0]} />
-                              </BarChart>
-                            </ResponsiveContainer>
+                          <div className="h-48 w-full min-w-0">
+                            {stepsData.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                                <span>Keine Schrittdaten vorhanden.</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveTab('personal-api')}
+                                  className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                                >
+                                  Über Garmin Personal API synchronisieren
+                                </button>
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                <BarChart data={stepsData.slice(-15)}>
+                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                  <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                                  <YAxis stroke="#94a3b8" fontSize={9} />
+                                  <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                                  <Bar dataKey="steps" name="Schritte" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -789,51 +844,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </motion.div>
                   )}
 
-                  {/* Tab 3: WEIGHT */}
-                  {activeTab === 'weight' && (
-                    <motion.div 
-                      key="weight"
-                      initial={{ opacity: 0, y: 5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4"
-                    >
-                      <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Körpergewicht & Zusammensetzung</h4>
-                      <p className="text-xs text-slate-500">Überwache die Entwicklung deines Körpergewichts, Body-Mass-Index (BMI) und des Körperfettanteils.</p>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className={`md:col-span-2 ${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={data?.weight}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                              <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                              <YAxis domain={['dataMin - 1', 'dataMax + 1']} stroke="#94a3b8" fontSize={9} unit=" kg" />
-                              <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                              <Line type="monotone" dataKey="weight" name="Gewicht" stroke="#ff7300" strokeWidth={3} dot={{ r: 3 }} />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </div>
-
-                        <div className="space-y-4">
-                          <div className="bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-[120px]">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase block">Body-Mass-Index (BMI)</span>
-                            <span className="text-3xl font-black text-slate-800 dark:text-slate-100">
-                              {latestWeight?.bmi ? latestWeight.bmi.toFixed(1) : '-'}
-                            </span>
-                            <span className="text-[10px] text-slate-400">basierend auf der letzten Messung</span>
-                          </div>
-
-                          <div className="bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-[120px]">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase block">Körperfett (%)</span>
-                            <span className="text-3xl font-black text-slate-800 dark:text-slate-100">
-                              {latestWeight?.body_fat ? `${latestWeight.body_fat.toFixed(1)} %` : '-'}
-                            </span>
-                            <span className="text-[10px] text-slate-400">Verhältnis von Fett- zu Muskelmasse</span>
-                          </div>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-
                   {/* Tab 4: RHR */}
                   {activeTab === 'rhr' && (
                     <motion.div 
@@ -845,22 +855,48 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Ruheherzfrequenz (RHR)</h4>
                       <p className="text-xs text-slate-500">Ein hervorragender Indikator für deine Regeneration, Ausdauerleistung und Fitnessentwicklung über Zeit.</p>
-                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={data?.rhr}>
-                            <defs>
-                              <linearGradient id="colorRhr" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.2}/>
-                                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                            <YAxis domain={['dataMin - 5', 'dataMax + 5']} stroke="#94a3b8" fontSize={9} />
-                            <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                            <Area type="monotone" dataKey="rhr" name="Ruhepuls" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorRhr)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
+                        {rhrData.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                            <span>Keine Ruhepuls-Daten vorhanden.</span>
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('personal-api')}
+                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                            >
+                              Über Garmin Personal API synchronisieren
+                            </button>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
+                            <AreaChart data={rhrData}>
+                              <defs>
+                                <linearGradient id="colorRhr" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.2}/>
+                                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                              <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                              <YAxis
+                                domain={[(min: number) => Math.max(25, Math.floor(min - 5)), (max: number) => Math.ceil(max + 5)]}
+                                stroke="#94a3b8"
+                                fontSize={9}
+                              />
+                              <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                              <Area
+                                type="monotone"
+                                dataKey="rhr"
+                                name="Ruhepuls"
+                                stroke="#f43f5e"
+                                strokeWidth={3}
+                                fillOpacity={1}
+                                fill="url(#colorRhr)"
+                                dot={rhrData.length <= 3 ? { r: 4, fill: '#f43f5e' } : false}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -876,18 +912,35 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schritte & Kalorienverbrauch</h4>
                       <p className="text-xs text-slate-500">Überwache deine tägliche Aktivität im Alltag, Distanzen und verbrannte Kalorien.</p>
-                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={data?.steps.slice(-30)}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                            <YAxis yAxisId="left" stroke="#10b981" fontSize={9} />
-                            <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={9} unit=" kcal" />
-                            <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                            <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" radius={[3, 3, 0, 0]} />
-                            <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" radius={[3, 3, 0, 0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
+                        {stepsData.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                            <span>Keine Schrittdaten vorhanden.</span>
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('personal-api')}
+                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                            >
+                              Über Garmin Personal API synchronisieren
+                            </button>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
+                            <BarChart data={stepsData.slice(-30)}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                              <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                              <YAxis yAxisId="left" stroke="#10b981" fontSize={9} />
+                              {stepsData.slice(-30).some((d) => d.calories !== undefined && d.calories > 0) && (
+                                <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={9} unit=" kcal" />
+                              )}
+                              <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                              <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" radius={[3, 3, 0, 0]} />
+                              {stepsData.slice(-30).some((d) => d.calories !== undefined && d.calories > 0) && (
+                                <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" radius={[3, 3, 0, 0]} />
+                              )}
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -903,22 +956,44 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Tägliche Stressbelastung</h4>
                       <p className="text-xs text-slate-500">Dein Stress-Score (0-100) berechnet aus der Herzfrequenzvariabilität (HRV) für tiefere Regenerationseinblicke.</p>
-                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={data?.stress}>
-                            <defs>
-                              <linearGradient id="colorStress" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.2}/>
-                                <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                            <YAxis domain={[0, 100]} stroke="#94a3b8" fontSize={9} />
-                            <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                            <Area type="monotone" dataKey="avg_stress" name="Ø Stress-Level" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorStress)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
+                        {stressData.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                            <span>Keine Stress-Daten vorhanden.</span>
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('personal-api')}
+                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                            >
+                              Über Garmin Personal API synchronisieren
+                            </button>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
+                            <AreaChart data={stressData}>
+                              <defs>
+                                <linearGradient id="colorStress" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#ef4444" stopOpacity={0.2}/>
+                                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                              <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                              <YAxis domain={[0, 100]} stroke="#94a3b8" fontSize={9} />
+                              <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                              <Area
+                                type="monotone"
+                                dataKey="avg_stress"
+                                name="Ø Stress-Level"
+                                stroke="#ef4444"
+                                strokeWidth={3}
+                                fillOpacity={1}
+                                fill="url(#colorStress)"
+                                dot={stressData.length <= 3 ? { r: 4, fill: '#ef4444' } : false}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -1086,8 +1161,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         </div>
                       ) : (
                         <div className="space-y-6">
-                          {/* Top row: Sleep-Stress and Weight-Fat Pearson Correlations */}
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          {/* Top row: Sleep-Stress Pearson Correlation */}
+                          <div className="grid grid-cols-1 gap-6">
                             
                             {/* Card 1: Sleep vs Stress */}
                             <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
@@ -1114,43 +1189,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 <p className="font-bold text-slate-500 mb-1">💡 Verständnis:</p>
                                 Ein negativer Pearson-Koeffizient (r &lt; 0) bedeutet, dass längere Schlafdauer signifikant mit geringerem durchschnittlichen Stress tagsüber korreliert. Je näher der Wert bei -1 liegt, desto stärker ist dieser beruhigende Effekt.
                               </div>
-                            </div>
-
-                            {/* Card 2: Weight vs Body Fat */}
-                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/60 pb-2">
-                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                  Körpergewicht & Körperfettanteil
-                                </h5>
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400">
-                                  r = {analyticsData.weightFatCorrelation.coefficient.toFixed(2)}
-                                </span>
-                              </div>
-
-                              <p className="text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-medium">
-                                <span className="font-bold text-slate-800 dark:text-slate-100">Analyse: </span>
-                                {analyticsData.weightFatCorrelation.interpretation}
-                              </p>
-
-                              {/* Weight/Fat mini-chart */}
-                              {analyticsData.weightFatCorrelation.dataPoints && analyticsData.weightFatCorrelation.dataPoints.length > 1 ? (
-                                <div className="h-28 w-full">
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={analyticsData.weightFatCorrelation.dataPoints.slice(-15)}>
-                                      <XAxis dataKey="date" hide />
-                                      <YAxis yAxisId="left" stroke="#3b82f6" fontSize={8} domain={['dataMin - 1', 'dataMax + 1']} />
-                                      <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={8} domain={['dataMin - 1', 'dataMax + 1']} />
-                                      <Tooltip contentStyle={{ borderRadius: '8px', fontSize: '10px' }} />
-                                      <Line yAxisId="left" type="monotone" dataKey="weight" name="Gewicht (kg)" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                                      <Line yAxisId="right" type="monotone" dataKey="bodyFat" name="Körperfett (%)" stroke="#10b981" strokeWidth={2} dot={false} />
-                                    </LineChart>
-                                  </ResponsiveContainer>
-                                </div>
-                              ) : (
-                                <div className="h-28 bg-slate-50 dark:bg-slate-900/30 rounded-xl flex items-center justify-center text-[10px] text-slate-400 border border-slate-100 dark:border-slate-800">
-                                  Trage mindestens 2 Gewichts- & Körperfett-Einträge für den Verlauf ein.
-                                </div>
-                              )}
                             </div>
                           </div>
 

@@ -389,23 +389,65 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
   const sleepData = useMemo(() => {
     if (!Array.isArray(data?.sleep)) return [];
+    const weekdayShort = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
     const sorted = data.sleep
       .map((d: any) => {
-        const duration = Math.max(0, Number(d?.duration || 0));
-        const deep = Math.max(0, Number(d?.deep || 0));
-        const rem = Math.max(0, Number(d?.rem || 0));
-        const light = Math.max(0, Number(d?.light || 0));
-        const awake = Math.max(0, Number(d?.awake || 0));
+        const dateKey = normalizeDateKey(d?.date);
+        const duration = Math.max(0, Math.round(Number(d?.duration || 0)));
+        let deep = Math.max(0, Math.round(Number(d?.deep || 0)));
+        let rem = Math.max(0, Math.round(Number(d?.rem || 0)));
+        let light = Math.max(0, Math.round(Number(d?.light || 0)));
+        let awake = Math.max(0, Math.round(Number(d?.awake || 0)));
+
+        // Sanitize awake time if stale DB row still contains seconds (60..600)
+        if (duration > 0 && awake >= 60 && awake <= 600 && awake % 60 === 0) {
+          awake = Math.max(1, Math.round(awake / 60));
+        }
+
+        // Derive fallback phase distribution if total sleep duration exists without phases
+        let hasEstimatedPhases = false;
+        const phaseSum = deep + rem + light;
+        if (duration > 0 && phaseSum === 0) {
+          hasEstimatedPhases = true;
+          deep = Math.round(duration * 0.17);
+          rem = Math.round(duration * 0.22);
+          light = Math.max(0, duration - deep - rem);
+          if (awake === 0) awake = Math.max(5, Math.min(25, Math.round(duration * 0.04)));
+        } else if (duration > 0 && phaseSum > duration * 1.25) {
+          const scale = duration / phaseSum;
+          deep = Math.round(deep * scale);
+          rem = Math.round(rem * scale);
+          light = Math.max(0, duration - deep - rem);
+        }
+
         const totalWithAwake = duration + awake;
         const efficiencyPct = totalWithAwake > 0 ? Math.round((duration / totalWithAwake) * 100) : 100;
+        const regenerativeMin = deep + rem;
+        const regenerativePct = duration > 0 ? Math.round((regenerativeMin / duration) * 100) : 0;
+
+        const durScore = Math.min(40, (duration / 480) * 40);
+        const regScore = Math.min(35, (regenerativePct / 45) * 35);
+        const effScore = Math.min(25, (efficiencyPct / 96) * 25);
+        const sleepScore = clampScore(durScore + regScore + effScore, 1, 100);
+
+        const dt = /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? new Date(`${dateKey}T12:00:00Z`) : null;
+        const dayIndex = dt && !isNaN(dt.getTime()) ? dt.getUTCDay() : 0;
+
         return {
-          date: normalizeDateKey(d?.date),
+          date: dateKey,
+          shortDate: dateKey.length >= 10 ? `${dateKey.slice(8, 10)}.${dateKey.slice(5, 7)}.` : dateKey,
+          weekday: weekdayShort[dayIndex],
+          dayIndex,
           duration,
           deep,
           rem,
           light,
           awake,
-          efficiencyPct
+          efficiencyPct,
+          regenerativeMin,
+          regenerativePct,
+          sleepScore,
+          hasEstimatedPhases
         };
       })
       .filter((d) => Boolean(d.date) && Number.isFinite(d.duration) && d.duration > 0)
@@ -417,6 +459,132 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const visibleStepsData = useMemo(() => filterByRange(stepsData, healthRangeDays), [stepsData, healthRangeDays]);
   const visibleStressData = useMemo(() => filterByRange(stressData, healthRangeDays), [stressData, healthRangeDays]);
   const visibleSleepData = useMemo(() => filterByRange(sleepData, healthRangeDays), [sleepData, healthRangeDays]);
+
+  const sleepStatsSummary = useMemo(() => {
+    const n = visibleSleepData.length;
+    if (n === 0) {
+      return {
+        count: 0,
+        avgDuration: 0,
+        avgDeep: 0,
+        avgRem: 0,
+        avgLight: 0,
+        avgAwake: 0,
+        avgRegenerativeMin: 0,
+        avgRegenerativePct: 0,
+        avgEfficiencyPct: 0,
+        avgSleepScore: 0,
+        goalNightsCount: 0,
+        goalNightsPct: 0,
+        sleepBalanceLast7dMin: 0,
+        allPhasesEstimated: false,
+        bestNight: null as (typeof visibleSleepData)[number] | null,
+        worstNight: null as (typeof visibleSleepData)[number] | null,
+        weekdayProfile: [] as Array<{ day: string; avgDuration: number; avgDeep: number; avgRem: number; avgLight: number; avgScore: number; nights: number }>
+      };
+    }
+
+    const avgDuration = Math.round(visibleSleepData.reduce((s, d) => s + d.duration, 0) / n);
+    const avgDeep = Math.round(visibleSleepData.reduce((s, d) => s + d.deep, 0) / n);
+    const avgRem = Math.round(visibleSleepData.reduce((s, d) => s + d.rem, 0) / n);
+    const avgLight = Math.round(visibleSleepData.reduce((s, d) => s + d.light, 0) / n);
+    const avgAwake = Math.round(visibleSleepData.reduce((s, d) => s + d.awake, 0) / n);
+    const avgRegenerativeMin = avgDeep + avgRem;
+    const avgRegenerativePct = avgDuration > 0 ? Math.round((avgRegenerativeMin / avgDuration) * 100) : 0;
+    const avgEfficiencyPct = Math.round(visibleSleepData.reduce((s, d) => s + d.efficiencyPct, 0) / n);
+    const avgSleepScore = Math.round(visibleSleepData.reduce((s, d) => s + d.sleepScore, 0) / n);
+    const goalNightsCount = visibleSleepData.filter((d) => d.duration >= 450).length;
+    const goalNightsPct = Math.round((goalNightsCount / n) * 100);
+    const last7 = visibleSleepData.slice(-7);
+    const sleepBalanceLast7dMin = last7.reduce((s, d) => s + (d.duration - 450), 0);
+
+    const bestNight = visibleSleepData.reduce((best, cur) => (cur.sleepScore > best.sleepScore ? cur : best), visibleSleepData[0]);
+    const worstNight = visibleSleepData.reduce((worst, cur) => (cur.duration < worst.duration ? cur : worst), visibleSleepData[0]);
+
+    const weekdayOrder = [
+      { idx: 1, day: 'Mo' },
+      { idx: 2, day: 'Di' },
+      { idx: 3, day: 'Mi' },
+      { idx: 4, day: 'Do' },
+      { idx: 5, day: 'Fr' },
+      { idx: 6, day: 'Sa' },
+      { idx: 0, day: 'So' }
+    ];
+    const weekdayProfile = weekdayOrder.map(({ idx, day }) => {
+      const subset = visibleSleepData.filter((d) => d.dayIndex === idx);
+      const cnt = subset.length;
+      return {
+        day,
+        avgDuration: cnt > 0 ? Math.round(subset.reduce((s, d) => s + d.duration, 0) / cnt) : 0,
+        avgDeep: cnt > 0 ? Math.round(subset.reduce((s, d) => s + d.deep, 0) / cnt) : 0,
+        avgRem: cnt > 0 ? Math.round(subset.reduce((s, d) => s + d.rem, 0) / cnt) : 0,
+        avgLight: cnt > 0 ? Math.round(subset.reduce((s, d) => s + d.light, 0) / cnt) : 0,
+        avgScore: cnt > 0 ? Math.round(subset.reduce((s, d) => s + d.sleepScore, 0) / cnt) : 0,
+        nights: cnt
+      };
+    });
+
+    return {
+      count: n,
+      avgDuration,
+      avgDeep,
+      avgRem,
+      avgLight,
+      avgAwake,
+      avgRegenerativeMin,
+      avgRegenerativePct,
+      avgEfficiencyPct,
+      avgSleepScore,
+      goalNightsCount,
+      goalNightsPct,
+      sleepBalanceLast7dMin,
+      allPhasesEstimated: visibleSleepData.every((d) => d.hasEstimatedPhases),
+      bestNight,
+      worstNight,
+      weekdayProfile
+    };
+  }, [visibleSleepData]);
+
+  const rhrStatsSummary = useMemo(() => {
+    const n = visibleRhrData.length;
+    if (n === 0) return { latest: null as number | null, avg: 0, min: 0, max: 0, trend7dDelta: null as number | null };
+    const latest = visibleRhrData[n - 1].rhr;
+    const avg = Math.round(visibleRhrData.reduce((s, d) => s + d.rhr, 0) / n);
+    const min = Math.min(...visibleRhrData.map((d) => d.rhr));
+    const max = Math.max(...visibleRhrData.map((d) => d.rhr));
+    const recent7 = visibleRhrData.slice(-7);
+    const prev7 = visibleRhrData.slice(-14, -7);
+    const trend7dDelta = prev7.length > 0
+      ? Number((recent7.reduce((s, d) => s + d.rhr, 0) / recent7.length - prev7.reduce((s, d) => s + d.rhr, 0) / prev7.length).toFixed(1))
+      : null;
+    return { latest, avg, min, max, trend7dDelta };
+  }, [visibleRhrData]);
+
+  const stepsStatsSummary = useMemo(() => {
+    const n = visibleStepsData.length;
+    if (n === 0) return { avg: 0, total: 0, avgCalories: 0, totalDistanceKm: 0, goalDays: 0, goalPct: 0, maxSteps: 0 };
+    const total = visibleStepsData.reduce((s, d) => s + d.steps, 0);
+    const avg = Math.round(total / n);
+    const calRows = visibleStepsData.filter((d) => (d.calories || 0) > 0);
+    const avgCalories = calRows.length > 0 ? Math.round(calRows.reduce((s, d) => s + Number(d.calories || 0), 0) / calRows.length) : 0;
+    const totalDistanceKm = Number(visibleStepsData.reduce((s, d) => s + Number(d.distance || 0), 0).toFixed(1));
+    const goalDays = visibleStepsData.filter((d) => d.steps >= 10000).length;
+    const goalPct = Math.round((goalDays / n) * 100);
+    const maxSteps = Math.max(...visibleStepsData.map((d) => d.steps));
+    return { avg, total, avgCalories, totalDistanceKm, goalDays, goalPct, maxSteps };
+  }, [visibleStepsData]);
+
+  const stressStatsSummary = useMemo(() => {
+    const n = visibleStressData.length;
+    if (n === 0) return { avg: 0, min: 0, max: 0, lowDays: 0, modDays: 0, highDays: 0 };
+    const avg = Math.round(visibleStressData.reduce((s, d) => s + d.avg_stress, 0) / n);
+    const min = Math.min(...visibleStressData.map((d) => d.avg_stress));
+    const max = Math.max(...visibleStressData.map((d) => d.avg_stress));
+    const lowDays = visibleStressData.filter((d) => d.avg_stress <= 25).length;
+    const modDays = visibleStressData.filter((d) => d.avg_stress > 25 && d.avg_stress <= 50).length;
+    const highDays = visibleStressData.filter((d) => d.avg_stress > 50).length;
+    return { avg, min, max, lowDays, modDays, highDays };
+  }, [visibleStressData]);
 
   // 14-day Readiness & Recovery Balance
   const readinessSummary = useMemo(() => {
@@ -647,10 +815,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const sleepArchitectureData = useMemo(() => {
     if (visibleSleepData.length === 0) return [];
     const n = visibleSleepData.length;
-    const avgDeep = visibleSleepData.reduce((s, d) => s + d.deep, 0) / n;
-    const avgRem = visibleSleepData.reduce((s, d) => s + d.rem, 0) / n;
-    const avgLight = visibleSleepData.reduce((s, d) => s + d.light, 0) / n;
+    const avgDur = visibleSleepData.reduce((s, d) => s + d.duration, 0) / n;
+    let avgDeep = visibleSleepData.reduce((s, d) => s + d.deep, 0) / n;
+    let avgRem = visibleSleepData.reduce((s, d) => s + d.rem, 0) / n;
+    let avgLight = visibleSleepData.reduce((s, d) => s + d.light, 0) / n;
     const avgAwake = visibleSleepData.reduce((s, d) => s + d.awake, 0) / n;
+    if (avgDeep + avgRem + avgLight <= 0 && avgDur > 0) {
+      avgDeep = avgDur * 0.17;
+      avgRem = avgDur * 0.22;
+      avgLight = Math.max(0, avgDur - avgDeep - avgRem);
+    }
     const total = avgDeep + avgRem + avgLight + avgAwake;
     if (total <= 0) return [];
     return [
@@ -2306,10 +2480,26 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4"
+                      className="space-y-4 w-full min-w-0"
                     >
-                      <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schlafverlauf, Schlafarchitektur &amp; 7T-Trend</h4>
-                      <p className="text-xs text-slate-500">Zeigt deine Schlafdauer im Verhältnis zum 8h-Ziel, den gleitenden 7-Tage-Durchschnitt sowie die Verteilung von Leicht-, Tief- und REM-Schlaf.</p>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schlafverlauf, Schlafarchitektur &amp; 7T-Trend</h4>
+                          <p className="text-xs text-slate-500">Zeigt deine Schlafdauer im Verhältnis zum 8h-Ziel, den gleitenden 7-Tage-Durchschnitt sowie Schlafqualität &amp; Wochentagsmuster.</p>
+                        </div>
+                        {sleepStatsSummary.count > 0 && (
+                          <div className="flex items-center gap-2 text-[11px] font-bold">
+                            <span className="px-2.5 py-1 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/60">
+                              {sleepStatsSummary.count} Nächte ausgewertet
+                            </span>
+                            {sleepStatsSummary.allPhasesEstimated && (
+                              <span className="px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800/50">
+                                Phasenanteil aus Dauer geschätzt
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
 
                       {visibleSleepData.length === 0 ? (
                         <div className="h-64 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center text-center text-xs text-slate-400 gap-2">
@@ -2319,61 +2509,202 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           </button>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                          <div className={`lg:col-span-8 ${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                            <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
-                              <ComposedChart data={visibleSleepData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
-                                <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                                <YAxis unit=" Std." tickFormatter={(v) => (v / 60).toFixed(0)} stroke="#94a3b8" fontSize={9} />
-                                <Tooltip 
-                                  contentStyle={{ borderRadius: '12px' }}
-                                  formatter={(value: any, name: any) => [formatMinutes(Number(value)), name]}
-                                />
-                                <Legend wrapperStyle={{ fontSize: '10px' }} />
-                                <ReferenceLine y={480} stroke="#6366f1" strokeDasharray="4 4" label={{ value: '8h Ziel', position: 'insideTopRight', fill: '#6366f1', fontSize: 10 }} />
-                                <Bar dataKey="deep" name="Tiefschlaf" stackId="a" fill="#1e3a8a" />
-                                <Bar dataKey="rem" name="REM" stackId="a" fill="#8b5cf6" />
-                                <Bar dataKey="light" name="Leichtschlaf" stackId="a" fill="#3b82f6" />
-                                <Bar dataKey="awake" name="Wach" stackId="a" fill="#f59e0b" />
-                                <Line type="monotone" dataKey="sleep7dAvg" name="7T-Schnitt" stroke="#ec4899" strokeWidth={2.5} dot={false} />
-                              </ComposedChart>
-                            </ResponsiveContainer>
+                        <>
+                          {/* 6-Card Sleep KPI Strip */}
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schlafdauer</p>
+                              <p className="text-lg font-black text-indigo-600 dark:text-indigo-400 mt-0.5 font-mono tabular-nums">{formatMinutes(sleepStatsSummary.avgDuration)}</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">Ziel: 7h 30m – 8h</p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schlaf-Score</p>
+                              <p className="text-lg font-black text-slate-900 dark:text-white mt-0.5 font-mono tabular-nums">{sleepStatsSummary.avgSleepScore}<span className="text-xs font-bold text-slate-400">/100</span></p>
+                              <p className={`text-[10px] font-semibold mt-0.5 ${sleepStatsSummary.avgSleepScore >= 80 ? 'text-emerald-600' : sleepStatsSummary.avgSleepScore >= 65 ? 'text-indigo-500' : 'text-amber-500'}`}>
+                                {sleepStatsSummary.avgSleepScore >= 80 ? 'Sehr erholsam' : sleepStatsSummary.avgSleepScore >= 65 ? 'Solide Basis' : 'Ausbaufähig'}
+                              </p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Tief &amp; REM Anteil</p>
+                              <p className="text-lg font-black text-violet-600 dark:text-violet-400 mt-0.5 font-mono tabular-nums">{sleepStatsSummary.avgRegenerativePct}%</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">Ø {formatMinutes(sleepStatsSummary.avgRegenerativeMin)} Erholung</p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Schlafeffizienz</p>
+                              <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5 font-mono tabular-nums">{sleepStatsSummary.avgEfficiencyPct}%</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">Ø {sleepStatsSummary.avgAwake} min wach</p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Zielnächte (&ge;7,5h)</p>
+                              <p className="text-lg font-black text-sky-600 dark:text-sky-400 mt-0.5 font-mono tabular-nums">{sleepStatsSummary.goalNightsCount}/{sleepStatsSummary.count}</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{sleepStatsSummary.goalNightsPct}% Quote</p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">7T-Schlafkonto</p>
+                              <p className={`text-lg font-black mt-0.5 font-mono tabular-nums ${sleepStatsSummary.sleepBalanceLast7dMin >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                                {sleepStatsSummary.sleepBalanceLast7dMin >= 0 ? '+' : '-'}{formatMinutes(Math.abs(sleepStatsSummary.sleepBalanceLast7dMin))}
+                              </p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">vs. 7 &times; 7,5h Soll</p>
+                            </div>
                           </div>
 
-                          {/* Diagram 5: Sleep Architecture Donut */}
-                          <div className="lg:col-span-4 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between">
-                            <div>
-                              <h5 className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider">Schlafarchitektur (Ø)</h5>
-                              <p className="text-[11px] text-slate-500 mt-0.5">Durchschnittliche Phasenverteilung</p>
-                            </div>
-                            <div className="h-44 w-full">
-                              <ResponsiveContainer width="100%" height={176}>
-                                <PieChart>
-                                  <Pie data={sleepArchitectureData} dataKey="value" nameKey="name" innerRadius={42} outerRadius={66} paddingAngle={3}>
-                                    {sleepArchitectureData.map((entry) => (
-                                      <Cell key={entry.name} fill={entry.color} />
-                                    ))}
-                                  </Pie>
-                                  <Tooltip formatter={(value: any, name: any) => [formatMinutes(Number(value)), name]} />
-                                </PieChart>
-                              </ResponsiveContainer>
-                            </div>
-                            <div className="space-y-1.5 text-[11px]">
-                              {sleepArchitectureData.map((seg) => (
-                                <div key={seg.name} className="flex items-center justify-between">
-                                  <span className="flex items-center gap-1.5 font-semibold text-slate-700 dark:text-slate-300">
-                                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: seg.color }} />
-                                    {seg.name}
+                          {/* Primary Row: Stacked Phase Timeline + Donut */}
+                          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 w-full min-w-0">
+                            <div className="lg:col-span-8 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 w-full min-w-0 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider">Phasenverlauf &amp; 7T-Trend</span>
+                                {sleepStatsSummary.bestNight && (
+                                  <span className="text-[10px] text-slate-400 font-medium">
+                                    Beste Nacht: <strong className="text-indigo-500">{sleepStatsSummary.bestNight.shortDate}</strong> ({sleepStatsSummary.bestNight.sleepScore} Pkt · {formatMinutes(sleepStatsSummary.bestNight.duration)})
                                   </span>
-                                  <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                                    {seg.pct}% ({formatMinutes(seg.value)}) · <span className="text-[10px] font-normal text-slate-400">{seg.target}</span>
+                                )}
+                              </div>
+                              <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0`}>
+                                <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 240} minWidth={0}>
+                                  <ComposedChart data={visibleSleepData}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                    <XAxis dataKey="shortDate" stroke="#94a3b8" fontSize={9} minTickGap={16} />
+                                    <YAxis domain={[0, 'dataMax + 60']} unit="h" tickFormatter={(v) => (v / 60).toFixed(1)} stroke="#94a3b8" fontSize={9} width={38} />
+                                    <Tooltip
+                                      content={({ active, payload }) => {
+                                        if (!active || !payload?.length) return null;
+                                        const pt = payload[0].payload;
+                                        return (
+                                          <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1.5">
+                                            <div className="flex items-center justify-between gap-4 border-b border-slate-700 pb-1">
+                                              <span className="font-bold">{pt.date} ({pt.weekday})</span>
+                                              <span className="px-1.5 py-0.5 rounded bg-indigo-500/30 text-indigo-300 font-mono font-bold">Score {pt.sleepScore}</span>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px]">
+                                              <span className="text-slate-400">Gesamt:</span>
+                                              <span className="font-bold text-white text-right">{formatMinutes(pt.duration)}</span>
+                                              <span className="text-blue-300">Tiefschlaf:</span>
+                                              <span className="font-mono text-right">{formatMinutes(pt.deep)}</span>
+                                              <span className="text-violet-300">REM:</span>
+                                              <span className="font-mono text-right">{formatMinutes(pt.rem)}</span>
+                                              <span className="text-sky-300">Leichtschlaf:</span>
+                                              <span className="font-mono text-right">{formatMinutes(pt.light)}</span>
+                                              <span className="text-amber-300">Wach:</span>
+                                              <span className="font-mono text-right">{formatMinutes(pt.awake)} ({pt.efficiencyPct}% Eff.)</span>
+                                              <span className="text-pink-300">7T-Schnitt:</span>
+                                              <span className="font-mono text-right">{formatMinutes(Math.round(pt.sleep7dAvg || pt.duration))}</span>
+                                            </div>
+                                          </div>
+                                        );
+                                      }}
+                                    />
+                                    <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                    <ReferenceLine y={480} stroke="#6366f1" strokeDasharray="4 4" label={{ value: '8h Ziel', position: 'insideTopRight', fill: '#6366f1', fontSize: 10 }} />
+                                    <Bar dataKey="deep" name="Tiefschlaf" stackId="a" fill="#1e3a8a" isAnimationActive={false} />
+                                    <Bar dataKey="rem" name="REM" stackId="a" fill="#8b5cf6" isAnimationActive={false} />
+                                    <Bar dataKey="light" name="Leichtschlaf" stackId="a" fill="#3b82f6" isAnimationActive={false} />
+                                    <Bar dataKey="awake" name="Wach" stackId="a" fill="#f59e0b" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                    <Line type="monotone" dataKey="sleep7dAvg" name="7T-Schnitt" stroke="#ec4899" strokeWidth={2.5} dot={false} isAnimationActive={false} />
+                                  </ComposedChart>
+                                </ResponsiveContainer>
+                              </div>
+                            </div>
+
+                            {/* Sleep Architecture Donut */}
+                            <div className="lg:col-span-4 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between min-w-0">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider">Schlafarchitektur (Ø)</h5>
+                                <p className="text-[11px] text-slate-500 mt-0.5">Durchschnittliche Phasenverteilung</p>
+                              </div>
+                              <div className="h-48 w-full min-w-0 relative">
+                                <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                  <PieChart>
+                                    <Pie
+                                      data={sleepArchitectureData}
+                                      dataKey="value"
+                                      nameKey="name"
+                                      cx="50%"
+                                      cy="50%"
+                                      innerRadius={48}
+                                      outerRadius={72}
+                                      paddingAngle={3}
+                                      isAnimationActive={false}
+                                    >
+                                      {sleepArchitectureData.map((entry) => (
+                                        <Cell key={entry.name} fill={entry.color} />
+                                      ))}
+                                    </Pie>
+                                    <Tooltip formatter={(value: any, name: any) => [formatMinutes(Number(value)), name]} />
+                                  </PieChart>
+                                </ResponsiveContainer>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                  <span className="text-sm font-black text-slate-800 dark:text-slate-100 font-mono">
+                                    {formatMinutes(sleepStatsSummary.avgDuration)}
                                   </span>
+                                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-bold">Ø Nacht</span>
                                 </div>
-                              ))}
+                              </div>
+                              <div className="space-y-1.5 text-[11px]">
+                                {sleepArchitectureData.map((seg) => (
+                                  <div key={seg.name} className="flex items-center justify-between p-1.5 rounded-lg bg-slate-50/70 dark:bg-slate-900/40">
+                                    <span className="flex items-center gap-1.5 font-semibold text-slate-700 dark:text-slate-300">
+                                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
+                                      {seg.name}
+                                    </span>
+                                    <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                                      {seg.pct}% ({formatMinutes(seg.value)}) · <span className="text-[10px] font-normal text-slate-400">{seg.target}</span>
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           </div>
-                        </div>
+
+                          {/* Secondary Row: Sleep Score & Regenerative Efficiency + Weekday Profile */}
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 w-full min-w-0">
+                            <div className="bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 min-w-0 space-y-2">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider">Schlaf-Score &amp; Regenerations-Effizienz</h5>
+                                <p className="text-[11px] text-slate-500">Verfolgt deinen täglichen Schlaf-Score (0–100) im Vergleich zu Tief+REM-Anteil (%) und Schlafeffizienz (%).</p>
+                              </div>
+                              <div className="h-52 w-full min-w-0">
+                                <ResponsiveContainer width="100%" height={208} minWidth={0}>
+                                  <ComposedChart data={visibleSleepData}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                    <XAxis dataKey="shortDate" stroke="#94a3b8" fontSize={9} minTickGap={16} />
+                                    <YAxis domain={[0, 100]} unit="%" stroke="#94a3b8" fontSize={9} width={34} />
+                                    <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '11px' }} />
+                                    <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                    <ReferenceLine y={80} stroke="#10b981" strokeDasharray="3 3" />
+                                    <Area type="monotone" dataKey="sleepScore" name="Schlaf-Score" stroke="#6366f1" fill="#818cf8" fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
+                                    <Line type="monotone" dataKey="regenerativePct" name="Tief+REM (%)" stroke="#8b5cf6" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                    <Line type="monotone" dataKey="efficiencyPct" name="Effizienz (%)" stroke="#10b981" strokeWidth={2} strokeDasharray="4 3" dot={false} isAnimationActive={false} />
+                                  </ComposedChart>
+                                </ResponsiveContainer>
+                              </div>
+                            </div>
+
+                            <div className="bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 min-w-0 space-y-2">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wider">Wochentags-Schlafprofil (Mo–So)</h5>
+                                <p className="text-[11px] text-slate-500">Zeigt, an welchen Wochentagen du am längsten schläfst und wie viel Tief-/REM-Schlaf du im Schnitt erreichst.</p>
+                              </div>
+                              <div className="h-52 w-full min-w-0">
+                                <ResponsiveContainer width="100%" height={208} minWidth={0}>
+                                  <BarChart data={sleepStatsSummary.weekdayProfile}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                    <XAxis dataKey="day" stroke="#94a3b8" fontSize={10} />
+                                    <YAxis unit="h" tickFormatter={(v) => (v / 60).toFixed(1)} stroke="#94a3b8" fontSize={9} width={36} />
+                                    <Tooltip
+                                      contentStyle={{ borderRadius: '12px', fontSize: '11px' }}
+                                      formatter={(val: any, name: any) => [formatMinutes(Number(val)), name]}
+                                    />
+                                    <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                    <ReferenceLine y={450} stroke="#6366f1" strokeDasharray="3 3" />
+                                    <Bar dataKey="avgDeep" name="Tiefschlaf" stackId="w" fill="#1e3a8a" isAnimationActive={false} />
+                                    <Bar dataKey="avgRem" name="REM" stackId="w" fill="#8b5cf6" isAnimationActive={false} />
+                                    <Bar dataKey="avgLight" name="Leichtschlaf" stackId="w" fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                                  </BarChart>
+                                </ResponsiveContainer>
+                              </div>
+                            </div>
+                          </div>
+                        </>
                       )}
                     </motion.div>
                   )}
@@ -2385,10 +2716,32 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4"
+                      className="space-y-4 w-full min-w-0"
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Ruheherzfrequenz (RHR) &amp; 7-Tage-Trend</h4>
                       <p className="text-xs text-slate-500">Ein hervorragender Indikator für deine Regeneration, Ausdauerleistung und Fitnessentwicklung über Zeit.</p>
+                      {visibleRhrData.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Letzter Messwert</p>
+                            <p className="text-lg font-black text-rose-600 dark:text-rose-400 mt-0.5 font-mono">{rhrStatsSummary.latest} <span className="text-xs font-bold">bpm</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Zeitraum</p>
+                            <p className="text-lg font-black text-slate-900 dark:text-white mt-0.5 font-mono">{rhrStatsSummary.avg} <span className="text-xs font-bold text-slate-400">bpm</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Spanne (Min / Max)</p>
+                            <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{rhrStatsSummary.min}–{rhrStatsSummary.max} <span className="text-xs font-bold text-slate-400">bpm</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">7T vs. Vorwoche</p>
+                            <p className={`text-lg font-black mt-0.5 font-mono ${rhrStatsSummary.trend7dDelta === null ? 'text-slate-400' : rhrStatsSummary.trend7dDelta <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                              {rhrStatsSummary.trend7dDelta === null ? '-' : `${rhrStatsSummary.trend7dDelta > 0 ? '+' : ''}${rhrStatsSummary.trend7dDelta} bpm`}
+                            </p>
+                          </div>
+                        </div>
+                      )}
                       <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         {visibleRhrData.length === 0 ? (
                           <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
@@ -2429,8 +2782,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 fillOpacity={1}
                                 fill="url(#colorRhr)"
                                 dot={visibleRhrData.length <= 5 ? { r: 4, fill: '#f43f5e' } : false}
+                                isAnimationActive={false}
                               />
-                              <Line type="monotone" dataKey="rhr7dAvg" name="7T-Schnitt" stroke="#e11d48" strokeWidth={3} dot={false} />
+                              <Line type="monotone" dataKey="rhr7dAvg" name="7T-Schnitt" stroke="#e11d48" strokeWidth={3} dot={false} isAnimationActive={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
                         )}
@@ -2445,10 +2799,30 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4"
+                      className="space-y-4 w-full min-w-0"
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schritte, 10k-Ziel &amp; Kalorienverbrauch</h4>
                       <p className="text-xs text-slate-500">Überwache deine tägliche Aktivität im Alltag, den 7-Tage-Durchschnitt und verbrannte Kalorien.</p>
+                      {visibleStepsData.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schritte / Tag</p>
+                            <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5 font-mono">{stepsStatsSummary.avg.toLocaleString()}</p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">10k-Zieltage</p>
+                            <p className="text-lg font-black text-slate-900 dark:text-white mt-0.5 font-mono">{stepsStatsSummary.goalDays}/{visibleStepsData.length} <span className="text-xs font-bold text-emerald-500">({stepsStatsSummary.goalPct}%)</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rekordtag</p>
+                            <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{stepsStatsSummary.maxSteps.toLocaleString()}</p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Distanz &amp; Ø kcal</p>
+                            <p className="text-lg font-black text-orange-600 dark:text-orange-400 mt-0.5 font-mono">{stepsStatsSummary.totalDistanceKm.toFixed(0)} km <span className="text-xs font-bold text-slate-400">· {stepsStatsSummary.avgCalories || '-'} kcal</span></p>
+                          </div>
+                        </div>
+                      )}
                       <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         {visibleStepsData.length === 0 ? (
                           <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
@@ -2473,11 +2847,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               <Tooltip contentStyle={{ borderRadius: '12px' }} />
                               <Legend wrapperStyle={{ fontSize: '10px' }} />
                               <ReferenceLine yAxisId="left" y={10000} stroke="#059669" strokeDasharray="4 4" label={{ value: '10.000 Ziel', position: 'insideTopRight', fill: '#059669', fontSize: 10 }} />
-                              <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                              <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                               {visibleStepsData.some((d) => d.calories !== undefined && d.calories > 0) && (
-                                <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" fillOpacity={0.7} radius={[3, 3, 0, 0]} />
+                                <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" fillOpacity={0.7} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                               )}
-                              <Line yAxisId="left" type="monotone" dataKey="steps7dAvg" name="7T-Schnitt Schritte" stroke="#047857" strokeWidth={2.5} dot={false} />
+                              <Line yAxisId="left" type="monotone" dataKey="steps7dAvg" name="7T-Schnitt Schritte" stroke="#047857" strokeWidth={2.5} dot={false} isAnimationActive={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
                         )}
@@ -2492,10 +2866,30 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4"
+                      className="space-y-4 w-full min-w-0"
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Tägliche Stressbelastung &amp; 7-Tage-Trend</h4>
                       <p className="text-xs text-slate-500">Dein Stress-Score (0–100) berechnet aus der Herzfrequenzvariabilität (HRV) inkl. 7-Tage-Schnitt.</p>
+                      {visibleStressData.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Stress-Score</p>
+                            <p className="text-lg font-black text-rose-600 dark:text-rose-400 mt-0.5 font-mono">{stressStatsSummary.avg} <span className="text-xs font-bold text-slate-400">/100</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Entspannte Tage (&le;25)</p>
+                            <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5 font-mono">{stressStatsSummary.lowDays} <span className="text-xs font-bold text-slate-400">Tage</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Hoher Stress (&gt;50)</p>
+                            <p className="text-lg font-black text-amber-600 dark:text-amber-400 mt-0.5 font-mono">{stressStatsSummary.highDays} <span className="text-xs font-bold text-slate-400">Tage</span></p>
+                          </div>
+                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Min / Max Spanne</p>
+                            <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{stressStatsSummary.min}–{stressStatsSummary.max}</p>
+                          </div>
+                        </div>
+                      )}
                       <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         {visibleStressData.length === 0 ? (
                           <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
@@ -2532,8 +2926,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 fillOpacity={1}
                                 fill="url(#colorStress)"
                                 dot={visibleStressData.length <= 5 ? { r: 4, fill: '#ef4444' } : false}
+                                isAnimationActive={false}
                               />
-                              <Line type="monotone" dataKey="stress7dAvg" name="7T-Schnitt" stroke="#dc2626" strokeWidth={3} dot={false} />
+                              <Line type="monotone" dataKey="stress7dAvg" name="7T-Schnitt" stroke="#dc2626" strokeWidth={3} dot={false} isAnimationActive={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
                         )}
@@ -2697,16 +3092,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -5 }}
-                      className="space-y-6 flex-1"
+                      className="space-y-6 flex-1 w-full min-w-0"
                     >
                       <div className="flex items-center justify-between">
                         <div>
-                          <h4 className="text-sm font-black text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                          <h4 className="text-sm font-black text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <Sparkles className="w-4 h-4 text-orange-500" />
                             Erweiterte Gesundheits- und Leistungsanalyse
                           </h4>
                           <p className="text-xs text-slate-500">
-                            Tiefgehende mathematische Analysen und Korrelationen deiner Garmin-Historie.
+                            Tiefgehende mathematische Analysen, Belastungssteuerung (ACWR) und Korrelationen deiner Garmin-Historie.
                           </p>
                         </div>
                         {isAnalyticsLoading && (
@@ -2736,8 +3131,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                   <PolarGrid stroke="#94a3b8" strokeOpacity={0.25} />
                                   <PolarAngleAxis dataKey="axis" tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }} />
                                   <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
-                                  <Radar name="Letzte 30 Tage" dataKey="recent" stroke="#f97316" fill="#f97316" fillOpacity={0.35} strokeWidth={2.5} />
-                                  <Radar name="Langzeitschnitt" dataKey="baseline" stroke="#6366f1" fill="#6366f1" fillOpacity={0.18} strokeWidth={2} strokeDasharray="4 4" />
+                                  <Radar name="Letzte 30 Tage" dataKey="recent" stroke="#f97316" fill="#f97316" fillOpacity={0.35} strokeWidth={2.5} isAnimationActive={false} />
+                                  <Radar name="Langzeitschnitt" dataKey="baseline" stroke="#6366f1" fill="#6366f1" fillOpacity={0.18} strokeWidth={2} strokeDasharray="4 4" isAnimationActive={false} />
                                   <Legend wrapperStyle={{ fontSize: '11px' }} />
                                   <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '11px' }} />
                                 </RadarChart>
@@ -2776,70 +3171,135 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         </div>
                       ) : (
                         <div className="space-y-6">
-                          {/* Top row: Sleep-Stress Pearson Correlation */}
-                          <div className="grid grid-cols-1 gap-6">
-                            
-                            {/* Card 1: Sleep vs Stress */}
-                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/60 pb-2">
-                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                  Schlafqualität vs. Alltagsstress
-                                </h5>
+                          {/* Top row: Sleep-Stress-RHR Pearson Correlation */}
+                          <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800/60 pb-2">
+                              <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                                Schlafqualität vs. Alltagsstress &amp; Ruhepuls
+                              </h5>
+                              <div className="flex flex-wrap items-center gap-1.5">
                                 <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
-                                  Math.abs(analyticsData.sleepStressCorrelation.coefficient) > 0.3 
-                                    ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-400' 
+                                  Math.abs(analyticsData.sleepStressCorrelation?.coefficient ?? 0) > 0.3
+                                    ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-400'
                                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                                 }`}>
-                                  r = {analyticsData.sleepStressCorrelation.coefficient.toFixed(2)}
+                                  Schlaf/Stress r = {(analyticsData.sleepStressCorrelation?.coefficient ?? 0).toFixed(2)}
                                 </span>
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300">
+                                  Tiefschlaf r = {(analyticsData.sleepStressCorrelation?.deepSleepStressCoefficient ?? 0).toFixed(2)}
+                                </span>
+                                {analyticsData.sleepStressCorrelation?.rhrSleepCoefficient !== undefined && (
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300">
+                                    Schlaf/RHR r = {Number(analyticsData.sleepStressCorrelation.rhrSleepCoefficient).toFixed(2)}
+                                  </span>
+                                )}
                               </div>
-                              
-                              <p className="text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-medium">
-                                <span className="font-bold text-slate-800 dark:text-slate-100">Analyse: </span>
-                                {analyticsData.sleepStressCorrelation.interpretation}
-                              </p>
+                            </div>
 
-                              {/* Small explanatory visual */}
-                              <div className="text-[10px] text-slate-400 leading-relaxed bg-slate-50/50 dark:bg-slate-900/20 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                                <p className="font-bold text-slate-500 mb-1">💡 Verständnis:</p>
-                                Ein negativer Pearson-Koeffizient (r &lt; 0) bedeutet, dass längere Schlafdauer signifikant mit geringerem durchschnittlichen Stress tagsüber korreliert. Je näher der Wert bei -1 liegt, desto stärker ist dieser beruhigende Effekt.
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+                              <div className="lg:col-span-7 h-52 w-full min-w-0">
+                                {analyticsData.sleepStressCorrelation?.recentPoints?.length > 0 ? (
+                                  <ResponsiveContainer width="100%" height={208} minWidth={0}>
+                                    <ComposedChart data={analyticsData.sleepStressCorrelation.recentPoints}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                      <XAxis dataKey="date" tickFormatter={(d) => String(d).slice(5)} stroke="#94a3b8" fontSize={9} minTickGap={16} />
+                                      <YAxis yAxisId="left" unit="h" stroke="#6366f1" fontSize={9} domain={[0, 'dataMax + 1']} width={34} />
+                                      <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={9} domain={[0, 100]} width={32} />
+                                      <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '11px' }} />
+                                      <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                      <Bar yAxisId="left" dataKey="sleepDuration" name="Schlaf (Std.)" fill="#818cf8" fillOpacity={0.55} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                      <Line yAxisId="right" type="monotone" dataKey="stress" name="Tagesstress" stroke="#f59e0b" strokeWidth={2.5} dot={false} isAnimationActive={false} />
+                                      <Line yAxisId="right" type="monotone" dataKey="rhr" name="Ruhepuls (bpm)" stroke="#ef4444" strokeWidth={2} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} />
+                                    </ComposedChart>
+                                  </ResponsiveContainer>
+                                ) : (
+                                  <div className="h-full bg-slate-50 dark:bg-slate-900/30 rounded-xl flex items-center justify-center text-xs text-slate-400">
+                                    Noch keine kombinierten Schlaf-/Stress-Tage vorhanden.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="lg:col-span-5 space-y-3">
+                                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-medium">
+                                  <span className="font-bold text-slate-800 dark:text-slate-100">Analyse ({analyticsData.sleepStressCorrelation?.pointsCount ?? 0} Tage): </span>
+                                  {analyticsData.sleepStressCorrelation?.interpretation || analyticsData.sleepStressCorrelation?.summaryText}
+                                </p>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed bg-slate-50 dark:bg-slate-900/30 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                                  <p className="font-bold text-slate-600 dark:text-slate-300 mb-1">💡 Verständnis:</p>
+                                  Ein negativer Pearson-Koeffizient (r &lt; 0) bedeutet, dass erholsamer Schlaf signifikant mit niedrigerem Tagesstress und entspannterem Ruhepuls einhergeht.
+                                </div>
                               </div>
                             </div>
                           </div>
 
-                          {/* Middle row: Fitness Adaption (RHR vs. Training Volume) */}
+                          {/* Middle row: Fitness Adaption & ACWR (RHR vs. Training Volume + Acute:Chronic Load Ratio) */}
                           <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                            <div>
-                              <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                Aerobe Fitness-Adaption (Wöchentliches Trainingsvolumen vs. Ruhepuls)
-                              </h5>
-                              <p className="text-[10px] text-slate-400 mt-1">
-                                Verfolgt, wie sich ein steigendes wöchentliches Lauf-/Fahrradvolumen langfristig senkend auf deinen durchschnittlichen Ruhepuls (RHR) auswirkt.
-                              </p>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                                  Aerobe Fitness-Adaption &amp; Trainingsbelastung (ACWR)
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                  Verfolgt wöchentliche Distanz, Ruhepuls (RHR) und das Acute:Chronic Workload Ratio (Sweet Spot: 0,8 – 1,3).
+                                </p>
+                              </div>
+                              {analyticsData.acwrSummary && (
+                                <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full ${
+                                  analyticsData.acwrSummary.zone === 'optimal'
+                                    ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                                    : analyticsData.acwrSummary.zone === 'high_risk'
+                                    ? 'bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                                    : analyticsData.acwrSummary.zone === 'building'
+                                    ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                                }`}>
+                                  ACWR: {analyticsData.acwrSummary.acwr !== null ? analyticsData.acwrSummary.acwr.toFixed(2) : '-'} · {
+                                    analyticsData.acwrSummary.zone === 'optimal' ? 'Optimal-Zone' :
+                                    analyticsData.acwrSummary.zone === 'high_risk' ? 'Überlastungsrisiko' :
+                                    analyticsData.acwrSummary.zone === 'building' ? 'Aufbauphase' :
+                                    analyticsData.acwrSummary.zone === 'undertraining' ? 'Erholung / Unterbelastung' : 'Zu wenig Daten'
+                                  }
+                                </span>
+                              )}
                             </div>
 
                             {analyticsData.weeklyRhrTrainingTrend && analyticsData.weeklyRhrTrainingTrend.length > 0 ? (
-                              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 items-center">
-                                <div className="lg:col-span-3 h-48 w-full">
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={analyticsData.weeklyRhrTrainingTrend.slice(-12)}>
-                                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                                      <XAxis dataKey="week" stroke="#94a3b8" fontSize={9} />
-                                      <YAxis yAxisId="left" stroke="#ef4444" fontSize={9} domain={['dataMin - 2', 'dataMax + 2']} label={{ value: 'Puls (bpm)', angle: -90, position: 'insideLeft', style: {fontSize: 8} }} />
-                                      <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={9} label={{ value: 'Aktivität (km)', angle: 90, position: 'insideRight', style: {fontSize: 8} }} />
+                              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+                                <div className="lg:col-span-8 h-56 w-full min-w-0">
+                                  <ResponsiveContainer width="100%" height={224} minWidth={0}>
+                                    <ComposedChart data={analyticsData.weeklyRhrTrainingTrend.slice(-16)}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                      <XAxis dataKey="week" tickFormatter={(w) => String(w).slice(5)} stroke="#94a3b8" fontSize={9} />
+                                      <YAxis yAxisId="left" stroke="#ef4444" fontSize={9} domain={['dataMin - 2', 'dataMax + 2']} width={34} />
+                                      <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={9} unit="km" width={40} />
+                                      <YAxis yAxisId="acwr" orientation="right" hide domain={[0, 2.5]} />
                                       <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '11px' }} />
-                                      <Line yAxisId="left" type="monotone" dataKey="avgRhr" name="Mittel Ruhepuls" stroke="#ef4444" strokeWidth={3} activeDot={{ r: 6 }} />
-                                      <Line yAxisId="right" type="monotone" dataKey="totalDistance" name="Gesamtstrecke (km)" stroke="#10b981" strokeWidth={2} dot={true} />
-                                    </LineChart>
+                                      <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                      <Bar yAxisId="right" dataKey="totalDistance" name="Wochenstrecke (km)" fill="#10b981" fillOpacity={0.35} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                                      <Line yAxisId="left" type="monotone" dataKey="avgRhr" name="Ø Ruhepuls (bpm)" stroke="#ef4444" strokeWidth={2.5} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
+                                      <Line yAxisId="acwr" type="monotone" dataKey="acwr" name="ACWR Ratio" stroke="#6366f1" strokeWidth={2} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                                    </ComposedChart>
                                   </ResponsiveContainer>
                                 </div>
-                                <div className="p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800 space-y-3">
-                                  <h6 className="text-[11px] font-bold text-slate-700 dark:text-slate-300">📈 Leistungsdiagnostik</h6>
+                                <div className="lg:col-span-4 p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800 space-y-3">
+                                  <h6 className="text-[11px] font-bold text-slate-700 dark:text-slate-300">📈 Leistungs- &amp; Belastungsdiagnostik</h6>
+                                  {analyticsData.acwrSummary && (
+                                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                      <div className="p-2 rounded-lg bg-white dark:bg-slate-950/40">
+                                        <span className="text-slate-400 block">Akute Last (7T)</span>
+                                        <span className="font-mono font-black text-indigo-600 dark:text-indigo-400">{analyticsData.acwrSummary.acuteLoad} TRIMP</span>
+                                      </div>
+                                      <div className="p-2 rounded-lg bg-white dark:bg-slate-950/40">
+                                        <span className="text-slate-400 block">Chronische Basis (4W)</span>
+                                        <span className="font-mono font-black text-slate-700 dark:text-slate-200">{analyticsData.acwrSummary.chronicLoad} TRIMP</span>
+                                      </div>
+                                    </div>
+                                  )}
                                   <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                                    Mit zunehmender kardiovaskulärer Fitness vergrößert sich das Schlagvolumen deines Herzens. Dadurch muss es im Ruhezustand seltener schlagen, um den Körper mit Sauerstoff zu versorgen.
+                                    {analyticsData.trainingVolumeVsRhr?.summaryText}
                                   </p>
-                                  <p className="text-[9px] text-rose-500 dark:text-rose-400 italic">
-                                    Tipp: Ein dauerhaft sinkender Ruhepuls bei gleichem oder höherem Trainingsvolumen signalisiert ein verbessertes Fitnesslevel!
+                                  <p className="text-[9px] text-indigo-500 dark:text-indigo-400 italic">
+                                    Tipp: Ein ACWR zwischen 0,8 und 1,3 baut Form auf, ohne Übertraining zu riskieren.
                                   </p>
                                 </div>
                               </div>
@@ -2852,51 +3312,132 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
                           {/* Bottom Row: Weekday Trends & Monthly Sleep Trends */}
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            
                             {/* Weekday Trends */}
-                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
                               <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                Wochentags-Muster (Aktivität & Belastung)
+                                Wochentags-Muster (Schritte, Stress &amp; Schlaf)
                               </h5>
-                              <div className="h-44 w-full">
-                                <ResponsiveContainer width="100%" height="100%">
-                                  <BarChart data={analyticsData.weekdayTrends}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                                    <XAxis dataKey="dayName" stroke="#94a3b8" fontSize={9} />
-                                    <YAxis yAxisId="left" stroke="#10b981" fontSize={8} />
-                                    <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={8} domain={[0, 100]} />
-                                    <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '10px' }} />
-                                    <Bar yAxisId="left" dataKey="avgSteps" name="Mittel Schritte" fill="#10b981" radius={[3, 3, 0, 0]} />
-                                    <Line yAxisId="right" type="monotone" dataKey="avgStress" name="Ø Stress-Wert" stroke="#f59e0b" strokeWidth={2} />
-                                  </BarChart>
+                              <div className="h-48 w-full min-w-0">
+                                <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                  <ComposedChart data={analyticsData.weekdayTrends || analyticsData.weekdayAverages || []}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                    <XAxis dataKey="dayName" tickFormatter={(d) => String(d).slice(0, 2)} stroke="#94a3b8" fontSize={10} />
+                                    <YAxis yAxisId="left" stroke="#10b981" fontSize={8} width={38} />
+                                    <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={8} domain={[0, 100]} width={28} />
+                                    <Tooltip
+                                      contentStyle={{ borderRadius: '12px', fontSize: '10px' }}
+                                      formatter={(value: any, name: any) => {
+                                        if (String(name).includes('Schlaf')) return [formatMinutes(Number(value)), name];
+                                        return [value, name];
+                                      }}
+                                    />
+                                    <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                    <Bar yAxisId="left" dataKey="avgSteps" name="Ø Schritte" fill="#10b981" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                    <Line yAxisId="right" type="monotone" dataKey="avgStress" name="Ø Stress" stroke="#f59e0b" strokeWidth={2.5} isAnimationActive={false} />
+                                  </ComposedChart>
                                 </ResponsiveContainer>
                               </div>
                             </div>
 
                             {/* Monthly Sleep Quality Trends */}
-                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
                               <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                Monatliche Schlafdauer & Tiefschlaf
+                                Monatliche Schlafdauer, Tief- &amp; REM-Schlaf
                               </h5>
-                              {analyticsData.monthlySleepAnalysis && analyticsData.monthlySleepAnalysis.length > 0 ? (
-                                <div className="h-44 w-full">
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={analyticsData.monthlySleepAnalysis}>
-                                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                              {(analyticsData.monthlySleepAnalysis || analyticsData.monthlySleepAverages)?.length > 0 ? (
+                                <div className="h-48 w-full min-w-0">
+                                  <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                    <ComposedChart data={analyticsData.monthlySleepAnalysis || analyticsData.monthlySleepAverages}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
                                       <XAxis dataKey="month" stroke="#94a3b8" fontSize={9} />
-                                      <YAxis unit="h" tickFormatter={(v) => (v / 60).toFixed(0)} stroke="#94a3b8" fontSize={8} />
-                                      <Tooltip 
+                                      <YAxis unit="h" tickFormatter={(v) => (v / 60).toFixed(1)} stroke="#94a3b8" fontSize={8} width={34} />
+                                      <Tooltip
                                         contentStyle={{ borderRadius: '12px', fontSize: '10px' }}
                                         formatter={(val: any, name: any) => [formatMinutes(Number(val)), name]}
                                       />
-                                      <Area type="monotone" dataKey="avgDuration" name="Gesamtschlaf" stroke="#6366f1" fill="#818cf8" fillOpacity={0.2} strokeWidth={2.5} />
-                                      <Area type="monotone" dataKey="avgDeep" name="Tiefschlaf" stroke="#4f46e5" fill="#4f46e5" fillOpacity={0.3} strokeWidth={1.5} />
-                                    </AreaChart>
+                                      <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                      <Area type="monotone" dataKey="avgDuration" name="Gesamtschlaf" stroke="#6366f1" fill="#818cf8" fillOpacity={0.22} strokeWidth={2.5} isAnimationActive={false} />
+                                      <Area type="monotone" dataKey="avgRem" name="REM-Schlaf" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.2} strokeWidth={1.5} isAnimationActive={false} />
+                                      <Area type="monotone" dataKey="avgDeep" name="Tiefschlaf" stroke="#1e40af" fill="#1e40af" fillOpacity={0.25} strokeWidth={1.8} isAnimationActive={false} />
+                                    </ComposedChart>
                                   </ResponsiveContainer>
                                 </div>
                               ) : (
-                                <div className="h-44 bg-slate-50 dark:bg-slate-900/30 rounded-xl flex items-center justify-center text-xs text-slate-400 border border-slate-100 dark:border-slate-800">
+                                <div className="h-48 bg-slate-50 dark:bg-slate-900/30 rounded-xl flex items-center justify-center text-xs text-slate-400 border border-slate-100 dark:border-slate-800">
                                   Keine historischen Schlafdaten für eine Monatsanalyse vorhanden.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Training Distribution & Aerobic Efficiency Row */}
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Training Duration & Intensity Distribution */}
+                            {analyticsData.trainingDistribution && (
+                              <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
+                                <div>
+                                  <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                                    Trainingsdauer-Verteilung &amp; HF-Zonen ({analyticsData.trainingDistribution.hrTrackedCount || 0} Einheiten mit HF)
+                                  </h5>
+                                  <p className="text-[10px] text-slate-400 mt-1">
+                                    Zeigt die Verteilung deiner Einheiten nach Dauer sowie den prozentualen Anteil je Herzfrequenzzone.
+                                  </p>
+                                </div>
+                                <div className="h-40 w-full min-w-0">
+                                  <ResponsiveContainer width="100%" height={160} minWidth={0}>
+                                    <BarChart data={analyticsData.trainingDistribution.durationBuckets || []}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                      <XAxis dataKey="label" stroke="#94a3b8" fontSize={9} />
+                                      <YAxis stroke="#94a3b8" fontSize={9} width={28} />
+                                      <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '10px' }} />
+                                      <Bar dataKey="count" name="Einheiten" fill="#6366f1" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                                    </BarChart>
+                                  </ResponsiveContainer>
+                                </div>
+                                <div className="space-y-1.5">
+                                  {(analyticsData.trainingDistribution.intensityBreakdown || []).map((z: any) => (
+                                    <div key={z.zone} className="space-y-1">
+                                      <div className="flex items-center justify-between text-[10px]">
+                                        <span className="font-semibold text-slate-700 dark:text-slate-300">{z.zone} <span className="text-slate-400">({z.range})</span></span>
+                                        <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{z.count}x · {z.hours}h ({z.pct}%)</span>
+                                      </div>
+                                      <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                                        <div className="h-full rounded-full" style={{ width: `${Math.max(z.pct, z.count > 0 ? 3 : 0)}%`, backgroundColor: z.color }} />
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Aerobic Efficiency Factor Trend */}
+                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
+                              <div>
+                                <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                                  Aerobe Effizienz (EF = Meter/Min pro Herzschlag)
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                  Steigende EF-Werte zeigen an, dass du bei gleicher Herzfrequenz schneller läufst oder fährst.
+                                </p>
+                              </div>
+                              {analyticsData.aerobicEfficiencyTrend && analyticsData.aerobicEfficiencyTrend.length > 0 ? (
+                                <div className="h-64 w-full min-w-0">
+                                  <ResponsiveContainer width="100%" height={256} minWidth={0}>
+                                    <ComposedChart data={analyticsData.aerobicEfficiencyTrend}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                      <XAxis dataKey="date" tickFormatter={(d) => String(d).slice(5)} stroke="#94a3b8" fontSize={9} minTickGap={16} />
+                                      <YAxis yAxisId="left" stroke="#10b981" fontSize={9} domain={['auto', 'auto']} width={34} />
+                                      <YAxis yAxisId="right" orientation="right" stroke="#3b82f6" fontSize={9} unit=" km/h" width={46} />
+                                      <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '10px' }} />
+                                      <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                      <Line yAxisId="left" type="monotone" dataKey="ef" name="Effizienz-Faktor (EF)" stroke="#10b981" strokeWidth={2.5} dot={{ r: 2.5 }} isAnimationActive={false} />
+                                      <Line yAxisId="right" type="monotone" dataKey="speedKmh" name="Tempo (km/h)" stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+                                    </ComposedChart>
+                                  </ResponsiveContainer>
+                                </div>
+                              ) : (
+                                <div className="h-56 bg-slate-50 dark:bg-slate-900/30 rounded-xl flex items-center justify-center text-xs text-slate-400 border border-slate-100 dark:border-slate-800">
+                                  Keine Ausdauer-Einheiten mit HF-Daten für EF-Trend vorhanden.
                                 </div>
                               )}
                             </div>
@@ -2906,45 +3447,79 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                             <div>
                               <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                Sportarten-Effizienz & Kalorienverbrauch
+                                Sportarten-Effizienz, Tempo &amp; Kalorienverbrauch
                               </h5>
                               <p className="text-[10px] text-slate-400 mt-1">
-                                Vergleich des stündlichen Kalorienverbrauchs (kcal/h) und der durchschnittlichen Herzfrequenz nach Aktivitätstyp.
+                                Vergleich des stündlichen Kalorienverbrauchs (kcal/h), Ø Herzfrequenz, Durchschnittsgeschwindigkeit und Steigleistung (VAM).
                               </p>
                             </div>
 
                             {analyticsData.sportEfficiency && analyticsData.sportEfficiency.length > 0 ? (
                               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {analyticsData.sportEfficiency.map((sport: any) => (
-                                  <div key={sport.type} className="p-4 bg-slate-50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800 rounded-xl space-y-2">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-xs font-black capitalize text-slate-800 dark:text-slate-200">
-                                        {sport.type === 'running' ? '🏃 Laufen' : sport.type === 'cycling' ? '🚴 Radfahren' : `🏅 ${sport.type}`}
-                                      </span>
-                                      <span className="text-[10px] text-slate-400">
-                                        {sport.count}x ausgeführt
-                                      </span>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                      <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
-                                        <p className="text-slate-400">Verbrennung</p>
-                                        <p className="font-extrabold text-orange-600 dark:text-orange-400 text-xs">
-                                          {Math.round(sport.calorieBurnRatePerHour)} kcal/h
-                                        </p>
+                                {analyticsData.sportEfficiency.map((sport: any) => {
+                                  const sportLabelMap: Record<string, string> = {
+                                    running: '🏃 Laufen',
+                                    trail_running: '🏔️ Trailrun',
+                                    cycling: '🚴 Radfahren',
+                                    hiking: '🥾 Wandern',
+                                    walking: '🚶 Gehen',
+                                    swimming: '🏊 Schwimmen',
+                                    strength: '🏋️ Krafttraining',
+                                    soccer: '⚽ Fußball'
+                                  };
+                                  const burnRate = Number(sport.calorieBurnRatePerHour ?? sport.calPerHour ?? 0);
+                                  const avgHrVal = sport.avgHr ?? sport.avgHeartRate;
+                                  const avgDurMin = sport.totalDuration && sport.count
+                                    ? sport.totalDuration / sport.count / 60
+                                    : (sport.totalHours && sport.count ? (sport.totalHours * 60) / sport.count : 0);
+
+                                  return (
+                                    <div key={sport.type} className="p-4 bg-slate-50 dark:bg-slate-900/30 border border-slate-100 dark:border-slate-800 rounded-xl space-y-2.5">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-black text-slate-800 dark:text-slate-200">
+                                          {sportLabelMap[sport.type] || `🏅 ${sport.type}`}
+                                        </span>
+                                        <span className="text-[10px] font-semibold text-slate-400">
+                                          {sport.count}x ({sport.totalHours ?? 0}h)
+                                        </span>
                                       </div>
-                                      <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
-                                        <p className="text-slate-400">Ø Puls</p>
-                                        <p className="font-extrabold text-rose-600 dark:text-rose-400 text-xs">
-                                          {sport.avgHr ? `${Math.round(sport.avgHr)} bpm` : '-'}
-                                        </p>
+                                      <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                        <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
+                                          <p className="text-slate-400">Verbrennung</p>
+                                          <p className="font-extrabold text-orange-600 dark:text-orange-400 text-xs font-mono">
+                                            {Math.round(burnRate)} kcal/h
+                                          </p>
+                                        </div>
+                                        <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
+                                          <p className="text-slate-400">Ø Puls</p>
+                                          <p className="font-extrabold text-rose-600 dark:text-rose-400 text-xs font-mono">
+                                            {avgHrVal ? `${Math.round(avgHrVal)} bpm` : '-'}
+                                          </p>
+                                        </div>
+                                        {Number(sport.avgSpeedKmh || 0) > 0 && (
+                                          <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
+                                            <p className="text-slate-400">Ø Tempo</p>
+                                            <p className="font-extrabold text-blue-600 dark:text-blue-400 text-xs font-mono">
+                                              {Number(sport.avgSpeedKmh).toFixed(1)} km/h
+                                            </p>
+                                          </div>
+                                        )}
+                                        {Number(sport.vam || 0) > 0 && (
+                                          <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
+                                            <p className="text-slate-400">VAM / EF</p>
+                                            <p className="font-extrabold text-emerald-600 dark:text-emerald-400 text-xs font-mono">
+                                              {sport.vam} m/h {sport.efficiencyFactor ? `· EF ${sport.efficiencyFactor}` : ''}
+                                            </p>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400 pt-1 flex justify-between border-t border-slate-100 dark:border-slate-800/70">
+                                        <span>Distanz: <strong className="text-slate-600 dark:text-slate-300">{Number(sport.totalDistance || 0).toFixed(1)} km</strong></span>
+                                        <span>Ø Dauer: <strong className="text-slate-600 dark:text-slate-300">{formatMinutes(avgDurMin)}</strong></span>
                                       </div>
                                     </div>
-                                    <div className="text-[9px] text-slate-400 pt-1 flex justify-between">
-                                      <span>Gesamtdistanz: {sport.totalDistance.toFixed(1)} km</span>
-                                      <span>Ø Dauer: {formatMinutes(sport.totalDuration / sport.count / 60)}</span>
-                                    </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             ) : (
                               <div className="p-6 bg-slate-50 dark:bg-slate-900/30 rounded-xl text-center text-xs text-slate-400 border border-slate-100 dark:border-slate-800">

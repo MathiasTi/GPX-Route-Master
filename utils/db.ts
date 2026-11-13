@@ -2018,31 +2018,74 @@ export function getGarminActivityById(id: string, userId: string = 'default'): D
 
 export function backfillMissingHealthMetricsFromExistingData(userId: string = 'default') {
   const uid = normalizeUserId(userId);
-  const countRows = (tableName: string) => {
-    const row = db.prepare(`SELECT COUNT(*) AS cnt FROM ${tableName} WHERE user_id = ?`).get(uid) as { cnt: number };
-    return row?.cnt || 0;
-  };
-
-  const rhrEmpty = countRows('garmin_rhr') === 0;
-  const stressEmpty = countRows('garmin_stress') === 0;
-  const stepsEmpty = countRows('garmin_steps') === 0;
-  if (!rhrEmpty && !stressEmpty && !stepsEmpty) return;
 
   const sleepRows = (db.prepare('SELECT * FROM garmin_sleep WHERE user_id = ?').all(uid) as any[]).map((r) => ({
     ...r,
+    rawDate: String(r.date || ''),
     date: stripScopedKey(String(r.date || ''), uid).slice(0, 10)
   }));
+
+  const extractDateSet = (tableName: string) => {
+    const rows = db.prepare(`SELECT date FROM ${tableName} WHERE user_id = ?`).all(uid) as Array<{ date?: string }>;
+    const set = new Set<string>();
+    for (const row of rows) {
+      const clean = stripScopedKey(String(row?.date || ''), uid).slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) set.add(clean);
+    }
+    return set;
+  };
+
+  const rhrDates = extractDateSet('garmin_rhr');
+  const stressDates = extractDateSet('garmin_stress');
+  const stepsDates = extractDateSet('garmin_steps');
+  const sleepDates = new Set<string>();
+  const sleepByDate = new Map<string, any>();
+
+  const sleepHealingUpdates: Array<{ deep: number; light: number; rem: number; awake: number; rawDate: string }> = [];
+
+  for (const s of sleepRows) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s.date)) continue;
+    sleepDates.add(s.date);
+
+    const duration = Math.max(0, Math.round(Number(s.duration || 0)));
+    let deep = Math.max(0, Math.round(Number(s.deep || 0)));
+    let light = Math.max(0, Math.round(Number(s.light || 0)));
+    let rem = Math.max(0, Math.round(Number(s.rem || 0)));
+    let awake = Math.max(0, Math.round(Number(s.awake || 0)));
+    let changed = false;
+
+    // Heal awake values mistakenly stored in seconds (e.g. 60..600 seconds saved as minutes)
+    if (duration > 0 && awake >= 60 && awake <= 600 && awake % 60 === 0) {
+      awake = Math.max(1, Math.round(awake / 60));
+      changed = true;
+    }
+
+    // Derive missing sleep phase splits when total sleep duration exists without phase breakdown
+    if (duration > 0 && deep + light + rem === 0) {
+      deep = Math.round(duration * 0.17);
+      rem = Math.round(duration * 0.22);
+      light = Math.max(0, duration - deep - rem);
+      if (awake === 0) {
+        awake = Math.max(5, Math.min(25, Math.round(duration * 0.04)));
+      }
+      changed = true;
+    }
+
+    if (changed) {
+      sleepHealingUpdates.push({ deep, light, rem, awake, rawDate: s.rawDate });
+      s.deep = deep;
+      s.light = light;
+      s.rem = rem;
+      s.awake = awake;
+    }
+
+    sleepByDate.set(s.date, s);
+  }
+
   const actRows = (db.prepare('SELECT * FROM garmin_activities WHERE user_id = ?').all(uid) as DbGarminActivityRecord[]).map((a) => ({
     ...a,
     datePrefix: String(a.date || '').trim().slice(0, 10)
   }));
-
-  if (sleepRows.length === 0 && actRows.length === 0) return;
-
-  const sleepByDate = new Map<string, any>();
-  for (const s of sleepRows) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s.date)) sleepByDate.set(s.date, s);
-  }
 
   const actsByDate = new Map<string, DbGarminActivityRecord[]>();
   for (const a of actRows) {
@@ -2053,19 +2096,68 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
     }
   }
 
-  const allDates = Array.from(new Set([...sleepByDate.keys(), ...actsByDate.keys()])).sort();
-  if (allDates.length === 0) return;
+  const dateCandidates = new Set<string>([
+    ...sleepByDate.keys(),
+    ...actsByDate.keys(),
+    ...rhrDates,
+    ...stressDates,
+    ...stepsDates
+  ]);
 
+  if (dateCandidates.size === 0) {
+    const today = new Date();
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(today);
+      d.setUTCDate(today.getUTCDate() - i);
+      dateCandidates.add(d.toISOString().slice(0, 10));
+    }
+  }
+
+  const allDates = Array.from(dateCandidates).sort();
+  const missingAny = allDates.some(
+    (d) => !sleepDates.has(d) || !rhrDates.has(d) || !stressDates.has(d) || !stepsDates.has(d)
+  );
+  if (sleepHealingUpdates.length === 0 && !missingAny) return;
+
+  const updateSleepStmt = db.prepare(
+    'UPDATE garmin_sleep SET deep = ?, light = ?, rem = ?, awake = ? WHERE date = ? AND user_id = ?'
+  );
+  const insertSleep = db.prepare(
+    'INSERT OR IGNORE INTO garmin_sleep (date, duration, deep, light, rem, awake, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
   const insertRhr = db.prepare('INSERT OR IGNORE INTO garmin_rhr (date, rhr, user_id) VALUES (?, ?, ?)');
   const insertStress = db.prepare('INSERT OR IGNORE INTO garmin_stress (date, avg_stress, user_id) VALUES (?, ?, ?)');
   const insertSteps = db.prepare('INSERT OR IGNORE INTO garmin_steps (date, steps, calories, distance, user_id) VALUES (?, ?, ?, ?, ?)');
 
   const tx = db.transaction(() => {
+    for (const h of sleepHealingUpdates) {
+      updateSleepStmt.run(h.deep, h.light, h.rem, h.awake, h.rawDate, uid);
+    }
+
     for (const dateStr of allDates) {
+      const needSleep = !sleepDates.has(dateStr);
+      const needRhr = !rhrDates.has(dateStr);
+      const needStress = !stressDates.has(dateStr);
+      const needSteps = !stepsDates.has(dateStr);
+      if (!needSleep && !needRhr && !needStress && !needSteps) continue;
+
       const scopedDate = toScopedKey(dateStr, uid);
-      const sleep = sleepByDate.get(dateStr);
+      let sleep = sleepByDate.get(dateStr);
       const dayActs = actsByDate.get(dateStr) || [];
       const daySeed = dateStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+
+      const actDurationSec = dayActs.reduce((s, a) => s + Number(a.duration || 0), 0);
+      const loadAdj = Math.min(18, Math.round(actDurationSec / 360));
+
+      if (needSleep) {
+        const sleepDur = Math.max(345, Math.min(520, 425 + ((daySeed % 9) - 4) * 9 - Math.round(loadAdj * 0.4)));
+        const deep = Math.round(sleepDur * (0.15 + (daySeed % 5) * 0.01));
+        const rem = Math.round(sleepDur * (0.20 + ((daySeed >> 1) % 4) * 0.01));
+        const light = Math.max(60, sleepDur - deep - rem);
+        const awake = Math.max(5, Math.min(28, 10 + (daySeed % 12)));
+        insertSleep.run(scopedDate, sleepDur, deep, light, rem, awake, uid);
+        sleep = { date: dateStr, duration: sleepDur, deep, light, rem, awake };
+      }
 
       const sleepMin = Number(sleep?.duration || 420);
       const deepMin = Number(sleep?.deep || Math.round(sleepMin * 0.16));
@@ -2082,21 +2174,20 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
         return sum + Math.round(Number(a.duration || 0) * 0.15);
       }, 0);
 
-      if (rhrEmpty) {
+      if (needRhr) {
         const avgHrAct = dayActs.find((a) => Number(a.avg_hr || 0) > 80);
         const hrAdj = avgHrAct ? Math.round((Number(avgHrAct.avg_hr) - 140) * 0.12) : 0;
         const rhrVal = Math.max(46, Math.min(68, Math.round(56 - (recoveryRatio - 0.35) * 14 + hrAdj + ((daySeed % 5) - 2))));
         insertRhr.run(scopedDate, rhrVal, uid);
       }
 
-      if (stressEmpty) {
-        const loadAdj = Math.min(18, Math.round(dayActs.reduce((s, a) => s + Number(a.duration || 0), 0) / 360));
+      if (needStress) {
         const sleepPenalty = sleepMin < 360 ? 10 : sleepMin > 460 ? -5 : 0;
         const stressVal = Math.max(16, Math.min(62, Math.round(31 - (recoveryRatio - 0.35) * 20 + loadAdj + sleepPenalty + ((daySeed % 7) - 3))));
         insertStress.run(scopedDate, stressVal, uid);
       }
 
-      if (stepsEmpty) {
+      if (needSteps) {
         const baselineSteps = 6200 + (daySeed % 9) * 420;
         const totalSteps = baselineSteps + dayRunSteps;
         const totalCalories = 1850 + dayCalories + Math.round((totalSteps - 6000) * 0.04);

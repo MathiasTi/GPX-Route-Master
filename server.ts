@@ -2687,34 +2687,52 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       return num / Math.sqrt(denX * denY);
     };
 
-    // 2. Sleep vs Stress Correlation
+    // 2. Sleep vs Stress & Resting Heart Rate Correlation
     const sleepMap = new Map<string, any>();
     for (const s of data.sleep) {
-      sleepMap.set(s.date, s);
+      const dKey = String(s?.date || '').slice(0, 10);
+      if (dKey) sleepMap.set(dKey, s);
     }
-    
-    const sleepStressPoints: { date: string; sleepDuration: number; deepSleep: number; stress: number }[] = [];
+
+    const rhrMap = new Map<string, number>();
+    for (const r of data.rhr) {
+      const dKey = String(r?.date || '').slice(0, 10);
+      if (dKey && Number(r.rhr) > 0) rhrMap.set(dKey, Number(r.rhr));
+    }
+
+    const sleepStressPoints: { date: string; sleepDuration: number; deepSleep: number; remSleep: number; stress: number; rhr?: number }[] = [];
     const sleepDurations: number[] = [];
     const deepSleepDurations: number[] = [];
     const stressLevels: number[] = [];
-    
+    const sleepDurationsForRhr: number[] = [];
+    const rhrForSleep: number[] = [];
+
     for (const str of data.stress) {
-      if (sleepMap.has(str.date)) {
-        const sl = sleepMap.get(str.date);
+      const dKey = String(str?.date || '').slice(0, 10);
+      if (sleepMap.has(dKey)) {
+        const sl = sleepMap.get(dKey);
+        const rhrVal = rhrMap.get(dKey);
         sleepStressPoints.push({
-          date: str.date,
+          date: dKey,
           sleepDuration: parseFloat((sl.duration / 60).toFixed(2)), // in hours
           deepSleep: parseFloat(((sl.deep || 0) / 60).toFixed(2)), // in hours
-          stress: str.avg_stress
+          remSleep: parseFloat(((sl.rem || 0) / 60).toFixed(2)), // in hours
+          stress: str.avg_stress,
+          ...(rhrVal ? { rhr: rhrVal } : {})
         });
         sleepDurations.push(sl.duration);
         deepSleepDurations.push(sl.deep || 0);
         stressLevels.push(str.avg_stress);
+        if (rhrVal) {
+          sleepDurationsForRhr.push(sl.duration);
+          rhrForSleep.push(rhrVal);
+        }
       }
     }
-    
+
     const sleepStressCorr = pearsonCorrelation(sleepDurations, stressLevels);
     const deepSleepStressCorr = pearsonCorrelation(deepSleepDurations, stressLevels);
+    const rhrSleepCorr = pearsonCorrelation(sleepDurationsForRhr, rhrForSleep);
 
     // 3. Weight vs Body Fat Correlation
     const weights: number[] = [];
@@ -2733,22 +2751,45 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
     const weightFatCorr = pearsonCorrelation(weights, bodyFats);
 
-    // 4. Weekly Training Volume vs Resting Heart Rate Trend
-    const getWeekKey = (dateStr: string) => {
-      const d = new Date(dateStr);
-      const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday adjustment
-      const monday = new Date(d.setDate(diff));
-      return monday.toISOString().split('T')[0];
+    // 4. Weekly Training Volume, TRIMP Load, ACWR & Resting Heart Rate Trend
+    const getWeekKey = (dateStr: string): string => {
+      const clean = String(dateStr || '').trim().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return '';
+      const d = new Date(`${clean}T12:00:00Z`);
+      if (isNaN(d.getTime())) return '';
+      const day = d.getUTCDay();
+      const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1); // Monday adjustment in UTC
+      d.setUTCDate(diff);
+      return d.toISOString().slice(0, 10);
     };
 
-    const weeklyActivities = new Map<string, { distance: number; duration: number; calories: number; count: number }>();
+    const normalizeSportType = (rawType?: string): string => {
+      const t = String(rawType || 'other').toLowerCase().trim();
+      if (t.includes('cycl') || t.includes('bik') || t.includes('ride') || t.includes('peloton')) return 'cycling';
+      if (t.includes('trail') && t.includes('run')) return 'trail_running';
+      if (t.includes('run') || t.includes('jog') || t.includes('treadmill')) return 'running';
+      if (t.includes('hik') || t.includes('mount')) return 'hiking';
+      if (t.includes('walk')) return 'walking';
+      if (t.includes('swim')) return 'swimming';
+      if (t.includes('strength') || t.includes('weight') || t.includes('gym') || t.includes('fitness')) return 'strength';
+      if (t.includes('soccer') || t.includes('football')) return 'soccer';
+      return t || 'other';
+    };
+
+    const weeklyActivities = new Map<string, { distance: number; duration: number; ascent: number; calories: number; count: number; trimpLoad: number }>();
     for (const act of data.activities) {
       const wKey = getWeekKey(act.date);
-      const existing = weeklyActivities.get(wKey) || { distance: 0, duration: 0, calories: 0, count: 0 };
-      existing.distance += act.distance || 0;
-      existing.duration += act.duration || 0; // in seconds
-      existing.calories += act.calories || 0;
+      if (!wKey) continue;
+      const existing = weeklyActivities.get(wKey) || { distance: 0, duration: 0, ascent: 0, calories: 0, count: 0, trimpLoad: 0 };
+      const durSec = Number(act.duration || 0);
+      const durMin = durSec / 60;
+      const hr = Number(act.avg_hr || 0);
+      const hrFactor = hr > 50 ? Math.min(2.6, Math.max(0.45, (hr - 55) / 85)) : 0.95;
+      existing.distance += Number(act.distance || 0);
+      existing.duration += durSec;
+      existing.ascent += Number(act.ascent || 0);
+      existing.calories += Number(act.calories || 0);
+      existing.trimpLoad += durMin * hrFactor;
       existing.count += 1;
       weeklyActivities.set(wKey, existing);
     }
@@ -2756,65 +2797,252 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     const weeklyRhr = new Map<string, { sum: number; count: number }>();
     for (const r of data.rhr) {
       const wKey = getWeekKey(r.date);
+      if (!wKey) continue;
       const existing = weeklyRhr.get(wKey) || { sum: 0, count: 0 };
-      existing.sum += r.rhr;
+      existing.sum += Number(r.rhr || 0);
       existing.count += 1;
       weeklyRhr.set(wKey, existing);
     }
 
-    const volumeVsRhrPoints: { week: string; trainingDistanceKm: number; trainingHours: number; avgRhr: number }[] = [];
+    const allWeekKeys = Array.from(new Set([...weeklyActivities.keys(), ...weeklyRhr.keys()])).sort();
+    const unifiedWeeklyPoints: {
+      week: string;
+      totalDistance: number;
+      trainingDistanceKm: number;
+      trainingHours: number;
+      totalAscent: number;
+      activityCount: number;
+      avgRhr: number | null;
+      trimpLoad: number;
+      chronicLoad: number;
+      acwr: number | null;
+    }[] = [];
+
+    const volumeVsRhrPoints: { week: string; trainingDistanceKm: number; totalDistance: number; trainingHours: number; avgRhr: number; trimpLoad: number; acwr: number }[] = [];
     const weeklyDistances: number[] = [];
     const weeklyAverageRhrs: number[] = [];
 
-    for (const [wKey, actStats] of weeklyActivities.entries()) {
-      if (weeklyRhr.has(wKey)) {
-        const rStats = weeklyRhr.get(wKey)!;
-        const avgRhrVal = rStats.sum / rStats.count;
+    for (let i = 0; i < allWeekKeys.length; i++) {
+      const wKey = allWeekKeys[i];
+      const actStats = weeklyActivities.get(wKey) || { distance: 0, duration: 0, ascent: 0, calories: 0, count: 0, trimpLoad: 0 };
+      const rStats = weeklyRhr.get(wKey);
+      const avgRhrVal = rStats && rStats.count > 0 ? parseFloat((rStats.sum / rStats.count).toFixed(1)) : null;
+
+      // Rolling 4-week chronic baseline including current window
+      let loadSum = 0;
+      let loadWeeks = 0;
+      for (let j = Math.max(0, i - 3); j <= i; j++) {
+        const prevAct = weeklyActivities.get(allWeekKeys[j]);
+        loadSum += prevAct ? prevAct.trimpLoad : 0;
+        loadWeeks++;
+      }
+      const chronicLoad = loadWeeks > 0 ? loadSum / loadWeeks : 0;
+      const acuteLoad = actStats.trimpLoad;
+      const acwrVal = chronicLoad >= 10 ? parseFloat((acuteLoad / chronicLoad).toFixed(2)) : null;
+
+      const distKm = parseFloat(actStats.distance.toFixed(1));
+      const hours = parseFloat((actStats.duration / 3600).toFixed(1));
+
+      unifiedWeeklyPoints.push({
+        week: wKey,
+        totalDistance: distKm,
+        trainingDistanceKm: distKm,
+        trainingHours: hours,
+        totalAscent: Math.round(actStats.ascent),
+        activityCount: actStats.count,
+        avgRhr: avgRhrVal,
+        trimpLoad: Math.round(acuteLoad),
+        chronicLoad: Math.round(chronicLoad),
+        acwr: acwrVal
+      });
+
+      if (actStats.count > 0 && avgRhrVal !== null) {
         volumeVsRhrPoints.push({
           week: wKey,
-          trainingDistanceKm: parseFloat(actStats.distance.toFixed(1)),
-          trainingHours: parseFloat((actStats.duration / 3600).toFixed(1)),
-          avgRhr: parseFloat(avgRhrVal.toFixed(1))
+          trainingDistanceKm: distKm,
+          totalDistance: distKm,
+          trainingHours: hours,
+          avgRhr: avgRhrVal,
+          trimpLoad: Math.round(acuteLoad),
+          acwr: acwrVal ?? 1.0
         });
         weeklyDistances.push(actStats.distance);
         weeklyAverageRhrs.push(avgRhrVal);
       }
     }
-    
-    volumeVsRhrPoints.sort((a, b) => a.week.localeCompare(b.week));
-    const trainingVolumeRhrCorr = pearsonCorrelation(weeklyDistances, weeklyAverageRhrs);
 
-    // 5. Sport Efficiency
-    const sportStats = new Map<string, { totalDuration: number; totalDistance: number; totalCalories: number; count: number; countWithHr: number; sumAvgHr: number }>();
+    const trainingVolumeRhrCorr = pearsonCorrelation(weeklyDistances, weeklyAverageRhrs);
+    const latestWeek = unifiedWeeklyPoints[unifiedWeeklyPoints.length - 1];
+    const latestAcwr = latestWeek?.acwr ?? null;
+    const acwrSummary = {
+      acwr: latestAcwr,
+      acuteLoad: latestWeek?.trimpLoad ?? 0,
+      chronicLoad: latestWeek?.chronicLoad ?? 0,
+      zone: latestAcwr === null
+        ? 'insufficient'
+        : latestAcwr > 1.5
+        ? 'high_risk'
+        : latestAcwr >= 0.8 && latestAcwr <= 1.3
+        ? 'optimal'
+        : latestAcwr > 1.3
+        ? 'building'
+        : 'undertraining'
+    };
+
+    // 5. Sport Efficiency & Training Distribution
+    const sportMetFallback: Record<string, number> = {
+      cycling: 8.0,
+      running: 9.5,
+      trail_running: 10.5,
+      swimming: 8.5,
+      hiking: 6.0,
+      walking: 4.0,
+      strength: 5.0,
+      soccer: 7.5
+    };
+
+    const sportStats = new Map<string, {
+      totalDuration: number;
+      totalDistance: number;
+      totalAscent: number;
+      totalCalories: number;
+      count: number;
+      countWithHr: number;
+      sumAvgHr: number;
+    }>();
+
+    const durationBuckets = [
+      { key: 'lt30', label: '< 30 min', minSec: 0, maxSec: 1800, count: 0, durationSec: 0, distanceKm: 0 },
+      { key: '30_60', label: '30–60 min', minSec: 1800, maxSec: 3600, count: 0, durationSec: 0, distanceKm: 0 },
+      { key: '60_90', label: '60–90 min', minSec: 3600, maxSec: 5400, count: 0, durationSec: 0, distanceKm: 0 },
+      { key: '90_120', label: '90–120 min', minSec: 5400, maxSec: 7200, count: 0, durationSec: 0, distanceKm: 0 },
+      { key: 'gt120', label: '> 120 min', minSec: 7200, maxSec: Infinity, count: 0, durationSec: 0, distanceKm: 0 }
+    ];
+
+    const intensityZones = [
+      { zone: 'Z1 Regeneration', range: '< 125 bpm', color: '#94a3b8', minHr: 0, maxHr: 124, count: 0, durationSec: 0 },
+      { zone: 'Z2 Grundlage', range: '125–145 bpm', color: '#10b981', minHr: 125, maxHr: 145, count: 0, durationSec: 0 },
+      { zone: 'Z3 Tempo', range: '146–162 bpm', color: '#f59e0b', minHr: 146, maxHr: 162, count: 0, durationSec: 0 },
+      { zone: 'Z4 Schwelle', range: '163–176 bpm', color: '#f97316', minHr: 163, maxHr: 176, count: 0, durationSec: 0 },
+      { zone: 'Z5 VO2max', range: '> 176 bpm', color: '#ef4444', minHr: 177, maxHr: 999, count: 0, durationSec: 0 }
+    ];
+    let hrTrackedCount = 0;
+
+    const aerobicEfficiencyTrend: { date: string; name: string; type: string; ef: number; speedKmh: number; avgHr: number }[] = [];
+
     for (const act of data.activities) {
-      const sType = act.type || 'other';
-      const existing = sportStats.get(sType) || { totalDuration: 0, totalDistance: 0, totalCalories: 0, count: 0, countWithHr: 0, sumAvgHr: 0 };
-      existing.totalDuration += act.duration || 0;
-      existing.totalDistance += act.distance || 0;
-      existing.totalCalories += act.calories || 0;
+      const sType = normalizeSportType(act.type);
+      const durSec = Number(act.duration || 0);
+      const distKm = Number(act.distance || 0);
+      const ascM = Number(act.ascent || 0);
+      const hoursAct = durSec / 3600;
+      const rawCal = Number(act.calories || 0);
+      const estCal = rawCal > 0 ? rawCal : Math.round((sportMetFallback[sType] || 5.5) * 75 * hoursAct);
+
+      const existing = sportStats.get(sType) || {
+        totalDuration: 0,
+        totalDistance: 0,
+        totalAscent: 0,
+        totalCalories: 0,
+        count: 0,
+        countWithHr: 0,
+        sumAvgHr: 0
+      };
+      existing.totalDuration += durSec;
+      existing.totalDistance += distKm;
+      existing.totalAscent += ascM;
+      existing.totalCalories += estCal;
       existing.count += 1;
-      if (act.avg_hr) {
+      if (act.avg_hr && Number(act.avg_hr) > 40) {
         existing.countWithHr += 1;
-        existing.sumAvgHr += act.avg_hr;
+        existing.sumAvgHr += Number(act.avg_hr);
       }
       sportStats.set(sType, existing);
+
+      if (durSec > 0) {
+        const bucket = durationBuckets.find((b) => durSec >= b.minSec && durSec < b.maxSec);
+        if (bucket) {
+          bucket.count += 1;
+          bucket.durationSec += durSec;
+          bucket.distanceKm += distKm;
+        }
+      }
+
+      if (act.avg_hr && Number(act.avg_hr) >= 50) {
+        const hrVal = Number(act.avg_hr);
+        const z = intensityZones.find((iz) => hrVal >= iz.minHr && hrVal <= iz.maxHr);
+        if (z) {
+          z.count += 1;
+          z.durationSec += durSec;
+          hrTrackedCount += 1;
+        }
+      }
+
+      if ((sType === 'running' || sType === 'trail_running' || sType === 'cycling') && distKm > 1 && durSec > 600 && Number(act.avg_hr) > 75) {
+        const spd = distKm / (durSec / 3600);
+        if (spd > 2 && spd < 85) {
+          const efVal = ((spd * 1000) / 60) / Number(act.avg_hr);
+          aerobicEfficiencyTrend.push({
+            date: String(act.date || '').slice(0, 10),
+            name: act.name || sType,
+            type: sType,
+            ef: parseFloat(efVal.toFixed(2)),
+            speedKmh: parseFloat(spd.toFixed(1)),
+            avgHr: Math.round(Number(act.avg_hr))
+          });
+        }
+      }
     }
 
-    const sportEfficiency: { type: string; count: number; totalDistance: number; totalHours: number; totalCalories: number; calPerHour: number; avgHeartRate?: number }[] = [];
+    aerobicEfficiencyTrend.sort((a, b) => a.date.localeCompare(b.date));
+
+    const sportEfficiency: {
+      type: string;
+      count: number;
+      totalDistance: number;
+      totalDuration: number;
+      totalHours: number;
+      totalAscent: number;
+      totalCalories: number;
+      calPerHour: number;
+      calorieBurnRatePerHour: number;
+      avgHeartRate: number | null;
+      avgHr: number | null;
+      avgSpeedKmh: number;
+      vam: number;
+      efficiencyFactor: number | null;
+    }[] = [];
+
     for (const [sType, stats] of sportStats.entries()) {
       const hours = stats.totalDuration / 3600;
+      const calPerHour = hours > 0 ? Math.round(stats.totalCalories / hours) : 0;
+      const avgHr = stats.countWithHr > 0 ? Math.round(stats.sumAvgHr / stats.countWithHr) : null;
+      const avgSpeedKmh = hours > 0 && stats.totalDistance > 0 ? parseFloat((stats.totalDistance / hours).toFixed(1)) : 0;
+      const vam = hours > 0 && stats.totalAscent > 0 ? Math.round(stats.totalAscent / hours) : 0;
+      const efficiencyFactor = avgHr && avgHr > 0 && avgSpeedKmh > 0
+        ? parseFloat((((avgSpeedKmh * 1000) / 60) / avgHr).toFixed(2))
+        : null;
+
       sportEfficiency.push({
         type: sType,
         count: stats.count,
         totalDistance: parseFloat(stats.totalDistance.toFixed(1)),
+        totalDuration: Math.round(stats.totalDuration),
         totalHours: parseFloat(hours.toFixed(1)),
-        totalCalories: stats.totalCalories,
-        calPerHour: hours > 0 ? Math.round(stats.totalCalories / hours) : 0,
-        avgHeartRate: stats.countWithHr > 0 ? Math.round(stats.sumAvgHr / stats.countWithHr) : undefined
+        totalAscent: Math.round(stats.totalAscent),
+        totalCalories: Math.round(stats.totalCalories),
+        calPerHour,
+        calorieBurnRatePerHour: calPerHour,
+        avgHeartRate: avgHr,
+        avgHr,
+        avgSpeedKmh,
+        vam,
+        efficiencyFactor
       });
     }
+    sportEfficiency.sort((a, b) => b.totalDuration - a.totalDuration);
 
-    // 6. Weekday Trends (Average steps, stress, sleep)
+    // 6. Weekday Trends (Average steps, stress, sleep, deep+rem, activity distance)
     const weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
     const weekdayData = weekdays.map((name, index) => ({
       dayIndex: index,
@@ -2824,57 +3052,107 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       stressCount: 0,
       stressSum: 0,
       sleepCount: 0,
-      sleepSum: 0
+      sleepSum: 0,
+      deepRemSum: 0,
+      actDistSum: 0,
+      actCount: 0
     }));
 
+    const parseUtcDayIndex = (dateStr?: string): number | null => {
+      const clean = String(dateStr || '').trim().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
+      const d = new Date(`${clean}T12:00:00Z`);
+      return isNaN(d.getTime()) ? null : d.getUTCDay();
+    };
+
     for (const s of data.steps) {
-      const d = new Date(s.date);
-      const day = d.getDay();
-      weekdayData[day].stepsSum += s.steps;
+      const day = parseUtcDayIndex(s.date);
+      if (day === null) continue;
+      weekdayData[day].stepsSum += Number(s.steps || 0);
       weekdayData[day].stepsCount += 1;
     }
     for (const str of data.stress) {
-      const d = new Date(str.date);
-      const day = d.getDay();
-      weekdayData[day].stressSum += str.avg_stress;
+      const day = parseUtcDayIndex(str.date);
+      if (day === null) continue;
+      weekdayData[day].stressSum += Number(str.avg_stress || 0);
       weekdayData[day].stressCount += 1;
     }
     for (const sl of data.sleep) {
-      const d = new Date(sl.date);
-      const day = d.getDay();
-      weekdayData[day].sleepSum += sl.duration; // in minutes
+      const day = parseUtcDayIndex(sl.date);
+      if (day === null) continue;
+      weekdayData[day].sleepSum += Number(sl.duration || 0);
+      weekdayData[day].deepRemSum += Number(sl.deep || 0) + Number(sl.rem || 0);
       weekdayData[day].sleepCount += 1;
     }
+    for (const act of data.activities) {
+      const day = parseUtcDayIndex(act.date);
+      if (day === null) continue;
+      weekdayData[day].actDistSum += Number(act.distance || 0);
+      weekdayData[day].actCount += 1;
+    }
 
-    const weekdayAverages = weekdayData.map(d => ({
+    const weekdayAverages = weekdayData.map((d) => ({
       name: d.name,
+      dayName: d.name,
       avgSteps: d.stepsCount > 0 ? Math.round(d.stepsSum / d.stepsCount) : 0,
       avgStress: d.stressCount > 0 ? Math.round(d.stressSum / d.stressCount) : 0,
-      avgSleep: d.sleepCount > 0 ? Math.round(d.sleepSum / d.sleepCount) : 0 // in minutes
+      avgSleep: d.sleepCount > 0 ? Math.round(d.sleepSum / d.sleepCount) : 0,
+      avgDeepRem: d.sleepCount > 0 ? Math.round(d.deepRemSum / d.sleepCount) : 0,
+      avgDistanceKm: d.actCount > 0 ? parseFloat((d.actDistSum / Math.max(1, d.stepsCount || d.actCount)).toFixed(1)) : 0,
+      activityCount: d.actCount
     }));
 
     // Reorder Mon to Sun
     const mondayToSundayAverages = [...weekdayAverages.slice(1), weekdayAverages[0]];
 
     // 7. Monthly Sleep Analysis
-    const monthlySleep = new Map<string, { sumDuration: number; sumDeep: number; sumRem: number; count: number }>();
+    const monthlySleep = new Map<string, { sumDuration: number; sumDeep: number; sumRem: number; sumLight: number; sumAwake: number; scoreSum: number; count: number }>();
     for (const s of data.sleep) {
-      const mKey = s.date.substring(0, 7); // YYYY-MM
-      const existing = monthlySleep.get(mKey) || { sumDuration: 0, sumDeep: 0, sumRem: 0, count: 0 };
-      existing.sumDuration += s.duration;
-      existing.sumDeep += s.deep || 0;
-      existing.sumRem += s.rem || 0;
+      const mKey = String(s.date || '').substring(0, 7); // YYYY-MM
+      if (!/^\d{4}-\d{2}$/.test(mKey)) continue;
+      const dur = Number(s.duration || 0);
+      if (dur <= 0) continue;
+      const deep = Number(s.deep || 0);
+      const rem = Number(s.rem || 0);
+      const light = Number(s.light || 0);
+      const rawAwake = Number(s.awake || 0);
+      const awake = rawAwake >= 60 && rawAwake <= 600 && rawAwake % 60 === 0
+        ? Math.round(rawAwake / 60)
+        : rawAwake;
+
+      const effPct = dur + awake > 0 ? (dur / (dur + awake)) * 100 : 100;
+      const regPct = (deep + rem) > 0 ? ((deep + rem) / dur) * 100 : 35;
+      const durScore = Math.min(40, (dur / 480) * 40);
+      const regScore = Math.min(35, (regPct / 45) * 35);
+      const effScore = Math.min(25, (effPct / 96) * 25);
+      const sleepScore = Math.max(1, Math.min(100, Math.round(durScore + regScore + effScore)));
+
+      const existing = monthlySleep.get(mKey) || { sumDuration: 0, sumDeep: 0, sumRem: 0, sumLight: 0, sumAwake: 0, scoreSum: 0, count: 0 };
+      existing.sumDuration += dur;
+      existing.sumDeep += deep;
+      existing.sumRem += rem;
+      existing.sumLight += light;
+      existing.sumAwake += awake;
+      existing.scoreSum += sleepScore;
       existing.count += 1;
       monthlySleep.set(mKey, existing);
     }
 
-    const monthlySleepAverages = Array.from(monthlySleep.entries()).map(([month, stats]) => ({
-      month,
-      avgSleep: Math.round(stats.sumDuration / stats.count),
-      avgDeep: Math.round(stats.sumDeep / stats.count),
-      avgRem: Math.round(stats.sumRem / stats.count),
-      deepRatio: stats.sumDuration > 0 ? parseFloat(((stats.sumDeep / stats.sumDuration) * 100).toFixed(1)) : 0
-    })).sort((a, b) => a.month.localeCompare(b.month));
+    const monthlySleepList = Array.from(monthlySleep.entries()).map(([month, stats]) => {
+      const avgSleep = Math.round(stats.sumDuration / stats.count);
+      return {
+        month,
+        avgDuration: avgSleep,
+        avgSleep,
+        avgDeep: Math.round(stats.sumDeep / stats.count),
+        avgRem: Math.round(stats.sumRem / stats.count),
+        avgLight: Math.round(stats.sumLight / stats.count),
+        avgAwake: Math.round(stats.sumAwake / stats.count),
+        deepRatio: stats.sumDuration > 0 ? parseFloat(((stats.sumDeep / stats.sumDuration) * 100).toFixed(1)) : 0,
+        remRatio: stats.sumDuration > 0 ? parseFloat(((stats.sumRem / stats.sumDuration) * 100).toFixed(1)) : 0,
+        avgSleepScore: Math.round(stats.scoreSum / stats.count)
+      };
+    }).sort((a, b) => a.month.localeCompare(b.month));
 
     // 8. Activity performance correlations (Heart Rate, Speed, Elevation)
     const activityPerformancePoints: {
@@ -2902,7 +3180,6 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     for (const act of data.activities) {
       if (act.distance > 0.1 && act.duration > 60) {
         const speedKmh = act.distance / (act.duration / 3600);
-        // exclude unrealistic outliers (e.g. GPS errors or car drives, or pausing issues)
         if (speedKmh > 1.5 && speedKmh < 100) {
           const ascent = act.ascent || 0;
           const elevationRate = act.distance > 0 ? (ascent / act.distance) : 0;
@@ -2939,42 +3216,72 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     const speedAscentCorr = pearsonCorrelation(ascentValues, speedValuesForAscent);
     const hrAscentCorr = pearsonCorrelation(ascentValuesForHr, hrValuesForAscent);
 
+    const sleepStressText = sleepStressPoints.length < 3
+      ? "Zu wenige kombinierte Schlaf- und Stress-Datenpunkte für eine belastbare Korrelation."
+      : sleepStressCorr < -0.3
+      ? "Starke negative Korrelation: Erhöhter Tagesstress geht bei dir mit signifikant kürzerem Schlaf einher."
+      : sleepStressCorr < -0.1
+      ? "Milde negative Korrelation: Stressigere Tage tendieren dazu, deine Schlafdauer leicht zu verkürzen."
+      : sleepStressCorr > 0.25
+      ? "Leicht positive Korrelation: Nach anspruchsvollen Tagen holt sich dein Körper oft mehr Erholungsschlaf."
+      : "Stabile Unabhängigkeit: Dein Schlaf bleibt auch bei unterschiedlichem Tagesstress weitgehend konstant.";
+
     return {
       activityCorrelations: {
         hrSpeed: parseFloat(hrSpeedCorr.toFixed(3)),
         speedAscent: parseFloat(speedAscentCorr.toFixed(3)),
         hrAscent: parseFloat(hrAscentCorr.toFixed(3)),
-        points: activityPerformancePoints.slice(-400) // Keep payload lightweight but informative
+        points: activityPerformancePoints.slice(-400)
       },
       sleepStressCorrelation: {
         coefficient: parseFloat(sleepStressCorr.toFixed(3)),
         deepSleepStressCoefficient: parseFloat(deepSleepStressCorr.toFixed(3)),
+        rhrSleepCoefficient: parseFloat(rhrSleepCorr.toFixed(3)),
         pointsCount: sleepStressPoints.length,
-        recentPoints: sleepStressPoints.slice(-30),
-        summaryText: sleepStressCorr < -0.3 
-          ? "Starke negative Korrelation: Erhöhter Tagesstress führt bei dir nachweislich zu kürzerem und weniger erholsamem Schlaf." 
-          : sleepStressCorr < -0.1
-          ? "Milde negative Korrelation: Es gibt einen leichten Trend, dass stressigere Tage deine Schlafdauer verkürzen."
-          : "Keine signifikante Korrelation: Dein Schlaf scheint weitgehend unbeeinflusst vom gemessenen Tagesstress zu sein."
+        recentPoints: sleepStressPoints.slice(-60),
+        summaryText: sleepStressText,
+        interpretation: sleepStressText
       },
       weightFatCorrelation: {
         coefficient: parseFloat(weightFatCorr.toFixed(3)),
         pointsCount: weightFatPoints.length,
         recentPoints: weightFatPoints.slice(-15),
-        summaryText: weightFatCorr > 0.6 
-          ? "Starke positive Korrelation: Gewichtsveränderungen gehen bei dir direkt mit einer Veränderung des Körperfettanteils einher (gesunder Trend bei Gewichtsabnahme)."
+        summaryText: weightFatCorr > 0.6
+          ? "Starke positive Korrelation: Gewichtsveränderungen gehen direkt mit einer Veränderung des Körperfettanteils einher."
           : "Mäßige Korrelation: Dein Körpergewicht und Körperfett korrelieren moderat."
       },
       trainingVolumeVsRhr: {
         coefficient: parseFloat(trainingVolumeRhrCorr.toFixed(3)),
-        points: volumeVsRhrPoints.slice(-12),
+        points: volumeVsRhrPoints.slice(-16),
         summaryText: trainingVolumeRhrCorr < -0.2
-          ? "Positive Fitness-Adaption! Wochen mit höherem Trainingsvolumen (mehr km) korrelieren mit einem signifikant niedrigeren Ruhepuls (RHR). Dein Herz arbeitet effizienter."
-          : "Noch kein klarer Trend sichtbar. Ein längerer Trainingszeitraum wird benötigt, um die aerobe Anpassung deines Ruhepulses statistisch nachzuweisen."
+          ? "Positive Fitness-Adaption! Wochen mit höherem Trainingsvolumen korrelieren mit einem niedrigeren Ruhepuls (RHR)."
+          : "Noch kein klarer linearer Trend sichtbar. Weitere Trainingswochen schärfen die Ruhepuls-Adaption."
       },
+      weeklyRhrTrainingTrend: unifiedWeeklyPoints.slice(-24),
+      acwrSummary,
       sportEfficiency,
+      weekdayTrends: mondayToSundayAverages,
       weekdayAverages: mondayToSundayAverages,
-      monthlySleepAverages: monthlySleepAverages.slice(-6)
+      monthlySleepAnalysis: monthlySleepList.slice(-12),
+      monthlySleepAverages: monthlySleepList.slice(-12),
+      trainingDistribution: {
+        hrTrackedCount,
+        durationBuckets: durationBuckets.map((b) => ({
+          label: b.label,
+          count: b.count,
+          hours: parseFloat((b.durationSec / 3600).toFixed(1)),
+          distanceKm: parseFloat(b.distanceKm.toFixed(1))
+        })),
+        intensityBreakdown: intensityZones.map((z) => ({
+          zone: z.zone,
+          range: z.range,
+          color: z.color,
+          count: z.count,
+          hours: parseFloat((z.durationSec / 3600).toFixed(1)),
+          pct: hrTrackedCount > 0 ? Math.round((z.count / hrTrackedCount) * 100) : 0
+        }))
+      },
+      aerobicEfficiencyTrend: aerobicEfficiencyTrend.slice(-40)
     };
   }
 

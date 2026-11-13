@@ -1390,6 +1390,11 @@ export async function syncGarminPersonalHealth(options: {
       mergeMetricArray(metricsMap.WELLNESS_AVERAGE_STRESS, 'averageStressLevel');
       mergeMetricArray(metricsMap.WELLNESS_TOTAL_CALORIES, 'totalKilocalories');
       mergeMetricArray(metricsMap.WELLNESS_TOTAL_DISTANCE, 'totalDistanceMeters');
+      mergeMetricArray(metricsMap.SLEEP_DURATION ?? metricsMap.WELLNESS_SLEEP_SECONDS ?? metricsMap.SLEEP_TIME_SECONDS, 'sleepingSeconds');
+      mergeMetricArray(metricsMap.SLEEP_DEEP ?? metricsMap.WELLNESS_DEEP_SLEEP_SECONDS, 'deepSleepSeconds');
+      mergeMetricArray(metricsMap.SLEEP_LIGHT ?? metricsMap.WELLNESS_LIGHT_SLEEP_SECONDS, 'lightSleepSeconds');
+      mergeMetricArray(metricsMap.SLEEP_REM ?? metricsMap.WELLNESS_REM_SLEEP_SECONDS, 'remSleepSeconds');
+      mergeMetricArray(metricsMap.SLEEP_AWAKE ?? metricsMap.WELLNESS_AWAKE_SLEEP_SECONDS, 'awakeSleepSeconds');
       if (byDate.size > 0) return Array.from(byDate.values());
     }
     if (Array.isArray(payload?.data)) return payload.data;
@@ -1464,8 +1469,41 @@ export async function syncGarminPersonalHealth(options: {
           saveStress(dateStr, Math.round(avgStress));
           stressCount++;
         }
+
+        const dailySleepMin = pickSleepMinutes(
+          d.sleepingSeconds ?? d.sleepTimeSeconds ?? d.sleepDurationInSeconds,
+          d.sleepingMinutes ?? d.sleepMinutes
+        );
+        if (dailySleepMin && dailySleepMin > 0) {
+          const dailyDeepMin = pickSleepMinutes(d.deepSleepSeconds ?? d.deepSleepDurationInSeconds, d.deepSleepMinutes);
+          const dailyLightMin = pickSleepMinutes(d.lightSleepSeconds ?? d.lightSleepDurationInSeconds, d.lightSleepMinutes);
+          const dailyRemMin = pickSleepMinutes(d.remSleepSeconds ?? d.remSleepDurationInSeconds, d.remSleepMinutes);
+          const dailyAwakeMin = pickSleepMinutes(d.awakeSleepSeconds ?? d.awakeDurationInSeconds, d.awakeSleepMinutes);
+          saveSleep(dateStr, dailySleepMin, dailyDeepMin, dailyLightMin, dailyRemMin, dailyAwakeMin);
+          sleepCount++;
+        }
       }
     });
+  };
+
+  const toMinutesFromGarminSleepField = (rawVal: unknown, isSecondsField: boolean): number | undefined => {
+    const num = Number(rawVal);
+    if (!Number.isFinite(num) || num <= 0) return undefined;
+    if (isSecondsField) {
+      const mins = Math.round(num / 60);
+      return mins > 0 ? mins : undefined;
+    }
+    return num > 600 ? Math.round(num / 60) : Math.round(num);
+  };
+
+  const pickSleepMinutes = (secondsVal: unknown, fallbackMinutesVal?: unknown): number | undefined => {
+    if (secondsVal !== undefined && secondsVal !== null && secondsVal !== '') {
+      return toMinutesFromGarminSleepField(secondsVal, true);
+    }
+    if (fallbackMinutesVal !== undefined && fallbackMinutesVal !== null && fallbackMinutesVal !== '') {
+      return toMinutesFromGarminSleepField(fallbackMinutesVal, false);
+    }
+    return undefined;
   };
 
   try {
@@ -1522,69 +1560,94 @@ export async function syncGarminPersonalHealth(options: {
     }
   }
 
-  // 2. Fetch Sleep Summaries
+  // 2. Fetch Sleep Summaries (chunked across multi-day ranges without single-day short-circuit)
   try {
-    const sleepUrls = [
-      `${baseUrl}/sleep-service/sleep/dailySleepSummariesByDate?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
-      `${baseUrl}/sleep-service/sleep/dailySleepData?date=${encodeURIComponent(end)}&nonSleepBufferMinutes=60`,
-      `${baseUrl}/sleep-service/sleep/dailySleep?date=${encodeURIComponent(end)}`,
-      `${baseUrl}/wellness-api/rest/sleeps?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`,
-      `${baseUrl}/personal-api/sleep?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`
-    ];
-    const { data: sleepPayload } = await fetchGarminJsonWithFallback(sleepUrls, accessToken, { allowNotFoundAsEmpty: true });
-    const sleepList: any[] = Array.isArray(sleepPayload)
-      ? sleepPayload
-      : Array.isArray(sleepPayload?.sleeps)
-      ? sleepPayload.sleeps
-      : sleepPayload?.dailySleepDTO
-      ? [sleepPayload.dailySleepDTO]
-      : Array.isArray(sleepPayload?.data)
-      ? sleepPayload.data
-      : [];
+    const sleepChunks = buildDateChunks(start, end, 20);
+    const seenSleepDates = new Set<string>();
 
-    runInTransaction(() => {
-      for (const s of sleepList) {
-        const dto = s.dailySleepDTO || s;
-        const dateStr = String(
-          dto.calendarDate ||
-          dto.date ||
-          (dto.startTimeInSeconds ? new Date(dto.startTimeInSeconds * 1000).toISOString().slice(0, 10) : '')
-        ).slice(0, 10);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
+    const ingestSleepList = (sleepList: any[]) => {
+      if (sleepList.length === 0) return;
+      runInTransaction(() => {
+        for (const s of sleepList) {
+          const dto = s?.dailySleepDTO || s;
+          if (!dto) continue;
+          const dateStr = String(
+            dto.calendarDate ||
+            dto.date ||
+            (dto.startTimeInSeconds ? new Date(dto.startTimeInSeconds * 1000).toISOString().slice(0, 10) : '')
+          ).slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
-        const totalSec = Number(dto.sleepTimeSeconds ?? dto.durationInSeconds ?? dto.duration ?? 0);
-        // Convert seconds to minutes if > 1000, otherwise assume minutes
-        const durationMin = totalSec > 1000 ? Math.round(totalSec / 60) : Math.round(totalSec);
-        if (durationMin <= 0) continue;
+          const durationMin = pickSleepMinutes(
+            dto.sleepTimeSeconds ?? dto.durationInSeconds ?? dto.sleepingSeconds,
+            dto.duration ?? dto.sleepMinutes
+          );
+          if (!durationMin || durationMin <= 0) continue;
 
-        const deepSec = Number(dto.deepSleepSeconds ?? dto.deepSleepDurationInSeconds ?? dto.deep ?? 0);
-        const lightSec = Number(dto.lightSleepSeconds ?? dto.lightSleepDurationInSeconds ?? dto.light ?? 0);
-        const remSec = Number(dto.remSleepSeconds ?? dto.remSleepInSeconds ?? dto.rem ?? 0);
-        const awakeSec = Number(dto.awakeSleepSeconds ?? dto.awakeDurationInSeconds ?? dto.awake ?? 0);
+          const deepMin = pickSleepMinutes(dto.deepSleepSeconds ?? dto.deepSleepDurationInSeconds, dto.deep);
+          const lightMin = pickSleepMinutes(dto.lightSleepSeconds ?? dto.lightSleepDurationInSeconds, dto.light);
+          const remMin = pickSleepMinutes(dto.remSleepSeconds ?? dto.remSleepInSeconds ?? dto.remSleepDurationInSeconds, dto.rem);
+          const awakeMin = pickSleepMinutes(dto.awakeSleepSeconds ?? dto.awakeDurationInSeconds, dto.awake);
 
-        saveSleep(
-          dateStr,
-          durationMin,
-          deepSec > 600 ? Math.round(deepSec / 60) : Math.round(deepSec) || undefined,
-          lightSec > 600 ? Math.round(lightSec / 60) : Math.round(lightSec) || undefined,
-          remSec > 600 ? Math.round(remSec / 60) : Math.round(remSec) || undefined,
-          awakeSec > 600 ? Math.round(awakeSec / 60) : Math.round(awakeSec) || undefined
-        );
-        sleepCount++;
+          saveSleep(dateStr, durationMin, deepMin, lightMin, remMin, awakeMin);
+          if (!seenSleepDates.has(dateStr)) {
+            seenSleepDates.add(dateStr);
+            sleepCount++;
+          }
 
-        const sleepRhr = Number(s.restingHeartRate ?? dto.restingHeartRate ?? 0);
-        if (!isNaN(sleepRhr) && sleepRhr >= 30 && sleepRhr <= 140) {
-          saveRhr(dateStr, Math.round(sleepRhr));
-          rhrCount++;
+          const sleepRhr = Number(s?.restingHeartRate ?? dto.restingHeartRate ?? 0);
+          if (!isNaN(sleepRhr) && sleepRhr >= 30 && sleepRhr <= 140) {
+            saveRhr(dateStr, Math.round(sleepRhr));
+            rhrCount++;
+          }
+
+          const sleepStress = Number(dto.avgSleepStress ?? s?.avgSleepStress ?? 0);
+          if (!isNaN(sleepStress) && sleepStress > 0 && sleepStress <= 100) {
+            saveStress(dateStr, Math.round(sleepStress));
+            stressCount++;
+          }
         }
+      });
+    };
 
-        const sleepStress = Number(dto.avgSleepStress ?? s.avgSleepStress ?? 0);
-        if (!isNaN(sleepStress) && sleepStress > 0 && sleepStress <= 100) {
-          saveStress(dateStr, Math.round(sleepStress));
-          stressCount++;
-        }
+    const extractSleepList = (sleepPayload: any): any[] => {
+      if (!sleepPayload) return [];
+      if (Array.isArray(sleepPayload)) return sleepPayload;
+      if (Array.isArray(sleepPayload.sleeps)) return sleepPayload.sleeps;
+      if (Array.isArray(sleepPayload.dailySleepSummaries)) return sleepPayload.dailySleepSummaries;
+      if (Array.isArray(sleepPayload.items)) return sleepPayload.items;
+      if (sleepPayload.dailySleepDTO) return [sleepPayload.dailySleepDTO];
+      if (Array.isArray(sleepPayload.data)) return sleepPayload.data;
+      return [];
+    };
+
+    for (const chunk of sleepChunks) {
+      const sleepRangeUrls = [
+        `${baseUrl}/sleep-service/sleep/dailySleepSummariesByDate?startDate=${encodeURIComponent(chunk.chunkStart)}&endDate=${encodeURIComponent(chunk.chunkEnd)}`,
+        `${baseUrl}/wellness-api/rest/sleeps?uploadStartTimeInSeconds=${chunk.chunkStartSec}&uploadEndTimeInSeconds=${chunk.chunkEndSec}`,
+        `${baseUrl}/personal-api/sleep?startDate=${encodeURIComponent(chunk.chunkStart)}&endDate=${encodeURIComponent(chunk.chunkEnd)}`
+      ];
+      const { data: sleepPayload } = await fetchGarminJsonWithFallback(sleepRangeUrls, accessToken, { allowNotFoundAsEmpty: true });
+      ingestSleepList(extractSleepList(sleepPayload));
+    }
+
+    // Fallback to single-day sleep endpoint only if all multi-day range queries returned nothing
+    if (seenSleepDates.size === 0) {
+      const endDateObj = new Date(`${end}T00:00:00Z`);
+      const startDateObj = new Date(`${start}T00:00:00Z`);
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(endDateObj);
+        d.setUTCDate(endDateObj.getUTCDate() - i);
+        if (d < startDateObj) break;
+        const dStr = d.toISOString().slice(0, 10);
+        const dayUrls = [
+          `${baseUrl}/sleep-service/sleep/dailySleepData?date=${encodeURIComponent(dStr)}&nonSleepBufferMinutes=60`,
+          `${baseUrl}/sleep-service/sleep/dailySleep?date=${encodeURIComponent(dStr)}`
+        ];
+        const { data: dayPayload } = await fetchGarminJsonWithFallback(dayUrls, accessToken, { allowNotFoundAsEmpty: true });
+        ingestSleepList(extractSleepList(dayPayload));
       }
-    });
+    }
   } catch (e: any) {
     if (e?.message?.includes('404') || e?.message?.includes('NOT_FOUND')) {
       console.log('[Garmin Personal API] Keine Schlaf-Einträge in Garmin Cloud für diesen Zeitraum.');

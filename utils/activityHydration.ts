@@ -4,6 +4,7 @@ import {
   calculatePowerStats,
   calculateSurfaceStatsFromPoints,
   generateVirtualRoute,
+  hasRealGpsData,
   hydratePointsWithSurface,
   parseLocationCoords
 } from './gpxUtils';
@@ -181,11 +182,20 @@ export function hydrateLibraryTrackPayload(rawTrack: any): GPXTrack {
     hydratePointsWithSurface(points, surfaceStats, Number(rawTrack.distance || 0));
   }
 
+  const taggedVirtual = Boolean(
+    rawTrack.isVirtual ||
+    (Array.isArray(rawTrack.tags) &&
+      rawTrack.tags.some((t: any) => String(t).trim().toLowerCase() === 'indoor/virtuell')) ||
+    rawTrack.rawFileDetails?.metadata?.isVirtual
+  );
+  const hasRealGps = !taggedVirtual && hasRealGpsData({ ...rawTrack, points, isVirtual: false });
+
   return {
     ...rawTrack,
     points,
     maxSlope: maxSlope ?? 0,
     surfaceStats,
+    isVirtual: !hasRealGps,
     visible: true
   };
 }
@@ -302,7 +312,7 @@ export function hydrateGarminActivityPayload(
     }
   }
 
-  if (points.length <= 1) {
+  if (points.length <= 1 || !hasRealGpsData({ points, isVirtual: false })) {
     if (points.length === 1) {
       startCoords = { lat: points[0].lat, lng: points[0].lng };
     }

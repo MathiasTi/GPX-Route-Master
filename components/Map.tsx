@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
-import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX } from '../utils/gpxUtils';
+import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
 import { getApiUrl } from '../utils/api';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
@@ -120,18 +120,27 @@ const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) =>
 
 const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
   const map = useMap();
-  const prevTracksLength = useRef(tracks.length);
+  const prevTracksLength = useRef(tracks.filter(t => t.visible && hasRealGpsData(t)).length);
 
   useEffect(() => {
-    const visibleTracks = tracks.filter(t => t.visible);
-    if (visibleTracks.length > prevTracksLength.current && visibleTracks.length > 0) {
-      const bounds = L.latLngBounds(visibleTracks[0].points.map(p => [p.lat, p.lng]));
-      visibleTracks.forEach(t => {
-        t.points.forEach(p => bounds.extend([p.lat, p.lng]));
-      });
-      map.fitBounds(bounds, { padding: [50, 50] });
+    const visibleGpsTracks = tracks.filter(t => t.visible && hasRealGpsData(t));
+    if (visibleGpsTracks.length > prevTracksLength.current && visibleGpsTracks.length > 0) {
+      const firstPts = visibleGpsTracks[0].points.filter(p => p && Number.isFinite(p.lat) && Number.isFinite(p.lng));
+      if (firstPts.length > 0) {
+        const bounds = L.latLngBounds(firstPts.map(p => [p.lat, p.lng]));
+        visibleGpsTracks.forEach(t => {
+          t.points.forEach(p => {
+            if (p && Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+              bounds.extend([p.lat, p.lng]);
+            }
+          });
+        });
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, { padding: [50, 50] });
+        }
+      }
     }
-    prevTracksLength.current = tracks.length;
+    prevTracksLength.current = visibleGpsTracks.length;
   }, [tracks, map]);
   return null;
 };
@@ -143,7 +152,7 @@ const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | 
   useEffect(() => {
     if (markedTrackId && markedTrackId !== prevMarkedId.current) {
       const track = tracks.find(t => t.id === markedTrackId);
-      if (track && !track.isVirtual && track.points && track.points.length > 0) {
+      if (track && hasRealGpsData(track)) {
         const validPoints = track.points
           .map(p => {
             if (!p) return null;
@@ -170,7 +179,7 @@ const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXT
   const map = useMap();
 
   useEffect(() => {
-    if (activeTrack && !activeTrack.isVirtual && activeTrack.points && activeTrack.points.length > 0 && recenterTrigger > 0) {
+    if (activeTrack && hasRealGpsData(activeTrack) && recenterTrigger > 0) {
       const validPoints = activeTrack.points
         .map(p => {
           if (!p) return null;
@@ -347,8 +356,9 @@ const MobileZoomControls = ({
     if (onRecenterActiveTrack) {
       onRecenterActiveTrack();
     } else {
-      const trackToFit = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible)) || tracks[0];
-      if (trackToFit && trackToFit.points && trackToFit.points.length > 0) {
+      const candidate = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible && hasRealGpsData(t))) || tracks.find(t => hasRealGpsData(t));
+      const trackToFit = candidate && hasRealGpsData(candidate) ? candidate : tracks.find(t => t.visible && hasRealGpsData(t));
+      if (trackToFit && hasRealGpsData(trackToFit)) {
         const validPoints: [number, number][] = [];
         trackToFit.points.forEach(p => {
           if (p) {
@@ -372,7 +382,7 @@ const MobileZoomControls = ({
     e.preventDefault();
     triggerHaptic('medium');
 
-    const targetTracks = tracks.filter(t => t.visible || t.id === markedTrackId);
+    const targetTracks = tracks.filter(t => (t.visible || t.id === markedTrackId) && hasRealGpsData(t));
     const allPoints: [number, number][] = [];
 
     targetTracks.forEach(t => {
@@ -711,7 +721,7 @@ const Map: React.FC<MapProps> = ({
   // Deterministic POI Generator along active/visible routes
   const poiList = useMemo(() => {
     const list: POI[] = [];
-    const visibleTracks = tracks.filter(t => t.visible && !t.isVirtual && t.points && t.points.length > 0);
+    const visibleTracks = tracks.filter(t => t.visible && hasRealGpsData(t));
 
     visibleTracks.forEach((track, trackIdx) => {
       const points = track.points;
@@ -1014,7 +1024,7 @@ const Map: React.FC<MapProps> = ({
 
         <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
         
-        {tracks.filter(t => t.visible && !t.isVirtual).map(track => {
+        {tracks.filter(t => t.visible && hasRealGpsData(t)).map(track => {
           const isMarked = track.id === markedTrackId;
           const validPoints = (track.points || [])
             .map(p => {
@@ -1472,6 +1482,8 @@ const Map: React.FC<MapProps> = ({
             ? tracks.find(t => t.id === hoveredTrackId)
             : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
             || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
+
+          if (!pointTrack || !hasRealGpsData(pointTrack)) return null;
 
           const isFit = Boolean(
             pointTrack?.rawFileDetails?.fileType === 'fit' ||
@@ -2034,13 +2046,13 @@ const Map: React.FC<MapProps> = ({
             const markedTrack = tracks.find(t => t.id === markedTrackId);
             if (!markedTrack) return null;
 
-            if (markedTrack.isVirtual) {
+            if (!hasRealGpsData(markedTrack)) {
               return (
                 <div className="text-[10px] text-orange-700 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-950/30 border border-orange-200/50 dark:border-orange-900/40 p-2 rounded-lg leading-snug font-sans shadow-xs">
                   <div className="font-extrabold flex items-center gap-1 mb-0.5 text-xs">
                     <span>⚠️</span> Keine GPS-Koordinatendaten
                   </div>
-                  Diese Aktivität enthält keine GPS-Spur. Visualisierungen auf der Karte wurden deaktiviert, um eine fehlerhafte Kreisdarstellung zu vermeiden. Alle anderen Statistiken sind voll nutzbar.
+                  Diese Aktivität enthält keine GPX/GPS-Spur. Auf der Karte wird keine Route gezeichnet; alle Statistiken und das Höhenprofil sind voll nutzbar.
                 </div>
               );
             }

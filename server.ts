@@ -1643,6 +1643,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         }
         hydratePointsWithSurface(points, surfaceStats, r.distance);
 
+        const parsedRawDetails = r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined;
+        const parsedTags = r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [];
+        const isVirtualTrack = Boolean(
+          parsedTags.some(t => t.toLowerCase() === 'indoor/virtuell') ||
+          parsedRawDetails?.metadata?.isVirtual === true ||
+          !Array.isArray(points) ||
+          points.length < 2
+        );
+
         return {
           id: r.id,
           name: r.name,
@@ -1652,7 +1661,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           duration: r.duration,
           activityType: r.activity_type,
           description: r.description || "",
-          tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+          tags: parsedTags,
           dateCreated: r.date_created,
           originalFilename: r.original_filename,
           points,
@@ -1662,7 +1671,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
           color: r.color || '#3b82f6',
           hasTimestamps: r.has_timestamps === 1,
-          rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
+          rawFileDetails: parsedRawDetails,
+          isVirtual: isVirtualTrack,
           visible: true
         };
       });
@@ -1744,6 +1754,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
       hydratePointsWithSurface(points, surfaceStats, r.distance);
 
+      const parsedRawDetails = r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined;
+      const parsedTags = r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [];
+      const isVirtualTrack = Boolean(
+        parsedTags.some(t => t.toLowerCase() === 'indoor/virtuell') ||
+        parsedRawDetails?.metadata?.isVirtual === true ||
+        !Array.isArray(points) ||
+        points.length < 2
+      );
+
       // Reconstruct fully hydrated track structure
       const track = {
         id: r.id,
@@ -1754,7 +1773,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         duration: r.duration,
         activityType: r.activity_type,
         description: r.description || "",
-        tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
+        tags: parsedTags,
         dateCreated: r.date_created,
         originalFilename: r.original_filename,
         points,
@@ -1764,7 +1783,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
         color: r.color || '#3b82f6',
         hasTimestamps: r.has_timestamps === 1,
-        rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
+        rawFileDetails: parsedRawDetails,
+        isVirtual: isVirtualTrack,
         visible: true
       };
 
@@ -1796,7 +1816,9 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         climbs,
         maxSlope,
         color,
-        hasTimestamps
+        hasTimestamps,
+        isVirtual,
+        rawFileDetails
       } = req.body;
 
       if (!id || typeof id !== "string" || !name || typeof name !== "string" || !points || !Array.isArray(points)) {
@@ -1812,8 +1834,22 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
 
       const tagsList = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : (typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : []);
+      if (isVirtual === true && !tagsList.some(t => t.toLowerCase() === 'indoor/virtuell')) {
+        tagsList.push('Indoor/Virtuell');
+      }
       const safeDesc = String(description || "").slice(0, 5000);
       const safeActivityType = activityType === "running" ? "running" : "cycling";
+      const safeRawFileDetails = rawFileDetails && typeof rawFileDetails === "object"
+        ? {
+            ...rawFileDetails,
+            metadata: {
+              ...(rawFileDetails.metadata || {}),
+              ...(isVirtual === true ? { isVirtual: true } : {})
+            }
+          }
+        : isVirtual === true
+        ? { fileType: 'gpx', fileName: originalFilename || `${name}.gpx`, metadata: { isVirtual: true } }
+        : undefined;
 
       // Execute SaveTrackUseCase to strictly validate Domain invariants & invariants
       const domainSaveRes = await saveTrackUseCase.execute({
@@ -1835,7 +1871,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         return res.status(400).json({ success: false, error: domainSaveRes.error.message });
       }
 
-      // Also persist legacy metadata extensions (powerStats, surfaceStats, climbs) to SQLite
+      // Also persist legacy metadata extensions (powerStats, surfaceStats, climbs, rawFileDetails) to SQLite
       saveTrack({
         id: id.trim(),
         name: name.trim(),
@@ -1846,15 +1882,16 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         activityType: safeActivityType,
         description: safeDesc,
         tags: tagsList.join(","),
-        dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined,
-        originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : undefined,
+        dateCreated: dateCreated ? String(dateCreated).slice(0, 40) : undefined,
+        originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : (rawFileDetails?.fileName ? String(rawFileDetails.fileName).slice(0, 255) : undefined),
         points,
         powerStats,
         surfaceStats,
         climbs,
         maxSlope: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : undefined,
         color: color ? String(color).slice(0, 30) : undefined,
-        hasTimestamps: hasTimestamps === true || hasTimestamps === 1
+        hasTimestamps: hasTimestamps === true || hasTimestamps === 1,
+        rawFileDetails: safeRawFileDetails
       });
 
       res.json({ success: true, id: domainSaveRes.data.id });
@@ -1913,9 +1950,26 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           continue;
         }
 
-        const tagsStr = Array.isArray(track.tags) ? track.tags.slice(0, 50).join(",").slice(0, 1000) : String(track.tags || "").slice(0, 1000);
+        const tagsList = Array.isArray(track.tags)
+          ? track.tags.slice(0, 50).map((t: any) => String(t).trim()).filter(Boolean)
+          : String(track.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean);
+        if (track.isVirtual === true && !tagsList.some((t: string) => t.toLowerCase() === 'indoor/virtuell')) {
+          tagsList.push('Indoor/Virtuell');
+        }
+        const tagsStr = tagsList.join(",").slice(0, 1000);
         const safeDesc = String(track.description || "").slice(0, 5000);
         const safeActivityType = String(track.activityType || "cycling").slice(0, 50);
+        const safeRawDetails = track.rawFileDetails && typeof track.rawFileDetails === "object"
+          ? {
+              ...track.rawFileDetails,
+              metadata: {
+                ...(track.rawFileDetails.metadata || {}),
+                ...(track.isVirtual === true ? { isVirtual: true } : {})
+              }
+            }
+          : track.isVirtual === true
+          ? { fileType: 'gpx', fileName: track.originalFilename || `${track.name}.gpx`, metadata: { isVirtual: true } }
+          : undefined;
 
         saveTrack({
           id: String(track.id).trim().slice(0, 128),
@@ -1927,15 +1981,16 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           activityType: safeActivityType,
           description: safeDesc,
           tags: tagsStr,
-          dateCreated: track.dateCreated ? String(track.dateCreated).slice(0, 30) : undefined,
-          originalFilename: track.originalFilename ? String(track.originalFilename).slice(0, 255) : undefined,
+          dateCreated: track.dateCreated ? String(track.dateCreated).slice(0, 40) : undefined,
+          originalFilename: track.originalFilename ? String(track.originalFilename).slice(0, 255) : (track.rawFileDetails?.fileName ? String(track.rawFileDetails.fileName).slice(0, 255) : undefined),
           points: track.points,
           powerStats: track.powerStats,
           surfaceStats: track.surfaceStats,
           climbs: track.climbs,
           maxSlope: track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : undefined,
           color: track.color ? String(track.color).slice(0, 30) : undefined,
-          hasTimestamps: track.hasTimestamps === true || track.hasTimestamps === 1
+          hasTimestamps: track.hasTimestamps === true || track.hasTimestamps === 1,
+          rawFileDetails: safeRawDetails
         });
         savedCount++;
       }
@@ -2188,6 +2243,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         }
         hydratePointsWithSurface(points, surfaceStats, r.distance);
 
+        const parsedRawDetails = r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined;
+        const parsedTags = r.tags ? r.tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+        const isVirtualTrack = Boolean(
+          parsedTags.some((t) => t.toLowerCase() === 'indoor/virtuell') ||
+          parsedRawDetails?.metadata?.isVirtual === true ||
+          !Array.isArray(points) ||
+          points.length < 2
+        );
+
         return {
           id: r.id,
           name: r.name,
@@ -2197,7 +2261,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           duration: r.duration,
           activityType: r.activity_type,
           description: r.description || "",
-          tags: r.tags ? r.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
+          tags: parsedTags,
           dateCreated: r.date_created,
           originalFilename: r.original_filename,
           points,
@@ -2207,7 +2271,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
           color: r.color || "#3b82f6",
           hasTimestamps: r.has_timestamps === 1,
-          rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
+          rawFileDetails: parsedRawDetails,
+          isVirtual: isVirtualTrack,
           visible: true
         };
       });

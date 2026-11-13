@@ -64,6 +64,7 @@ export interface RawFileDetails {
     sessionDuration?: number;
     sessionDistance?: number;
     lapCount?: number;
+    isVirtual?: boolean;
     rawRecords?: { type: string; data: Record<string, unknown> }[];
   };
 }

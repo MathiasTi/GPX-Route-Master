@@ -544,7 +544,173 @@ function runInitDbStatements() {
     console.error('Error auto-seeding GPX folder tours:', e);
   }
 
+  // One-time backfill migration (2.9.1): Repair stored import-date fallbacks (e.g. Pottrunde) from GPS/metadata timestamps
+  try {
+    const checkMigration = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasV291 = (checkMigration.get('2.9.1') as { count: number }).count > 0;
+    if (!hasV291) {
+      const repairResult = repairStoredActivityDates();
+      if (repairResult.repairedTracks > 0 || repairResult.repairedGarmin > 0) {
+        console.log(
+          `[DB Migration 2.9.1] Repaired stored activity dates: ${repairResult.repairedTracks} library track(s), ${repairResult.repairedGarmin} Garmin activity(s).`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.1',
+        new Date().toISOString(),
+        'Authentic Activity Timestamp Preservation & DB Date Repair: Preserves original GPX/FIT timestamps on import, backfills historical import-date rows from GPS/metadata timestamps, and isolates GPS-less tracks from 2D/3D maps.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.1 activity date repair migration:', e);
+  }
+
   console.log('SQLite database initialized successfully at', dbPath);
+}
+
+function parsePlausibleIsoDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) {
+    const y = value.getUTCFullYear();
+    return !isNaN(value.getTime()) && y >= 1995 && y <= 2100 ? value : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Handle Unix epoch ms vs s
+    const ms = value > 1e12 ? value : value > 1e9 ? value * 1000 : NaN;
+    if (!Number.isFinite(ms)) return null;
+    const d = new Date(ms);
+    const y = d.getUTCFullYear();
+    return !isNaN(d.getTime()) && y >= 1995 && y <= 2100 ? d : null;
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (isNaN(parsed.getTime())) return null;
+  const y = parsed.getUTCFullYear();
+  return y >= 1995 && y <= 2100 ? parsed : null;
+}
+
+export function extractAuthenticTimestampFromTrackData(
+  points: any[] | undefined,
+  rawFileDetails: any,
+  isVirtualHint: boolean = false
+): string | undefined {
+  // 1. Prefer raw metadata timestamps (GPX <metadata><time>, FIT session/activity/file_id)
+  // because they remain authentic even if point timestamps were previously shifted during legacy imports.
+  const rawRecords = rawFileDetails?.metadata?.rawRecords;
+  if (Array.isArray(rawRecords)) {
+    const priorityTypes = ['metadata_time', 'session', 'activity', 'file_id'];
+    for (const pType of priorityTypes) {
+      for (const rec of rawRecords) {
+        if (!rec || rec.type !== pType || !rec.data || typeof rec.data !== 'object') continue;
+        const candidate =
+          parsePlausibleIsoDate(rec.data.start_time) ||
+          parsePlausibleIsoDate(rec.data.timestamp) ||
+          parsePlausibleIsoDate(rec.data.time_created) ||
+          parsePlausibleIsoDate(rec.data.local_timestamp);
+        if (candidate) {
+          return candidate.toISOString();
+        }
+      }
+    }
+  }
+
+  // 2. Otherwise inspect earliest valid point timestamp (skip synthetic virtual routes unless they carry genuine times)
+  if (!isVirtualHint && Array.isArray(points) && points.length > 0) {
+    for (let i = 0; i < Math.min(points.length, 50); i++) {
+      const pt = points[i];
+      if (!pt) continue;
+      const candidate = parsePlausibleIsoDate(pt.time) || parsePlausibleIsoDate(pt.timestamp);
+      if (candidate) {
+        return candidate.toISOString();
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export function repairStoredActivityDates(): { repairedTracks: number; repairedGarmin: number } {
+  return executeWithCorruptionRecovery(() => {
+    let repairedTracks = 0;
+    let repairedGarmin = 0;
+
+    const rows = db
+      .prepare('SELECT id, name, date_created, tags, points_json, raw_file_json FROM tracks')
+      .all() as {
+      id: string;
+      name: string;
+      date_created: string | null;
+      tags: string | null;
+      points_json: string | null;
+      raw_file_json: string | null;
+    }[];
+
+    const updateTrackDateStmt = db.prepare('UPDATE tracks SET date_created = ? WHERE id = ?');
+
+    const repairTrx = db.transaction(() => {
+      for (const row of rows) {
+        const cleanId = stripScopedKey(row.id);
+        // Preserve curated multi-stage Alpentour sequential dates intentionally assigned by seedTours
+        if (cleanId.startsWith('gpx-alpentour-tag-')) continue;
+
+        let pts: any[] = [];
+        let rawDetails: any = undefined;
+        try {
+          if (row.points_json) pts = JSON.parse(row.points_json);
+        } catch {}
+        try {
+          if (row.raw_file_json) rawDetails = JSON.parse(row.raw_file_json);
+        } catch {}
+
+        const isVirtualRow =
+          (row.tags || '').toLowerCase().includes('indoor/virtuell') ||
+          rawDetails?.metadata?.isVirtual === true;
+
+        const authenticIso = extractAuthenticTimestampFromTrackData(pts, rawDetails, isVirtualRow);
+        if (!authenticIso) continue;
+
+        const stored = (row.date_created || '').trim();
+        const isDateOnlyFallback = /^\d{4}-\d{2}-\d{2}$/.test(stored);
+        const storedDatePart = stored.slice(0, 10);
+        const authenticDatePart = authenticIso.slice(0, 10);
+
+        // Repair if date_created was missing, stored as date-only fallback YYYY-MM-DD (previous saveTrack bug),
+        // or its calendar date differs from the authentic recorded timestamp.
+        if (!stored || isDateOnlyFallback || storedDatePart !== authenticDatePart) {
+          updateTrackDateStmt.run(authenticIso, row.id);
+          repairedTracks++;
+        }
+      }
+
+      const garminRows = db
+        .prepare('SELECT id, date, points_json FROM garmin_activities WHERE points_json IS NOT NULL')
+        .all() as { id: string; date: string | null; points_json: string | null }[];
+      const updateGarminDateStmt = db.prepare('UPDATE garmin_activities SET date = ? WHERE id = ?');
+
+      for (const g of garminRows) {
+        let pts: any[] = [];
+        try {
+          if (g.points_json) pts = JSON.parse(g.points_json);
+        } catch {}
+        if (!Array.isArray(pts) || pts.length < 2) continue;
+
+        const firstPtDate = parsePlausibleIsoDate(pts[0]?.time) || parsePlausibleIsoDate(pts[0]?.timestamp);
+        if (!firstPtDate) continue;
+
+        const storedDate = parsePlausibleIsoDate(g.date);
+        // Only overwrite Garmin local date if stored date is missing or > 24h newer than GPS points (import-date fallback)
+        if (!storedDate || storedDate.getTime() - firstPtDate.getTime() > 24 * 3600 * 1000) {
+          updateGarminDateStmt.run(firstPtDate.toISOString(), g.id);
+          repairedGarmin++;
+        }
+      }
+    });
+
+    repairTrx();
+    return { repairedTracks, repairedGarmin };
+  });
 }
 
 export function normalizeUserId(userId?: string): string {
@@ -839,7 +1005,19 @@ export function saveTrack(track: {
     `);
 
     const tagsStr = track.tags || '';
-    const dateStr = track.dateCreated || new Date().toISOString().split('T')[0];
+    const isVirtualHint =
+      tagsStr.toLowerCase().includes('indoor/virtuell') ||
+      track.rawFileDetails?.metadata?.isVirtual === true;
+    const explicitDate =
+      typeof track.dateCreated === 'string' && track.dateCreated.trim().length >= 8
+        ? track.dateCreated.trim()
+        : undefined;
+    const inferredDate = extractAuthenticTimestampFromTrackData(
+      track.points,
+      track.rawFileDetails,
+      isVirtualHint
+    );
+    const dateStr = explicitDate || inferredDate || new Date().toISOString().split('T')[0];
 
     statement.run(
       scopedId,
@@ -1589,7 +1767,15 @@ const CATALOG_UNIFIED_CTE = `
       COALESCE(tags, '') AS tags,
       COALESCE(original_filename, '') AS original_filename,
       COALESCE(color, '#3b82f6') AS color,
-      CASE WHEN points_json IS NOT NULL AND length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps
+      CASE
+        WHEN points_json IS NOT NULL
+          AND length(points_json) > 20
+          AND LOWER(COALESCE(tags, '')) NOT LIKE '%indoor/virtuell%'
+          AND LOWER(COALESCE(raw_file_json, '')) NOT LIKE '%"isvirtual":true%'
+          AND (NOT json_valid(points_json) OR json_array_length(points_json) >= 2)
+        THEN 1
+        ELSE 0
+      END AS has_gps
     FROM tracks
     WHERE user_id = ?
 
@@ -1632,7 +1818,13 @@ const CATALOG_UNIFIED_CTE = `
       '' AS tags,
       '' AS original_filename,
       '#f97316' AS color,
-      CASE WHEN points_json IS NOT NULL AND length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps
+      CASE
+        WHEN points_json IS NOT NULL
+          AND length(points_json) > 20
+          AND (NOT json_valid(points_json) OR json_array_length(points_json) >= 2)
+        THEN 1
+        ELSE 0
+      END AS has_gps
     FROM garmin_activities
     WHERE user_id = ?
   )

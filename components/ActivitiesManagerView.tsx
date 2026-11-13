@@ -19,7 +19,8 @@ import {
   Square,
   MinusSquare,
   Calendar,
-  Compass
+  Compass,
+  BarChart3
 } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
@@ -1491,12 +1492,12 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                       </span>
                       {isOnMap && (
                         <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap shrink-0">
-                          · Auf Karte
+                          {item.hasGps ? '· Auf Karte' : '· Geladen'}
                         </span>
                       )}
                       {!item.hasGps && (
                         <span className="text-[11px] text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">
-                          · Virtuell
+                          · Ohne GPS
                         </span>
                       )}
                     </div>
@@ -1582,15 +1583,25 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                               rowKey: item.key
                             })
                           }
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 md:py-1 text-xs font-semibold rounded-md bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-500 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[36px] md:min-h-0"
-                          title="Aktivität auf Karte laden und direkt zur Karte wechseln"
+                          className={
+                            item.hasGps
+                              ? 'inline-flex items-center gap-1 px-2.5 py-1.5 md:py-1 text-xs font-semibold rounded-md bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-500 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[36px] md:min-h-0'
+                              : 'inline-flex items-center gap-1 px-2.5 py-1.5 md:py-1 text-xs font-semibold rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-slate-700 hover:text-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[36px] md:min-h-0'
+                          }
+                          title={
+                            item.hasGps
+                              ? 'Aktivität auf Karte laden und direkt zur Karte wechseln'
+                              : 'Ohne GPS-Spur: Aktivitätsdaten & Statistik im Workspace öffnen'
+                          }
                         >
                           {loadingRowKey === item.key ? (
                             <Loader2 size={12} className="animate-spin" />
-                          ) : (
+                          ) : item.hasGps ? (
                             <ArrowUpRight size={13} />
+                          ) : (
+                            <BarChart3 size={13} />
                           )}
-                          <span>Karte</span>
+                          <span>{item.hasGps ? 'Karte' : 'Statistik'}</span>
                         </button>
                         <button
                           type="button"

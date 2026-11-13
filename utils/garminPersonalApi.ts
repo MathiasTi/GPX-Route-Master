@@ -768,23 +768,33 @@ export async function downloadAndParseGarminActivityFit(
     parsedTrack.name = existingRecord.name;
   }
 
-  // Persist points_json back to garmin_activities
-  const compactPoints = parsedTrack.points.map(p => ({
-    lat: Number(p.lat.toFixed(6)),
-    lng: Number(p.lng.toFixed(6)),
-    ele: Number((p.ele ?? 0).toFixed(1)),
-    time: p.time instanceof Date ? p.time.toISOString() : p.time,
-    hr: p.hr,
-    cadence: p.cadence,
-    power: p.power,
-    slope: p.slope !== undefined ? Number(p.slope.toFixed(1)) : undefined
-  }));
+  // Persist points_json back to garmin_activities ONLY when genuine GPS points exist.
+  // Virtual/indoor activities stay without fake coordinates in SQLite so maps remain clean.
+  const compactPoints = !parsedTrack.isVirtual
+    ? parsedTrack.points.map(p => ({
+        lat: Number(p.lat.toFixed(6)),
+        lng: Number(p.lng.toFixed(6)),
+        ele: Number((p.ele ?? 0).toFixed(1)),
+        time: p.time instanceof Date ? p.time.toISOString() : p.time,
+        hr: p.hr,
+        cadence: p.cadence,
+        power: p.power,
+        slope: p.slope !== undefined ? Number(p.slope.toFixed(1)) : undefined
+      }))
+    : null;
+
+  const authenticGarminDate =
+    existingRecord?.date ||
+    parsedTrack.dateCreated ||
+    (parsedTrack.points[0]?.time instanceof Date
+      ? parsedTrack.points[0].time.toISOString()
+      : new Date().toISOString());
 
   saveGarminActivity(
     cleanId,
     parsedTrack.name,
     existingRecord?.type || parsedTrack.activityType || 'cycling',
-    existingRecord?.date || (parsedTrack.points[0]?.time instanceof Date ? parsedTrack.points[0].time.toISOString() : new Date().toISOString()),
+    authenticGarminDate,
     parsedTrack.distance || existingRecord?.distance || 0,
     parsedTrack.duration || existingRecord?.duration || 0,
     parsedTrack.ascent ?? existingRecord?.ascent,
@@ -793,13 +803,14 @@ export async function downloadAndParseGarminActivityFit(
     existingRecord?.avg_hr,
     existingRecord?.description || parsedTrack.description,
     existingRecord?.location,
-    JSON.stringify(compactPoints)
+    compactPoints ? JSON.stringify(compactPoints) : existingRecord?.points_json || undefined
   );
 
   if (options?.saveToWorkspaceTracks !== false) {
     try {
       saveTrack({
         ...parsedTrack,
+        dateCreated: parsedTrack.dateCreated || existingRecord?.date,
         originalFilename: `garmin_${cleanId}.fit`,
         tags: Array.isArray(parsedTrack.tags) ? parsedTrack.tags.join(',') : parsedTrack.tags
       });
@@ -810,7 +821,7 @@ export async function downloadAndParseGarminActivityFit(
 
   return {
     track: parsedTrack,
-    pointsCount: parsedTrack.points.length,
+    pointsCount: parsedTrack.isVirtual ? 0 : parsedTrack.points.length,
     sourceFormat
   };
 }

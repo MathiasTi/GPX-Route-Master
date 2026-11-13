@@ -46,7 +46,7 @@ async function main() {
     const mobilePillSuccess = runMobileTelemetryPillTests();
     const powerZonesSuccess = runPowerZonesTests();
     const garminSessionKeySuccess = await runGarminSessionKeyTests();
-    const activitiesCatalogSuccess = runActivitiesCatalogTests();
+    const activitiesCatalogSuccess = await runActivitiesCatalogTests();
 
     if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess) {
       console.error('❌ One or more test suites failed.');

@@ -3,7 +3,7 @@ import Map, { Source, Layer, MapRef, NavigationControl, Marker, Popup } from 're
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint } from '../types';
-import { calculateBearing } from '../utils/gpxUtils';
+import { calculateBearing, hasRealGpsData } from '../utils/gpxUtils';
 import { Maximize2 } from 'lucide-react';
 
 interface Map3DProps {
@@ -99,8 +99,14 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   }, []);
 
   const visibleTracks = useMemo(() => {
-    return tracks.filter(t => t.visible && t.points.length >= 2);
+    return tracks.filter(t => t.visible && hasRealGpsData(t));
   }, [tracks]);
+
+  const markedTrack = useMemo(
+    () => (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks[0]) || null,
+    [tracks, markedTrackId]
+  );
+  const markedTrackHasGps = markedTrack ? hasRealGpsData(markedTrack) : true;
 
   const fitToTracks = () => {
     if (visibleTracks.length > 0 && mapRef.current) {
@@ -147,7 +153,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   useEffect(() => {
     if (markedTrackId && markedTrackId !== prevMarkedId.current && mapRef.current) {
       const track = tracks.find(t => t.id === markedTrackId);
-      if (track && track.points && track.points.length > 0) {
+      if (track && hasRealGpsData(track)) {
         let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
         track.points.forEach(p => {
           if (p && p.lng !== undefined && p.lat !== undefined) {
@@ -507,7 +513,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           );
         })}
 
-        {hoveredPoint && (
+        {hoveredPoint && markedTrackHasGps && (
           <Source id="hovered-point" type="geojson" data={{
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [hoveredPoint.lng, hoveredPoint.lat] },
@@ -530,11 +536,18 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
       </Map>
 
       <div className="absolute bottom-6 left-6 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-4 rounded-xl shadow-lg z-10 w-64 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100">
+        {markedTrack && !markedTrackHasGps && (
+          <div className="mb-3 p-2.5 rounded-lg bg-orange-50 dark:bg-orange-950/40 border border-orange-200/70 dark:border-orange-900/60 text-[11px] leading-snug text-orange-800 dark:text-orange-300">
+            <div className="font-semibold mb-0.5">Keine GPS-Spur</div>
+            Aktive Aktivität hat keine GPX-Koordinaten und wird auf der 3D-Karte ausgeblendet.
+          </div>
+        )}
         <div className="mb-3 pb-3 border-b border-slate-200 dark:border-slate-800">
           <button
             type="button"
+            disabled={visibleTracks.length === 0}
             onClick={fitToTracks}
-            className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 shadow cursor-pointer active:scale-95"
+            className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed active:bg-indigo-800 text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 shadow cursor-pointer active:scale-95"
             title="Zoom & Zentrieren auf ausgewählte & sichtbare Strecken"
             aria-label="Auf ausgewählte und sichtbare Strecken zoomen"
             id="btn-fit-tracks-3d"

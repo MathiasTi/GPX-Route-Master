@@ -1496,6 +1496,47 @@ export const detectActivityType = (points: GPXPoint[], name: string, fileName: s
   return 'cycling';
 };
 
+export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boolean => {
+  if (!track) return false;
+  if (track.isVirtual === true) return false;
+  if (Array.isArray(track.tags) && track.tags.some((t) => String(t).trim().toLowerCase() === 'indoor/virtuell')) {
+    return false;
+  }
+  if ((track as any).rawFileDetails?.metadata?.isVirtual === true) {
+    return false;
+  }
+  const pts = track.points;
+  if (!Array.isArray(pts) || pts.length < 2) return false;
+
+  let validCount = 0;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (!p) continue;
+    const lat = typeof p.lat === 'number' ? p.lat : parseFloat(String(p.lat));
+    const lng = typeof p.lng === 'number' ? p.lng : parseFloat(String(p.lng));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+    if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) continue;
+
+    validCount++;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+  }
+
+  if (validCount < 2) return false;
+  if (Math.abs(maxLat - minLat) < 1e-6 && Math.abs(maxLng - minLng) < 1e-6) {
+    return false;
+  }
+  return true;
+};
+
 export const parseGPX = async (xmlString: string, fileName: string): Promise<GPXTrack | null> => {
   const validation = validateGPX(xmlString);
   if (!validation.isValid) {
@@ -1508,12 +1549,19 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const xml = parser.parseFromString(xmlString, "text/xml");
     const trkpts = getGPXPoints(xml);
     
-    // Try to extract name and description from GPX XML
+    // Try to extract name, description, and metadata timestamp from GPX XML
     const gpxNameNode = xml.querySelector("gpx > metadata > name") || xml.querySelector("gpx > name") || xml.querySelector("trk > name") || xml.querySelector("rte > name");
     const parsedGpxName = gpxNameNode?.textContent?.trim() || "";
 
     const gpxDescNode = xml.querySelector("gpx > metadata > desc") || xml.querySelector("gpx > desc") || xml.querySelector("trk > desc") || xml.querySelector("rte > desc") || xml.querySelector("gpx > metadata > comment") || xml.querySelector("gpx > comment");
     const parsedGpxDesc = gpxDescNode?.textContent?.trim() || "";
+
+    const metadataTimeRaw =
+      xml.querySelector("gpx > metadata > time")?.textContent?.trim() ||
+      xml.querySelector("trk > time")?.textContent?.trim() ||
+      xml.querySelector("rte > time")?.textContent?.trim() ||
+      undefined;
+    const metadataDate = metadataTimeRaw ? toDate(metadataTimeRaw) : undefined;
 
     const rawPoints: GPXPoint[] = Array.from(trkpts).map((pt) => {
       const latAttr = pt.getAttribute("lat") || pt.getAttribute("latitude") || "0";
@@ -1572,25 +1620,14 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     // Validate elevation data existence and provide a meaningful default if missing
     interpolateMissingElevations(points);
 
-    const hasTimestamps = points.some(p => p.time !== undefined);
-    if (hasTimestamps && points.length > 0) {
-      // Shift timestamps to start at current date/time for GPX tracks
-      const now = new Date();
-      const firstTimePt = points.find(p => p.time !== undefined);
-      if (firstTimePt && firstTimePt.time) {
-        const firstDate = toDate(firstTimePt.time);
-        if (firstDate) {
-          const offsetMs = now.getTime() - firstDate.getTime();
-          points.forEach(p => {
-            const pDate = toDate(p.time);
-            if (pDate) {
-              p.time = new Date(pDate.getTime() + offsetMs);
-            }
-          });
-        }
-      }
-    } else if (points.length > 0) {
-      let currentTimeMs = Date.now() - 3600 * 2000; // Start 2 hours ago
+    const hasTimestamps = points.some(p => toDate(p.time) !== undefined);
+    const firstAuthenticPointDate = points.map(p => toDate(p.time)).find((d): d is Date => d !== undefined);
+    const authenticDateCreated = (firstAuthenticPointDate || metadataDate)?.toISOString();
+
+    if (!hasTimestamps && points.length > 0) {
+      // Only fill relative pacing timestamps when the GPX lacks per-point <time> tags;
+      // anchor to GPX metadata <time> when present instead of overwriting with today's clock.
+      let currentTimeMs = metadataDate ? metadataDate.getTime() : Date.now() - 3600 * 2000;
       points[0].time = new Date(currentTimeMs);
       for (let i = 1; i < points.length; i++) {
         const distKm = calculateDistance(points[i - 1], points[i]);
@@ -1734,6 +1771,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       climbs,
       duration,
       hasTimestamps,
+      dateCreated: authenticDateCreated,
       description: parsedGpxDesc,
       rawFileDetails: {
         fileType: 'gpx',
@@ -2108,6 +2146,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     let version: string | undefined;
     let gpxName: string | undefined;
     let gpxDesc: string | undefined;
+    let metadataTime: string | undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -2127,6 +2166,19 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
 
         const descMatch = buffer.match(/<(?:metadata|trk|rte)>(?:[\s\S]*?)<desc>([\s\S]*?)<\/desc>/i);
         if (descMatch) gpxDesc = descMatch[1].trim();
+
+        const metaBlockMatch = buffer.match(/<metadata(?:\s[^>]*)?>([\s\S]*?)<\/metadata>/i);
+        if (metaBlockMatch) {
+          const metaTimeMatch = metaBlockMatch[1].match(/<time(?:\s[^>]*)?>([^<]+)<\/time>/i);
+          if (metaTimeMatch) metadataTime = metaTimeMatch[1].trim();
+        }
+        if (!metadataTime) {
+          const trkPreMatch = buffer.match(/<trk(?:\s[^>]*)?>([\s\S]*?)<(?:trkseg|trkpt)/i);
+          if (trkPreMatch) {
+            const trkTimeMatch = trkPreMatch[1].match(/<time(?:\s[^>]*)?>([^<]+)<\/time>/i);
+            if (trkTimeMatch) metadataTime = trkTimeMatch[1].trim();
+          }
+        }
 
         if (buffer.includes('<trkseg>') || buffer.includes('<trkpt') || buffer.includes('<rtept') || buffer.includes('<wpt') || buffer.length > 100000) {
           foundMeta = true;
@@ -2215,24 +2267,13 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
     // Validate elevation data existence and provide a meaningful default if missing
     interpolateMissingElevations(sanitizedPoints);
 
-    const hasTimestamps = sanitizedPoints.some(p => p.time !== undefined);
-    if (hasTimestamps && sanitizedPoints.length > 0) {
-      const now = new Date();
-      const firstTimePt = sanitizedPoints.find(p => p.time !== undefined);
-      if (firstTimePt && firstTimePt.time) {
-        const firstDate = toDate(firstTimePt.time);
-        if (firstDate) {
-          const offsetMs = now.getTime() - firstDate.getTime();
-          sanitizedPoints.forEach(p => {
-            const pDate = toDate(p.time);
-            if (pDate) {
-              p.time = new Date(pDate.getTime() + offsetMs);
-            }
-          });
-        }
-      }
-    } else if (sanitizedPoints.length > 0) {
-      let currentTimeMs = Date.now() - 3600 * 2000;
+    const metadataDate = metadataTime ? toDate(metadataTime) : undefined;
+    const hasTimestamps = sanitizedPoints.some(p => toDate(p.time) !== undefined);
+    const firstAuthenticPointDate = sanitizedPoints.map(p => toDate(p.time)).find((d): d is Date => d !== undefined);
+    const authenticDateCreated = (firstAuthenticPointDate || metadataDate)?.toISOString();
+
+    if (!hasTimestamps && sanitizedPoints.length > 0) {
+      let currentTimeMs = metadataDate ? metadataDate.getTime() : Date.now() - 3600 * 2000;
       sanitizedPoints[0].time = new Date(currentTimeMs);
       for (let i = 1; i < sanitizedPoints.length; i++) {
         const distKm = calculateDistance(sanitizedPoints[i - 1], sanitizedPoints[i]);
@@ -2302,6 +2343,13 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
       });
     }
 
+    if (metadataTime) {
+      rawRecords.push({
+        type: 'metadata_time',
+        data: { timestamp: metadataTime }
+      });
+    }
+
     // Add waypoints to rawRecords for completeness
     wpts.forEach((wpt, i) => {
       if (i < 100) {
@@ -2333,6 +2381,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
       climbs,
       duration,
       hasTimestamps,
+      dateCreated: authenticDateCreated,
       description: gpxDesc || '',
       rawFileDetails: {
         fileType: 'gpx',

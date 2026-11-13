@@ -1989,6 +1989,9 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     let sportName: string | undefined = undefined;
     let sessionDuration: number | undefined = undefined;
     let sessionDistance: number | undefined = undefined;
+    let sessionStartTime: Date | undefined = undefined;
+    let fileCreatedTime: Date | undefined = undefined;
+    let activityTimestamp: Date | undefined = undefined;
     let lapCount = 0;
     const rawRecordsForMeta: { type: string; data: Record<string, any> }[] = [];
 
@@ -2215,8 +2218,15 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             } else if (globalMsgNum === 0) {
               // file_id
               if (field.recordNumber === 3) metaManufacturer = String(val);
-              else if (field.recordNumber === 4) metaProduct = String(val);
-              else if (field.recordNumber === 1) metaSerial = String(val);
+              else if (field.recordNumber === 4) {
+                metaProduct = String(val);
+                if (typeof val === 'number' && val > 0 && val !== 0xFFFFFFFF && !fileCreatedTime) {
+                  const candidate = new Date((val + 631065600) * 1000);
+                  if (!isNaN(candidate.getTime()) && candidate.getUTCFullYear() >= 1995) {
+                    fileCreatedTime = candidate;
+                  }
+                }
+              } else if (field.recordNumber === 1) metaSerial = String(val);
             } else if (globalMsgNum === 23) {
               // device_info
               if (field.recordNumber === 2) metaManufacturer = String(val);
@@ -2234,7 +2244,17 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               if (field.recordNumber === 6 || field.recordNumber === 8) fitName = String(val).trim();
             } else if (globalMsgNum === 18) {
               // session
-              if (field.recordNumber === 8) metaTotalTime = parseFloat(val);
+              if (field.recordNumber === 2 && typeof val === 'number' && val > 0 && val !== 0xFFFFFFFF && !sessionStartTime) {
+                const candidate = new Date((val + 631065600) * 1000);
+                if (!isNaN(candidate.getTime()) && candidate.getUTCFullYear() >= 1995) {
+                  sessionStartTime = candidate;
+                }
+              } else if (field.recordNumber === 253 && typeof val === 'number' && val > 0 && val !== 0xFFFFFFFF && !sessionStartTime) {
+                const candidate = new Date((val + 631065600) * 1000);
+                if (!isNaN(candidate.getTime()) && candidate.getUTCFullYear() >= 1995) {
+                  sessionStartTime = candidate;
+                }
+              } else if (field.recordNumber === 8) metaTotalTime = parseFloat(val);
               else if (field.recordNumber === 9) metaTotalDist = parseFloat(val);
               else if (field.recordNumber === 28) {
                 const sName = String(val).trim();
@@ -2247,7 +2267,12 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
               }
             } else if (globalMsgNum === 34) {
               // activity
-              if (field.recordNumber === 1 || field.recordNumber === 2) {
+              if (field.recordNumber === 253 && typeof val === 'number' && val > 0 && val !== 0xFFFFFFFF && !activityTimestamp) {
+                const candidate = new Date((val + 631065600) * 1000);
+                if (!isNaN(candidate.getTime()) && candidate.getUTCFullYear() >= 1995) {
+                  activityTimestamp = candidate;
+                }
+              } else if (field.recordNumber === 1 || field.recordNumber === 2) {
                 const aName = String(val).trim();
                 if (aName && !/activity/i.test(aName)) fitName = aName;
               } else if (field.recordNumber === 11) {
@@ -2481,6 +2506,10 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     const color = HIGH_CONTRAST_COLORS[colorIndex % HIGH_CONTRAST_COLORS.length];
     colorIndex++;
 
+    const firstValidPointTime = sanitizedPoints.find(p => p.time instanceof Date && !isNaN(p.time.getTime()))?.time;
+    const authenticFitDate = firstValidPointTime || sessionStartTime || activityTimestamp || fileCreatedTime;
+    const authenticDateCreated = authenticFitDate ? authenticFitDate.toISOString() : undefined;
+
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : `fit-${Date.now()}-${Math.random()}`,
       name,
@@ -2496,6 +2525,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       surfaceStats,
       duration,
       hasTimestamps,
+      dateCreated: authenticDateCreated,
       climbs,
       isVirtual,
       tags: isVirtual ? ['Indoor/Virtuell'] : undefined,
@@ -2512,6 +2542,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
           sessionDuration,
           sessionDistance,
           lapCount,
+          isVirtual,
           rawRecords: rawRecordsForMeta
         }
       }

@@ -7,7 +7,7 @@ import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
 import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock } from 'lucide-react';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -1057,6 +1057,14 @@ const App: React.FC = () => {
     if (fitMeta && fitMeta.fitDate && fitMeta.fitTime) {
       setSelectedDate(fitMeta.fitDate);
       setSelectedTime(fitMeta.fitTime);
+    } else if (approvedTracks[0]?.dateCreated) {
+      const dt = new Date(approvedTracks[0].dateCreated);
+      if (!isNaN(dt.getTime())) {
+        setSelectedDate(dt.toISOString().split('T')[0]);
+        const hours = String(dt.getHours()).padStart(2, '0');
+        const minutes = String(dt.getMinutes()).padStart(2, '0');
+        setSelectedTime(`${hours}:${minutes}`);
+      }
     } else {
       const today = new Date();
       const formattedDate = today.toISOString().split('T')[0];
@@ -1247,12 +1255,14 @@ const App: React.FC = () => {
       setIsMobileMenuOpen(false);
     }
 
-    if (options?.fitToTracks !== false) {
+    const gpsTracks = hydratedPrepared.filter((tr) => hasRealGpsData(tr));
+
+    if (options?.fitToTracks !== false && gpsTracks.length > 0) {
       let minLat = Infinity;
       let maxLat = -Infinity;
       let minLng = Infinity;
       let maxLng = -Infinity;
-      for (const tr of hydratedPrepared) {
+      for (const tr of gpsTracks) {
         for (const pt of tr.points || []) {
           if (typeof pt.lat === 'number' && typeof pt.lng === 'number' && !isNaN(pt.lat) && !isNaN(pt.lng)) {
             if (pt.lat < minLat) minLat = pt.lat;
@@ -1273,7 +1283,13 @@ const App: React.FC = () => {
     }
 
     if (hydratedPrepared.length === 1) {
-      setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" auf die Karte geladen.`);
+      if (gpsTracks.length === 0) {
+        setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" geladen (ohne GPS-Spur – Statistik & Analyse aktiv).`);
+      } else {
+        setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" auf die Karte geladen.`);
+      }
+    } else if (gpsTracks.length === 0) {
+      setSuccessMessage(`${hydratedPrepared.length} Aktivitäten ohne GPS-Spur für Statistik & Analyse geladen.`);
     } else {
       setSuccessMessage(`${hydratedPrepared.length} Aktivitäten auf die Karte geladen (${addedCount} neu).`);
     }

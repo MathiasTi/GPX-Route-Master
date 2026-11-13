@@ -298,6 +298,16 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     return new Set(workspaceTracks.map((t) => t.id));
   }, [workspaceTracks]);
 
+  const { maxDistanceInCatalog, maxAscentInCatalog } = useMemo(() => {
+    let maxDist = 10;
+    let maxAsc = 100;
+    for (const it of items) {
+      if (it.distanceKm > maxDist) maxDist = it.distanceKm;
+      if (it.ascentM > maxAsc) maxAsc = it.ascentM;
+    }
+    return { maxDistanceInCatalog: maxDist, maxAscentInCatalog: maxAsc };
+  }, [items]);
+
   // Debounce text search (150ms)
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1715,13 +1725,25 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                   </div>
 
                   {/* Distance */}
-                  <div className="hidden md:block text-right font-mono tabular-nums text-xs font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                    {item.distanceKm.toFixed(1)} km
+                  <div className="hidden md:flex flex-col items-end justify-center font-mono tabular-nums text-xs font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                    <span>{item.distanceKm.toFixed(1)} km</span>
+                    <div className="w-16 h-1 bg-slate-200/70 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
+                      <div
+                        className="h-full bg-indigo-500/80 rounded-full"
+                        style={{ width: `${Math.min(100, Math.max(4, Math.round((item.distanceKm / maxDistanceInCatalog) * 100)))}%` }}
+                      />
+                    </div>
                   </div>
 
                   {/* Ascent */}
-                  <div className="hidden md:block text-right font-mono tabular-nums text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                    +{item.ascentM.toLocaleString('de-DE')} m
+                  <div className="hidden md:flex flex-col items-end justify-center font-mono tabular-nums text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                    <span>+{item.ascentM.toLocaleString('de-DE')} m</span>
+                    <div className="w-16 h-1 bg-slate-200/70 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
+                      <div
+                        className="h-full bg-emerald-500/80 rounded-full"
+                        style={{ width: `${item.ascentM > 0 ? Math.min(100, Math.max(4, Math.round((item.ascentM / maxAscentInCatalog) * 100))) : 0}%` }}
+                      />
+                    </div>
                   </div>
 
                   {/* Duration */}

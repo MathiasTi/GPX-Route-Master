@@ -33,6 +33,7 @@ const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'overview',
   'personal-api',
   'performance',
+  'records',
   'calendar',
   'compare',
   'activities',

@@ -19,7 +19,7 @@ import {
   IntensiveClimb,
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ComposedChart, Bar, Line, Legend } from 'recharts';
 import { calculateDistance, detectActivityType, detectTrackPauses, formatPace, getPaceString } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
@@ -438,6 +438,87 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       analysis.estimatedAverageSpeedKmh || estimatedSpeed
     );
   }, [track, activityType, splitIntervalKm, analysis.estimatedAverageSpeedKmh, estimatedSpeed]);
+
+  // Diagram 6: Speed / Pace & Heart Rate by Gradient Buckets
+  const gradientBuckets = useMemo(() => {
+    const pts = track.points || [];
+    if (pts.length < 2) return [];
+
+    const defs = [
+      { id: 'steep_down', label: '<-6%', min: -Infinity, max: -6 },
+      { id: 'mod_down', label: '-6..-2%', min: -6, max: -2 },
+      { id: 'flat', label: '-2..+2%', min: -2, max: 2 },
+      { id: 'easy_up', label: '+2..+5%', min: 2, max: 5 },
+      { id: 'steep_up', label: '+5..+9%', min: 5, max: 9 },
+      { id: 'ramp', label: '>+9%', min: 9, max: Infinity }
+    ];
+    const buckets = defs.map((d) => ({
+      ...d,
+      distanceKm: 0,
+      durationSec: 0,
+      hrWeightedSum: 0,
+      hrWeight: 0
+    }));
+
+    let totalDuration = 0;
+    let totalDistance = 0;
+    const baseSpeedKmh = Math.max(4, analysis.estimatedAverageSpeedKmh || estimatedSpeed || 20);
+
+    for (let i = 1; i < pts.length; i++) {
+      const p0 = pts[i - 1];
+      const p1 = pts[i];
+      const dKm = calculateDistance(p0, p1);
+      if (!Number.isFinite(dKm) || dKm <= 0.0005 || dKm > 2) continue;
+
+      const dEle = (p1.ele ?? 0) - (p0.ele ?? 0);
+      const rawGradePct = p0.ele !== undefined && p1.ele !== undefined
+        ? (dEle / (dKm * 1000)) * 100
+        : 0;
+      const gradePct = Math.max(-35, Math.min(35, rawGradePct));
+
+      let dtSec = 0;
+      if (p0.time && p1.time) {
+        const t0 = new Date(p0.time as any).getTime();
+        const t1 = new Date(p1.time as any).getTime();
+        if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0 && t1 - t0 < 600000) {
+          dtSec = (t1 - t0) / 1000;
+        }
+      }
+      if (dtSec <= 0) {
+        const gradeFactor = gradePct > 0
+          ? 1 / (1 + gradePct * (activityType === 'running' ? 0.08 : 0.14))
+          : 1 + Math.min(0.45, Math.abs(gradePct) * 0.03);
+        const estSpeed = Math.max(3, baseSpeedKmh * gradeFactor);
+        dtSec = (dKm / estSpeed) * 3600;
+      }
+
+      const b = buckets.find((x) => gradePct >= x.min && gradePct < x.max) || buckets[buckets.length - 1];
+      b.distanceKm += dKm;
+      b.durationSec += dtSec;
+      totalDistance += dKm;
+      totalDuration += dtSec;
+
+      const hr = Number(p1.hr ?? p0.hr);
+      if (Number.isFinite(hr) && hr > 35 && hr < 230) {
+        b.hrWeightedSum += hr * dtSec;
+        b.hrWeight += dtSec;
+      }
+    }
+
+    if (totalDistance <= 0) return [];
+    return buckets.map((b) => {
+      const avgSpeedKmh = b.durationSec > 0 ? Number((b.distanceKm / (b.durationSec / 3600)).toFixed(1)) : 0;
+      const avgHr = b.hrWeight > 0 ? Math.round(b.hrWeightedSum / b.hrWeight) : null;
+      const timeSharePct = totalDuration > 0 ? Number(((b.durationSec / totalDuration) * 100).toFixed(1)) : 0;
+      return {
+        label: b.label,
+        distanceKm: Number(b.distanceKm.toFixed(2)),
+        timeSharePct,
+        avgSpeedKmh,
+        avgHr
+      };
+    });
+  }, [track.points, activityType, analysis.estimatedAverageSpeedKmh, estimatedSpeed]);
 
   // Downsample profile data for elevation & grade chart with climb mapping
   const elevationData = useMemo(() => {
@@ -1698,6 +1779,68 @@ GPX Route Master Pro`;
                       <span className="text-[10px] font-sans text-slate-500">
                         Gesamtzeit {formatSecondsToTime(realSplits[realSplits.length - 1]?.cumulativeSeconds || 0)}
                       </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Diagram 6: Speed / Pace & Heart Rate by Gradient Buckets */}
+                {gradientBuckets.length > 0 && (
+                  <div className="bg-white dark:bg-slate-900/60 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
+                          Tempo &amp; Herzfrequenz nach Steigungs-Klassen (Gradient-Profil)
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Zeigt Ø Geschwindigkeit (km/h), Zeitanteil (%) und Ø Puls nach Steigungsklassen der Strecke.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-[10px] font-mono">
+                        {(() => {
+                          const flat = gradientBuckets.find((b) => b.label === '-2..+2%');
+                          const steep = gradientBuckets.find((b) => b.label === '+5..+9%');
+                          return (
+                            <>
+                              {flat && flat.avgSpeedKmh > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold">
+                                  Flach: {flat.avgSpeedKmh} km/h
+                                </span>
+                              )}
+                              {steep && steep.avgSpeedKmh > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-bold">
+                                  Berg (+5..9%): {steep.avgSpeedKmh} km/h
+                                </span>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    <div className="h-52 w-full min-w-0">
+                      <ResponsiveContainer width="100%" height={208} minWidth={0}>
+                        <ComposedChart data={gradientBuckets} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
+                          <XAxis dataKey="label" stroke="#94a3b8" fontSize={10} />
+                          <YAxis yAxisId="left" stroke="#6366f1" fontSize={9} unit=" km/h" />
+                          <YAxis yAxisId="right" orientation="right" stroke="#f43f5e" fontSize={9} domain={['auto', 'auto']} />
+                          <Tooltip
+                            contentStyle={{ borderRadius: '12px', fontSize: '11px' }}
+                            formatter={(val: any, name: any) => {
+                              if (name === 'Ø Tempo') return [`${val} km/h`, name];
+                              if (name === 'Zeitanteil') return [`${val}%`, name];
+                              if (name === 'Ø Puls') return [`${val} bpm`, name];
+                              return [val, name];
+                            }}
+                          />
+                          <Legend wrapperStyle={{ fontSize: '10px' }} />
+                          <Bar yAxisId="left" dataKey="avgSpeedKmh" name="Ø Tempo" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                          <Bar yAxisId="right" dataKey="timeSharePct" name="Zeitanteil" fill="#10b981" fillOpacity={0.55} radius={[4, 4, 0, 0]} />
+                          {gradientBuckets.some((b) => b.avgHr !== null) && (
+                            <Line yAxisId="right" type="monotone" dataKey="avgHr" name="Ø Puls" stroke="#f43f5e" strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+                          )}
+                        </ComposedChart>
+                      </ResponsiveContainer>
                     </div>
                   </div>
                 )}

@@ -968,9 +968,29 @@ export async function downloadAndParseGarminActivityFit(
   };
 }
 
+function extractActivityArrayFromPayload(rawPayload: any): any[] {
+  if (Array.isArray(rawPayload)) return rawPayload;
+  if (Array.isArray(rawPayload?.activities)) return rawPayload.activities;
+  if (Array.isArray(rawPayload?.activityList)) return rawPayload.activityList;
+  if (Array.isArray(rawPayload?.data)) return rawPayload.data;
+  return [];
+}
+
+function extractActivityDateStr(item: any): string {
+  const rawDate =
+    item.startTimeLocal ||
+    item.startTimeGMT ||
+    (item.startTimeInSeconds ? new Date(item.startTimeInSeconds * 1000).toISOString() : null) ||
+    item.date ||
+    new Date().toISOString();
+  return String(rawDate);
+}
+
 /**
  * Synchronizes activities from the Garmin Connect Personal API within a date range,
  * saving summaries into `garmin_activities` and optionally downloading .FIT GPS routes.
+ * Automatically paginates backwards through history and falls back to parameterless
+ * search endpoints if Garmin's date-filtered search returns HTTP 500.
  */
 export async function syncGarminPersonalActivities(options: {
   startDate?: string;
@@ -1003,34 +1023,79 @@ export async function syncGarminPersonalActivities(options: {
 
     const end = options.endDate || new Date().toISOString().slice(0, 10);
     const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
-    const limit = Math.min(200, Math.max(1, Number(options.limit || 50)));
+    // Internal page size: 50 is reliable on Garmin Connect; falls back to 20 if needed
+    const pageSize = options.limit ? Math.min(50, Math.max(10, Number(options.limit))) : 50;
+    const maxPages = 20;
 
     const startEpochSec = Math.floor(new Date(`${start}T00:00:00Z`).getTime() / 1000);
     const endEpochSec = Math.floor(new Date(`${end}T23:59:59Z`).getTime() / 1000);
 
-    const candidateUrls = [
-      `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${limit}`,
-      `${baseUrl}/activitylist-service/activities/search/activities?start=0&limit=${limit}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
-      `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
-    ];
+    const collectedItems: any[] = [];
+    const seenActivityIds = new Set<string>();
+    let offset = 0;
+    let lastUsedUrl = '';
 
-    updateSyncProgress({
-      phase: 'activities_list',
-      message: `Rufe Aktivitäten (${start} bis ${end}) ab...`,
-      percent: 25
-    });
+    for (let page = 0; page < maxPages; page++) {
+      const candidateUrls = [
+        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
+        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}`,
+        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=20`,
+        `${baseUrl}/activitylist-service/activities?start=${offset}&limit=20`,
+        ...(offset === 0
+          ? [
+              `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${pageSize}`,
+              `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
+            ]
+          : [])
+      ];
 
-    const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken);
+      updateSyncProgress({
+        phase: 'activities_list',
+        message: `Rufe Aktivitäten (${start} bis ${end}, Seite ${page + 1}) ab...`,
+        percent: Math.min(40, 15 + page * 3)
+      });
 
-    const rawList: any[] = Array.isArray(rawPayload)
-      ? rawPayload
-      : Array.isArray(rawPayload?.activities)
-      ? rawPayload.activities
-      : Array.isArray(rawPayload?.activityList)
-      ? rawPayload.activityList
-      : Array.isArray(rawPayload?.data)
-      ? rawPayload.data
-      : [];
+      const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken, {
+        allowNotFoundAsEmpty: page > 0
+      });
+      lastUsedUrl = usedUrl;
+
+      const pageItems = extractActivityArrayFromPayload(rawPayload);
+      if (pageItems.length === 0) {
+        break;
+      }
+
+      let reachedBeforeStart = false;
+      for (const item of pageItems) {
+        const id = String(item.activityId || item.id || item.summaryId || '');
+        const dateYmd = extractActivityDateStr(item).slice(0, 10);
+
+        if (dateYmd && dateYmd < start) {
+          reachedBeforeStart = true;
+          continue;
+        }
+        if (dateYmd && dateYmd > end) {
+          continue;
+        }
+        if (id && seenActivityIds.has(id)) {
+          continue;
+        }
+        if (id) seenActivityIds.add(id);
+        collectedItems.push(item);
+      }
+
+      offset += pageItems.length;
+
+      // Determine effective limit used by the winning URL to detect the final page
+      const limitMatch = usedUrl.match(/[?&]limit=(\d+)/);
+      const effectiveLimit = limitMatch ? Number(limitMatch[1]) : pageSize;
+      if (reachedBeforeStart || pageItems.length < effectiveLimit || usedUrl.includes('/wellness-api/')) {
+        break;
+      }
+    }
+
+    const rawList = collectedItems;
+    const usedUrl = lastUsedUrl;
 
     const normalizedActivities: any[] = [];
     let newActivities = 0;
@@ -1166,7 +1231,7 @@ export async function syncGarminPersonalActivities(options: {
     let fitFailedCount = 0;
 
     if (options.downloadFitRoutes && normalizedActivities.length > 0) {
-      const batch = normalizedActivities.filter((a) => !a.hasGps).slice(0, 10);
+      const batch = normalizedActivities.filter((a) => !a.hasGps);
       for (let i = 0; i < batch.length; i++) {
         const act = batch[i];
         const pct = 45 + Math.round(((i + 1) / Math.max(1, batch.length)) * 45);

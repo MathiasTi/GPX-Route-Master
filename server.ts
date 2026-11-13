@@ -2506,7 +2506,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       const result = await syncGarminPersonalActivities({
         startDate,
         endDate,
-        limit: limit ? Number(limit) : 50,
+        limit: limit ? Number(limit) : undefined,
         downloadFitRoutes: Boolean(downloadFitRoutes),
         overrideApiKey: headerKey
       });
@@ -2598,10 +2598,25 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
       const health = searchGarminHealthMetrics(startDate, endDate);
 
+      const hasActiveFilters = Boolean(
+        q || (activityType && activityType !== "all") || startDate || endDate ||
+        minDistance !== undefined || maxDistance !== undefined || minAscent !== undefined || hasGps
+      );
+      const allActivitiesForMeta = hasActiveFilters ? searchGarminActivities("", "all", {}) : activities;
+      let oldestActivityDate: string | null = null;
+      for (const act of allActivitiesForMeta) {
+        const ymd = typeof act.date === "string" ? act.date.slice(0, 10) : "";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(ymd) && (!oldestActivityDate || ymd < oldestActivityDate)) {
+          oldestActivityDate = ymd;
+        }
+      }
+
       res.json({
         success: true,
         activities,
-        health
+        health,
+        oldestActivityDate,
+        totalActivitiesCount: allActivitiesForMeta.length
       });
     } catch (err: any) {
       console.error("[Garmin Personal API] Search error:", err);

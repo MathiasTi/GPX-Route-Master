@@ -8,6 +8,7 @@ import {
   updateCatalogActivityMetadata,
   bulkDeleteCatalogActivities,
   repairStoredActivityDates,
+  repairGarminSeedPointStubs,
   db
 } from '../utils/db';
 import { hydrateGarminActivityPayload, hydrateLibraryTrackPayload } from '../utils/activityHydration';
@@ -392,6 +393,33 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     assert(
       switzerlandQuery.totalCount === 1 && switzerlandQuery.items[0].id === 'garmin-stelvio-italy',
       `Expected updated activity to appear under Schweiz query, got ${switzerlandQuery.totalCount}`
+    );
+
+    // 12. Test 2-point Garmin seed stub detection & cleanup (prevents straight-line map rendering)
+    const stubHydrated = hydrateGarminActivityPayload({
+      id: 'alpengravel-stub-5',
+      name: 'Alpengravel Transalp 5 Prad - St. Caterina',
+      type: 'cycling',
+      distance: 59.58,
+      duration: 14400,
+      ascent: 2414,
+      descent: 1546,
+      points_json: JSON.stringify([
+        { lat: 46.621227, lng: 10.589952, ele: 861.8 },
+        { lat: 46.411751, lng: 10.495158, ele: 2762.4 }
+      ])
+    });
+    assert(
+      stubHydrated.isVirtual === true && hasRealGpsData(stubHydrated) === false,
+      'Expected 2-point Garmin seed stub to be marked isVirtual and hidden from 2D/3D maps instead of drawing a straight line'
+    );
+
+    const clearedCount = repairGarminSeedPointStubs();
+    assert(clearedCount >= 1, `Expected repairGarminSeedPointStubs to clear garmin-stelvio-italy stub, got ${clearedCount}`);
+    const afterStubRepair = queryActivitiesCatalog({ q: 'Passo dello Stelvio' }, testUser);
+    assert(
+      afterStubRepair.items[0]?.hasGps === false,
+      'Expected cleared 2-point Garmin stub to have hasGps === false in catalog'
     );
 
     // Clean up extra test rows

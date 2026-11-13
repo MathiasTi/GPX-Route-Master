@@ -533,6 +533,16 @@ async function fetchGarminBinaryWithFallback(urls: string[], accessToken: string
   throw new Error(`Konnte Binär-/FIT-Datei für Aktivität nicht herunterladen (${errors.join(', ')})`);
 }
 
+function hasDetailedGpsPointsJson(rawJson?: string | null): boolean {
+  if (!rawJson || typeof rawJson !== 'string') return false;
+  try {
+    const parsed = JSON.parse(rawJson);
+    return Array.isArray(parsed) && parsed.length > 2;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeGarminSportType(rawType: any): string {
   if (!rawType) return 'cycling';
   const str = typeof rawType === 'string'
@@ -914,21 +924,15 @@ export async function syncGarminPersonalActivities(options: {
       const location = item.locationName || item.location || undefined;
       const description = item.description || undefined;
 
-      // Preserve existing points_json if already downloaded
+      // Preserve existing points_json only if it holds a real multi-point GPS track (never 2-point stubs)
       const existing = getGarminActivityById(id);
-      let pointsJson = existing?.points_json;
+      let pointsJson = hasDetailedGpsPointsJson(existing?.points_json) ? existing?.points_json : undefined;
 
       if (!pointsJson && Array.isArray(item.samples)) {
         const pts = extractPointsFromGarminDetailsJson(item);
-        if (pts.length > 1) {
+        if (pts.length > 2) {
           pointsJson = JSON.stringify(pts);
         }
-      } else if (!pointsJson && typeof item.startLatitude === 'number' && typeof item.startLongitude === 'number') {
-        const seedPoints = [{ lat: item.startLatitude, lng: item.startLongitude, ele: item.minElevation || 0 }];
-        if (typeof item.endLatitude === 'number' && typeof item.endLongitude === 'number') {
-          seedPoints.push({ lat: item.endLatitude, lng: item.endLongitude, ele: item.maxElevation || 0 });
-        }
-        pointsJson = JSON.stringify(seedPoints);
       }
 
       saveGarminActivity(
@@ -960,15 +964,15 @@ export async function syncGarminPersonalActivities(options: {
         avg_hr: avgHr,
         location,
         description,
-        hasGps: Boolean(pointsJson && pointsJson.length > 80)
+        hasGps: hasDetailedGpsPointsJson(pointsJson)
       });
     }
   });
 
   let fitDownloadedCount = 0;
   if (options.downloadFitRoutes && normalizedActivities.length > 0) {
-    // Download FIT files for top 10 most recent activities to avoid gateway timeouts
-    const batch = normalizedActivities.slice(0, 10);
+    // Download FIT files for top 10 most recent activities lacking detailed GPS to avoid gateway timeouts
+    const batch = normalizedActivities.filter((a) => !a.hasGps).slice(0, 10);
     for (const act of batch) {
       try {
         await downloadAndParseGarminActivityFit(act.id, {

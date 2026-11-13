@@ -200,6 +200,24 @@ export function hydrateLibraryTrackPayload(rawTrack: any): GPXTrack {
   };
 }
 
+export function isTwoPointSeedStub(points: any[], distanceKm: number): boolean {
+  return (
+    Array.isArray(points) &&
+    points.length > 0 &&
+    points.length <= 2 &&
+    distanceKm > 0.5 &&
+    !points.some(
+      (p) =>
+        p &&
+        (p.time !== undefined ||
+          p.hr !== undefined ||
+          p.power !== undefined ||
+          p.cadence !== undefined ||
+          p.speed !== undefined)
+    )
+  );
+}
+
 export function hydrateGarminActivityPayload(
   act: any,
   options?: { ftp?: number; userWeight?: number; estimatedSpeed?: number }
@@ -282,6 +300,11 @@ export function hydrateGarminActivityPayload(
     } catch (err) {
       console.error('Failed to parse Garmin points_json during hydration:', err);
     }
+  }
+
+  if (isTwoPointSeedStub(points, distanceKm)) {
+    startCoords = { lat: points[0].lat, lng: points[0].lng };
+    points = [];
   }
 
   let finalAscent = ascent;

@@ -608,6 +608,27 @@ function runInitDbStatements() {
     console.error('Error auto-seeding GPX folder tours:', e);
   }
 
+  // One-time backfill migration (2.9.2): Remove 2-point Garmin seed stubs so straight-line stubs are not treated as GPS tracks
+  try {
+    const checkMigration = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasV292 = (checkMigration.get('2.9.2') as { count: number }).count > 0;
+    if (!hasV292) {
+      const repairedStubs = repairGarminSeedPointStubs();
+      if (repairedStubs > 0) {
+        console.log(
+          `[DB Migration 2.9.2] Cleared ${repairedStubs} 2-point Garmin GPS seed stub(s) so full FIT routes can be synced cleanly.`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.2',
+        new Date().toISOString(),
+        'Cleared 2-point Garmin seed stubs from points_json so straight-line endpoint stubs are never rendered as GPS tracks.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.2 Garmin seed stub cleanup migration:', e);
+  }
+
   // One-time backfill migration (2.9.1): Repair stored import-date fallbacks (e.g. Pottrunde) from GPS/metadata timestamps
   try {
     const checkMigration = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
@@ -800,6 +821,47 @@ export function repairStoredActivityDates(): { repairedTracks: number; repairedG
       rebuildActivitiesCatalog();
     }
     return { repairedTracks, repairedGarmin };
+  });
+}
+
+export function repairGarminSeedPointStubs(): number {
+  return executeWithCorruptionRecovery(() => {
+    const rows = db
+      .prepare('SELECT id, distance, points_json FROM garmin_activities WHERE points_json IS NOT NULL AND length(points_json) < 400 AND distance > 0.5')
+      .all() as { id: string; distance: number; points_json: string }[];
+
+    const clearStmt = db.prepare('UPDATE garmin_activities SET points_json = NULL WHERE id = ?');
+    let cleared = 0;
+
+    for (const row of rows) {
+      try {
+        const pts = JSON.parse(row.points_json);
+        if (
+          Array.isArray(pts) &&
+          pts.length > 0 &&
+          pts.length <= 2 &&
+          !pts.some(
+            (p: any) =>
+              p &&
+              (p.time !== undefined ||
+                p.hr !== undefined ||
+                p.power !== undefined ||
+                p.cadence !== undefined ||
+                p.speed !== undefined)
+          )
+        ) {
+          clearStmt.run(row.id);
+          cleared++;
+        }
+      } catch {
+        // Ignore invalid JSON
+      }
+    }
+
+    if (cleared > 0) {
+      rebuildActivitiesCatalog();
+    }
+    return cleared;
   });
 }
 

@@ -13,13 +13,27 @@ import { getApiUrl, apiFetch } from '../utils/api';
 import { resolveGarminTrackForMap } from '../utils/garminClient';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
+import { GarminActivitiesAnalysis } from './GarminActivitiesAnalysis';
 
-export type GarminDashboardTab = 'overview' | 'performance' | 'activities' | 'analytics' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'personal-api';
+export type GarminDashboardTab =
+  | 'overview'
+  | 'performance'
+  | 'calendar'
+  | 'compare'
+  | 'activities'
+  | 'analytics'
+  | 'sleep'
+  | 'weight'
+  | 'rhr'
+  | 'steps'
+  | 'stress'
+  | 'personal-api';
 
 interface GarminDashboardProps {
   onClose?: () => void;
   onLoadTrack?: (track: any) => void;
   onDataSynced?: () => void;
+  onTabChange?: (tab: GarminDashboardTab) => void;
   initialTab?: GarminDashboardTab;
   variant?: 'modal' | 'page';
   userWeight?: number;
@@ -109,6 +123,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   onClose, 
   onLoadTrack,
   onDataSynced,
+  onTabChange,
   initialTab = 'overview',
   variant = 'modal',
   userWeight = 75,
@@ -122,8 +137,13 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'performance' | 'sleep' | 'weight' | 'rhr' | 'steps' | 'stress' | 'activities' | 'analytics' | 'personal-api'>(initialTab);
+  const [activeTab, setActiveTab] = useState<GarminDashboardTab>(initialTab);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
+
+  const handleSelectTab = (tab: GarminDashboardTab) => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  };
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
   const [selectedCorrelation, setSelectedCorrelation] = useState<'hr_speed' | 'speed_ascent' | 'hr_ascent'>('hr_speed');
@@ -441,7 +461,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setActiveTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
+              onClick={() => handleSelectTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
               className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
                 activeTab === 'personal-api'
                   ? 'bg-orange-600 text-white shadow-sm'
@@ -504,7 +524,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           ) : (
             /* Main Dashboard View */
             <div className="space-y-6">
-              {/* Bento-Grid Quick Stats */}
+              {/* Bento-Grid Quick Stats (only shown on overview tab) */}
+              {activeTab === 'overview' && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {/* Steps */}
                 <div className="bg-emerald-50/40 dark:bg-emerald-950/10 p-5 rounded-2xl border border-emerald-100/40 dark:border-emerald-900/20 flex items-center gap-4">
@@ -558,13 +579,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                   </div>
                 </div>
               </div>
+              )}
 
               {/* Navigation Tabs */}
               <div className="flex gap-1 bg-slate-50 dark:bg-slate-850 p-1 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-x-auto">
-                {(['overview', 'personal-api', 'performance', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress'] as const).map((tab) => (
+                {(['overview', 'personal-api', 'performance', 'calendar', 'compare', 'activities', 'analytics', 'sleep', 'weight', 'rhr', 'steps', 'stress'] as const).map((tab) => (
                   <button
                     key={tab}
-                    onClick={() => setActiveTab(tab)}
+                    onClick={() => handleSelectTab(tab)}
                     className={`px-4 py-2 rounded-xl text-xs font-bold capitalize transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
                       activeTab === tab
                         ? 'bg-orange-600 text-white shadow-md shadow-orange-100'
@@ -577,6 +599,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       ? '🔑 Personal API & Cloud-Suche'
                       : tab === 'performance'
                       ? '⚡ Leistungs- & Fitness-Analyse'
+                      : tab === 'calendar'
+                      ? '📅 Kalender'
+                      : tab === 'compare'
+                      ? '⚖️ Einheiten-Vergleich'
                       : tab === 'activities' 
                       ? 'Aktivitäten' 
                       : tab === 'analytics' 
@@ -634,6 +660,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         ftp={ftp}
                         onUpdateFtp={onUpdateFtp}
                         onUpdateMaxHr={onUpdateMaxHr}
+                      />
+                    </motion.div>
+                  )}
+
+                  {/* Tab: CALENDAR & COMPARE (GarminActivitiesAnalysis embedded) */}
+                  {(activeTab === 'calendar' || activeTab === 'compare') && (
+                    <motion.div
+                      key={activeTab}
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="w-full flex-1 flex flex-col"
+                    >
+                      <GarminActivitiesAnalysis
+                        embedded
+                        initialTab={activeTab === 'compare' ? 'compare' : 'calendar'}
+                        onLoadTrack={onLoadTrack}
                       />
                     </motion.div>
                   )}
@@ -696,7 +739,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         <div className="flex gap-2">
                           <button
                             type="button"
-                            onClick={() => setActiveTab('personal-api')}
+                            onClick={() => handleSelectTab('personal-api')}
                             className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/30 dark:hover:bg-orange-950/50 text-orange-700 dark:text-orange-300 border border-orange-200/70 dark:border-orange-800/60 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5"
                           >
                             <Key className="w-3.5 h-3.5" />
@@ -726,7 +769,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schlafverlauf & Schlafphasen</h4>
                       <p className="text-xs text-slate-500">Zeigt deine gesamte Schlafdauer und die Verteilung von Leicht-, Tief- und REM-Schlafphasen.</p>
-                      <div className="h-64 w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={data?.sleep.slice(-30)}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -758,7 +801,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Körpergewicht & Zusammensetzung</h4>
                       <p className="text-xs text-slate-500">Überwache die Entwicklung deines Körpergewichts, Body-Mass-Index (BMI) und des Körperfettanteils.</p>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="md:col-span-2 h-64 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                        <div className={`md:col-span-2 ${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={data?.weight}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -802,7 +845,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Ruheherzfrequenz (RHR)</h4>
                       <p className="text-xs text-slate-500">Ein hervorragender Indikator für deine Regeneration, Ausdauerleistung und Fitnessentwicklung über Zeit.</p>
-                      <div className="h-64 w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={data?.rhr}>
                             <defs>
@@ -833,7 +876,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schritte & Kalorienverbrauch</h4>
                       <p className="text-xs text-slate-500">Überwache deine tägliche Aktivität im Alltag, Distanzen und verbrannte Kalorien.</p>
-                      <div className="h-64 w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={data?.steps.slice(-30)}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -860,7 +903,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     >
                       <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Tägliche Stressbelastung</h4>
                       <p className="text-xs text-slate-500">Dein Stress-Score (0-100) berechnet aus der Herzfrequenzvariabilität (HRV) für tiefere Regenerationseinblicke.</p>
-                      <div className="h-64 w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={data?.stress}>
                             <defs>
@@ -927,7 +970,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         )}
                       </div>
 
-                      <div className="max-h-[300px] overflow-y-auto border border-slate-150 dark:border-slate-800 rounded-2xl">
+                      <div className={`${variant === 'page' ? 'max-h-[55vh]' : 'max-h-[300px]'} overflow-y-auto border border-slate-150 dark:border-slate-800 rounded-2xl`}>
                         {filteredActivities.length === 0 ? (
                           <div className="p-8 text-center text-xs text-slate-500">
                             Keine Aktivitäten gefunden, die dem Suchbegriff entsprechen.

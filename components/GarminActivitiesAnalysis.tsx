@@ -10,13 +10,15 @@ import {
   Tooltip, CartesianGrid, AreaChart, Area, Legend, ScatterChart, Scatter
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
+import { resolveGarminTrackForMap } from '../utils/garminClient';
 import { GarminActivitiesCalendar } from './GarminActivitiesCalendar';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 
 interface GarminActivitiesAnalysisProps {
-  onClose: () => void;
+  onClose?: () => void;
   onLoadTrack?: (track: any) => void;
+  embedded?: boolean;
+  initialTab?: 'overview' | 'compare' | 'calendar' | 'personal-api';
 }
 
 interface GarminActivity {
@@ -51,12 +53,21 @@ function isCyclingType(type: string | undefined, name?: string): boolean {
          n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
 }
 
-export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> = ({ onClose, onLoadTrack }) => {
+export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> = ({
+  onClose,
+  onLoadTrack,
+  embedded = false,
+  initialTab = 'calendar'
+}) => {
   const [activities, setActivities] = useState<GarminActivity[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'compare' | 'calendar' | 'personal-api'>('calendar');
+  const [activeTab, setActiveTab] = useState<'overview' | 'compare' | 'calendar' | 'personal-api'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -282,7 +293,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
     return { maxDistIdx, minDurIdx, maxSpeedIdx, maxAscIdx, minHrIdx, maxCalIdx };
   }, [comparedActivities]);
 
-  // Load Garmin Activity into main workspace map & charts
+  // Load Garmin Activity into main workspace map & charts via unified hydration + auto-FIT
   const handleLoadActivity = useCallback(async (act: GarminActivity) => {
     if (!onLoadTrack) return;
     try {
@@ -291,7 +302,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
 
       // Attempt to load the full path
       try {
-        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${encodeURIComponent(act.id)}`));
         const json = await res.json();
         if (json.success && json.points_json) {
           pointsJson = json.points_json;
@@ -300,148 +311,10 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
         console.error('Failed to fetch full track points, using fallback:', err);
       }
 
-      let startCoords = parseLocationCoords(act.location);
-      if (!startCoords) {
-        // Try to find any other activity with a valid location or start coordinates in points_json
-        for (const otherAct of (comparedActivities || [])) {
-          if (otherAct.location) {
-            const coords = parseLocationCoords(otherAct.location);
-            if (coords) {
-              startCoords = coords;
-              break;
-            }
-          }
-          if (otherAct.points_json) {
-            try {
-              let parsed = JSON.parse(otherAct.points_json);
-              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
-                if (arrayKey) parsed = (parsed as any)[arrayKey];
-              }
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                const firstPt = parsed[0];
-                let lat = 0, lng = 0;
-                if (Array.isArray(firstPt)) {
-                  lat = parseFloat(firstPt[0]);
-                  lng = parseFloat(firstPt[1]);
-                } else if (firstPt && typeof firstPt === 'object') {
-                  lat = parseFloat(firstPt.lat || firstPt.latitude);
-                  lng = parseFloat(firstPt.lng || firstPt.longitude);
-                }
-                
-                if (lat !== 0 && lng !== 0 && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
-                  // Normalize coordinate scale if needed (semicircle or e7 vs degrees)
-                  if (Math.abs(lat) > 180) {
-                    const semi = lat * 180.0 / 2147483648.0;
-                    const e7 = lat / 10000000.0;
-                    lat = Math.abs(semi) <= 90 ? semi : e7;
-                  }
-                  if (Math.abs(lng) > 180) {
-                    const semi = lng * 180.0 / 2147483648.0;
-                    const e7 = lng / 10000000.0;
-                    lng = Math.abs(semi) <= 180 ? semi : e7;
-                  }
-                  
-                  if (Math.abs(lat) > 1 && Math.abs(lng) > 1 && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
-                    startCoords = { lat, lng };
-                    break;
-                  }
-                }
-              }
-            } catch {}
-          }
-        }
-      }
-      if (!startCoords) {
-        startCoords = { lat: 48.1351, lng: 11.5820 }; // Munich default fallback
-      }
-
-      const durationSec = act.duration || 3600;
-      const distanceKm = act.distance || 10;
-      const ascent = act.ascent || 0;
-      const descent = act.descent || 0;
-      const avgHr = act.avg_hr || undefined;
-      const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
-
-      let isVirtual = false;
-      let points: any[] = [];
-
-      if (pointsJson) {
-        try {
-          let parsed = JSON.parse(pointsJson);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
-            if (arrayKey) parsed = (parsed as any)[arrayKey];
-          }
-
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            points = parsed.map((p: any) => {
-              if (!p) return null;
-              if (Array.isArray(p)) {
-                return {
-                  lat: parseFloat(p[0]),
-                  lng: parseFloat(p[1]),
-                  ele: p[2] !== undefined ? parseFloat(p[2]) : undefined,
-                  time: p[3] ? new Date(p[3]) : undefined,
-                  hr: p[4] !== undefined ? parseFloat(p[4]) : undefined,
-                  cadence: p[5] !== undefined ? parseFloat(p[5]) : undefined,
-                  power: p[6] !== undefined ? parseFloat(p[6]) : undefined,
-                  speed: p[7] !== undefined ? parseFloat(p[7]) : undefined,
-                };
-              } else if (typeof p === 'object') {
-                return {
-                  lat: parseFloat(p.lat || p.latitude),
-                  lng: parseFloat(p.lng || p.longitude),
-                  ele: p.ele !== undefined ? parseFloat(p.ele) : undefined,
-                  time: p.time ? new Date(p.time) : undefined,
-                  hr: p.hr || p.heartrate || p.avg_hr,
-                  cadence: p.cadence || p.cad,
-                  power: p.power || p.watts,
-                  speed: p.speed,
-                };
-              }
-              return null;
-            }).filter(Boolean);
-          }
-        } catch (pe) {
-          console.error('Failed to parse points_json:', pe);
-        }
-      }
-
-      if (points.length <= 1) {
-        isVirtual = true;
-        points = generateVirtualRoute(
-          startCoords.lat,
-          startCoords.lng,
-          distanceKm,
-          durationSec,
-          ascent,
-          descent,
-          avgHr,
-          activityType
-        );
-      }
-
-      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
-        ? calculateElevationStats(points)
-        : { maxSlope: 0 };
-
-      const track = {
-        id: `garmin-act-${act.id}`,
-        name: act.name || 'Garmin Aktivität',
-        points,
-        color: '#f97316', // Orange Garmin-brand accent
-        distance: distanceKm,
-        ascent,
-        descent,
-        maxSlope: calculatedMaxSlope,
-        visible: true,
-        activityType,
-        duration: durationSec,
-        hasTimestamps: true,
-        description: act.description || `Garmin-Aktivität in ${act.location || 'Unbekannt'}`,
-        isVirtual
-      };
+      const track = await resolveGarminTrackForMap({
+        ...act,
+        points_json: pointsJson
+      });
 
       onLoadTrack(track);
       setSuccessMsg(`"${act.name}" erfolgreich in den Workspace geladen!`);
@@ -478,9 +351,10 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   }, [filteredActivities]);
 
   useEffect(() => {
+    if (embedded) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onClose?.();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -491,44 +365,48 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
       window.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = originalOverflow;
     };
-  }, [onClose]);
+  }, [onClose, embedded]);
 
-  return (
-    <div 
-      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
-      onClick={onClose}
-    >
+  const panelContent = (
       <motion.div 
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[90vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col font-sans cursor-default"
-        onClick={(e) => e.stopPropagation()}
+        initial={embedded ? false : { opacity: 0, scale: 0.95, y: 15 }}
+        animate={embedded ? undefined : { opacity: 1, scale: 1, y: 0 }}
+        exit={embedded ? undefined : { opacity: 0, scale: 0.95, y: 15 }}
+        className={
+          embedded
+            ? 'relative w-full bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col font-sans cursor-default'
+            : 'relative w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[90vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden flex flex-col font-sans cursor-default'
+        }
+        onClick={embedded ? undefined : (e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-150 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
-            <div className="p-2 sm:p-2.5 bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-xl shrink-0">
-              <GitCompare className="w-5 h-5 sm:w-6 sm:h-6" />
+        {/* Header (Modal only) */}
+        {!embedded && (
+          <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-150 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+              <div className="p-2 sm:p-2.5 bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-xl shrink-0">
+                <GitCompare className="w-5 h-5 sm:w-6 sm:h-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h1 className="text-sm sm:text-xl font-bold text-slate-850 dark:text-slate-100 truncate">
+                  Garmin Aktivitäten-Analyse
+                </h1>
+                <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
+                  Analysiere deine Läufe, Radtouren und Trainingsdaten aus der SQLite-Datenbank und vergleiche Einheiten direkt.
+                </p>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <h1 className="text-sm sm:text-xl font-bold text-slate-850 dark:text-slate-100 truncate">
-                Garmin Aktivitäten-Analyse
-              </h1>
-              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
-                Analysiere deine Läufe, Radtouren und Trainingsdaten aus der SQLite-Datenbank und vergleiche Einheiten direkt.
-              </p>
-            </div>
-          </div>
-          <button 
-            onClick={onClose}
-            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-150 dark:bg-slate-800 text-slate-600 dark:text-slate-350 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all cursor-pointer shrink-0"
-            title="Schließen"
-            aria-label="Schließen"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </header>
+            {onClose && (
+              <button 
+                onClick={onClose}
+                className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-slate-150 dark:bg-slate-800 text-slate-600 dark:text-slate-350 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-all cursor-pointer shrink-0"
+                title="Schließen"
+                aria-label="Schließen"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </header>
+        )}
 
         {/* Info/Success/Error overlays */}
         <AnimatePresence>
@@ -604,19 +482,21 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                 )}
               </div>
             </button>
-            <button
-              onClick={() => setActiveTab('personal-api')}
-              className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
-                activeTab === 'personal-api'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-500/10'
-                  : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
-              }`}
-            >
-              <div className="flex items-center gap-1.5">
-                <Key className="w-4 h-4" />
-                <span>Personal API &amp; Cloud-Import</span>
-              </div>
-            </button>
+            {!embedded && (
+              <button
+                onClick={() => setActiveTab('personal-api')}
+                className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                  activeTab === 'personal-api'
+                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-500/10'
+                    : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Key className="w-4 h-4" />
+                  <span>Personal API &amp; Cloud-Import</span>
+                </div>
+              </button>
+            )}
           </div>
 
           <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
@@ -1301,6 +1181,18 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
           )}
         </div>
       </motion.div>
+  );
+
+  if (embedded) {
+    return panelContent;
+  }
+
+  return (
+    <div 
+      className="fixed inset-0 z-[2000] flex items-center justify-center p-2 sm:p-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] bg-black/60 backdrop-blur-xs cursor-pointer" 
+      onClick={onClose}
+    >
+      {panelContent}
     </div>
   );
 };

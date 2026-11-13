@@ -4,7 +4,7 @@ import {
   X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, TrendingUp, Info,
   Zap, Key, Activity, Calendar, BarChart2, ShieldCheck,
-  Trophy, Award, Timer, Mountain, ArrowUpRight
+  Trophy, Award, Timer, Mountain, ArrowUpRight, Sliders
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -45,6 +45,8 @@ interface GarminDashboardProps {
   ftp?: number;
   onUpdateFtp?: (ftp: number) => void;
   onUpdateMaxHr?: (maxHr: number) => void;
+  onUpdateWeight?: (weight: number) => void;
+  onUpdateAge?: (age: number) => void;
 }
 
 interface SleepRecord {
@@ -250,7 +252,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   userMaxHr = 185,
   ftp = 250,
   onUpdateFtp,
-  onUpdateMaxHr
+  onUpdateMaxHr,
+  onUpdateWeight,
+  onUpdateAge
 }) => {
   const [data, setData] = useState<HealthData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -270,6 +274,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [heatmapMetric, setHeatmapMetric] = useState<'distance' | 'duration' | 'ascent' | 'steps'>('distance');
   const [recordsSportFilter, setRecordsSportFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [recordsYearFilter, setRecordsYearFilter] = useState<string>('all');
+  const [showAthleteSettings, setShowAthleteSettings] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1077,6 +1082,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => setShowAthleteSettings(prev => !prev)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                showAthleteSettings
+                  ? 'bg-orange-600 text-white border-orange-600 shadow-sm'
+                  : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+              }`}
+              title="Athleten-Profil bearbeiten (FTP, Gewicht, Alter, Max. Puls)"
+            >
+              <Sliders className="w-3.5 h-3.5 text-orange-500" style={showAthleteSettings ? { color: '#ffffff' } : undefined} />
+              <span className="font-mono tabular-nums">{ftp}W · {userWeight}kg · {userAge}J</span>
+            </button>
+            <button
+              type="button"
               onClick={() => handleSelectTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
               className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
                 activeTab === 'personal-api'
@@ -1100,6 +1118,98 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             )}
           </div>
         </div>
+
+        {showAthleteSettings && (
+          <div className="px-6 py-3 bg-slate-50/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">FTP:</span>
+                <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1">
+                  <input
+                    type="number"
+                    min={50}
+                    max={600}
+                    value={ftp}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!Number.isNaN(val) && val > 0) onUpdateFtp?.(val);
+                    }}
+                    className="w-14 text-center font-mono font-extrabold text-xs text-amber-500 bg-transparent focus:outline-none"
+                  />
+                  <span className="text-[11px] font-bold text-slate-400 ml-1">W</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Gewicht:</span>
+                <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1">
+                  <input
+                    type="number"
+                    min={30}
+                    max={250}
+                    step="0.5"
+                    value={userWeight}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!Number.isNaN(val) && val > 0) onUpdateWeight?.(val);
+                    }}
+                    className="w-14 text-center font-mono font-extrabold text-xs text-emerald-600 dark:text-emerald-400 bg-transparent focus:outline-none"
+                  />
+                  <span className="text-[11px] font-bold text-slate-400 ml-1">kg</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Alter:</span>
+                <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1">
+                  <input
+                    type="number"
+                    min={10}
+                    max={100}
+                    value={userAge}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!Number.isNaN(val) && val > 0) onUpdateAge?.(val);
+                    }}
+                    className="w-12 text-center font-mono font-extrabold text-xs text-indigo-600 dark:text-indigo-400 bg-transparent focus:outline-none"
+                  />
+                  <span className="text-[11px] font-bold text-slate-400 ml-1">J</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">HF Max:</span>
+                <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1">
+                  <input
+                    type="number"
+                    min={100}
+                    max={230}
+                    value={userMaxHr}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!Number.isNaN(val) && val > 0) onUpdateMaxHr?.(val);
+                    }}
+                    className="w-14 text-center font-mono font-extrabold text-xs text-rose-500 bg-transparent focus:outline-none"
+                  />
+                  <span className="text-[11px] font-bold text-slate-400 ml-1">bpm</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="text-xs font-bold bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 px-2.5 py-1 rounded-lg border border-amber-200/70 dark:border-amber-800/50 font-mono">
+                Leistungsgewicht: {userWeight > 0 ? (ftp / userWeight).toFixed(2) : '0.00'} W/kg
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAthleteSettings(false)}
+                className="text-xs font-bold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 cursor-pointer"
+              >
+                Schließen
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -1857,6 +1967,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         ftp={ftp}
                         onUpdateFtp={onUpdateFtp}
                         onUpdateMaxHr={onUpdateMaxHr}
+                        onUpdateWeight={onUpdateWeight}
+                        onUpdateAge={onUpdateAge}
                       />
                     </motion.div>
                   )}

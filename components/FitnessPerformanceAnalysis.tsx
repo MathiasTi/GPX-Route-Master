@@ -21,6 +21,8 @@ interface FitnessPerformanceAnalysisProps {
   ftp: number;
   onUpdateFtp?: (ftp: number) => void;
   onUpdateMaxHr?: (maxHr: number) => void;
+  onUpdateWeight?: (weight: number) => void;
+  onUpdateAge?: (age: number) => void;
   isEmbedded?: boolean;
 }
 
@@ -64,6 +66,8 @@ export default function FitnessPerformanceAnalysis({
   ftp: initialFtp,
   onUpdateFtp,
   onUpdateMaxHr,
+  onUpdateWeight,
+  onUpdateAge,
   isEmbedded = false
 }: FitnessPerformanceAnalysisProps) {
   // Local adjustable sports metrics
@@ -1571,8 +1575,45 @@ export default function FitnessPerformanceAnalysis({
               </div>
             </div>
 
-            <div className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 px-2.5 py-1 rounded-lg font-medium border border-indigo-100/50 dark:border-indigo-900/30">
-              Alter: <span className="font-extrabold">{userAge} Jahre</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Gewicht:</span>
+              <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
+                <input 
+                  type="number"
+                  min={30}
+                  max={250}
+                  step="0.5"
+                  value={userWeight} 
+                  onChange={e => {
+                    const val = parseFloat(e.target.value);
+                    if (!Number.isNaN(val) && val > 0) onUpdateWeight?.(val);
+                  }}
+                  className="w-14 text-center font-mono font-extrabold text-sm text-emerald-500 bg-transparent focus:outline-none"
+                />
+                <span className="text-xs font-bold text-slate-400 ml-1">kg</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Alter:</span>
+              <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
+                <input 
+                  type="number"
+                  min={10}
+                  max={100}
+                  value={userAge} 
+                  onChange={e => {
+                    const val = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(val) && val > 0) onUpdateAge?.(val);
+                  }}
+                  className="w-12 text-center font-mono font-extrabold text-sm text-indigo-500 bg-transparent focus:outline-none"
+                />
+                <span className="text-xs font-bold text-slate-400 ml-1">Jahre</span>
+              </div>
+            </div>
+
+            <div className="text-[11px] bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 px-2.5 py-1 rounded-lg font-mono font-bold border border-amber-200/70 dark:border-amber-800/40">
+              {userWeight > 0 ? (ftp / userWeight).toFixed(2) : '0.00'} W/kg
             </div>
           </div>
 

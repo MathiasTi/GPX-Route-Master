@@ -6,7 +6,7 @@ import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
-import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock } from 'lucide-react';
+import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders } from 'lucide-react';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
@@ -195,6 +195,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
   const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
+  const [athleteProfileOpen, setAthleteProfileOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
   const [showHint, setShowHint] = useState(false);
@@ -1875,6 +1876,130 @@ const App: React.FC = () => {
             </button>
           )}
 
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setAthleteProfileOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                athleteProfileOpen
+                  ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+              }`}
+              title="Athleten-Profil: Alter, Gewicht, FTP & Max. Puls"
+            >
+              <Sliders size={13} className="text-amber-500" />
+              <span className="hidden lg:inline font-mono tabular-nums">
+                {ftp}W · {userWeight}kg · {userAge}J
+              </span>
+              <span className="lg:hidden">Profil</span>
+            </button>
+
+            {athleteProfileOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-[1190]"
+                  onClick={() => setAthleteProfileOpen(false)}
+                />
+                <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 z-[1200] space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
+                        Athleten-Profil &amp; Schwellenwerte
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Relativleistung: <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAthleteProfileOpen(false)}
+                      className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                      aria-label="Schließen"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <label className="space-y-1 block">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        FTP (Watt)
+                      </span>
+                      <input
+                        type="number"
+                        min={50}
+                        max={600}
+                        value={ftp}
+                        onChange={(e) => setFtp(Math.max(50, Math.min(600, parseInt(e.target.value) || 250)))}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-amber-600 dark:text-amber-400"
+                      />
+                    </label>
+
+                    <label className="space-y-1 block">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Gewicht (kg)
+                      </span>
+                      <input
+                        type="number"
+                        min={30}
+                        max={200}
+                        step={0.5}
+                        value={userWeight}
+                        onChange={(e) => setUserWeight(Math.max(30, Math.min(200, parseFloat(e.target.value) || 75)))}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
+                      />
+                    </label>
+
+                    <label className="space-y-1 block">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Alter (Jahre)
+                      </span>
+                      <input
+                        type="number"
+                        min={10}
+                        max={100}
+                        value={userAge}
+                        onChange={(e) => setUserAge(Math.max(10, Math.min(100, parseInt(e.target.value) || 35)))}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
+                      />
+                    </label>
+
+                    <label className="space-y-1 block">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Max. Puls (bpm)
+                      </span>
+                      <input
+                        type="number"
+                        min={100}
+                        max={230}
+                        value={userMaxHr}
+                        onChange={(e) => handleMaxHrChange(Math.max(100, Math.min(230, parseInt(e.target.value) || 185)))}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-rose-600 dark:text-rose-400"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => handleMaxHrChange(Math.max(120, Math.min(220, 220 - userAge)))}
+                      className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
+                    >
+                      HFmax = 220 − Alter ({220 - userAge})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAthleteProfileOpen(false)}
+                      className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold cursor-pointer"
+                    >
+                      Fertig
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
@@ -1993,6 +2118,8 @@ const App: React.FC = () => {
             userMaxHr={userMaxHr}
             ftp={ftp}
             onUpdateFtp={setFtp}
+            onUpdateWeight={setUserWeight}
+            onUpdateAge={setUserAge}
             onUpdateMaxHr={handleMaxHrChange}
           />
         )}

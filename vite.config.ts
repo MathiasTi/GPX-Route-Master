@@ -43,7 +43,19 @@ export default defineConfig(({ mode }) => {
         target: 'esnext'
       },
       build: {
-        target: 'esnext'
+        target: 'esnext',
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (!id.includes('node_modules')) return;
+              if (id.includes('/three/') || id.includes('three-stdlib')) return 'vendor-three';
+              if (id.includes('/maplibre-gl/') || id.includes('/@vis.gl/react-maplibre/')) return 'vendor-maplibre';
+              if (id.includes('/leaflet/') || id.includes('/react-leaflet/')) return 'vendor-leaflet';
+              if (id.includes('/recharts/') || id.includes('/d3-') || id.includes('/victory-vendor/')) return 'vendor-charts';
+              if (id.includes('/motion/') || id.includes('/framer-motion/')) return 'vendor-motion';
+            }
+          }
+        }
       },
       optimizeDeps: {
         esbuildOptions: {

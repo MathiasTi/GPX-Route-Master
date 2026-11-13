@@ -262,6 +262,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<GarminDashboardTab>(initialTab);
   const [activitySearchQuery, setActivitySearchQuery] = useState('');
+  const [activitiesVisibleCount, setActivitiesVisibleCount] = useState(100);
+
+  useEffect(() => {
+    setActivitiesVisibleCount(100);
+  }, [activitySearchQuery]);
 
   const handleSelectTab = (tab: GarminDashboardTab) => {
     setActiveTab(tab);
@@ -1976,6 +1981,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       <GarminActivitiesAnalysis
                         embedded
                         initialTab={activeTab === 'compare' ? 'compare' : 'calendar'}
+                        initialActivities={data?.activities}
+                        onDataSynced={handlePanelDataSynced}
                         onLoadTrack={onLoadTrack}
                       />
                     </motion.div>
@@ -2189,7 +2196,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 <span>Keine Ruhepuls-Daten vorhanden.</span>
                                 <button
                                   type="button"
-                                  onClick={() => setActiveTab('personal-api')}
+                                  onClick={() => handleSelectTab('personal-api')}
                                   className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
                                 >
                                   Über Garmin Personal API synchronisieren
@@ -2241,7 +2248,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 <span>Keine Schrittdaten vorhanden.</span>
                                 <button
                                   type="button"
-                                  onClick={() => setActiveTab('personal-api')}
+                                  onClick={() => handleSelectTab('personal-api')}
                                   className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
                                 >
                                   Über Garmin Personal API synchronisieren
@@ -2307,7 +2314,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       {visibleSleepData.length === 0 ? (
                         <div className="h-64 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center text-center text-xs text-slate-400 gap-2">
                           <span>Keine Schlafdaten vorhanden.</span>
-                          <button type="button" onClick={() => setActiveTab('personal-api')} className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2">
+                          <button type="button" onClick={() => handleSelectTab('personal-api')} className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2">
                             Über Garmin Personal API synchronisieren
                           </button>
                         </div>
@@ -2388,7 +2395,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <span>Keine Ruhepuls-Daten vorhanden.</span>
                             <button
                               type="button"
-                              onClick={() => setActiveTab('personal-api')}
+                              onClick={() => handleSelectTab('personal-api')}
                               className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
                             >
                               Über Garmin Personal API synchronisieren
@@ -2448,7 +2455,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <span>Keine Schrittdaten vorhanden.</span>
                             <button
                               type="button"
-                              onClick={() => setActiveTab('personal-api')}
+                              onClick={() => handleSelectTab('personal-api')}
                               className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
                             >
                               Über Garmin Personal API synchronisieren
@@ -2495,7 +2502,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <span>Keine Stress-Daten vorhanden.</span>
                             <button
                               type="button"
-                              onClick={() => setActiveTab('personal-api')}
+                              onClick={() => handleSelectTab('personal-api')}
                               className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
                             >
                               Über Garmin Personal API synchronisieren
@@ -2587,72 +2594,97 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             Keine Aktivitäten gefunden, die dem Suchbegriff entsprechen.
                           </div>
                         ) : (
-                          <table className="w-full text-left border-collapse text-xs">
-                            <thead>
-                              <tr className="bg-slate-50 dark:bg-slate-850 border-b border-slate-150 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
-                                <th className="p-3">Aktivität</th>
-                                <th className="p-3">Datum</th>
-                                <th className="p-3">Distanz</th>
-                                <th className="p-3">Dauer</th>
-                                <th className="p-3">Höhenmeter</th>
-                                <th className="p-3">Kalorien</th>
-                                <th className="p-3 text-right">Aktion</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                              {filteredActivities.map((act) => (
-                                <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/40">
-                                  <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
-                                    <div className="flex flex-col gap-0.5">
-                                      <div className="flex items-center gap-1.5 flex-wrap">
-                                        <span>{isRunningType(act.type, act.name) ? '🏃' : isCyclingType(act.type, act.name) ? '🚴' : '🏅'}</span>
-                                        <span>{act.name}</span>
-                                        {!act.points_json && (
-                                          <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
-                                            NUR STATS
-                                          </span>
-                                        )}
-                                        {act.location && (
-                                          <span className="text-[9px] bg-indigo-55/70 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.5 rounded border border-indigo-100/30 dark:border-indigo-900/30 shrink-0" title="Standort">
-                                            📍 {act.location}
-                                          </span>
+                          <>
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead className="sticky top-0 z-10">
+                                <tr className="bg-slate-50 dark:bg-slate-850 border-b border-slate-150 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
+                                  <th className="p-3">Aktivität</th>
+                                  <th className="p-3">Datum</th>
+                                  <th className="p-3">Distanz</th>
+                                  <th className="p-3">Dauer</th>
+                                  <th className="p-3">Höhenmeter</th>
+                                  <th className="p-3">Kalorien</th>
+                                  <th className="p-3 text-right">Aktion</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
+                                {filteredActivities.slice(0, activitiesVisibleCount).map((act) => (
+                                  <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/40">
+                                    <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
+                                      <div className="flex flex-col gap-0.5">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span>{isRunningType(act.type, act.name) ? '🏃' : isCyclingType(act.type, act.name) ? '🚴' : '🏅'}</span>
+                                          <span>{act.name}</span>
+                                          {!act.points_json && (
+                                            <span className="text-[9px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-normal px-1.5 py-0.5 rounded border border-slate-200/50 dark:border-slate-700/50 cursor-help inline-flex shrink-0" title="Diese Aktivität enthält keine GPS-Spur in der SQLite-Datenbank. Beim Laden wird eine virtuelle Route erzeugt.">
+                                              NUR STATS
+                                            </span>
+                                          )}
+                                          {act.location && (
+                                            <span className="text-[9px] bg-indigo-55/70 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.5 rounded border border-indigo-100/30 dark:border-indigo-900/30 shrink-0" title="Standort">
+                                              📍 {act.location}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {act.description && (
+                                          <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium max-w-md italic tracking-wide mt-0.5">
+                                            {act.description}
+                                          </p>
                                         )}
                                       </div>
-                                      {act.description && (
-                                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium max-w-md italic tracking-wide mt-0.5">
-                                          {act.description}
-                                        </p>
+                                    </td>
+                                    <td className="p-3 text-slate-500">{act.date}</td>
+                                    <td className="p-3">{act.distance.toFixed(1)} km</td>
+                                    <td className="p-3">{formatMinutes(act.duration / 60)}</td>
+                                    <td className="p-3">
+                                      {act.ascent !== undefined && act.ascent !== null ? `+${Math.round(act.ascent)}m` : '-'}
+                                    </td>
+                                    <td className="p-3">
+                                      {act.calories !== undefined && act.calories !== null ? `${Math.round(act.calories)} kcal` : '-'}
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      {onLoadTrack && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleLoadActivity(act);
+                                          }}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md text-[10px] cursor-pointer shadow-xs transition-colors"
+                                          title="In Workspace laden"
+                                        >
+                                          In Workspace laden
+                                        </button>
                                       )}
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-slate-500">{act.date}</td>
-                                  <td className="p-3">{act.distance.toFixed(1)} km</td>
-                                  <td className="p-3">{formatMinutes(act.duration / 60)}</td>
-                                  <td className="p-3">
-                                    {act.ascent !== undefined && act.ascent !== null ? `+${Math.round(act.ascent)}m` : '-'}
-                                  </td>
-                                  <td className="p-3">
-                                    {act.calories !== undefined && act.calories !== null ? `${Math.round(act.calories)} kcal` : '-'}
-                                  </td>
-                                  <td className="p-3 text-right">
-                                    {onLoadTrack && (
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleLoadActivity(act);
-                                        }}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md text-[10px] cursor-pointer shadow-xs transition-colors"
-                                        title="In Workspace laden"
-                                      >
-                                        In Workspace laden
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {filteredActivities.length > activitiesVisibleCount && (
+                              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 bg-slate-50 dark:bg-slate-850 border-t border-slate-150 dark:border-slate-800 text-xs text-slate-500">
+                                <span>
+                                  {Math.min(activitiesVisibleCount, filteredActivities.length)} von {filteredActivities.length} Aktivitäten angezeigt
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActivitiesVisibleCount((c) => c + 100)}
+                                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                  >
+                                    +100 laden
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActivitiesVisibleCount(filteredActivities.length)}
+                                    className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors"
+                                  >
+                                    Alle ({filteredActivities.length})
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     </motion.div>

@@ -19,6 +19,8 @@ interface GarminActivitiesAnalysisProps {
   onLoadTrack?: (track: any) => void;
   embedded?: boolean;
   initialTab?: 'overview' | 'compare' | 'calendar' | 'personal-api';
+  initialActivities?: any[];
+  onDataSynced?: () => void;
 }
 
 interface GarminActivity {
@@ -57,9 +59,13 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   onClose,
   onLoadTrack,
   embedded = false,
-  initialTab = 'calendar'
+  initialTab = 'calendar',
+  initialActivities,
+  onDataSynced
 }) => {
-  const [activities, setActivities] = useState<GarminActivity[]>([]);
+  const [activities, setActivities] = useState<GarminActivity[]>(() =>
+    Array.isArray(initialActivities) ? initialActivities : []
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -68,6 +74,12 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (Array.isArray(initialActivities)) {
+      setActivities(initialActivities);
+    }
+  }, [initialActivities]);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -78,6 +90,11 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   const [endDate, setEndDate] = useState('');
   const [minAscent, setMinAscent] = useState<number | ''>('');
   const [downloadingFitId, setDownloadingFitId] = useState<string | null>(null);
+  const [visibleRowsCount, setVisibleRowsCount] = useState(100);
+
+  useEffect(() => {
+    setVisibleRowsCount(100);
+  }, [searchQuery, typeFilter, minDistance, maxDistance, startDate, endDate, minAscent]);
 
   // Selected for comparison
   const [selectedToCompare, setSelectedToCompare] = useState<string[]>([]);
@@ -105,8 +122,9 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
   }, []);
 
   useEffect(() => {
+    if (initialActivities && initialActivities.length > 0) return;
     fetchActivities();
-  }, [fetchActivities]);
+  }, [fetchActivities, initialActivities]);
 
   // Format Helpers
   const formatDuration = (seconds: number) => {
@@ -187,6 +205,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
       if (json.success && json.pointsCount > 0) {
         setSuccessMsg(`.FIT-Track für "${act.name}" geladen (${json.pointsCount} GPS-Punkte)`);
         await fetchActivities();
+        onDataSynced?.();
         setTimeout(() => setSuccessMsg(null), 3500);
       } else {
         setError(json.error || 'Kein .FIT GPS-Track über Garmin Personal API verfügbar.');
@@ -349,6 +368,17 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
         };
       });
   }, [filteredActivities]);
+
+  const chartTimelineData = useMemo(() => {
+    const maxPoints = 150;
+    if (timelineData.length <= maxPoints) return timelineData;
+    const step = (timelineData.length - 1) / (maxPoints - 1);
+    const sampled: typeof timelineData = [];
+    for (let i = 0; i < maxPoints; i++) {
+      sampled.push(timelineData[Math.round(i * step)]);
+    }
+    return sampled;
+  }, [timelineData]);
 
   useEffect(() => {
     if (embedded) return;
@@ -677,7 +707,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                       </h3>
                       <div className="h-64 font-mono text-[10px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={timelineData}>
+                          <AreaChart data={chartTimelineData}>
                             <defs>
                               <linearGradient id="colorDistance" x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="5%" stopColor="#f97316" stopOpacity={0.25}/>
@@ -715,7 +745,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                       </h3>
                       <div className="h-64 font-mono text-[10px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={timelineData}>
+                          <LineChart data={chartTimelineData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" className="dark:stroke-slate-800" />
                             <XAxis dataKey="dateStr" stroke="#94a3b8" />
                             <YAxis yAxisId="left" stroke="#6366f1" label={{ value: 'km/h', angle: -90, position: 'insideLeft', style: { fill: '#6366f1', fontWeight: 'bold' } }} />
@@ -727,8 +757,8 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                 return payload ? `${payload.name} (${payload.dateStr})` : lbl;
                               }}
                             />
-                            <Line yAxisId="left" type="monotone" dataKey="speed" name="Geschwindigkeit" stroke="#6366f1" strokeWidth={3} activeDot={{ r: 6 }} />
-                            <Line yAxisId="right" type="monotone" dataKey="avgHr" name="Herzfrequenz" stroke="#f43f5e" strokeWidth={3} activeDot={{ r: 6 }} />
+                            <Line yAxisId="left" type="monotone" dataKey="speed" name="Geschwindigkeit" stroke="#6366f1" strokeWidth={3} dot={chartTimelineData.length <= 40} activeDot={{ r: 6 }} />
+                            <Line yAxisId="right" type="monotone" dataKey="avgHr" name="Herzfrequenz" stroke="#f43f5e" strokeWidth={3} dot={chartTimelineData.length <= 40} activeDot={{ r: 6 }} />
                             <Legend />
                           </LineChart>
                         </ResponsiveContainer>
@@ -785,7 +815,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono text-slate-700 dark:text-slate-300">
-                          {filteredActivities.map((act) => {
+                          {filteredActivities.slice(0, visibleRowsCount).map((act) => {
                             const isSelected = selectedToCompare.includes(act.id);
                             const isRunning = isRunningType(act.type, act.name);
                             const isCycling = isCyclingType(act.type, act.name);
@@ -827,7 +857,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                   ) : isCycling ? (
                                     <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border border-blue-200/40 dark:border-blue-900/30">🚴 Rad</span>
                                   ) : (
-                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">Other</span>
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">Sonstige</span>
                                   )}
                                 </td>
                                 <td className="p-4 text-slate-500 text-xs">
@@ -880,6 +910,29 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                           })}
                         </tbody>
                       </table>
+                      {filteredActivities.length > visibleRowsCount && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-slate-50/70 dark:bg-slate-900/40 border-t border-slate-150 dark:border-slate-800 text-xs text-slate-500">
+                          <span>
+                            {Math.min(visibleRowsCount, filteredActivities.length)} von {filteredActivities.length} Aktivitäten angezeigt
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setVisibleRowsCount((c) => c + 100)}
+                              className="px-3 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                            >
+                              +100 laden
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setVisibleRowsCount(filteredActivities.length)}
+                              className="px-3 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer"
+                            >
+                              Alle ({filteredActivities.length})
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1008,7 +1061,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                   const isCycling = isCyclingType(act.type, act.name);
                                   return (
                                     <td key={act.id} className="p-4 border-l border-slate-100 dark:border-slate-800/60 font-sans font-bold">
-                                      {isRunning ? '🏃 Laufen' : isCycling ? '🚴 Radsport' : 'Other'}
+                                      {isRunning ? '🏃 Laufen' : isCycling ? '🚴 Radsport' : 'Sonstige'}
                                     </td>
                                   );
                                 })}
@@ -1035,7 +1088,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
 
                               {/* 3. DURATION */}
                               <tr>
-                                <td className="p-4 font-sans font-bold bg-slate-50/20 dark:bg-slate-900/10">Dauer (Dauer)</td>
+                                <td className="p-4 font-sans font-bold bg-slate-50/20 dark:bg-slate-900/10">Dauer</td>
                                 {comparedActivities.map((act, idx) => {
                                   const isBest = comparisonHighlights?.minDurIdx === idx;
                                   return (

@@ -60,7 +60,7 @@ interface TrackItemProps {
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
-const SortableTrackItem: React.FC<TrackItemProps> = ({ 
+const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({ 
   track, 
   isMarked, 
   isExpanded,
@@ -123,8 +123,19 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
     }
   };
 
-  const hasPower = track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0);
-  const hasHR = track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0);
+  const hasPower = useMemo(
+    () => track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0),
+    [track.points]
+  );
+  const hasHR = useMemo(
+    () => track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0),
+    [track.points]
+  );
+  const maxSlopeDisplay = useMemo(() => {
+    if (track.maxSlope && track.maxSlope > 0) return track.maxSlope;
+    if (track.points && track.points.length > 1) return calculateElevationStats(track.points).maxSlope || 0;
+    return 0;
+  }, [track.maxSlope, track.points]);
   const showAnalyticsAndZones = hasPower && hasHR;
 
   const trackClimbs = useMemo(() => {
@@ -487,7 +498,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                       {track.duration ? (
                         `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
                       ) : (
-                        `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 65)}m`
+                        `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
                       )}
                     </span>
                   </div>
@@ -554,10 +565,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
                     <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                      {(track.maxSlope && track.maxSlope > 0
-                        ? track.maxSlope
-                        : (track.points && track.points.length > 1 ? (calculateElevationStats(track.points).maxSlope || 0) : 0)
-                      ).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
+                      {maxSlopeDisplay.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
                     </span>
                   </div>
                 </div>
@@ -565,7 +573,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 {/* Miscellaneous status bar for HR or point length */}
                 <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/60 dark:border-slate-800/60 pt-1.5 mt-0.5">
                   <span>{track.points.length.toLocaleString('de-DE')} GPX-Punkte</span>
-                  {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
+                  {hasHR && (
                     <span className="flex items-center gap-1 text-[9px] font-semibold text-rose-600 dark:text-rose-400">
                       <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 shrink-0" /> HF-Daten
                     </span>
@@ -802,7 +810,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
       </div>
     </div>
   );
-};
+});
 
 interface SidebarProps {
   tracks: GPXTrack[];

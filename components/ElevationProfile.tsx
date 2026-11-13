@@ -795,6 +795,307 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setDragCurrentX(null);
   };
 
+  const graphWidth = width - padding.left - padding.right;
+  const graphHeight = height - padding.top - padding.bottom;
+
+  const selectionStats = useMemo(() => {
+    const empty = {
+      selectedRegions: [] as { startX: number; endX: number }[],
+      selectedPolylines: [] as string[],
+      selectedAscent: 0,
+      selectedDescent: 0,
+      selectedDistance: 0,
+      selectedSurfaceStats: [] as { type: string; distance: number }[],
+      selectedStartKm: 0,
+      selectedEndKm: 0,
+      selectedAvgHr: null as number | null,
+      selectedAvgPower: null as number | null,
+      selectedVam: null as number | null,
+      isRunOrFit: false,
+      selectedPaceStr: null as string | null,
+      selectedSpeedKmh: estimatedSpeed,
+      selectedAvgGrade: 0,
+    };
+
+    if (!profileData) return empty;
+
+    const { data, minEle, distRange, eleRange } = profileData;
+    const selectedRegions: { startX: number; endX: number }[] = [];
+    const selectedPolylines: string[] = [];
+    let currentPolyline: string[] = [];
+    let currentRegion: { startX: number; endX: number } | null = null;
+    let selectedAscent = 0;
+    let selectedDescent = 0;
+    let selectedDistance = 0;
+    let selectedEnergy = 0;
+    let selectionElapsedSecs = 0;
+    let selectedSurfaceStats: { type: string; distance: number }[] = [];
+    let selectedStartKm = 0;
+    let selectedEndKm = 0;
+    let selectedInBoundsCount = 0;
+    let selectedHrSum = 0;
+    let selectedHrCount = 0;
+
+    if (selectionBounds) {
+      const selectionMedianDtSec = estimateMedianSamplingIntervalSec(track.points || []);
+
+      for (let i = 0; i < data.length; i++) {
+        const p = data[i];
+        const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
+                         p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
+
+        const x = (p.dist / distRange) * graphWidth + padding.left;
+        const y = height - padding.bottom - ((p.ele - minEle) / eleRange) * graphHeight;
+
+        if (inBounds) {
+          currentPolyline.push(`${x},${y}`);
+          if (!currentRegion) {
+            currentRegion = { startX: x, endX: x };
+          } else {
+            currentRegion.endX = x;
+          }
+
+          if (selectedInBoundsCount === 0) {
+            selectedStartKm = p.dist;
+          }
+          selectedEndKm = p.dist;
+          selectedInBoundsCount++;
+
+          if (p.hr && p.hr > 0) {
+            selectedHrSum += p.hr;
+            selectedHrCount++;
+          }
+
+          if (i > 0) {
+            const prevP = data[i - 1];
+            const prevInBounds = prevP.lat >= selectionBounds.minLat && prevP.lat <= selectionBounds.maxLat &&
+                                 prevP.lng >= selectionBounds.minLng && prevP.lng <= selectionBounds.maxLng;
+            if (prevInBounds) {
+              const diff = p.ele - prevP.ele;
+              if (diff > 0) selectedAscent += diff;
+              else selectedDescent += Math.abs(diff);
+              selectedDistance += (p.dist - prevP.dist);
+
+              // Time-weighted power & active pace calculation (skip pause/timer-stop gaps)
+              const pMs = toValidTimestampMs(p.time);
+              const prevMs = toValidTimestampMs(prevP.time);
+              if (pMs !== undefined && prevMs !== undefined) {
+                const dt = (pMs - prevMs) / 1000;
+                const segKm = Math.max(0, p.dist - prevP.dist);
+                if (dt > 0 && dt < 300 && !isRecordingPauseGap(dt, segKm, selectionMedianDtSec)) {
+                  selectedEnergy += (prevP.power ?? 0) * dt;
+                  selectionElapsedSecs += dt;
+                }
+              }
+            }
+          }
+        } else {
+          if (currentRegion) {
+            selectedRegions.push(currentRegion);
+            currentRegion = null;
+          }
+          if (currentPolyline.length > 0) {
+            selectedPolylines.push(currentPolyline.join(' '));
+            currentPolyline = [];
+          }
+        }
+      }
+      if (currentRegion) {
+        selectedRegions.push(currentRegion);
+      }
+      if (currentPolyline.length > 0) {
+        selectedPolylines.push(currentPolyline.join(' '));
+      }
+
+      // Generate real surface stats for the selected distance by walking the in-bounds points
+      if (selectedDistance > 0) {
+        const statsMap: Record<string, number> = {};
+
+        for (let i = 1; i < data.length; i++) {
+          const pCurrent = data[i];
+          const pPrevious = data[i - 1];
+
+          const currentInBounds = pCurrent.lat >= selectionBounds.minLat && pCurrent.lat <= selectionBounds.maxLat &&
+                                  pCurrent.lng >= selectionBounds.minLng && pCurrent.lng <= selectionBounds.maxLng;
+          const previousInBounds = pPrevious.lat >= selectionBounds.minLat && pPrevious.lat <= selectionBounds.maxLat &&
+                                   pPrevious.lng >= selectionBounds.minLng && pPrevious.lng <= selectionBounds.maxLng;
+
+          if (currentInBounds && previousInBounds) {
+            const stepDist = pCurrent.dist - pPrevious.dist;
+            const sType = pCurrent.surface || "Asphalt";
+            statsMap[sType] = (statsMap[sType] || 0) + stepDist;
+          }
+        }
+
+        selectedSurfaceStats = Object.entries(statsMap)
+          .map(([type, distance]) => ({ type, distance }))
+          .sort((a, b) => b.distance - a.distance);
+
+        if (selectedSurfaceStats.length === 0) {
+          selectedSurfaceStats = [{ type: "Asphalt", distance: selectedDistance }];
+        }
+      }
+    }
+
+    const selectedAvgHr = selectedHrCount > 0 ? Math.round(selectedHrSum / selectedHrCount) : null;
+    const selectedAvgPower = selectionElapsedSecs > 0 ? Math.round(selectedEnergy / selectionElapsedSecs) : null;
+    const selectedVam = selectionElapsedSecs > 10 && selectedAscent > 5 ? Math.round((selectedAscent / selectionElapsedSecs) * 3600) : null;
+    const isRunOrFit = isFitTrack(track) || track.activityType === 'running';
+    const selectedPaceStr = selectionElapsedSecs > 0 && selectedDistance > 0.03
+      ? formatPace(selectionElapsedSecs, selectedDistance)
+      : (estimatedSpeed ? getPaceString(estimatedSpeed) : null);
+    const selectedSpeedKmh = selectionElapsedSecs > 0 && selectedDistance > 0.03
+      ? (selectedDistance / (selectionElapsedSecs / 3600))
+      : estimatedSpeed;
+    const selectedAvgGrade = selectedDistance > 0.05
+      ? ((selectedAscent - selectedDescent) / (selectedDistance * 1000)) * 100
+      : 0;
+
+    return {
+      selectedRegions,
+      selectedPolylines,
+      selectedAscent,
+      selectedDescent,
+      selectedDistance,
+      selectedSurfaceStats,
+      selectedStartKm,
+      selectedEndKm,
+      selectedAvgHr,
+      selectedAvgPower,
+      selectedVam,
+      isRunOrFit,
+      selectedPaceStr,
+      selectedSpeedKmh,
+      selectedAvgGrade,
+    };
+  }, [profileData, selectionBounds, graphWidth, graphHeight, height, padding.left, padding.bottom, track, estimatedSpeed]);
+
+  const svgPaths = useMemo(() => {
+    if (!profileData || profileData.data.length === 0) {
+      return {
+        points: '',
+        areaPath: '',
+        powerPoints: '',
+        hrPoints: '',
+        slopePoints: '',
+        speedPoints: '',
+        cadencePoints: '',
+      };
+    }
+
+    const { data, minEle, distRange, eleRange, maxEleIdx, maxPosSlopeIdx } = profileData;
+    const n = data.length;
+    const maxRenderPoints = 1200;
+
+    let decimated: typeof data;
+    if (n <= maxRenderPoints) {
+      decimated = data;
+    } else {
+      const idxSet = new Set<number>();
+      const step = (n - 1) / (maxRenderPoints - 1);
+      for (let i = 0; i < maxRenderPoints; i++) {
+        idxSet.add(Math.round(i * step));
+      }
+      if (maxEleIdx >= 0 && maxEleIdx < n) idxSet.add(maxEleIdx);
+      if (maxPosSlopeIdx >= 0 && maxPosSlopeIdx < n) idxSet.add(maxPosSlopeIdx);
+      const sortedIndices = Array.from(idxSet).sort((a, b) => a - b);
+      decimated = sortedIndices.map((idx) => data[idx]);
+    }
+
+    const points = showElevation
+      ? decimated
+          .map((d) => {
+            const x = (d.dist / distRange) * graphWidth + padding.left;
+            const y = height - padding.bottom - ((d.ele - minEle) / eleRange) * graphHeight;
+            return `${x},${y}`;
+          })
+          .join(' ')
+      : '';
+
+    const areaPath = showElevation && points
+      ? `M${padding.left},${height - padding.bottom} ${points} L${width - padding.right},${height - padding.bottom} Z`
+      : '';
+
+    const powerPoints = showPower && profileData.hasPower
+      ? decimated
+          .filter((d) => d.displayPower !== undefined)
+          .map((d) => {
+            const px = padding.left + (d.dist / distRange) * graphWidth;
+            const py = height - padding.bottom - ((d.displayPower! - profileData.minPower) / profileData.powerRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
+    const hrPoints = showHr && profileData.hasHr
+      ? decimated
+          .filter((d) => d.hr !== undefined)
+          .map((d) => {
+            const px = padding.left + (d.dist / distRange) * graphWidth;
+            const py = height - padding.bottom - ((d.hr! - profileData.minHr) / profileData.hrRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
+    const slopePoints = showSlope
+      ? decimated
+          .map((d) => {
+            const px = padding.left + (d.dist / distRange) * graphWidth;
+            const py = height - padding.bottom - ((d.slope - profileData.slopeMinLimit) / profileData.slopeRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
+    const speedPoints = showSpeed && profileData.hasSpeed
+      ? decimated
+          .filter((d) => d.speed !== undefined)
+          .map((d) => {
+            const px = padding.left + (d.dist / distRange) * graphWidth;
+            const py = height - padding.bottom - ((d.speed! - profileData.minSpeedVal) / profileData.speedRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
+    const cadencePoints = showCadence && profileData.hasCadence
+      ? decimated
+          .filter((d) => d.cadence !== undefined)
+          .map((d) => {
+            const px = padding.left + (d.dist / distRange) * graphWidth;
+            const py = height - padding.bottom - ((d.cadence! - profileData.minCadenceVal) / profileData.cadenceRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
+    return {
+      points,
+      areaPath,
+      powerPoints,
+      hrPoints,
+      slopePoints,
+      speedPoints,
+      cadencePoints,
+    };
+  }, [
+    profileData,
+    graphWidth,
+    graphHeight,
+    width,
+    height,
+    padding.left,
+    padding.right,
+    padding.bottom,
+    showElevation,
+    showPower,
+    showHr,
+    showSlope,
+    showSpeed,
+    showCadence,
+  ]);
+
   if (!profileData) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-slate-400">
@@ -804,8 +1105,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }
 
   const { data, minEle, maxEle, distRange, eleRange, maxPosSlopeVal, maxPosSlopeIdx } = profileData;
-  const graphWidth = width - padding.left - padding.right;
-  const graphHeight = height - padding.top - padding.bottom;
+  const {
+    selectedRegions,
+    selectedPolylines,
+    selectedAscent,
+    selectedDescent,
+    selectedDistance,
+    selectedSurfaceStats,
+    selectedStartKm,
+    selectedEndKm,
+    selectedAvgHr,
+    selectedAvgPower,
+    selectedVam,
+    isRunOrFit,
+    selectedPaceStr,
+    selectedSpeedKmh,
+    selectedAvgGrade,
+  } = selectionStats;
+  const { points, areaPath } = svgPaths;
 
   const powerStops: React.ReactNode[] = [];
   if (profileData.hasPower) {
@@ -828,147 +1145,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
        if (offset >= 1) break;
     }
   }
-
-  // Calculate selected regions and stats
-  const selectedRegions: {startX: number, endX: number}[] = [];
-  const selectedPolylines: string[] = [];
-  let currentPolyline: string[] = [];
-  let currentRegion: {startX: number, endX: number} | null = null;
-  let selectedAscent = 0;
-  let selectedDescent = 0;
-  let selectedDistance = 0;
-  let selectedEnergy = 0;
-  let selectionElapsedSecs = 0;
-  let selectedSurfaceStats: {type: string, distance: number}[] = [];
-  let selectedStartKm = 0;
-  let selectedEndKm = 0;
-  let selectedInBoundsCount = 0;
-  let selectedHrSum = 0;
-  let selectedHrCount = 0;
-
-  if (selectionBounds) {
-    const selectionMedianDtSec = estimateMedianSamplingIntervalSec(track.points || []);
-
-    for (let i = 0; i < data.length; i++) {
-      const p = data[i];
-      const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
-                       p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
-      
-      const x = (p.dist / distRange) * graphWidth + padding.left;
-      const y = height - padding.bottom - ((p.ele - minEle) / eleRange) * graphHeight;
-
-      if (inBounds) {
-        currentPolyline.push(`${x},${y}`);
-        if (!currentRegion) {
-          currentRegion = { startX: x, endX: x };
-        } else {
-          currentRegion.endX = x;
-        }
-
-        if (selectedInBoundsCount === 0) {
-          selectedStartKm = p.dist;
-        }
-        selectedEndKm = p.dist;
-        selectedInBoundsCount++;
-
-        if (p.hr && p.hr > 0) {
-          selectedHrSum += p.hr;
-          selectedHrCount++;
-        }
-
-        if (i > 0) {
-          const prevP = data[i-1];
-          const prevInBounds = prevP.lat >= selectionBounds.minLat && prevP.lat <= selectionBounds.maxLat &&
-                               prevP.lng >= selectionBounds.minLng && prevP.lng <= selectionBounds.maxLng;
-          if (prevInBounds) {
-            const diff = p.ele - prevP.ele;
-            if (diff > 0) selectedAscent += diff;
-            else selectedDescent += Math.abs(diff);
-            selectedDistance += (p.dist - prevP.dist);
-
-            // Time-weighted power & active pace calculation (skip pause/timer-stop gaps)
-            const pMs = toValidTimestampMs(p.time);
-            const prevMs = toValidTimestampMs(prevP.time);
-            if (pMs !== undefined && prevMs !== undefined) {
-              const dt = (pMs - prevMs) / 1000;
-              const segKm = Math.max(0, p.dist - prevP.dist);
-              if (dt > 0 && dt < 300 && !isRecordingPauseGap(dt, segKm, selectionMedianDtSec)) {
-                selectedEnergy += (prevP.power ?? 0) * dt;
-                selectionElapsedSecs += dt;
-              }
-            }
-          }
-        }
-      } else {
-        if (currentRegion) {
-          selectedRegions.push(currentRegion);
-          currentRegion = null;
-        }
-        if (currentPolyline.length > 0) {
-          selectedPolylines.push(currentPolyline.join(' '));
-          currentPolyline = [];
-        }
-      }
-    }
-    if (currentRegion) {
-      selectedRegions.push(currentRegion);
-    }
-    if (currentPolyline.length > 0) {
-      selectedPolylines.push(currentPolyline.join(' '));
-    }
-    
-    // Generate real surface stats for the selected distance by walking the in-bounds points
-    if (selectedDistance > 0) {
-      const statsMap: Record<string, number> = {};
-      
-      for (let i = 1; i < data.length; i++) {
-        const pCurrent = data[i];
-        const pPrevious = data[i - 1];
-        
-        const currentInBounds = pCurrent.lat >= selectionBounds.minLat && pCurrent.lat <= selectionBounds.maxLat &&
-                               pCurrent.lng >= selectionBounds.minLng && pCurrent.lng <= selectionBounds.maxLng;
-        const previousInBounds = pPrevious.lat >= selectionBounds.minLat && pPrevious.lat <= selectionBounds.maxLat &&
-                                pPrevious.lng >= selectionBounds.minLng && pPrevious.lng <= selectionBounds.maxLng;
-        
-        if (currentInBounds && previousInBounds) {
-          const stepDist = pCurrent.dist - pPrevious.dist;
-          const sType = pCurrent.surface || "Asphalt";
-          statsMap[sType] = (statsMap[sType] || 0) + stepDist;
-        }
-      }
-
-      selectedSurfaceStats = Object.entries(statsMap)
-        .map(([type, distance]) => ({ type, distance }))
-        .sort((a, b) => b.distance - a.distance);
-
-      // Symmetrical fallback if no specific surfaces are designated in the selection yet
-      if (selectedSurfaceStats.length === 0) {
-        selectedSurfaceStats = [{ type: "Asphalt", distance: selectedDistance }];
-      }
-    }
-  }
-
-  const selectedAvgHr = selectedHrCount > 0 ? Math.round(selectedHrSum / selectedHrCount) : null;
-  const selectedAvgPower = selectionElapsedSecs > 0 ? Math.round(selectedEnergy / selectionElapsedSecs) : null;
-  const selectedVam = selectionElapsedSecs > 10 && selectedAscent > 5 ? Math.round((selectedAscent / selectionElapsedSecs) * 3600) : null;
-  const isRunOrFit = isFitTrack(track) || track.activityType === 'running';
-  const selectedPaceStr = selectionElapsedSecs > 0 && selectedDistance > 0.03 
-    ? formatPace(selectionElapsedSecs, selectedDistance)
-    : (estimatedSpeed ? getPaceString(estimatedSpeed) : null);
-  const selectedSpeedKmh = selectionElapsedSecs > 0 && selectedDistance > 0.03
-    ? (selectedDistance / (selectionElapsedSecs / 3600))
-    : estimatedSpeed;
-  const selectedAvgGrade = selectedDistance > 0.05
-    ? ((selectedAscent - selectedDescent) / (selectedDistance * 1000)) * 100
-    : 0;
-
-  const points = data.map(d => {
-    const x = (d.dist / distRange) * graphWidth + padding.left;
-    const y = height - padding.bottom - ((d.ele - minEle) / eleRange) * graphHeight;
-    return `${x},${y}`;
-  }).join(' ');
-
-  const areaPath = `M${padding.left},${height - padding.bottom} ${points} L${width - padding.right},${height - padding.bottom} Z`;
 
   // Coordinates for marking the steepest uphill segment
   const maxSlopePoint = data[maxPosSlopeIdx];
@@ -1389,7 +1565,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 className="w-full mt-0.5 py-1 px-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold text-[9.5px] border border-indigo-200 dark:border-indigo-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95"
               >
                 <Crosshair className="w-3 h-3 text-indigo-500" />
-                <span>Start auf km {(hoverInfo.dist / 1000).toFixed(1)} setzen</span>
+                <span>Start auf km {hoverInfo.dist.toFixed(1)} setzen</span>
               </button>
             )}
           </div>
@@ -1948,63 +2124,33 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           )}
 
           {/* Power Line */}
-          {showPower && profileData.hasPower && (() => {
-            const powerPoints = profileData.data
-              .filter(d => d.displayPower !== undefined)
-              .map(d => {
-                const px = padding.left + (d.dist / profileData.distRange) * graphWidth;
-                const py = height - padding.bottom - ((d.displayPower! - profileData.minPower) / profileData.powerRange) * graphHeight;
-                return `${px},${py}`;
-              })
-              .join(' ');
-
-            return (
-              <polyline
-                fill="none"
-                stroke={`url(#power-gradient-${track.id})`}
-                strokeWidth="2.5"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={powerPoints}
-                opacity="1"
-              />
-            );
-          })()}
+          {showPower && profileData.hasPower && svgPaths.powerPoints && (
+            <polyline
+              fill="none"
+              stroke={`url(#power-gradient-${track.id})`}
+              strokeWidth="2.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.powerPoints}
+              opacity="1"
+            />
+          )}
 
           {/* Heart Rate Line */}
-          {showHr && profileData.hasHr && (() => {
-            const hrPoints = profileData.data
-              .filter(d => d.hr !== undefined)
-              .map(d => {
-                const px = padding.left + (d.dist / profileData.distRange) * graphWidth;
-                const py = height - padding.bottom - ((d.hr! - profileData.minHr) / profileData.hrRange) * graphHeight;
-                return `${px},${py}`;
-              })
-              .join(' ');
-
-            return (
-              <polyline
-                fill="none"
-                stroke="rgba(239, 68, 68, 0.5)" // Red with opacity
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={hrPoints}
-              />
-            );
-          })()}
+          {showHr && profileData.hasHr && svgPaths.hrPoints && (
+            <polyline
+              fill="none"
+              stroke="rgba(239, 68, 68, 0.5)" // Red with opacity
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.hrPoints}
+            />
+          )}
 
           {/* Slope Line & 0% Baseline */}
-          {showSlope && (() => {
+          {showSlope && svgPaths.slopePoints && (() => {
             const yZero = height - padding.bottom - ((0 - profileData.slopeMinLimit) / profileData.slopeRange) * graphHeight;
-            const slopePoints = profileData.data
-              .map(d => {
-                const px = padding.left + (d.dist / profileData.distRange) * graphWidth;
-                const py = height - padding.bottom - ((d.slope - profileData.slopeMinLimit) / profileData.slopeRange) * graphHeight;
-                return `${px},${py}`;
-              })
-              .join(' ');
-
             return (
               <g>
                 <line 
@@ -2022,57 +2168,35 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   strokeWidth="1.5"
                   strokeLinejoin="round"
                   strokeLinecap="round"
-                  points={slopePoints}
+                  points={svgPaths.slopePoints}
                 />
               </g>
             );
           })()}
 
           {/* Speed Line */}
-          {showSpeed && profileData.hasSpeed && (() => {
-            const speedPoints = profileData.data
-              .filter(d => d.speed !== undefined)
-              .map(d => {
-                const px = padding.left + (d.dist / profileData.distRange) * graphWidth;
-                const py = height - padding.bottom - ((d.speed! - profileData.minSpeedVal) / profileData.speedRange) * graphHeight;
-                return `${px},${py}`;
-              })
-              .join(' ');
-
-            return (
-              <polyline
-                fill="none"
-                stroke="rgba(20, 184, 166, 0.75)" // Teal
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={speedPoints}
-              />
-            );
-          })()}
+          {showSpeed && profileData.hasSpeed && svgPaths.speedPoints && (
+            <polyline
+              fill="none"
+              stroke="rgba(20, 184, 166, 0.75)" // Teal
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.speedPoints}
+            />
+          )}
 
           {/* Cadence Line */}
-          {showCadence && profileData.hasCadence && (() => {
-            const cadencePoints = profileData.data
-              .filter(d => d.cadence !== undefined)
-              .map(d => {
-                const px = padding.left + (d.dist / profileData.distRange) * graphWidth;
-                const py = height - padding.bottom - ((d.cadence! - profileData.minCadenceVal) / profileData.cadenceRange) * graphHeight;
-                return `${px},${py}`;
-              })
-              .join(' ');
-
-            return (
-              <polyline
-                fill="none"
-                stroke="rgba(168, 85, 247, 0.75)" // Purple
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={cadencePoints}
-              />
-            );
-          })()}
+          {showCadence && profileData.hasCadence && svgPaths.cadencePoints && (
+            <polyline
+              fill="none"
+              stroke="rgba(168, 85, 247, 0.75)" // Purple
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.cadencePoints}
+            />
+          )}
 
           {/* Selected Polylines */}
           {selectedPolylines.map((pts, i) => (
@@ -2473,15 +2597,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           )}
 
           {/* External Hover Point (From Map) */}
-          {!hoverInfo && hoveredPoint && (
+          {!hoverInfo && hoveredPoint && data.length > 0 && (
             (() => {
               let closestIdx = 0;
-              let minDiff = Infinity;
-              for (let i = 0; i < data.length; i++) {
-                const diff = Math.abs(data[i].lat - hoveredPoint.lat) + Math.abs(data[i].lng - hoveredPoint.lng);
-                if (diff < minDiff) {
-                  minDiff = diff;
-                  closestIdx = i;
+              const hoverDist = (hoveredPoint as { dist?: number }).dist;
+              if (typeof hoverDist === 'number' && Number.isFinite(hoverDist)) {
+                closestIdx = findClosestDataIdx(data, hoverDist);
+              } else {
+                let minDiff = Infinity;
+                for (let i = 0; i < data.length; i++) {
+                  const diff = Math.abs(data[i].lat - hoveredPoint.lat) + Math.abs(data[i].lng - hoveredPoint.lng);
+                  if (diff < minDiff) {
+                    minDiff = diff;
+                    closestIdx = i;
+                  }
                 }
               }
               const point = data[closestIdx];

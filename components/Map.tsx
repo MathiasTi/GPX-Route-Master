@@ -720,6 +720,7 @@ const Map: React.FC<MapProps> = ({
 
   // Deterministic POI Generator along active/visible routes
   const poiList = useMemo(() => {
+    if (!showPOIs) return [];
     const list: POI[] = [];
     const visibleTracks = tracks.filter(t => t.visible && hasRealGpsData(t));
 
@@ -866,7 +867,7 @@ const Map: React.FC<MapProps> = ({
     });
 
     return list;
-  }, [tracks, calculateDistance]);
+  }, [tracks, calculateDistance, showPOIs]);
 
   const visiblePOIs = useMemo(() => {
     if (!showPOIs) return [];
@@ -941,7 +942,7 @@ const Map: React.FC<MapProps> = ({
     ];
   }, [ftp]);
 
-  const getPointColorMode = (pt: GPXPoint, activityType?: 'cycling' | 'running') => {
+  const getPointColorMode = useCallback((pt: GPXPoint, activityType?: 'cycling' | 'running') => {
     if (colorMode === 'hr') {
       if (pt.hr === undefined) return null;
       const effectiveZones = activityType === 'running'
@@ -1000,7 +1001,220 @@ const Map: React.FC<MapProps> = ({
     }
 
     return null;
-  };
+  }, [colorMode, hrZones, powerZones]);
+
+  const hoverRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (hoverRafRef.current !== null) {
+        cancelAnimationFrame(hoverRafRef.current);
+        hoverRafRef.current = null;
+      }
+    };
+  }, []);
+
+  const pauseIcon = useMemo(() => new L.DivIcon({
+    className: 'custom-pause-icon',
+    html: `
+      <div class="relative">
+        <div class="bg-amber-500 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
+        </div>
+      </div>
+    `,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
+  }), []);
+
+  const preparedTracks = useMemo(() => {
+    return tracks
+      .filter(t => t.visible && hasRealGpsData(t))
+      .map(track => {
+        const isMarked = track.id === markedTrackId;
+        const validPoints = (track.points || [])
+          .map(p => {
+            if (!p) return null;
+            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+            if (!Number.isFinite(latVal) || !Number.isFinite(lngVal)) return null;
+            if (Math.abs(latVal) > 90 || Math.abs(lngVal) > 180) return null;
+            if (Math.abs(latVal) < 0.0001 && Math.abs(lngVal) < 0.0001) return null;
+            return { ...p, lat: latVal, lng: lngVal };
+          })
+          .filter((p): p is GPXPoint => p !== null);
+
+        if (validPoints.length === 0) return null;
+
+        const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 2500);
+        const positions = renderPoints.map(p => [p.lat, p.lng] as [number, number]);
+
+        const selectedPolylines: [number, number][][] = [];
+        if (isMarked && selectionBounds) {
+          let currentLine: [number, number][] = [];
+          renderPoints.forEach(p => {
+            const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
+                             p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
+            if (inBounds) {
+              currentLine.push([p.lat, p.lng]);
+            } else if (currentLine.length > 0) {
+              selectedPolylines.push(currentLine);
+              currentLine = [];
+            }
+          });
+          if (currentLine.length > 0) {
+            selectedPolylines.push(currentLine);
+          }
+        }
+
+        const displayTrackColor = sanitizeColor(track.color);
+
+        // Build continuous coalesced segments of identical surface types over simplified renderPoints
+        const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
+        if (renderPoints.length > 0) {
+          const pointsWithSurface = renderPoints.map((pt, idx) => {
+            if (pt.surface) return pt.surface;
+            if (track.surfaceStats && track.surfaceStats.length > 0 && track.distance > 0) {
+              const currentDist = (idx / Math.max(1, renderPoints.length - 1)) * track.distance;
+              let runningDist = 0;
+              for (const stat of track.surfaceStats) {
+                runningDist += stat.distance;
+                if (currentDist <= runningDist) return stat.type;
+              }
+              return track.surfaceStats[track.surfaceStats.length - 1].type;
+            }
+            return "Asphalt";
+          });
+
+          let currentSurface = pointsWithSurface[0];
+          let currentPositions: [number, number][] = [[renderPoints[0].lat, renderPoints[0].lng]];
+
+          for (let i = 1; i < renderPoints.length; i++) {
+            const pt = renderPoints[i];
+            const surf = pointsWithSurface[i];
+            if (surf === currentSurface) {
+              currentPositions.push([pt.lat, pt.lng]);
+            } else {
+              currentPositions.push([pt.lat, pt.lng]); // connect segment overlaps
+              surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
+              currentPositions = [[pt.lat, pt.lng]];
+              currentSurface = surf;
+            }
+          }
+          if (currentPositions.length > 0) {
+            surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
+          }
+        }
+
+        // Build continuous coalesced segments of identical zone colors over simplified renderPoints
+        const zoneSegments: { color: string; positions: [number, number][] }[] = [];
+        if (colorMode !== 'default' && renderPoints.length > 0) {
+          let activeSegmentColor: string | null = null;
+          let currentPositions: [number, number][] = [];
+
+          renderPoints.forEach((pt) => {
+            const color = getPointColorMode(pt, track.activityType);
+            const latlng: [number, number] = [pt.lat, pt.lng];
+
+            if (color === null) {
+              const fallbackColor = '#94a3b8'; // gray fallback
+              if (activeSegmentColor === null) {
+                currentPositions = [latlng];
+                activeSegmentColor = fallbackColor;
+              } else if (activeSegmentColor !== fallbackColor) {
+                currentPositions.push(latlng);
+                zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+                currentPositions = [latlng];
+                activeSegmentColor = fallbackColor;
+              } else {
+                currentPositions.push(latlng);
+              }
+            } else {
+              if (activeSegmentColor === null) {
+                currentPositions = [latlng];
+                activeSegmentColor = color;
+              } else if (color === activeSegmentColor) {
+                currentPositions.push(latlng);
+              } else {
+                currentPositions.push(latlng);
+                zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+                currentPositions = [latlng];
+                activeSegmentColor = color;
+              }
+            }
+          });
+
+          if (currentPositions.length > 0 && activeSegmentColor !== null) {
+            zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+          }
+        }
+
+        // Pauses > 5 minutes
+        const pauses: { lat: number; lng: number; durationMins: number; startTime: Date; endTime: Date; idx: number }[] = [];
+        const rawPts = track.points || [];
+        for (let i = 1; i < rawPts.length; i++) {
+          const p = rawPts[i];
+          const prevP = rawPts[i - 1];
+          const pMs = toValidTimestampMs(p.time);
+          const prevMs = toValidTimestampMs(prevP.time);
+          if (pMs !== undefined && prevMs !== undefined) {
+            const diffMs = pMs - prevMs;
+            if (diffMs > 5 * 60 * 1000) {
+              pauses.push({
+                lat: prevP.lat,
+                lng: prevP.lng,
+                durationMins: Math.floor(diffMs / 60000),
+                startTime: prevP.time as Date,
+                endTime: p.time as Date,
+                idx: i
+              });
+            }
+          }
+        }
+
+        // Active route flow directional arrows
+        const arrows: { lat: number; lng: number; angle: number; idx: number }[] = [];
+        if (isMarked && rawPts.length >= 2) {
+          const cumDist: number[] = [0];
+          let totalD = 0;
+          for (let i = 1; i < rawPts.length; i++) {
+            const segmentD = calculateDistance(rawPts[i - 1], rawPts[i]);
+            totalD += segmentD;
+            cumDist.push(totalD);
+          }
+
+          if (totalD > 0) {
+            const numArrows = 12; // Spaced evenly along the entire route
+            for (let j = 1; j < numArrows; j++) {
+              const targetDist = (totalD * j) / numArrows;
+              let idx = 0;
+              while (idx < cumDist.length - 1 && cumDist[idx + 1] < targetDist) {
+                idx++;
+              }
+              const p1 = rawPts[idx];
+              const p2 = rawPts[Math.min(idx + 1, rawPts.length - 1)];
+              if (p1 && p2) {
+                const angle = getBearing(p1.lat, p1.lng, p2.lat, p2.lng);
+                arrows.push({ lat: p1.lat, lng: p1.lng, angle, idx: j });
+              }
+            }
+          }
+        }
+
+        return {
+          track,
+          isMarked,
+          validPoints,
+          positions,
+          selectedPolylines,
+          displayTrackColor,
+          surfaceSegments,
+          zoneSegments,
+          pauses,
+          arrows,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  }, [tracks, markedTrackId, selectionBounds, colorMode, getPointColorMode, calculateDistance]);
 
   const isDarkTile = isDark && activeLayer !== MapLayer.SATELLITE;
 
@@ -1024,127 +1238,18 @@ const Map: React.FC<MapProps> = ({
 
         <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
         
-        {tracks.filter(t => t.visible && hasRealGpsData(t)).map(track => {
-          const isMarked = track.id === markedTrackId;
-          const validPoints = (track.points || [])
-            .map(p => {
-              if (!p) return null;
-              const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
-              const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-              if (!Number.isFinite(latVal) || !Number.isFinite(lngVal)) return null;
-              if (Math.abs(latVal) > 90 || Math.abs(lngVal) > 180) return null;
-              if (Math.abs(latVal) < 0.0001 && Math.abs(lngVal) < 0.0001) return null;
-              return { ...p, lat: latVal, lng: lngVal };
-            })
-            .filter((p): p is GPXPoint => p !== null);
-          
-          if (validPoints.length === 0) return null;
-
-          const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 2500);
-          const positions = renderPoints.map(p => [p.lat, p.lng] as [number, number]);
-          
-          let selectedPolylines: [number, number][][] = [];
-          if (isMarked && selectionBounds) {
-            let currentLine: [number, number][] = [];
-            renderPoints.forEach(p => {
-              const inBounds = p.lat >= selectionBounds.minLat && p.lat <= selectionBounds.maxLat &&
-                               p.lng >= selectionBounds.minLng && p.lng <= selectionBounds.maxLng;
-              if (inBounds) {
-                currentLine.push([p.lat, p.lng]);
-              } else {
-                if (currentLine.length > 0) {
-                  selectedPolylines.push(currentLine);
-                  currentLine = [];
-                }
-              }
-            });
-            if (currentLine.length > 0) {
-              selectedPolylines.push(currentLine);
-            }
-          }
-
-          const displayTrackColor = sanitizeColor(track.color);
-
-          // Build continuous coalesced segments of identical surface types over simplified renderPoints
-          const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
-          if (renderPoints.length > 0) {
-            const pointsWithSurface = renderPoints.map((pt, idx) => {
-              if (pt.surface) return pt.surface;
-              if (track.surfaceStats && track.surfaceStats.length > 0 && track.distance > 0) {
-                const currentDist = (idx / Math.max(1, renderPoints.length - 1)) * track.distance;
-                let runningDist = 0;
-                for (const stat of track.surfaceStats) {
-                  runningDist += stat.distance;
-                  if (currentDist <= runningDist) return stat.type;
-                }
-                return track.surfaceStats[track.surfaceStats.length - 1].type;
-              }
-              return "Asphalt";
-            });
-
-            let currentSurface = pointsWithSurface[0];
-            let currentPositions: [number, number][] = [[renderPoints[0].lat, renderPoints[0].lng]];
-
-            for (let i = 1; i < renderPoints.length; i++) {
-              const pt = renderPoints[i];
-              const surf = pointsWithSurface[i];
-              if (surf === currentSurface) {
-                currentPositions.push([pt.lat, pt.lng]);
-              } else {
-                currentPositions.push([pt.lat, pt.lng]); // connect segment overlaps
-                surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
-                currentPositions = [[pt.lat, pt.lng]];
-                currentSurface = surf;
-              }
-            }
-            if (currentPositions.length > 0) {
-              surfaceSegments.push({ surface: currentSurface, positions: currentPositions });
-            }
-          }
-
-          // Build continuous coalesced segments of identical zone colors over simplified renderPoints
-          const zoneSegments: { color: string; positions: [number, number][] }[] = [];
-          if (colorMode !== 'default' && renderPoints.length > 0) {
-            let activeSegmentColor: string | null = null;
-            let currentPositions: [number, number][] = [];
-
-            renderPoints.forEach((pt) => {
-              const color = getPointColorMode(pt, track.activityType);
-              const latlng: [number, number] = [pt.lat, pt.lng];
-
-              if (color === null) {
-                const fallbackColor = '#94a3b8'; // gray fallback
-                if (activeSegmentColor === null) {
-                  currentPositions = [latlng];
-                  activeSegmentColor = fallbackColor;
-                } else if (activeSegmentColor !== fallbackColor) {
-                  currentPositions.push(latlng);
-                  zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
-                  currentPositions = [latlng];
-                  activeSegmentColor = fallbackColor;
-                } else {
-                  currentPositions.push(latlng);
-                }
-              } else {
-                if (activeSegmentColor === null) {
-                  currentPositions = [latlng];
-                  activeSegmentColor = color;
-                } else if (color === activeSegmentColor) {
-                  currentPositions.push(latlng);
-                } else {
-                  currentPositions.push(latlng);
-                  zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
-                  currentPositions = [latlng];
-                  activeSegmentColor = color;
-                }
-              }
-            });
-
-            if (currentPositions.length > 0 && activeSegmentColor !== null) {
-              zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
-            }
-          }
-
+        {preparedTracks.map(({
+          track,
+          isMarked,
+          validPoints,
+          positions,
+          selectedPolylines,
+          displayTrackColor,
+          surfaceSegments,
+          zoneSegments,
+          pauses,
+          arrows,
+        }) => {
           return (
             <React.Fragment key={track.id}>
               {/* Invisible thick line for easier hovering/clicking that holds the Popup */}
@@ -1160,12 +1265,19 @@ const Map: React.FC<MapProps> = ({
                     setRecenterTrigger(prev => prev + 1);
                   },
                   mousemove: (e) => {
-                    if (onHoverPoint) {
+                    if (!onHoverPoint) return;
+                    const lat = e.latlng.lat;
+                    const lng = e.latlng.lng;
+                    if (hoverRafRef.current !== null) {
+                      cancelAnimationFrame(hoverRafRef.current);
+                    }
+                    hoverRafRef.current = requestAnimationFrame(() => {
+                      hoverRafRef.current = null;
                       let closestIndex = 0;
                       let minDiff = Infinity;
                       for (let i = 0; i < validPoints.length; i++) {
                         const pt = validPoints[i];
-                        const diff = Math.abs(pt.lat - e.latlng.lat) + Math.abs(pt.lng - e.latlng.lng);
+                        const diff = Math.abs(pt.lat - lat) + Math.abs(pt.lng - lng);
                         if (diff < minDiff) {
                           minDiff = diff;
                           closestIndex = i;
@@ -1201,9 +1313,13 @@ const Map: React.FC<MapProps> = ({
                         dist: pointDist,
                         trackId: track.id
                       } as GPXPoint);
-                    }
+                    });
                   },
                   mouseout: () => {
+                    if (hoverRafRef.current !== null) {
+                      cancelAnimationFrame(hoverRafRef.current);
+                      hoverRafRef.current = null;
+                    }
                     if (onHoverPoint) onHoverPoint(null);
                   }
                 }}
@@ -1292,106 +1408,42 @@ const Map: React.FC<MapProps> = ({
               ))}
 
               {/* Pauses > 5 minutes */}
-              {(() => {
-                const pauses = [];
-                for (let i = 1; i < track.points.length; i++) {
-                  const p = track.points[i];
-                  const prevP = track.points[i - 1];
-                  const pMs = toValidTimestampMs(p.time);
-                  const prevMs = toValidTimestampMs(prevP.time);
-                  if (pMs !== undefined && prevMs !== undefined) {
-                    const diffMs = pMs - prevMs;
-                    if (diffMs > 5 * 60 * 1000) {
-                      pauses.push({
-                        lat: prevP.lat,
-                        lng: prevP.lng,
-                        durationMins: Math.floor(diffMs / 60000),
-                        startTime: prevP.time,
-                        endTime: p.time,
-                        idx: i
-                      });
-                    }
-                  }
-                }
-                return pauses.map(pause => (
-                  <LeafletMarker
-                    key={`pause-${track.id}-${pause.idx}`}
-                    position={[pause.lat, pause.lng]}
-                    icon={new L.DivIcon({
-                      className: 'custom-pause-icon',
-                      html: `
-                        <div class="relative">
-                          <div class="bg-amber-500 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
-                          </div>
-                        </div>
-                      `,
-                      iconSize: [24, 24],
-                      iconAnchor: [12, 12]
-                    })}
-                  >
-                    <Popup>
-                      <div className="font-bold text-amber-600">Pause</div>
-                      <div>Dauer: {pause.durationMins} Minuten</div>
-                      <div>Start: {pause.startTime.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
-                      <div>Ende: {pause.endTime.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
-                    </Popup>
-                  </LeafletMarker>
-                ));
-              })()}
+              {pauses.map(pause => (
+                <LeafletMarker
+                  key={`pause-${track.id}-${pause.idx}`}
+                  position={[pause.lat, pause.lng]}
+                  icon={pauseIcon}
+                >
+                  <Popup>
+                    <div className="font-bold text-amber-600">Pause</div>
+                    <div>Dauer: {pause.durationMins} Minuten</div>
+                    <div>Start: {new Date(pause.startTime).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
+                    <div>Ende: {new Date(pause.endTime).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
+                  </Popup>
+                </LeafletMarker>
+              ))}
 
               {/* Active Route Flow Directional Arrows */}
-              {isMarked && (() => {
-                const pts = track.points;
-                if (pts.length < 2) return null;
-                
-                const cumDist: number[] = [0];
-                let totalD = 0;
-                for (let i = 1; i < pts.length; i++) {
-                  const segmentD = calculateDistance(pts[i - 1], pts[i]);
-                  totalD += segmentD;
-                  cumDist.push(totalD);
-                }
-                
-                const arrows: { lat: number, lng: number, angle: number, idx: number }[] = [];
-                if (totalD > 0) {
-                  const numArrows = 12; // Spaced evenly along the entire route
-                  for (let j = 1; j < numArrows; j++) {
-                    const targetDist = (totalD * j) / numArrows;
-                    let idx = 0;
-                    while (idx < cumDist.length - 1 && cumDist[idx + 1] < targetDist) {
-                      idx++;
-                    }
-                    const p1 = pts[idx];
-                    const p2 = pts[Math.min(idx + 1, pts.length - 1)];
-                    if (p1 && p2) {
-                      const angle = getBearing(p1.lat, p1.lng, p2.lat, p2.lng);
-                      arrows.push({ lat: p1.lat, lng: p1.lng, angle, idx: j });
-                    }
-                  }
-                }
-                
-                return arrows.map(arrow => (
-                  <LeafletMarker
-                    key={`arrow-${track.id}-${arrow.idx}`}
-                    position={[arrow.lat, arrow.lng]}
-                    interactive={false}
-                    icon={new L.DivIcon({
-                      className: 'custom-arrow-icon',
-                      html: `
-                        <div style="transform: rotate(${arrow.angle}deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">
-                          <svg viewBox="0 0 24 24" width="22" height="22" style="filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.65));">
-                            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" />
-                            <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${track.color || '#3b82f6'}" />
-                          </svg>
-                        </div>
-                      `,
-                      iconSize: [24, 24],
-                      iconAnchor: [12, 12]
-                    })}
-                  />
-                ));
-              })()}
+              {arrows.map(arrow => (
+                <LeafletMarker
+                  key={`arrow-${track.id}-${arrow.idx}`}
+                  position={[arrow.lat, arrow.lng]}
+                  interactive={false}
+                  icon={new L.DivIcon({
+                    className: 'custom-arrow-icon',
+                    html: `
+                      <div style="transform: rotate(${arrow.angle}deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">
+                        <svg viewBox="0 0 24 24" width="22" height="22" style="filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.65));">
+                          <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" />
+                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${track.color || '#3b82f6'}" />
+                        </svg>
+                      </div>
+                    `,
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                  })}
+                />
+              ))}
 
               {/* Start- and Endepunkte für die aktive Route */}
               {isMarked && validPoints.length > 0 && (() => {

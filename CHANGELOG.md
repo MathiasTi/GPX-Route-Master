@@ -1,4 +1,4 @@
-# Changelog test
+# Changelog
 
 All notable changes to **GPX Route Master** are documented in this file.
 

@@ -18,6 +18,8 @@ import { runSafeTimeTests } from '../tests/safeTime.test';
 import { runMobileTelemetryPillTests } from '../tests/mobileTelemetryPill.test';
 import { runCleanArchitecturePortsAdaptersTests } from '../tests/cleanArchitecturePortsAdapters.test';
 import { runPowerZonesTests } from '../tests/powerZones.test';
+import { runGarminSessionKeyTests } from '../tests/garminSessionKey.test';
+import { runActivitiesCatalogTests } from '../tests/activitiesCatalog.test';
 
 async function main() {
   try {
@@ -43,8 +45,10 @@ async function main() {
     const safeTimeSuccess = runSafeTimeTests();
     const mobilePillSuccess = runMobileTelemetryPillTests();
     const powerZonesSuccess = runPowerZonesTests();
+    const garminSessionKeySuccess = await runGarminSessionKeyTests();
+    const activitiesCatalogSuccess = runActivitiesCatalogTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

@@ -92,7 +92,7 @@ export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
         <div className="relative">
           <BarChart2 size={20} />
           {!isProfileCollapsed && hasTrack && (
-            <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-slate-900 animate-pulse" />
+            <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-slate-900" />
           )}
         </div>
         <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">

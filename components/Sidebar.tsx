@@ -3,8 +3,8 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
-import { getApiUrl } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard } from 'lucide-react';
+import { getApiUrl, apiFetch } from '../utils/api';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
@@ -44,6 +44,7 @@ interface TrackItemProps {
   estimatedSpeed: number;
   onOpenAnalytics?: (id: string) => void;
   onOpenIntensiveAnalysis?: (id: string) => void;
+  onOpenVideoExport?: (id: string) => void;
   onOpenTrainingZones?: (id: string) => void;
   onOpenClimbs?: (id: string) => void;
   onAnalyzeSurface?: (id: string, force?: boolean) => void;
@@ -71,6 +72,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
   estimatedSpeed, 
   onOpenAnalytics, 
   onOpenIntensiveAnalysis,
+  onOpenVideoExport,
   onOpenTrainingZones,
   onOpenClimbs, 
   onAnalyzeSurface,
@@ -181,28 +183,19 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
             </div>
             
             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-              {track.activityType === 'running' ? (
-                <span 
-                  className="inline-flex items-center gap-0.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md border border-emerald-200/40 dark:border-emerald-900/30"
-                  title="Automatisch erkannt: Laufen"
-                >
-                  🏃
-                </span>
-              ) : (
-                <span 
-                  className="inline-flex items-center gap-0.5 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md border border-blue-200/40 dark:border-blue-900/30"
-                  title="Automatisch erkannt: Radsport"
-                >
-                  🚴
-                </span>
-              )}
+              <span
+                className="text-xs select-none px-1"
+                title={track.activityType === 'running' ? 'Automatisch erkannt: Laufen' : 'Automatisch erkannt: Radsport'}
+              >
+                {track.activityType === 'running' ? '🏃' : '🚴'}
+              </span>
 
               {/* Quick Intensive Analysis Cockpit button */}
               {onOpenIntensiveAnalysis && (
                 <button
                   type="button"
                   onClick={() => onOpenIntensiveAnalysis(track.id)}
-                  className="p-1 rounded-md border bg-purple-50 hover:bg-purple-100 text-purple-600 border-purple-200/60 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 dark:text-purple-400 dark:border-purple-900/50 transition-all cursor-pointer flex items-center justify-center"
+                  className="p-1.5 rounded-md border bg-purple-50 hover:bg-purple-100 text-purple-600 border-purple-200/70 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 dark:text-purple-400 dark:border-purple-900/50 transition-colors cursor-pointer flex items-center justify-center"
                   title="Analyse-Cockpit öffnen (Splits, Berge, Leistung, Zonen & Rohdaten)"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
@@ -213,10 +206,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               <button 
                 type="button"
                 onClick={() => onToggleVisibility(track.id)} 
-                className={`p-1 rounded-md border transition-all cursor-pointer flex items-center justify-center ${
+                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
                   track.visible 
-                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/60 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700' 
-                    : 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-200/60 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/50'
+                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/70 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 dark:border-slate-700' 
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-200/70 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/50'
                 }`}
                 title={track.visible ? "Sichtbar (Klicken zum Ausblenden)" : "Ausgeblendet (Klicken zum Einblenden)"}
               >
@@ -227,10 +220,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
               <button
                 type="button"
                 onClick={handleToggleExpand}
-                className={`p-1 rounded-md border transition-all cursor-pointer flex items-center justify-center ${
+                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
                   expanded 
-                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/50' 
-                    : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 border-slate-200/60 dark:border-slate-700'
+                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200/70 dark:border-blue-900/50' 
+                    : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-slate-700'
                 }`}
                 title={expanded ? "Details einklappen" : "Details ausklappen"}
                 aria-expanded={expanded}
@@ -284,190 +277,212 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
           {/* Expanded Content Section */}
           {expanded && (
             <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
-              {/* Action buttons (Sichtbar, Analyse, Zonen, etc.) */}
-              <div className="grid grid-cols-4 gap-1.5 bg-slate-50/70 dark:bg-slate-900/40 p-1.5 rounded-xl border border-slate-200/60 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
-                <button 
-                  type="button"
-                  onClick={() => onToggleVisibility(track.id)} 
-                  className={`p-1.5 rounded-lg border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold shadow-2xs ${
-                    track.visible 
-                      ? 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200/80 dark:bg-slate-850 dark:hover:bg-slate-800 dark:text-slate-200 dark:border-slate-700/70' 
-                      : 'bg-amber-50/80 hover:bg-amber-100/80 text-amber-700 border-amber-300/80 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800'
-                  }`}
-                  title="Sichtbarkeit umschalten"
-                >
-                  {track.visible ? <Eye className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" /> : <EyeOff className="w-3.5 h-3.5 text-amber-500" />}
-                  <span>{track.visible ? "Sichtbar" : "Ausgebl."}</span>
-                </button>
-                
-                {onOpenIntensiveAnalysis && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenIntensiveAnalysis(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                    <span>Intensiv</span>
-                  </button>
-                )}
-
-                {onOpenAnalytics && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenAnalytics(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Ausführliche Daten- & Leistungsanalyse"
-                  >
-                    <BarChart2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>Analyse</span>
-                  </button>
-                )}
-
-                {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenClimbs(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Steigungs- & Bergwertungs-Analyse öffnen"
-                  >
-                    <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span>Berge ({trackClimbs.length})</span>
-                  </button>
-                )}
-
-                {onOpenTrainingZones && (track.powerStats || track.points.some(p => p.hr !== undefined && p.hr > 0)) && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenTrainingZones(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Trainingszonen & Puls-Analyse öffnen"
-                  >
-                    <Heart className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 fill-rose-50 dark:fill-transparent" />
-                    <span>Zonen</span>
-                  </button>
-                )}
-
-                {onOpenRawData && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenRawData(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Rohdaten & Telemetrie-Sätze inspizieren"
-                  >
-                    <FileCode className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
-                    <span>Rohdaten</span>
-                  </button>
-                )}
-
-                {onOpenTimeGapAnalysis && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenTimeGapAnalysis(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Zeitlücken > 30s analysieren & Track trennen"
-                  >
-                    <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    <span>Zeitlücken</span>
-                  </button>
-                )}
-
-                {onReverseTrack && (
-                  <button 
-                    type="button"
-                    onClick={() => onReverseTrack(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="Streckenverlauf umkehren (Start/Ziel & Höhendaten tauschen)"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
-                    <span>Umkehren</span>
-                  </button>
-                )}
-
-                {onSanitizeTrack && (
-                  <button 
-                    type="button"
-                    onClick={() => onSanitizeTrack(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                    title="1-Click Track-Sanitizer (GPS-Ausreißer, Höhen-Spikes & Punkt-Reduktion)"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span>Bereinigen</span>
-                  </button>
-                )}
-
-                {onOpenValidation && (
-                  <button 
-                    type="button"
-                    onClick={() => onOpenValidation(track.id)} 
-                    className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold relative" 
-                    title={startValidation.issue ? `Plausibilitätsprüfung: ${startValidation.issue.title}` : "GPS-Validierung & Plausibilitätsprüfung (Ausreißer, Null-Island, Höhenprofil)"}
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>Prüfen</span>
-                    {startValidation.issue && (
-                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white dark:ring-slate-900" />
+              {/* Grouped Track Actions */}
+              <div className="space-y-2 bg-slate-50/80 dark:bg-slate-800/40 p-2 rounded-xl border border-slate-200/70 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
+                {/* Group 1: Analyse & 3D */}
+                <div className="space-y-1">
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
+                    Analyse &amp; 3D
+                  </div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {onOpenVideoExport && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenVideoExport(track.id)}
+                        className="p-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 rounded-lg border border-emerald-200/80 dark:border-emerald-800/70 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="3D-Überflug Video Studio öffnen"
+                      >
+                        <Video className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span>3D-Flug</span>
+                      </button>
                     )}
-                  </button>
-                )}
 
-                <button 
-                  type="button"
-                  onClick={handleExportGPX} 
-                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold font-sans" 
-                  title="Track zurück als GPX-Datei exportieren"
-                >
-                  <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                  <span>Export</span>
-                </button>
+                    {onOpenIntensiveAnalysis && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenIntensiveAnalysis(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="Analyse-Cockpit öffnen (Übersicht, Splits & Pacing)"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+                        <span>Cockpit</span>
+                      </button>
+                    )}
 
-                <button 
-                  type="button"
-                  onClick={() => {
-                    shareTrackNative({
-                      title: track.name,
-                      text: `🚴 GPX Route: ${track.name}\n📏 Distanz: ${track.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(track.ascent)}m`
-                    });
-                  }} 
-                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold font-sans" 
-                  title="Route via Smartphone (WhatsApp, Messages, Strava) teilen"
-                >
-                  <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  <span>Teilen</span>
-                </button>
+                    {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenClimbs(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="Bergwertungen im Cockpit öffnen"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span>Berge ({trackClimbs.length})</span>
+                      </button>
+                    )}
 
-                <button 
-                  type="button"
-                  onClick={() => onSaveTrackToLibrary?.(track.id)} 
-                  className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700/70 shadow-2xs transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                  title="Aktivität dauerhaft in der SQLite Bibliothek speichern"
-                >
-                  <Database className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                  <span>Sichern</span>
-                </button>
+                    {onOpenAnalytics && (hasPower || hasHR) && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenAnalytics(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="Leistungsphysik im Cockpit öffnen"
+                      >
+                        <BarChart2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                        <span>Leistung</span>
+                      </button>
+                    )}
 
-                <button 
-                  type="button"
-                  onClick={() => onRemoveTrack(track.id)} 
-                  className="p-1.5 bg-white hover:bg-rose-50 dark:bg-slate-850 dark:hover:bg-rose-950/30 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 rounded-lg border border-slate-200/80 hover:border-rose-200 dark:border-slate-700/70 dark:hover:border-rose-900/50 shadow-2xs transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" 
-                  title="Track vollständig entfernen"
-                >
-                  <Trash2 className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />
-                  <span>Löschen</span>
-                </button>
+                    {onOpenTrainingZones && (hasPower || hasHR) && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenTrainingZones(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="Trainingszonen im Cockpit öffnen"
+                      >
+                        <Heart className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
+                        <span>Zonen</span>
+                      </button>
+                    )}
+
+                    {onOpenRawData && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenRawData(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
+                        title="Rohdaten-Inspektor im Cockpit öffnen"
+                      >
+                        <FileCode className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                        <span>Rohdaten</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Group 2: Strecke bearbeiten */}
+                <div className="space-y-1 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
+                    Strecke bearbeiten
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {onOpenTimeGapAnalysis && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenTimeGapAnalysis(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                        title="Zeitlücken > 30s analysieren & Track trennen"
+                      >
+                        <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                        <span>Lücken</span>
+                      </button>
+                    )}
+
+                    {onReverseTrack && (
+                      <button
+                        type="button"
+                        onClick={() => onReverseTrack(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                        title="Streckenverlauf umkehren"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                        <span>Umkehren</span>
+                      </button>
+                    )}
+
+                    {onSanitizeTrack && (
+                      <button
+                        type="button"
+                        onClick={() => onSanitizeTrack(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                        title="1-Click Track-Sanitizer (GPS-Ausreißer & Höhen-Spikes)"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span>Bereinigen</span>
+                      </button>
+                    )}
+
+                    {onOpenValidation && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenValidation(track.id)}
+                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold relative"
+                        title={startValidation.issue ? `Plausibilitätsprüfung: ${startValidation.issue.title}` : "GPS-Validierung & Plausibilitätsprüfung"}
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                        <span>Prüfen</span>
+                        {startValidation.issue && (
+                          <span className="absolute -top-1 -right-1 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white dark:ring-slate-900" />
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Group 3: Export & Bibliothek */}
+                <div className="space-y-1 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
+                    Export &amp; Bibliothek
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    <button
+                      type="button"
+                      onClick={handleExportGPX}
+                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                      title="Track als GPX-Datei exportieren"
+                    >
+                      <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                      <span>Export</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        shareTrackNative({
+                          title: track.name,
+                          text: `GPX Route: ${track.name} · ${track.distance.toFixed(1)} km · +${Math.round(track.ascent)}m`
+                        });
+                      }}
+                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                      title="Route teilen"
+                    >
+                      <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Teilen</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onSaveTrackToLibrary?.(track.id)}
+                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                      title="Aktivität dauerhaft in der Bibliothek speichern"
+                    >
+                      <Database className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <span>Sichern</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onRemoveTrack(track.id)}
+                      className="p-1.5 bg-white hover:bg-rose-50 dark:bg-slate-800 dark:hover:bg-rose-950/30 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 rounded-lg border border-slate-200/80 hover:border-rose-200 dark:border-slate-700 dark:hover:border-rose-900/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
+                      title="Track vollständig entfernen"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />
+                      <span>Löschen</span>
+                    </button>
+                  </div>
+                </div>
               </div>
               
               <div className="flex flex-col gap-1.5">
                 {/* Bento Grid Row 1: Strecke, Dauer, Pace */}
                 <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Strecke</span>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Strecke</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300">
                       {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} km
                     </span>
                   </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Dauer</span>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Dauer</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300">
                       {track.duration ? (
                         `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
@@ -476,8 +491,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                       )}
                     </span>
                   </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Tempo</span>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Tempo</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300 truncate max-w-full">
                       {track.duration ? (
                         track.activityType === 'running' 
@@ -518,26 +533,26 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                         }
                       }
                     }}
-                    className="bg-emerald-500/5 dark:bg-emerald-950/10 border border-emerald-100/30 dark:border-emerald-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 transition-colors"
+                    className="bg-emerald-500/5 dark:bg-emerald-950/20 border border-emerald-100/50 dark:border-emerald-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 transition-colors"
                     title="Klicken zum Zoomen auf Anstiege auf der Karte"
                   >
-                    <span className="text-[8px] text-emerald-600 dark:text-emerald-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
-                      Anstieg 🔍
+                    <span className="text-[8px] text-emerald-600 dark:text-emerald-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                      Anstieg
                     </span>
                     <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
                       +{Math.round(track.ascent).toLocaleString('de-DE')}m
                     </span>
                   </div>
-                  <div className="bg-rose-500/5 dark:bg-rose-950/10 border border-rose-100/30 dark:border-rose-900/20 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-rose-600 dark:text-rose-500 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                  <div className="bg-rose-500/5 dark:bg-rose-950/20 border border-rose-100/50 dark:border-rose-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-rose-600 dark:text-rose-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
                       Abstieg
                     </span>
                     <span className="font-extrabold text-rose-700 dark:text-rose-400">
                       -{Math.round(track.descent).toLocaleString('de-DE')}m
                     </span>
                   </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-850/40 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-555 font-sans font-semibold uppercase tracking-wider">Steigung</span>
+                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300">
                       {(track.maxSlope && track.maxSlope > 0
                         ? track.maxSlope
@@ -548,18 +563,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 </div>
 
                 {/* Miscellaneous status bar for HR or point length */}
-                <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/40 dark:border-slate-800/40 pt-1.5 mt-0.5">
+                <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/60 dark:border-slate-800/60 pt-1.5 mt-0.5">
                   <span>{track.points.length.toLocaleString('de-DE')} GPX-Punkte</span>
                   {track.points.some(p => p.hr !== undefined && p.hr > 0) && (
-                    <span className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5 px-1 py-0.5 rounded border border-rose-500/10 shadow-3xs">
-                      <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 animate-pulse shrink-0" /> HF-Daten
+                    <span className="flex items-center gap-1 text-[9px] font-semibold text-rose-600 dark:text-rose-400">
+                      <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500 shrink-0" /> HF-Daten
                     </span>
                   )}
                 </div>
 
                 {/* Description/Notes block if present */}
                 {track.description && (
-                  <div className="bg-indigo-50/50 dark:bg-indigo-950/10 border border-indigo-100/45 dark:border-indigo-900/30 rounded-lg p-2 text-[10px] text-slate-650 dark:text-slate-300 leading-normal font-semibold text-left">
+                  <div className="bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100/60 dark:border-indigo-900/30 rounded-lg p-2 text-[10px] text-slate-700 dark:text-slate-300 leading-normal font-medium text-left">
                     <span className="font-bold text-indigo-600 dark:text-indigo-400 block text-[8px] uppercase tracking-wider mb-0.5">Notiz / Kommentar</span>
                     {track.description}
                   </div>
@@ -567,12 +582,12 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
 
                 {/* Power Stats Widget */}
                 {track.powerStats && (
-                  <div className="bg-amber-500/5 dark:bg-amber-950/10 border border-amber-100/40 dark:border-amber-900/20 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
-                    <span className="flex items-center gap-1 text-amber-600 dark:text-amber-500 font-extrabold text-[8px] uppercase tracking-wider">
+                  <div className="bg-amber-500/5 dark:bg-amber-950/20 border border-amber-100/50 dark:border-amber-900/30 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
+                    <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-extrabold text-[8px] uppercase tracking-wider">
                       <Zap className="w-3 h-3 fill-amber-500/10" /> NP Daten
                     </span>
-                    <span className="text-slate-300 dark:text-slate-800">|</span>
-                    <span className="font-bold text-slate-700 dark:text-slate-350" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="font-bold text-slate-700 dark:text-slate-200" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
                     <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
                     <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">TSS {Math.round(track.powerStats.tss || 0)}</span>
                   </div>
@@ -582,15 +597,15 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                 {trackClimbs && trackClimbs.length > 0 && (
                   <div className="space-y-1">
                     <div 
-                      className="bg-indigo-50/20 dark:bg-indigo-950/15 border border-indigo-100/40 dark:border-indigo-900/25 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20"
+                      className="bg-indigo-50/30 dark:bg-indigo-950/20 border border-indigo-100/60 dark:border-indigo-900/30 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono group/climbs cursor-pointer hover:bg-indigo-50/60 dark:hover:bg-indigo-950/30"
                       onClick={(e) => { e.stopPropagation(); onOpenClimbs?.(track.id); }}
-                      title="Bergwertungs-Analyse auf separater Seite öffnen"
+                      title="Bergwertungs-Analyse im Cockpit öffnen"
                     >
-                      <span className="flex items-center gap-1 text-indigo-700 dark:text-indigo-450 font-extrabold text-[8px] uppercase tracking-wider">
+                      <span className="flex items-center gap-1 text-indigo-700 dark:text-indigo-400 font-extrabold text-[8px] uppercase tracking-wider">
                         <TrendingUp className="w-3 h-3 shrink-0 text-indigo-500" />
                         <span>Anstiege / Berganalyse</span>
                       </span>
-                      <span className="font-extrabold text-blue-650 dark:text-blue-400 underline hover:no-underline">
+                      <span className="font-extrabold text-blue-600 dark:text-blue-400 underline hover:no-underline">
                         {trackClimbs.length} Berge ➔
                       </span>
                     </div>
@@ -715,7 +730,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                   {surfaceStatus && surfaceStatus.status !== 'idle' && (
                     <div className={`p-1.5 rounded-md text-[10px] flex items-start gap-1.5 border shadow-sm ${
                       surfaceStatus.status === 'loading'
-                        ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/80 text-blue-800 dark:text-blue-200 animate-pulse'
+                        ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/80 text-blue-800 dark:text-blue-200'
                         : surfaceStatus.status === 'success'
                         ? 'bg-emerald-50/90 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/80 text-emerald-800 dark:text-emerald-200'
                         : surfaceStatus.status === 'simulated'
@@ -761,7 +776,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                     </div>
                   )}
 
-                  {/* Permanent action button - always ready so user never needs to click twice */}
+                  {/* Permanent action button */}
                   <button
                     type="button"
                     disabled={isAnalyzing}
@@ -769,10 +784,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = ({
                       e.stopPropagation();
                       onAnalyzeSurface?.(track.id, true);
                     }}
-                    className={`w-full flex items-center justify-center gap-1.5 text-[10px] font-bold px-2 py-1.5 rounded-md transition-all cursor-pointer select-none border shadow-sm ${
+                    className={`w-full flex items-center justify-center gap-1.5 text-[10px] font-bold px-2 py-1.5 rounded-md transition-colors cursor-pointer select-none border shadow-xs ${
                       isAnalyzing
-                        ? "bg-blue-100/60 text-blue-700 border-blue-300 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-700 animate-pulse cursor-wait"
-                        : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 border-blue-200 dark:border-blue-800/50 hover:border-blue-300 dark:hover:border-blue-700 shadow-blue-500/5 dark:shadow-blue-900/10"
+                        ? "bg-blue-100/60 text-blue-700 border-blue-300 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-700 cursor-wait"
+                        : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 border-blue-200 dark:border-blue-800/50"
                     }`}
                     title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
                   >
@@ -832,6 +847,7 @@ interface SidebarProps {
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
   onOpenIntensiveAnalysis?: (id?: string) => void;
+  onOpenVideoExport?: (id?: string) => void;
   onOpenGlossary?: (metricId?: string) => void;
   onOpenAnalytics: (id: string) => void;
   onOpenClimbs: (id: string) => void;
@@ -862,6 +878,8 @@ interface SidebarProps {
   onToggleAllVisibility?: (makeAllVisible: boolean) => void;
   onFitVisibleTracks?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
   onLoadReferenceTours?: () => void;
+  onLockApp?: () => void;
+  onOpenFullActivitiesView?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -907,6 +925,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenTrainingZones,
   onOpenSummaryReport,
   onOpenIntensiveAnalysis,
+  onOpenVideoExport,
   onOpenGlossary,
   onOpenShortcuts,
   onOpenAnalytics,
@@ -936,7 +955,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleTheme,
   onToggleAllVisibility,
   onFitVisibleTracks,
-  onLoadReferenceTours
+  onLoadReferenceTours,
+  onLockApp,
+  onOpenFullActivitiesView
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
@@ -990,7 +1011,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     const fetchLatestVersion = async () => {
       try {
         const apiUrl = getApiUrl('/api/versions');
-        const res = await fetch(apiUrl);
+        const res = await apiFetch(apiUrl);
         if (!res.ok) return;
         const text = await res.text();
         if (!text || !text.trim().startsWith('{')) return;
@@ -1031,9 +1052,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   );
 
   const markedTrack = tracks.find(t => t.id === markedTrackId);
-  const markedHasPower = markedTrack?.points?.some(p => p.power !== undefined && p.power !== null && p.power > 0) || false;
-  const markedHasHR = markedTrack?.points?.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) || false;
-  const markedShowAnalyticsAndZones = markedHasPower && markedHasHR;
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1063,22 +1081,22 @@ const Sidebar: React.FC<SidebarProps> = ({
         fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
-        w-[88vw] max-w-[340px] md:w-auto bg-white border-r border-slate-200 shadow-2xl md:shadow-none
-        ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none md:bg-transparent' : 'md:w-80 md:shadow-2xl md:bg-white md:border-r md:border-slate-200'}
+        w-[88vw] max-w-[340px] md:w-auto bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-2xl md:shadow-none
+        ${isCollapsed ? 'md:w-0 md:border-r-0 md:shadow-none md:bg-transparent dark:md:bg-transparent' : 'md:w-80 md:shadow-2xl md:bg-white dark:md:bg-slate-900 md:border-r md:border-slate-200 dark:md:border-slate-800'}
         h-full flex flex-col overflow-visible
       `}>
         {/* Toggle Collapse Button (remains interactive and visible when collapsed to 0 width) */}
         <button 
           onClick={onToggleCollapse}
           style={{ right: isCollapsed ? '-20px' : '-12px' }}
-          className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-white border border-slate-200 rounded-full hidden md:flex items-center justify-center shadow-md hover:bg-slate-50 transition-all z-[90] group cursor-pointer"
+          className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-full hidden md:flex items-center justify-center shadow-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all z-[90] group cursor-pointer"
           title={isCollapsed ? "Menü ausklappen" : "Menü einklappen"}
         >
-          {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 text-slate-600 group-hover:scale-110 transition-transform" />}
+          {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-600 dark:text-slate-300 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 text-slate-600 dark:text-slate-300 group-hover:scale-110 transition-transform" />}
         </button>
 
         {/* Inner Content Wrapper */}
-        <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white duration-300 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
+        <div className={`w-full md:w-80 h-full flex flex-col relative shrink-0 transition-opacity bg-white dark:bg-slate-900 duration-300 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] ${isCollapsed ? 'md:opacity-0 md:pointer-events-none' : 'opacity-100'}`}>
           {/* Mobile Close Button */}
           <button 
             type="button"
@@ -1100,19 +1118,33 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </div>
             
-            {onToggleTheme && (
-              <button 
-                onClick={onToggleTheme}
-                className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition-all cursor-pointer shadow border border-slate-700/60 flex items-center justify-center group shrink-0"
-                title={isDark ? "In hellen Modus wechseln" : "In dunklen Modus wechseln"}
-              >
-                {isDark ? (
-                  <Sun className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform" />
-                ) : (
-                  <Moon className="w-4 h-4 text-slate-300 group-hover:-rotate-12 transition-transform" />
-                )}
-              </button>
-            )}
+            <div className="flex items-center gap-1.5">
+              {onToggleTheme && (
+                <button 
+                  onClick={onToggleTheme}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition-all cursor-pointer shadow border border-slate-700/60 flex items-center justify-center group shrink-0"
+                  title={isDark ? "In hellen Modus wechseln" : "In dunklen Modus wechseln"}
+                >
+                  {isDark ? (
+                    <Sun className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform" />
+                  ) : (
+                    <Moon className="w-4 h-4 text-slate-300 group-hover:-rotate-12 transition-transform" />
+                  )}
+                </button>
+              )}
+              {onLockApp && (
+                <button
+                  type="button"
+                  onClick={onLockApp}
+                  className="p-2 bg-slate-800 hover:bg-rose-950/80 text-slate-300 hover:text-rose-300 rounded-xl transition-all cursor-pointer shadow border border-slate-700/60 hover:border-rose-800/70 flex items-center justify-center shrink-0"
+                  title="App sperren (Passwortschutz aktivieren)"
+                  aria-label="App sperren"
+                  id="btn-sidebar-lock-app"
+                >
+                  <Lock className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="relative z-10 flex-1 overflow-y-auto p-4 space-y-6">
@@ -1149,6 +1181,27 @@ const Sidebar: React.FC<SidebarProps> = ({
                   </button>
                 )}
               </div>
+
+              {onOpenVideoExport && (
+                <button 
+                  onClick={() => onOpenVideoExport(markedTrackId || undefined)}
+                  disabled={tracks.length === 0}
+                  id="btn-sidebar-3d-flyover"
+                  className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-all cursor-pointer group"
+                  title="3D-Überflug Video Studio im Stile von Komoot & Relive öffnen"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1 rounded-md bg-white/15">
+                      <Video className="w-4 h-4 text-emerald-100" />
+                    </div>
+                    <div className="text-left">
+                      <div className="font-bold leading-tight">3D-Überflug Video-Studio</div>
+                      <div className="text-[10px] text-emerald-100 font-normal">Komoot / Relive Kameraflug & Export</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-emerald-100 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              )}
 
               {onOpenIntensiveAnalysis && (
                 <button 
@@ -1213,15 +1266,15 @@ const Sidebar: React.FC<SidebarProps> = ({
 
               {/* Active Route Quick-Actions (when a track is selected) */}
               {markedTrack && (
-                <div className="p-2 rounded-xl bg-slate-50/90 dark:bg-slate-850/60 border border-slate-200/70 dark:border-slate-800 space-y-1.5">
+                <div className="p-2 rounded-xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 space-y-1.5">
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 truncate">
                     Auswahl: <span className="text-slate-700 dark:text-slate-300 font-semibold normal-case">{markedTrack.name}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     <button 
                       onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
-                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
-                      title="Ausführlichen, druckbaren Aktivitäts-Report mit allen Statistiken anzeigen"
+                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer shadow-xs"
+                      title="Druckbaren Aktivitäts-Report im Cockpit öffnen"
                     >
                       <BarChart2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                       <span>PDF-Report</span>
@@ -1231,23 +1284,13 @@ const Sidebar: React.FC<SidebarProps> = ({
                         triggerHaptic('medium');
                         downloadTrackAsGPX(markedTrack, { textMarkers });
                       }}
-                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer shadow-xs"
                       title="Markierten Track als .gpx herunterladen"
                     >
                       <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                       <span>GPX Export</span>
                     </button>
                   </div>
-                  {markedShowAnalyticsAndZones && (
-                    <button 
-                      onClick={() => onOpenTrainingZones?.(markedTrackId || undefined)}
-                      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-rose-600 dark:text-rose-400 border border-slate-200/80 dark:border-slate-700 hover:bg-rose-50/50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer shadow-2xs"
-                      title="Puls-Trainingsbereiche anzeigen und analysieren"
-                    >
-                      <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
-                      <span>Puls-Trainingsbereiche</span>
-                    </button>
-                  )}
                 </div>
               )}
 
@@ -1492,7 +1535,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 
                 <div className="flex items-center gap-2">
                   {!showAdvancedSettings && ftp && (
-                    <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950/30 text-amber-650 dark:text-amber-450 border border-amber-200/50 dark:border-amber-800/50 rounded-md font-mono">
+                    <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border border-amber-200/50 dark:border-amber-800/50 rounded-md font-mono">
                       {ftp}W
                     </span>
                   )}
@@ -1551,7 +1594,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   {suggestedFtp && Math.abs(suggestedFtp - ftp) > 2 && (
                     <button 
                       onClick={() => setFtp(suggestedFtp)}
-                      className="w-full text-[9px] bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-450 px-1.5 py-1 rounded font-black hover:bg-amber-200 transition-colors animate-pulse"
+                      className="w-full text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-2 py-1 rounded font-bold hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors cursor-pointer"
                     >
                       FTP-Vorschlag basierend auf Bestleistung: {suggestedFtp}W
                     </button>
@@ -1562,14 +1605,14 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
 
             <section className="space-y-3">
-              <div className="flex border-b border-slate-201/80 dark:border-slate-800 pb-0.5">
+              <div className="flex border-b border-slate-200 dark:border-slate-800 pb-0.5">
                 <button
                   type="button"
                   onClick={() => setActiveTab('active')}
                   className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
                     activeTab === 'active'
                       ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
-                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
                   }`}
                 >
                   Workspace ({tracks.length})
@@ -1580,7 +1623,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
                     activeTab === 'library'
                       ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
-                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
                   }`}
                 >
                   Bibliothek
@@ -1607,14 +1650,14 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                   {tracks.length > 0 && (
                     <div className="flex flex-col gap-2">
-                      <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-900/50 rounded-lg border border-slate-200/60 dark:border-slate-800/60">
+                      <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
                         <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
-                          Workspace ({tracks.length})
+                          Strecken ({tracks.length})
                         </span>
                         <button
                           type="button"
                           onClick={handleToggleExpandAll}
-                          className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-3xs transition-all cursor-pointer select-none"
+                          className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
                           title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
                         >
                           {allTracksExpanded ? (
@@ -1723,6 +1766,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             estimatedSpeed={estimatedSpeed}
                             onOpenAnalytics={onOpenAnalytics}
                             onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
+                            onOpenVideoExport={onOpenVideoExport}
                             onOpenTrainingZones={onOpenTrainingZones}
                             onOpenClimbs={onOpenClimbs}
                             onAnalyzeSurface={onAnalyzeSurface}
@@ -1745,7 +1789,17 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
 
               {activeTab === 'library' && (
-                <div className="pb-6">
+                <div className="pb-6 space-y-2.5">
+                  {onOpenFullActivitiesView && (
+                    <button
+                      type="button"
+                      onClick={onOpenFullActivitiesView}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors cursor-pointer"
+                    >
+                      <span>Vollbild-Aktivitäten öffnen</span>
+                      <ChevronRight size={14} />
+                    </button>
+                  )}
                   <TrackLibrary 
                     onLoadTrack={(track) => {
                       onLoadLibraryTrack?.(track);
@@ -1755,6 +1809,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     selectionBounds={selectionBounds}
                     onClearSelection={onClearSelection}
                     workspaceTracks={tracks}
+                    onOpenFullView={onOpenFullActivitiesView}
                   />
                 </div>
               )}
@@ -1772,7 +1827,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
           )}
 
-          <div className="relative z-10 p-4 border-t border-slate-200/50 bg-slate-50/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-1 rounded-b-xl">
+          <div className="relative z-10 p-4 border-t border-slate-200/50 dark:border-slate-800/80 bg-slate-50/80 dark:bg-slate-900/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-2 rounded-b-xl">
             <div className="flex justify-between items-center font-medium">
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />

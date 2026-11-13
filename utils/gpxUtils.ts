@@ -1303,22 +1303,54 @@ const HIGH_CONTRAST_COLORS = [
 ];
 
 let colorIndex = 0;
+const locationCache = new Map<string, string>();
 
 export const getLocationName = async (lat: number, lng: number): Promise<string> => {
+  const fallback = `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
+  const cacheKey = `${lat.toFixed(2)}_${lng.toFixed(2)}`;
+  if (locationCache.has(cacheKey)) {
+    return locationCache.get(cacheKey)!;
+  }
+
   try {
-    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`, {
-      headers: {
-        'Accept-Language': 'de-DE, de;q=0.9, en;q=0.8'
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
+      {
+        headers: {
+          'Accept-Language': 'de-DE, de;q=0.9, en;q=0.8',
+          'User-Agent': 'GPXRouteMasterApplet/1.0 (velo-route-master@local.dev)'
+        },
+        signal: controller.signal
       }
-    });
-    const data = await response.json();
-    if (data.address) {
-      return data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.county || "Unbekannter Ort";
+    );
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      locationCache.set(cacheKey, fallback);
+      return fallback;
     }
-    return `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
-  } catch (error) {
-    console.error("Geocoding error:", error);
-    return `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
+
+    const text = await response.text();
+    if (!text || !text.startsWith('{')) {
+      locationCache.set(cacheKey, fallback);
+      return fallback;
+    }
+
+    const data = JSON.parse(text);
+    if (data && data.address) {
+      const resolved = data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.county || "Unbekannter Ort";
+      locationCache.set(cacheKey, resolved);
+      return resolved;
+    }
+    locationCache.set(cacheKey, fallback);
+    return fallback;
+  } catch {
+    // Graceful fallback without noisy console errors
+    locationCache.set(cacheKey, fallback);
+    return fallback;
   }
 };
 
@@ -2347,6 +2379,26 @@ export const parseLocationCoords = (locationStr?: string): { lat: number; lng: n
     'köln': { lat: 50.9375, lng: 6.9603 },
     'cologne': { lat: 50.9375, lng: 6.9603 },
     'düsseldorf': { lat: 51.2271, lng: 6.7735 },
+    'dortmund': { lat: 51.5136, lng: 7.4653 },
+    'bochum': { lat: 51.4818, lng: 7.2162 },
+    'essen': { lat: 51.4556, lng: 7.0116 },
+    'duisburg': { lat: 51.4344, lng: 6.7623 },
+    'wuppertal': { lat: 51.2562, lng: 7.1508 },
+    'bielefeld': { lat: 52.0302, lng: 8.5325 },
+    'münster': { lat: 51.9607, lng: 7.6261 },
+    'bonn': { lat: 50.7374, lng: 7.0982 },
+    'karlsruhe': { lat: 49.0069, lng: 8.4037 },
+    'mannheim': { lat: 49.4875, lng: 8.4660 },
+    'augsburg': { lat: 48.3705, lng: 10.8978 },
+    'regensburg': { lat: 49.0134, lng: 12.1016 },
+    'kiel': { lat: 54.3233, lng: 10.1228 },
+    'bremen': { lat: 53.0793, lng: 8.8017 },
+    'hannover': { lat: 52.3759, lng: 9.7320 },
+    'innsbruck': { lat: 47.2692, lng: 11.4041 },
+    'salzburg': { lat: 47.8095, lng: 13.0550 },
+    'basel': { lat: 47.5596, lng: 7.5886 },
+    'bern': { lat: 46.9480, lng: 7.4474 },
+    'garmisch': { lat: 47.4917, lng: 11.0955 },
     'dresden': { lat: 51.0504, lng: 13.7373 },
     'leipzig': { lat: 51.3397, lng: 12.3731 },
     'nürnberg': { lat: 49.4521, lng: 11.0767 },

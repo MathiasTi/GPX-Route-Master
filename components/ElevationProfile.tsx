@@ -12,7 +12,8 @@ import {
   ElevationFilterStrength
 } from '../utils/gpxUtils';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
-import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair } from 'lucide-react';
+import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/telemetry/pointMetricsEngine';
+import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
 const isFitTrack = (t?: GPXTrack | null): boolean => {
@@ -250,6 +251,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       ? filterElevationProfile(rawPointsToUse, elevationFilter) 
       : rawPointsToUse;
 
+    const resolvedSpeeds = resolveTrackPointSpeedsKmh(pointsToUse, {
+      isFitFile: isFitTrack(track),
+      activityType: track.activityType,
+      trackDistanceKm: track.distance,
+      trackDurationSec: track.duration
+    });
+
     let totalDist = 0;
     const rawData: { dist: number; ele: number; lat: number; lng: number; power?: number; hr?: number; time?: Date; cadence?: number; speed?: number; surface?: string }[] = [];
     
@@ -264,7 +272,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       hr: pointsToUse[0].hr,
       time: pointsToUse[0].time,
       cadence: pointsToUse[0].cadence,
-      speed: 0,
+      speed: resolvedSpeeds[0],
       surface: pointsToUse[0].surface
     });
 
@@ -273,22 +281,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       totalDist += distStep;
       
       const ele = pointsToUse[i].ele;
-
-      // Calculate instant/interval speed if present or from timestamps
-      let s = 0;
-      if (pointsToUse[i].speed !== undefined && pointsToUse[i].speed > 0) {
-        // If speed is in m/s (FIT legacy or < 15 with isFitTrack), convert to km/h, otherwise use directly
-        s = (isFitTrack(track) && pointsToUse[i].speed < 15) ? pointsToUse[i].speed * 3.6 : pointsToUse[i].speed;
-      } else {
-        const t1 = pointsToUse[i - 1].time;
-        const t2 = pointsToUse[i].time;
-        if (t1 && t2) {
-          const dt = (new Date(t2).getTime() - new Date(t1).getTime()) / 1000;
-          if (dt > 0 && dt < 120) { // skip anomalies/breaks larger than 120 seconds
-            s = (distStep / (dt / 3600));
-          }
-        }
-      }
 
       rawData.push({ 
         dist: totalDist, 
@@ -299,7 +291,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         hr: pointsToUse[i].hr,
         time: pointsToUse[i].time,
         cadence: pointsToUse[i].cadence,
-        speed: s,
+        speed: resolvedSpeeds[i],
         surface: pointsToUse[i].surface
       });
     }
@@ -335,22 +327,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
-    // Always smooth speed data to reduce GPS tracker jitter
-    const SPEED_WINDOW = 10;
     const hasSpeedData = rawData.some(d => d.speed !== undefined && d.speed > 0);
-    for (let i = 0; i < rawData.length; i++) {
-      if (rawData[i].speed !== undefined) {
-        let sum = 0;
-        let count = 0;
-        for (let j = Math.max(0, i - SPEED_WINDOW); j <= Math.min(rawData.length - 1, i + SPEED_WINDOW); j++) {
-          if (rawData[j].speed !== undefined) {
-            sum += rawData[j].speed!;
-            count++;
-          }
-        }
-        smoothedData[i].speed = count > 0 ? sum / count : rawData[i].speed;
-      }
-    }
 
     // Always smooth cadence data if available
     const CADENCE_WINDOW = 5;
@@ -681,7 +658,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           slope: point.slope,
           dist: point.dist,
           trackId: track.id,
-          speed: point.speed ?? originalPoint.speed
+          speed: point.speed ?? originalPoint.speed,
+          speedIsKmh: point.speed !== undefined
         } as any);
       }
     });
@@ -753,7 +731,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           slope: point.slope,
           dist: point.dist,
           trackId: track.id,
-          speed: point.speed ?? originalPoint.speed
+          speed: point.speed ?? originalPoint.speed,
+          speedIsKmh: point.speed !== undefined
         } as any);
       }
     });
@@ -1021,6 +1000,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             )}
           </button>
 
+          {onOpenVideoExport && (
+            <button
+              onClick={onOpenVideoExport}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-200 dark:shadow-none hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer"
+              title="3D-Überflug Video Studio öffnen (Komoot / Relive Stil)"
+            >
+              <Video className="w-3.5 h-3.5 text-emerald-100" />
+              <span>3D-Überflug</span>
+            </button>
+          )}
+
           {onOpenIntensiveAnalysis && (
             <button
               onClick={onOpenIntensiveAnalysis}
@@ -1099,7 +1089,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   type="checkbox" 
                   checked={showCadence} 
                   onChange={(e) => setShowCadence(e.target.checked)}
-                  className="w-3.5 h-3.5 text-purple-550 rounded bg-slate-100 border-slate-300 focus:ring-purple-550 cursor-pointer"
+                  className="w-3.5 h-3.5 text-purple-600 rounded bg-slate-100 border-slate-300 focus:ring-purple-500 cursor-pointer"
                 />
                 {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
               </label>
@@ -1132,7 +1122,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <span className="flex items-center gap-1">
                 Warnungen
                 {gradientAnomalies.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-rose-500 text-white">
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500 text-white">
                     {gradientAnomalies.length}
                   </span>
                 )}
@@ -1140,7 +1130,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </label>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-505 hover:text-slate-700 transition-colors">
+          <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors">
             <input 
               type="checkbox" 
               className="sr-only" 
@@ -1156,7 +1146,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <div className="flex items-center gap-2 ml-2">
               <label className="text-[10px] font-bold text-slate-500 tracking-wider">FTP:</label>
               <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-0.5 shadow-sm">
-                <span className="text-xs font-bold text-slate-750 w-10 text-center">{ftp}W</span>
+                <span className="text-xs font-bold text-slate-700 w-10 text-center">{ftp}W</span>
               </div>
             </div>
           )}
@@ -1260,6 +1250,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </span>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {/* 3D Flyover Video Studio */}
+            {onOpenVideoExport && (
+              <button
+                onClick={onOpenVideoExport}
+                className="min-h-[44px] px-2.5 flex items-center justify-center gap-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition-all cursor-pointer touch-manipulation active:scale-95 shadow-xs"
+                title="3D-Überflug Video Studio öffnen"
+              >
+                <Video className="w-4 h-4" />
+                <span className="hidden sm:inline">3D-Flug</span>
+              </button>
+            )}
+
             {/* GPX Download */}
             <button
               onClick={handleDownloadGPX}
@@ -1271,7 +1273,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               title="Markierten Track als GPX herunterladen"
             >
               {downloadSuccess ? (
-                <CheckCircle2 className="w-4 h-4 text-white animate-pulse" />
+                <CheckCircle2 className="w-4 h-4 text-white" />
               ) : (
                 <Download className="w-4 h-4" />
               )}
@@ -1471,7 +1473,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <span className="flex items-center gap-1">
                 Warnungen
                 {gradientAnomalies.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-rose-500 text-white">
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500 text-white">
                     {gradientAnomalies.length}
                   </span>
                 )}
@@ -1759,14 +1761,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {hoverInfo.hr !== undefined && (
                 <span className="text-rose-400 font-black">{Math.round(hoverInfo.hr)} bpm</span>
               )}
-              {hoverInfo.speed !== undefined && (
+              {hoverInfo.speed !== undefined && hoverInfo.speed > 0 && (
                 <span 
                   className="text-teal-300 font-bold"
-                  title={isFitTrack(track) || track.activityType === 'running' ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${getPaceString(hoverInfo.speed)}`}
+                  title={isFitTrack(track) || track.activityType === 'running' ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km'}`}
                 >
                   {isFitTrack(track) || track.activityType === 'running'
-                    ? getPaceString(hoverInfo.speed)
-                    : `${hoverInfo.speed.toFixed(1)} km/h`}
+                    ? (formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km')
+                    : `${hoverInfo.speed.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`}
                 </span>
               )}
             </div>
@@ -2093,7 +2095,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 fill="#10b981" 
                 stroke="white" 
                 strokeWidth="2"
-                className="animate-pulse"
                 style={{ filter: 'drop-shadow(0px 0px 3px rgba(16,185,129,0.6))' }}
               />
             </g>
@@ -2109,7 +2110,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 fill="#ef4444" 
                 stroke="white" 
                 strokeWidth="2"
-                className="animate-pulse"
                 style={{ filter: 'drop-shadow(0px 0px 3px rgba(239,68,68,0.6))' }}
               />
             </g>
@@ -2155,7 +2155,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   fill="#f43f5e" 
                   stroke="#ffffff" 
                   strokeWidth="2"
-                  className="animate-pulse"
                   style={{ filter: 'drop-shadow(0px 0px 4px rgba(244,63,94,0.8))' }}
                 />
               </g>
@@ -2205,7 +2204,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   fill={m.color} 
                   stroke="white" 
                   strokeWidth="2" 
-                  className={isSelected ? "animate-ping opacity-75" : "group-hover:scale-125 transition-transform"}
+                  className={isSelected ? "opacity-85" : "group-hover:scale-125 transition-transform"}
                 />
                 <circle 
                   cx={x} 
@@ -2314,7 +2313,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 const hasPower = hoverInfo.power !== undefined && showPower;
                 const hasHr = hoverInfo.hr !== undefined && showHr;
                 const hasTime = hoverInfo.time !== undefined;
-                const hasSpeed = hoverInfo.speed !== undefined && showSpeed;
+                const hasSpeed = hoverInfo.speed !== undefined && hoverInfo.speed > 0 && showSpeed;
                 const hasCadence = hoverInfo.cadence !== undefined && showCadence;
                 
                 // Let's compute custom layout rows dynamically
@@ -2348,7 +2347,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   rows.push({
                     label: showPace ? "Pace:" : "Tempo:",
                     val: showPace
-                      ? getPaceString(hoverInfo.speed!)
+                      ? (formatPaceFromSpeedKmh(hoverInfo.speed!) || '--:-- min/km')
                       : `${hoverInfo.speed!.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`,
                     color: "fill-teal-400"
                   });

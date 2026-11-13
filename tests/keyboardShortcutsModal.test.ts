@@ -115,11 +115,11 @@ export function runKeyboardShortcutsModalTests(): boolean {
   const sanitizeSearchQuery = (input: string): string => {
     return input.replace(/<[^>]*>?/gm, '').replace(/[<>"'&]/g, '').trim().slice(0, 100);
   };
-  const dirtyQuery = '<script>flyover</script>';
+  const dirtyQuery = '<script>glossar</script>';
   const cleanQuery = sanitizeSearchQuery(dirtyQuery);
   assert(!cleanQuery.includes('<script>'), 'Search input safely strips HTML/Script tags');
   const searchXssResults = filterBySearch(cleanQuery);
-  assert(searchXssResults.some(r => r.id === 'toggle-flyover'), 'Sanitized query still matches "toggle-flyover"');
+  assert(searchXssResults.some(r => r.id === 'open-glossary'), 'Sanitized query still matches "open-glossary"');
 
   console.log(`\n📊 Keyboard Shortcuts Test Results: ${passed} passed, ${failed} failed\n`);
   return failed === 0;

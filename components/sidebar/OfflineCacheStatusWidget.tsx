@@ -130,7 +130,7 @@ export const OfflineCacheStatusWidget: React.FC<OfflineCacheStatusWidgetProps> =
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${syncBadgeConfig.bg}`}
             title={`Status: ${syncBadgeConfig.text}`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${syncBadgeConfig.dot} animate-pulse`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${syncBadgeConfig.dot} ${snapshot?.syncState === 'syncing' ? 'animate-pulse' : ''}`} />
             <span>{syncBadgeConfig.text}</span>
           </span>
 

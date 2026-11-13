@@ -91,21 +91,12 @@ export const SHORTCUTS_DATA: ShortcutItem[] = [
     icon: <Box className="w-4 h-4 text-purple-500" />
   },
   {
-    id: 'toggle-dashboard-hud',
-    category: 'analysis',
-    keys: ['D'],
-    title: 'Workspace-Gesamtübersicht (Dashboard) umschalten',
-    description: 'Blendet die kumulierte Gesamtdistanz, Höhenmeter (Auf-/Abstieg) und Statistiken aller sichtbaren Strecken auf der Karte ein oder aus.',
-    badge: 'Dashboard',
-    icon: <Layers className="w-4 h-4 text-indigo-500" />
-  },
-  {
     id: 'open-intensive-analysis',
     category: 'analysis',
     keys: ['A', 'oder', 'I'],
-    title: 'Intensive Strecken- & Steigungsanalyse',
-    description: 'Öffnet die detaillierte Bergwertungs-Analyse (Kategorien HC/1-4, VAM, Leistungsprognosen & Streckencharakteristik).',
-    badge: 'Analyse',
+    title: 'Analyse-Cockpit (Übersicht, Berge, Zonen & Rohdaten)',
+    description: 'Öffnet das zentrale Strecken-Cockpit mit Bergwertungen, Leistungsphysik, Trainingszonen, Rohdaten und Druckbericht.',
+    badge: 'Cockpit',
     icon: <TrendingUp className="w-4 h-4 text-rose-500" />
   },
   {
@@ -288,7 +279,7 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({ 
                 }`}
               >
                 <span>{tab.label}</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-mono ${
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono ${
                   selectedCategory === tab.id 
                     ? 'bg-indigo-700/70 text-indigo-100' 
                     : 'bg-slate-200/70 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
@@ -384,7 +375,7 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({ 
         {/* Footer */}
         <div className="p-3.5 sm:p-4 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/70 dark:bg-slate-950/40 flex items-center justify-between text-xs text-slate-500">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
             <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
               Tipp: Drücken Sie jederzeit <kbd className="px-1.5 py-0.5 font-mono text-[10px] bg-slate-200 dark:bg-slate-800 rounded border border-slate-300 dark:border-slate-700 font-bold text-slate-700 dark:text-slate-300">?</kbd> für diese Hilfe
             </span>

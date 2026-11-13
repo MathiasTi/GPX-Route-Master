@@ -1739,7 +1739,7 @@ GPX Route Master Pro`;
                                   {split.startKm.toFixed(1)}–{split.endKm.toFixed(1)} km
                                 </span>
                                 {isFastest && (
-                                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-sans text-[9px] font-black uppercase">
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-sans text-[9px] font-black uppercase">
                                     Best
                                   </span>
                                 )}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal, Wifi, WifiOff, HardDrive, Trash2, Command } from 'lucide-react';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { getSWCacheStats, clearSWTileCache, SWCacheStats } from '../utils/serviceWorker';
 
 interface AppVersion {
@@ -48,7 +48,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
   const fetchVersions = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(getApiUrl('/api/versions'));
+      const response = await apiFetch(getApiUrl('/api/versions'));
       const data = await response.json();
       if (data.success) {
         setVersions(data.versions);
@@ -101,7 +101,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
 
     setIsSubmitting(true);
     try {
-      const response = await fetch(getApiUrl('/api/versions'), {
+      const response = await apiFetch(getApiUrl('/api/versions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version: cleanedVersion, changelog: newChangelog.trim() })
@@ -339,7 +339,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
               className="w-full flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-950/25 hover:bg-slate-100 dark:hover:bg-slate-950/50 transition-colors font-semibold text-xs text-slate-700 dark:text-slate-300 uppercase tracking-wider border-b border-slate-100 dark:border-slate-850 cursor-pointer"
             >
               <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+                <Sparkles className="w-4 h-4 text-amber-500" />
                 <span>Neue Systemversion persistieren</span>
               </div>
               <span className="text-[10px] bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 font-extrabold px-2 py-0.5 rounded-full border border-blue-100 dark:border-blue-900/30">

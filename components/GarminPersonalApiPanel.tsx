@@ -1,16 +1,17 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Key, RefreshCw, Download, Search, CheckCircle, AlertCircle, Trash2,
   Eye, EyeOff, Calendar, Activity, Heart, Moon, Footprints, Scale,
   MapPin, ExternalLink, Sparkles, Clock, Flame, TrendingUp, Filter, ShieldCheck
 } from 'lucide-react';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { calculateElevationStats } from '../utils/gpxUtils';
 import {
   getSessionGarminKey,
   setSessionGarminKey,
   clearSessionGarminKey,
   subscribeSessionGarminKey,
+  validateGarminSessionKey,
   garminFetch
 } from '../utils/garminSessionKey';
 
@@ -86,18 +87,27 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
     weight: any[];
   }>({ sleep: [], rhr: [], stress: [], steps: [], weight: [] });
 
+  const skipNextStatusRefreshRef = useRef(false);
+
   const fetchStatus = useCallback(async () => {
     try {
       const res = await garminFetch(getApiUrl('/api/garmin/personal/status'));
-      const json = await res.json();
+      if (!res.ok) {
+        return;
+      }
+      const text = await res.text();
+      if (!text || !text.trim().startsWith('{')) {
+        return;
+      }
+      const json = JSON.parse(text);
       if (json.success && json.status) {
         setStatus(json.status);
         if (json.status.baseUrl) {
           setBaseUrlInput(json.status.baseUrl);
         }
       }
-    } catch (e) {
-      console.error('Failed to load Garmin Personal API status:', e);
+    } catch (e: any) {
+      console.warn('Garmin Personal API Status konnte nicht geladen werden:', e?.message || e);
     }
   }, []);
 
@@ -115,7 +125,14 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       if (onlyWithGps) params.set('hasGps', 'true');
 
       const res = await garminFetch(getApiUrl(`/api/garmin/personal/search?${params.toString()}`));
-      const json = await res.json();
+      if (!res.ok) {
+        return;
+      }
+      const text = await res.text();
+      if (!text || !text.trim().startsWith('{')) {
+        return;
+      }
+      const json = JSON.parse(text);
       if (json.success) {
         setSearchedActivities(Array.isArray(json.activities) ? json.activities : []);
         if (json.health) {
@@ -129,7 +146,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
         }
       }
     } catch (e: any) {
-      console.error('Search error:', e);
+      console.warn('Garmin Personal API Suche fehlgeschlagen:', e?.message || e);
     } finally {
       setIsSearching(false);
     }
@@ -138,6 +155,10 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   useEffect(() => {
     fetchStatus();
     const unsubscribe = subscribeSessionGarminKey(() => {
+      if (skipNextStatusRefreshRef.current) {
+        skipNextStatusRefreshRef.current = false;
+        return;
+      }
       fetchStatus();
     });
     return unsubscribe;
@@ -173,7 +194,6 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
 
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedInput = apiKeyInput.trim();
     const activeTabKey = getSessionGarminKey();
 
     if (!isValidGarminBaseUrl(baseUrlInput)) {
@@ -184,32 +204,47 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       return;
     }
 
-    if (!trimmedInput && !activeTabKey) {
+    const validation = validateGarminSessionKey(apiKeyInput || activeTabKey);
+    if (!validation.valid) {
       setFeedback({
         type: 'error',
-        message: 'Bitte gib deinen Garmin Personal API Key für diese Browser-Tab-Sitzung ein.'
+        message: validation.error || 'Bitte gib deinen Garmin Personal API Key für diese Browser-Tab-Sitzung ein.'
       });
       return;
     }
 
+    const effectiveKey = validation.sanitized;
+
     setIsSavingConfig(true);
     setFeedback(null);
     try {
-      const effectiveKey = trimmedInput || activeTabKey;
-      setSessionGarminKey(effectiveKey);
-
       const res = await garminFetch(getApiUrl('/api/garmin/personal/config'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Garmin-Personal-Key': effectiveKey
+        },
         body: JSON.stringify({
           apiKey: effectiveKey,
           baseUrl: baseUrlInput.trim(),
           persistent: false
         })
       });
-      const json = await res.json();
-      if (json.success) {
-        setStatus(json.status);
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = null;
+      }
+
+      if (res.ok && json?.success) {
+        if (json.status) {
+          setStatus(json.status);
+        }
+        skipNextStatusRefreshRef.current = true;
+        setSessionGarminKey(effectiveKey);
+        skipNextStatusRefreshRef.current = false;
         setApiKeyInput('');
         setShowDeleteConfirm(false);
 
@@ -233,11 +268,15 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
           });
         }
       } else {
-        setFeedback({ type: 'error', message: json.error || 'Fehler beim Aktivieren des Sitzungs-Keys.' });
+        setFeedback({
+          type: 'error',
+          message: json?.error || `Fehler beim Aktivieren des Sitzungs-Keys (HTTP ${res.status}).`
+        });
       }
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Netzwerkfehler beim Aktivieren des Sitzungs-Keys.' });
     } finally {
+      skipNextStatusRefreshRef.current = false;
       setIsSavingConfig(false);
     }
   };
@@ -439,7 +478,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       }
 
       // Fallback: load from local SQLite points_json if already stored
-      const fullRes = await fetch(getApiUrl(`/api/activity-track-full?id=${encodeURIComponent(act.id)}`));
+      const fullRes = await apiFetch(getApiUrl(`/api/activity-track-full?id=${encodeURIComponent(act.id)}`));
       const fullJson = await fullRes.json();
       const rawPointsStr = fullJson.success && fullJson.points_json ? fullJson.points_json : act.points_json;
       if (rawPointsStr) {

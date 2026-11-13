@@ -1,17 +1,25 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --color-slate-150: #e2e8f0;
   --color-slate-250: #e2e8f0;
-  --color-slate-350: #f1f5f9;
-  --color-slate-450: #cbd5e1;
-  --color-slate-505: #94a3b8;
+  --color-slate-350: #cbd5e1;
+  --color-slate-450: #94a3b8;
+  --color-slate-505: #64748b;
   --color-slate-550: #64748b;
   --color-slate-650: #334155;
   --color-slate-705: #1e293b;
-  --color-slate-750: #0f172a;
+  --color-slate-750: #1e293b;
   --color-slate-850: #0f172a;
-  --color-slate-855: #020617;
+  --color-slate-855: #0b1120;
+  --color-slate-905: #060b16;
+}
+
+.font-mono {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Leaflet dark-tiles filter - preserves map contrast in dark mode beautifully */

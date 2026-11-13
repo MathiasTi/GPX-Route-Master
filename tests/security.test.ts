@@ -1,4 +1,4 @@
-import { getAllSettings, saveSetting, getSetting, searchTracks, searchGarminActivities } from '../utils/db';
+import { getAllSettings, saveSetting, getSetting, searchTracks, searchGarminActivities, verifyAppPassword, createAuthSession, verifyAuthSessionToken, deleteAuthSession } from '../utils/db';
 import { analyzeTrackValidation, autoFixTrackValidation } from '../utils/gpxUtils';
 import { GPXTrack, GPXPoint } from '../types';
 import path from 'path';
@@ -142,6 +142,40 @@ export function runSecurityTests(): boolean {
     const oversizedString = 'A'.repeat(5000);
     const results = searchTracks(oversizedString);
     assert(Array.isArray(results), 'Oversized search query handled gracefully');
+  });
+
+  // 6. Password Lock & 30-Day Session Lifecycle
+  test('Password Lock: verifyAppPassword accepts "mathias" and rejects invalid passwords', () => {
+    assert(verifyAppPassword('mathias') === true, 'Password "mathias" must be accepted');
+    assert(verifyAppPassword('  mathias  ') === true, 'Whitespace-padded "mathias" must be accepted');
+    assert(verifyAppPassword('wrongpassword') === false, 'Wrong password must be rejected');
+    assert(verifyAppPassword('') === false, 'Empty password must be rejected');
+    assert(verifyAppPassword(null) === false, 'Null password must be rejected');
+  });
+
+  test('Session Lifecycle: createAuthSession, verifyAuthSessionToken, and deleteAuthSession', () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const session = createAuthSession('default', THIRTY_DAYS_MS);
+    assert(typeof session.token === 'string' && session.token.length === 64, 'Generates 256-bit hex session token');
+    assert(session.expiresAt > Date.now() + 29 * 24 * 60 * 60 * 1000, 'Session expires in 30 days');
+
+    const checkValid = verifyAuthSessionToken(session.token);
+    assert(checkValid.valid === true, 'Active session token must verify as valid');
+
+    const deleted = deleteAuthSession(session.token);
+    assert(deleted === true, 'deleteAuthSession removes the session token');
+
+    const checkAfterDelete = verifyAuthSessionToken(session.token);
+    assert(checkAfterDelete.valid === false, 'Deleted session token must verify as invalid');
+  });
+
+  test('Environment Variables: .env.example contains no obsolete OAuth or unused secrets', () => {
+    const envExample = fs.readFileSync(path.join(process.cwd(), '.env.example'), 'utf-8');
+    assert(!envExample.includes('GOOGLE_CLIENT_ID'), 'GOOGLE_CLIENT_ID must not be in .env.example');
+    assert(!envExample.includes('APPLE_CLIENT_ID'), 'APPLE_CLIENT_ID must not be in .env.example');
+    assert(!envExample.includes('AUTH_SESSION_SECRET'), 'AUTH_SESSION_SECRET must not be in .env.example');
+    assert(!envExample.includes('GARMIN_KEY_ENCRYPTION_SECRET'), 'GARMIN_KEY_ENCRYPTION_SECRET must not be in .env.example');
+    assert(envExample.includes('APP_PASSWORD=mathias'), 'APP_PASSWORD=mathias documented in .env.example');
   });
 
   console.log(`\n🔒 Security Test Results: ${passed} passed, ${failed} failed.\n`);

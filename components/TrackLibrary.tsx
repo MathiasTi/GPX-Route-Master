@@ -2,8 +2,9 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, RefreshCw, Compass, ArrowLeftRight, Navigation, MapPin, ArrowUpDown, Plus } from 'lucide-react';
 import { GPXTrack } from '../types';
-import { getApiUrl } from '../utils/api';
-import { calculateElevationStats, parseLocationCoords, generateVirtualRoute } from '../utils/gpxUtils';
+import { getApiUrl, apiFetch } from '../utils/api';
+import { calculateElevationStats } from '../utils/gpxUtils';
+import { hydrateGarminActivityPayload } from '../utils/activityHydration';
 
 interface TrackLibraryProps {
   onLoadTrack: (track: GPXTrack) => void;
@@ -12,6 +13,7 @@ interface TrackLibraryProps {
   onClearSelection?: () => void;
   workspaceTracks?: GPXTrack[];
   onSaveWorkspaceToLibrary?: () => Promise<void>;
+  onOpenFullView?: () => void;
 }
 
 interface LibraryTrackThin {
@@ -30,163 +32,6 @@ interface LibraryTrackThin {
   rawFileDetails?: any;
   isGarminActivity?: boolean;
   rawRecord?: any;
-}
-
-// Robust helper function to extract elevation (ele) data from coordinate object or array
-function extractElevation(p: any): number | undefined {
-  if (!p) return undefined;
-  if (Array.isArray(p)) {
-    return p[2] !== undefined ? parseFloat(p[2]) : undefined;
-  }
-  const eleKeys = ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"];
-  for (const key of eleKeys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  // Case insensitive check
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (eleKeys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract latitude (lat)
-function extractLat(p: any): number | undefined {
-  if (!p) return undefined;
-  if (Array.isArray(p)) {
-    return parseFloat(p[0]);
-  }
-  const latKeys = ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"];
-  for (const key of latKeys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (latKeys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract longitude (lng)
-function extractLng(p: any): number | undefined {
-  if (!p) return undefined;
-  if (Array.isArray(p)) {
-    return parseFloat(p[1]);
-  }
-  const lngKeys = ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"];
-  for (const key of lngKeys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (lngKeys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract heart rate
-function extractHeartRate(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val) && val > 0) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val) && val > 0) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract cadence
-function extractCadence(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["cadence", "cad", "average_cadence", "avg_cadence", "bike_cadence", "run_cadence", "trittfrequenz", "cadence_rpm"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract power
-function extractPower(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["power", "watts", "average_power", "avg_power", "pwr", "leistung", "power_watts"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract speed
-function extractSpeed(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["speed", "velocity", "enhanced_speed", "speed_m_s", "geschwindigkeit"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
 }
 
 // Robust helper to normalize activity type
@@ -240,7 +85,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
       setIsBoundsLoading(true);
       try {
         const { minLat, maxLat, minLng, maxLng } = selectionBounds;
-        const res = await fetch(getApiUrl(`/api/library/search-by-bounds?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}`));
+        const res = await apiFetch(getApiUrl(`/api/library/search-by-bounds?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}`));
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -297,8 +142,8 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
 
       // Fetch both GPX tracks and Garmin activities concurrently
       const [gpxRes, garminRes] = await Promise.all([
-        fetch(getApiUrl(`/api/library?${queryParams.toString()}`)),
-        fetch(getApiUrl(`/api/garmin-activities?${queryParams.toString()}`))
+        apiFetch(getApiUrl(`/api/library?${queryParams.toString()}`)),
+        apiFetch(getApiUrl(`/api/garmin-activities?${queryParams.toString()}`))
       ]);
 
       const gpxData = await gpxRes.json();
@@ -355,7 +200,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
   const handleSeedCuratedTours = async (force = false) => {
     setIsSeeding(true);
     try {
-      const res = await fetch(getApiUrl('/api/library/seed-tours'), {
+      const res = await apiFetch(getApiUrl('/api/library/seed-tours'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ force })
@@ -399,7 +244,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
 
     setIsSavingBatch(true);
     try {
-      const res = await fetch(getApiUrl('/api/library/save-batch'), {
+      const res = await apiFetch(getApiUrl('/api/library/save-batch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tracks: workspaceTracks })
@@ -430,7 +275,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
   // Load track into current workspace
   const handleLoadTrack = async (id: string) => {
     try {
-      const response = await fetch(getApiUrl(`/api/library/${id}`));
+      const response = await apiFetch(getApiUrl(`/api/library/${id}`));
       const data = await response.json();
       if (data.success && data.track) {
         // Hydrate points time objects if they exist
@@ -482,14 +327,14 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
     }
   };
 
-  // Load Garmin Activity into current workspace (generates virtual route)
+  // Load Garmin Activity into current workspace (preserving raw DB points while normalizing coordinates in-memory)
   const handleLoadGarminActivity = async (act: any) => {
     try {
       let pointsJson = act.points_json;
       
       // Attempt to load the full, un-downsampled track from the server!
       try {
-        const res = await fetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
         const json = await res.json();
         if (json.success && json.points_json) {
           pointsJson = json.points_json;
@@ -498,112 +343,11 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
         console.error('Failed to fetch full track points, using fallback list track:', err);
       }
 
-      // Find starting coordinates
-      let startCoords = parseLocationCoords(act.location);
-      if (!startCoords) {
-        // Fallback: Munich, Germany
-        startCoords = { lat: 48.1351, lng: 11.5820 };
-      }
-      
-      const durationSec = act.duration || 3600;
-      const distanceKm = act.distance || 10;
-      const ascent = Math.round(act.ascent || 0);
-      const descent = Math.round(act.descent || 0);
-      const avgHr = act.avg_hr || undefined;
-      const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
-      
-      let isVirtual = false;
-      let points: any[] = [];
-      if (pointsJson) {
-        try {
-          const parsed = JSON.parse(pointsJson);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            points = parsed.map((p: any) => {
-              const latVal = extractLat(p);
-              const lngVal = extractLng(p);
-              if (latVal === undefined || lngVal === undefined) return null;
-              return {
-                lat: latVal,
-                lng: lngVal,
-                ele: extractElevation(p),
-                time: p.time ? new Date(p.time) : undefined,
-                hr: extractHeartRate(p),
-                cadence: extractCadence(p),
-                power: extractPower(p),
-                speed: extractSpeed(p),
-              };
-            }).filter((p: any) => p !== null);
-          }
-        } catch (pe) {
-          console.error('Failed to parse points_json from database:', pe);
-        }
-      }
+      const track = hydrateGarminActivityPayload({
+        ...act,
+        points_json: pointsJson
+      });
 
-      let finalAscent = ascent;
-      let finalDescent = descent;
-
-      if (points.length > 0 && (finalAscent === 0 || finalDescent === 0)) {
-        const stats = calculateElevationStats(points);
-        if (finalAscent === 0) finalAscent = stats.ascent;
-        if (finalDescent === 0) finalDescent = stats.descent;
-      }
-
-      // Fallback: If Garmin activity has points but no elevation or only flat zero elevation, generate a default profile using ascent
-      const hasElevation = points.some((p: any) => p.ele !== undefined && p.ele !== null && !isNaN(p.ele) && p.ele !== 0);
-      if (!hasElevation && points.length > 0) {
-        const ptsCount = points.length;
-        const baseElevation = 100;
-        points.forEach((p: any, idx: number) => {
-          const angle = (idx / (ptsCount - 1)) * Math.PI;
-          const elevationPhase = Math.sin(angle);
-          p.ele = Math.round(baseElevation + elevationPhase * (finalAscent || 0));
-        });
-        if (!finalAscent && !finalDescent) {
-          // Generate a gentle undulating landscape so the height profile is visually appealing instead of a flat 0 line
-          const baseElevation = 150;
-          points.forEach((p: any, idx: number) => {
-            const angle1 = (idx / (ptsCount - 1)) * Math.PI * 4; // 2 waves
-            const angle2 = (idx / (ptsCount - 1)) * Math.PI * 10; // 5 high frequency waves
-            p.ele = Math.round(baseElevation + Math.sin(angle1) * 15 + Math.cos(angle2) * 4);
-          });
-        }
-      }
-
-      if (points.length <= 1) {
-        isVirtual = true;
-        points = generateVirtualRoute(
-          startCoords.lat,
-          startCoords.lng,
-          distanceKm,
-          durationSec,
-          finalAscent,
-          finalDescent,
-          avgHr,
-          activityType
-        );
-      }
-      
-      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
-        ? calculateElevationStats(points)
-        : { maxSlope: 0 };
-
-      const track: GPXTrack = {
-        id: `garmin-act-${act.id || Date.now()}`,
-        name: act.name || 'Garmin Aktivität',
-        points,
-        color: '#f97316', // Orange Garmin-branding
-        distance: distanceKm,
-        ascent: Math.round(finalAscent),
-        descent: Math.round(finalDescent),
-        maxSlope: calculatedMaxSlope,
-        visible: true,
-        activityType,
-        duration: durationSec,
-        hasTimestamps: true,
-        description: act.description || `Garmin Aktivität in ${act.location || 'Unbekannt'}`,
-        isVirtual
-      };
-      
       onLoadTrack(track);
       showToast('Aktivität erfolgreich in den Workspace geladen!');
     } catch (err) {
@@ -615,7 +359,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
   // Delete track from DB (actual execution)
   const executeDeleteTrack = async (id: string) => {
     try {
-      const response = await fetch(getApiUrl(`/api/library/${id}`), { method: 'DELETE' });
+      const response = await apiFetch(getApiUrl(`/api/library/${id}`), { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         setTracks(prev => prev.filter(t => t.id !== id));
@@ -635,7 +379,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
   const executeClearAllTracks = async () => {
     setIsClearingAll(true);
     try {
-      const response = await fetch(getApiUrl('/api/library/clear-all'), { method: 'DELETE' });
+      const response = await apiFetch(getApiUrl('/api/library/clear-all'), { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         setTracks(prev => prev.filter(t => t.isGarminActivity));
@@ -682,7 +426,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
         .map(t => t.trim())
         .filter(t => t.length > 0);
 
-      const response = await fetch(getApiUrl(`/api/library/${editingTrack.id}`), {
+      const response = await apiFetch(getApiUrl(`/api/library/${editingTrack.id}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -773,7 +517,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
     try {
       let loaded = 0;
       for (const t of gpxTracksToLoad) {
-        const response = await fetch(getApiUrl(`/api/library/${t.id}`));
+        const response = await apiFetch(getApiUrl(`/api/library/${t.id}`));
         const data = await response.json();
         if (data.success && data.track) {
           const track = data.track as GPXTrack;
@@ -801,7 +545,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
       {selectionBounds && (
         <div className="p-3 bg-indigo-50/90 dark:bg-indigo-950/45 border border-indigo-200/60 dark:border-indigo-900 rounded-xl space-y-2 shrink-0">
           <div className="flex justify-between items-center">
-            <span className="text-xs font-black text-indigo-750 dark:text-indigo-400 flex items-center gap-1">
+            <span className="text-xs font-black text-indigo-700 dark:text-indigo-400 flex items-center gap-1">
               <MapPin className="w-3.5 h-3.5" />
               Bereich ausgewählt
             </span>
@@ -891,7 +635,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
           onClick={() => { setSourceFilter('gpx'); }}
           className={`flex-1 py-1.5 text-xs font-black transition-all rounded-lg text-center cursor-pointer ${
             sourceFilter === 'gpx'
-              ? 'bg-blue-50/70 dark:bg-blue-950/45 text-blue-750 dark:text-blue-400 border border-blue-200/40 dark:border-blue-900/50 font-extrabold shadow-3xs'
+              ? 'bg-blue-50/70 dark:bg-blue-950/45 text-blue-700 dark:text-blue-400 border border-blue-200/40 dark:border-blue-900/50 font-extrabold shadow-xs'
               : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-350'
           }`}
         >
@@ -902,7 +646,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
           onClick={() => { setSourceFilter('garmin'); }}
           className={`flex-1 py-1.5 text-xs font-black transition-all rounded-lg text-center cursor-pointer ${
             sourceFilter === 'garmin'
-              ? 'bg-orange-50/70 dark:bg-orange-950/45 text-orange-750 dark:text-orange-400 border border-orange-200/40 dark:border-orange-900/50 font-extrabold shadow-3xs'
+              ? 'bg-orange-50/70 dark:bg-orange-950/45 text-orange-700 dark:text-orange-400 border border-orange-200/40 dark:border-orange-900/50 font-extrabold shadow-xs'
               : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-350'
           }`}
         >
@@ -993,7 +737,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
             type="button"
             disabled={isSeeding}
             onClick={() => handleSeedCuratedTours(false)}
-            className="flex items-center gap-1 text-[9.5px] font-black bg-indigo-50 hover:bg-indigo-100 text-indigo-750 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 border border-indigo-200/60 dark:border-indigo-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+            className="flex items-center gap-1 text-[9.5px] font-black bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 border border-indigo-200/60 dark:border-indigo-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-xs disabled:opacity-50"
             title="GPX-Dateien aus dem Ordner /gpx zur Bibliothek hinzufügen"
           >
             <RefreshCw size={11} className={isSeeding ? "animate-spin text-indigo-600" : "text-indigo-600 dark:text-indigo-400"} />
@@ -1005,7 +749,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
               type="button"
               disabled={isLoadingAll}
               onClick={handleLoadAllToWorkspace}
-              className="flex items-center gap-1 text-[9.5px] font-black bg-blue-50 hover:bg-blue-100 text-blue-750 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50 border border-blue-200/60 dark:border-blue-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+              className="flex items-center gap-1 text-[9.5px] font-black bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50 border border-blue-200/60 dark:border-blue-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-xs disabled:opacity-50"
               title="Alle gefilterten GPX-Touren gleichzeitig in den Workspace laden"
             >
               <Plus size={11} className={isLoadingAll ? "animate-spin text-blue-600" : "text-blue-600 dark:text-blue-400"} />
@@ -1018,7 +762,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
               type="button"
               disabled={isSavingBatch}
               onClick={handleSaveWorkspaceTracks}
-              className="flex items-center gap-1 text-[9.5px] font-black bg-emerald-50 hover:bg-emerald-100 text-emerald-750 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/50 border border-emerald-200/60 dark:border-emerald-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs disabled:opacity-50"
+              className="flex items-center gap-1 text-[9.5px] font-black bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/50 border border-emerald-200/60 dark:border-emerald-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-xs disabled:opacity-50"
               title="Alle aktuell im Workspace geöffneten Touren dauerhaft in die SQLite-Bibliothek sichern"
             >
               <Check size={11} className={isSavingBatch ? "animate-spin text-emerald-600" : "text-emerald-600 dark:text-emerald-400"} />
@@ -1030,7 +774,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
             <button
               type="button"
               onClick={() => setConfirmClearAll(true)}
-              className="flex items-center gap-1 text-[9.5px] font-black bg-rose-50 hover:bg-rose-100 text-rose-750 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200/60 dark:border-rose-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-3xs"
+              className="flex items-center gap-1 text-[9.5px] font-black bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200/60 dark:border-rose-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-xs"
               title="Alle GPX-Dateien und Strecken aus der Bibliothek löschen"
             >
               <Trash2 size={11} className="text-rose-600 dark:text-rose-400" />
@@ -1131,7 +875,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
               >
                 {/* Title Line */}
                 <div className="flex items-center gap-1.5">
-                  <span className={`flex items-center justify-center text-xs w-6 h-6 rounded-lg font-bold shrink-0 shadow-3xs leading-none ${
+                  <span className={`flex items-center justify-center text-xs w-6 h-6 rounded-lg font-bold shrink-0 shadow-xs leading-none ${
                     isGarmin 
                       ? 'bg-orange-50 dark:bg-orange-950/45 text-orange-600 dark:text-orange-400' 
                       : 'bg-blue-50 dark:bg-blue-950/45 text-blue-600 dark:text-blue-400'
@@ -1419,7 +1163,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
                         onClick={() => setEditForm(prev => ({ ...prev, activityType: 'running' }))}
                         className={`flex-1 py-2 px-3 border rounded-lg font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
                           editForm.activityType === 'running'
-                            ? 'bg-emerald-550/15 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800/40 dark:text-emerald-400'
+                            ? 'bg-emerald-500/15 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800/40 dark:text-emerald-400'
                             : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-55'
                         }`}
                       >
@@ -1467,7 +1211,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
                   <button
                     type="submit"
                     disabled={isSaving}
-                    className="flex-1 py-2 bg-blue-650 hover:bg-blue-700 text-white rounded-xl font-bold hover:shadow-md transition-all cursor-pointer text-center flex items-center justify-center gap-1"
+                    className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold hover:shadow-md transition-all cursor-pointer text-center flex items-center justify-center gap-1"
                   >
                     {isSaving ? (
                       <>
@@ -1497,7 +1241,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
             exit={{ opacity: 0, y: -10 }}
             className={`absolute top-2 left-2 right-2 p-2.5 rounded-xl text-[11px] font-bold z-[120] text-center shadow-lg truncate ${
               toast.type === 'success'
-                ? 'bg-emerald-550 dark:bg-emerald-600 text-white'
+                ? 'bg-emerald-600 text-white'
                 : 'bg-rose-600 text-white'
             }`}
           >

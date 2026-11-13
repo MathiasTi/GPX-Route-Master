@@ -639,11 +639,11 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-700/80 pb-3">
           <div className="flex items-center gap-2">
             {zoneView === 'pace' ? (
-              <Gauge className="w-5 h-5 text-emerald-500 animate-pulse" />
+              <Gauge className="w-5 h-5 text-emerald-500" />
             ) : zoneView === 'hr' ? (
-              <Heart className="w-5 h-5 text-rose-500 fill-rose-500 animate-pulse" />
+              <Heart className="w-5 h-5 text-rose-500 fill-rose-500" />
             ) : (
-              <Zap className="w-5 h-5 text-amber-500 animate-pulse" />
+              <Zap className="w-5 h-5 text-amber-500" />
             )}
             <div>
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">

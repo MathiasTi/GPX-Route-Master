@@ -9,7 +9,7 @@ import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
   Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch, getSessionToken } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
@@ -399,7 +399,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     setDiagnosticFile(filepath);
     setActiveTab('diagnostics');
     try {
-      const res = await fetch(getApiUrl('/api/garmin/diagnose'), {
+      const res = await apiFetch(getApiUrl('/api/garmin/diagnose'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filepath })
@@ -442,7 +442,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const fetchDebugLogs = async () => {
     setIsRefreshingLogs(true);
     try {
-      const res = await fetch(getApiUrl('/api/import-debug-logs'));
+      const res = await apiFetch(getApiUrl('/api/import-debug-logs'));
       const json = await res.json();
       if (json.success) {
         setDebugLogs(json.logs || []);
@@ -457,7 +457,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const clearDebugLogs = async () => {
     if (!window.confirm('Möchtest du das Server-Protokoll wirklich leeren?')) return;
     try {
-      const res = await fetch(getApiUrl('/api/import-debug-logs/clear'), { method: 'POST' });
+      const res = await apiFetch(getApiUrl('/api/import-debug-logs/clear'), { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setDebugLogs([]);
@@ -599,7 +599,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(getApiUrl('/api/health-metrics'));
+      const res = await apiFetch(getApiUrl('/api/health-metrics'));
       const json = await res.json();
       if (json.success) {
         setData(json.data);
@@ -617,7 +617,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   // Fetch workspace files list (bypasses browser upload limits for large databases)
   const fetchLocalDbs = useCallback(async () => {
     try {
-      const res = await fetch(getApiUrl('/api/list-local-dbs'));
+      const res = await apiFetch(getApiUrl('/api/list-local-dbs'));
       const json = await res.json();
       if (json.success && json.files) {
         setLocalFiles(json.files);
@@ -631,7 +631,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const fetchAnalytics = useCallback(async () => {
     setIsAnalyticsLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/health-analytics'));
+      const res = await apiFetch(getApiUrl('/api/health-analytics'));
       const json = await res.json();
       if (json.success && json.analytics) {
         setAnalyticsData(json.analytics);
@@ -651,7 +651,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       
       // Attempt to load the full, un-downsampled track from the server!
       try {
-        const res = await fetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
         const json = await res.json();
         if (json.success && json.points_json) {
           pointsJson = json.points_json;
@@ -862,7 +862,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       const result = await new Promise<{ success: boolean; stats?: any; error?: string }>((resolve) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', getApiUrl('/api/import-sqlite'), true);
+        xhr.withCredentials = true;
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        const sessionToken = getSessionToken();
+        if (sessionToken) {
+          xhr.setRequestHeader('Authorization', `Bearer ${sessionToken}`);
+        }
 
         // Track upload progress
         xhr.upload.onprogress = (e) => {
@@ -937,7 +942,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     setError(null);
     setSuccessMsg(null);
     try {
-      const res = await fetch(getApiUrl('/api/import-local-db'), {
+      const res = await apiFetch(getApiUrl('/api/import-local-db'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filepath })
@@ -1001,7 +1006,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     }
     setIsLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/health-metrics/clear'), { method: 'POST' });
+      const res = await apiFetch(getApiUrl('/api/health-metrics/clear'), { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setData({ sleep: [], weight: [], stress: [], rhr: [], steps: [], activities: [] });
@@ -1044,10 +1049,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           className="w-full flex items-center justify-between p-5 text-left font-bold text-sm text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-850/35 transition-colors cursor-pointer"
         >
           <div className="flex items-center gap-2">
-            <span className="flex h-2 w-2 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
-            </span>
+            <span className="inline-flex rounded-full h-2 w-2 bg-orange-500" />
             <span>Server-Import-Protokoll & Diagnose</span>
           </div>
           <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
@@ -1411,7 +1413,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                 {/* RHR */}
                 <div className="bg-rose-50/40 dark:bg-rose-950/10 p-5 rounded-2xl border border-rose-100/40 dark:border-rose-900/20 flex items-center gap-4">
                   <div className="p-3 bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 rounded-xl">
-                    <Heart className="w-5 h-5 animate-pulse" />
+                    <Heart className="w-5 h-5" />
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider block">Ø Ruhepuls (RHR)</span>
@@ -1899,7 +1901,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                           e.stopPropagation();
                                           handleLoadActivity(act);
                                         }}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md text-[10px] cursor-pointer shadow-3xs transition-colors"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md text-[10px] cursor-pointer shadow-xs transition-colors"
                                         title="In Workspace laden"
                                       >
                                         In Workspace laden

@@ -1,7 +1,52 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initDb, closeDb, saveTrack, searchTracks, getTrackDetails, getAllTracksFull, updateTrackMetadata, deleteTrack, clearAllTracks, getTracksInBounds, saveSleep, saveWeight, saveStress, saveRhr, saveSteps, saveGarminActivity, getHealthMetrics, clearHealthMetrics, runInTransaction, searchGarminActivities, searchGarminHealthMetrics, getAppVersions, addAppVersion, getGarminActivitiesInBounds, getGarminActivityById, downsamplePoints, getSetting, saveSetting, getAllSettings, seedCuratedTours } from "./utils/db.js";
+import {
+  initDb,
+  closeDb,
+  saveTrack,
+  searchTracks,
+  getTrackDetails,
+  getAllTracksFull,
+  updateTrackMetadata,
+  deleteTrack,
+  clearAllTracks,
+  getTracksInBounds,
+  saveSleep,
+  saveWeight,
+  saveStress,
+  saveRhr,
+  saveSteps,
+  saveGarminActivity,
+  getHealthMetrics,
+  clearHealthMetrics,
+  runInTransaction,
+  searchGarminActivities,
+  searchGarminHealthMetrics,
+  getAppVersions,
+  addAppVersion,
+  getGarminActivitiesInBounds,
+  getGarminActivityById,
+  downsamplePoints,
+  getSetting,
+  saveSetting,
+  getAllSettings,
+  seedCuratedTours,
+  verifyAppPassword,
+  createAuthSession,
+  verifyAuthSessionToken,
+  deleteAuthSession,
+  queryActivitiesCatalog,
+  getFilteredActivityRefs,
+  getActivitiesBulkFull,
+  updateCatalogActivityMetadata,
+  bulkDeleteCatalogActivities,
+  CatalogActivityRef,
+  CatalogQueryOptions,
+  CatalogSortBy,
+  CatalogSource,
+  CatalogActivityCategory
+} from "./utils/db.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
@@ -170,6 +215,107 @@ async function startServer() {
     res.json({ status: "ok", timestamp: Date.now() });
   });
 
+  // Helper to extract session token from Authorization Bearer header or velo_session cookie
+  const extractSessionTokenFromRequest = (req: express.Request): string | null => {
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")) {
+      const token = authHeader.slice(7).trim();
+      if (token.length >= 16) return token;
+    }
+    const rawCookie = req.headers.cookie;
+    if (typeof rawCookie === "string" && rawCookie.includes("velo_session=")) {
+      const match = rawCookie.match(/(?:^|;\s*)velo_session=([^;]+)/);
+      if (match && match[1]) {
+        const token = decodeURIComponent(match[1].trim());
+        if (token.length >= 16) return token;
+      }
+    }
+    return null;
+  };
+
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const THIRTY_DAYS_SEC = 30 * 24 * 60 * 60;
+
+  // Check current password unlock session status
+  app.get("/api/auth/me", (req, res) => {
+    const token = extractSessionTokenFromRequest(req);
+    const verification = verifyAuthSessionToken(token);
+    if (!verification.valid) {
+      return res.json({ authenticated: false });
+    }
+    return res.json({
+      authenticated: true,
+      expiresAt: verification.expiresAt
+    });
+  });
+
+  // Unlock app with password ("mathias" or APP_PASSWORD) and create a 30-day session
+  const handleUnlock = (req: express.Request, res: express.Response) => {
+    const { password } = req.body || {};
+    if (!verifyAppPassword(password)) {
+      return res.status(401).json({
+        authenticated: false,
+        error: "Falsches Passwort. Bitte versuche es erneut."
+      });
+    }
+
+    const session = createAuthSession("default", THIRTY_DAYS_MS);
+    const isSecure =
+      req.secure ||
+      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+    const cookieFlags = isSecure
+      ? `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; Secure; SameSite=None`
+      : `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; SameSite=Lax`;
+
+    res.setHeader("Set-Cookie", `velo_session=${encodeURIComponent(session.token)}; ${cookieFlags}`);
+    return res.json({
+      authenticated: true,
+      token: session.token,
+      expiresAt: session.expiresAt
+    });
+  };
+
+  app.post("/api/auth/unlock", handleUnlock);
+  app.post("/api/auth/login", handleUnlock);
+
+  // Lock app and invalidate session
+  app.post("/api/auth/logout", (req, res) => {
+    const token = extractSessionTokenFromRequest(req);
+    if (token) {
+      deleteAuthSession(token);
+    }
+    const isSecure =
+      req.secure ||
+      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+    const clearFlags = isSecure
+      ? "Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None"
+      : "Path=/; Max-Age=0; HttpOnly; SameSite=Lax";
+    res.setHeader("Set-Cookie", `velo_session=; ${clearFlags}`);
+    return res.json({ success: true, authenticated: false });
+  });
+
+  // Protect all other /api/* routes with password session verification
+  app.use("/api", (req, res, next) => {
+    if (
+      req.path === "/health" ||
+      req.path === "/auth/me" ||
+      req.path === "/auth/unlock" ||
+      req.path === "/auth/login" ||
+      req.path === "/auth/logout"
+    ) {
+      return next();
+    }
+    const token = extractSessionTokenFromRequest(req);
+    const verification = verifyAuthSessionToken(token);
+    if (!verification.valid) {
+      return res.status(401).json({
+        success: false,
+        error: "Nicht autorisiert. Bitte entsperre die App mit dem Passwort."
+      });
+    }
+    next();
+  });
+
   // API route to resolve weather using Open-Meteo and OpenStreetMap Nominatim (High limits - completely free, no API key required)
   app.post("/api/weather", async (req, res) => {
     const { lat, lng, date } = req.body;
@@ -289,15 +435,18 @@ async function startServer() {
         signal: AbortSignal.timeout(2000) // fast 2s timeout
       });
       if (geoResponse.ok) {
-        const geoData: any = await geoResponse.json();
-        if (geoData && geoData.address) {
-          const county = geoData.address.county || geoData.address.district;
-          const town = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.suburb || county;
-          const country = geoData.address.country;
-          if (town) {
-            locationName = country ? `${town}, ${country}` : town;
-          } else if (geoData.display_name) {
-            locationName = geoData.display_name.split(",").slice(0, 2).join(",").trim();
+        const text = await geoResponse.text().catch(() => "");
+        if (text && text.trim().startsWith("{")) {
+          const geoData: any = JSON.parse(text);
+          if (geoData && geoData.address) {
+            const county = geoData.address.county || geoData.address.district;
+            const town = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.suburb || county;
+            const country = geoData.address.country;
+            if (town) {
+              locationName = country ? `${town}, ${country}` : town;
+            } else if (geoData.display_name) {
+              locationName = geoData.display_name.split(",").slice(0, 2).join(",").trim();
+            }
           }
         }
       }
@@ -1919,6 +2068,231 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     } catch (err: any) {
       console.error("Error searching Garmin activities:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to search Garmin activities" });
+    }
+  });
+
+  // ============================================================================
+  // HIGH-SPEED UNIFIED ACTIVITIES CATALOG API (/api/activities/*)
+  // ============================================================================
+
+  function parseCatalogQueryOptions(raw: any): CatalogQueryOptions {
+    const allowedSources = new Set(["all", "library", "garmin"]);
+    const allowedCategories = new Set(["all", "cycling", "running", "hiking", "other"]);
+    const allowedSortBy = new Set([
+      "date-desc",
+      "date-asc",
+      "distance-desc",
+      "ascent-desc",
+      "duration-desc",
+      "name-asc"
+    ]);
+
+    const source = typeof raw?.source === "string" && allowedSources.has(raw.source)
+      ? (raw.source as "all" | CatalogSource)
+      : "all";
+    const activityType = typeof raw?.activityType === "string" && allowedCategories.has(raw.activityType)
+      ? (raw.activityType as "all" | CatalogActivityCategory)
+      : "all";
+    const sortBy = typeof raw?.sortBy === "string" && allowedSortBy.has(raw.sortBy)
+      ? (raw.sortBy as CatalogSortBy)
+      : "date-desc";
+
+    const parseNum = (val: any): number | undefined => {
+      if (val === undefined || val === null || val === "") return undefined;
+      const n = Number(val);
+      return Number.isFinite(n) && n >= 0 ? n : undefined;
+    };
+
+    return {
+      q: typeof raw?.q === "string" ? raw.q : "",
+      source,
+      activityType,
+      startDate: typeof raw?.startDate === "string" ? raw.startDate : undefined,
+      endDate: typeof raw?.endDate === "string" ? raw.endDate : undefined,
+      minDistance: parseNum(raw?.minDistance),
+      maxDistance: parseNum(raw?.maxDistance),
+      minAscent: parseNum(raw?.minAscent),
+      hasGpsOnly: raw?.hasGpsOnly === "true" || raw?.hasGpsOnly === "1" || raw?.hasGpsOnly === true,
+      sortBy,
+      limit: parseNum(raw?.limit) ?? 150,
+      offset: parseNum(raw?.offset) ?? 0
+    };
+  }
+
+  // GET /api/activities/catalog: Metadata-only paginated & SQL-filtered unified catalog
+  app.get("/api/activities/catalog", (req, res) => {
+    try {
+      const options = parseCatalogQueryOptions(req.query);
+      const result = queryActivitiesCatalog(options);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error("Error querying activities catalog:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to query activities catalog" });
+    }
+  });
+
+  // POST /api/activities/bulk-load: Load full un-downsampled raw GPS payloads for selected activities
+  app.post("/api/activities/bulk-load", (req, res) => {
+    try {
+      const MAX_BULK_MAP_TRACKS = 50;
+      const { items, selectAllFiltered, filters } = req.body || {};
+
+      let refs: CatalogActivityRef[] = [];
+      let truncatedCount = 0;
+
+      if (selectAllFiltered === true) {
+        const filterOpts = parseCatalogQueryOptions(filters || {});
+        const allRefs = getFilteredActivityRefs(filterOpts, MAX_BULK_MAP_TRACKS + 1);
+        if (allRefs.length > MAX_BULK_MAP_TRACKS) {
+          truncatedCount = allRefs.length - MAX_BULK_MAP_TRACKS;
+          refs = allRefs.slice(0, MAX_BULK_MAP_TRACKS);
+        } else {
+          refs = allRefs;
+        }
+      } else if (Array.isArray(items)) {
+        const sanitized: CatalogActivityRef[] = items
+          .filter(
+            (i: any) =>
+              i &&
+              (i.source === "library" || i.source === "garmin") &&
+              typeof i.id === "string" &&
+              i.id.length > 0 &&
+              i.id.length <= 128
+          )
+          .map((i: any) => ({ source: i.source as CatalogSource, id: i.id }));
+
+        if (sanitized.length > MAX_BULK_MAP_TRACKS) {
+          truncatedCount = sanitized.length - MAX_BULK_MAP_TRACKS;
+          refs = sanitized.slice(0, MAX_BULK_MAP_TRACKS);
+        } else {
+          refs = sanitized;
+        }
+      } else {
+        return res.status(400).json({ success: false, error: "Invalid request payload for bulk-load." });
+      }
+
+      if (refs.length === 0) {
+        return res.json({ success: true, libraryTracks: [], garminActivities: [], truncatedCount: 0 });
+      }
+
+      const { libraryRecords, garminRecords } = getActivitiesBulkFull(refs);
+
+      const libraryTracks = libraryRecords.map((r) => {
+        const points = safeJsonParse(r.points_json, []).data || [];
+        let surfaceStats = r.surface_stats_json ? safeJsonParse(r.surface_stats_json, []).data : [];
+        const calcStats = calculateSurfaceStatsFromPoints(points);
+        if (calcStats.length > 0) {
+          surfaceStats = calcStats;
+        } else if (!surfaceStats || !Array.isArray(surfaceStats)) {
+          surfaceStats = [];
+        }
+        hydratePointsWithSurface(points, surfaceStats, r.distance);
+
+        return {
+          id: r.id,
+          name: r.name,
+          distance: r.distance,
+          ascent: r.ascent,
+          descent: r.descent,
+          duration: r.duration,
+          activityType: r.activity_type,
+          description: r.description || "",
+          tags: r.tags ? r.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
+          dateCreated: r.date_created,
+          originalFilename: r.original_filename,
+          points,
+          powerStats: r.power_stats_json ? safeJsonParse(r.power_stats_json, undefined).data : undefined,
+          surfaceStats,
+          climbs: r.climbs_json ? safeJsonParse(r.climbs_json, undefined).data : undefined,
+          maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
+          color: r.color || "#3b82f6",
+          hasTimestamps: r.has_timestamps === 1,
+          rawFileDetails: r.raw_file_json ? safeJsonParse(r.raw_file_json, undefined).data : undefined,
+          visible: true
+        };
+      });
+
+      res.json({
+        success: true,
+        libraryTracks,
+        garminActivities: garminRecords,
+        truncatedCount
+      });
+    } catch (err: any) {
+      console.error("Error in bulk-load activities:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to load selected activities" });
+    }
+  });
+
+  // PATCH /api/activities/:source/:id: Update metadata inline without touching raw points_json
+  app.patch("/api/activities/:source/:id", (req, res) => {
+    try {
+      const { source, id } = req.params;
+      if (source !== "library" && source !== "garmin") {
+        return res.status(400).json({ success: false, error: "Invalid activity source." });
+      }
+      if (!id || typeof id !== "string" || id.length > 128) {
+        return res.status(400).json({ success: false, error: "Invalid activity ID." });
+      }
+
+      const { name, description, tags, activityType, date, location } = req.body || {};
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({ success: false, error: "Name darf nicht leer sein." });
+      }
+
+      const tagsStr = Array.isArray(tags)
+        ? tags.slice(0, 50).map((t) => String(t).trim()).filter(Boolean).join(",").slice(0, 1000)
+        : String(tags || "").slice(0, 1000);
+
+      const updated = updateCatalogActivityMetadata(source as CatalogSource, id, {
+        name: name.trim().slice(0, 500),
+        description: String(description || "").slice(0, 5000),
+        tags: tagsStr,
+        activityType: String(activityType || "cycling").slice(0, 50),
+        date: typeof date === "string" && date.trim().length > 0 ? date.trim().slice(0, 32) : undefined,
+        location: typeof location === "string" ? location.trim().slice(0, 300) : undefined
+      });
+
+      if (!updated) {
+        return res.status(404).json({ success: false, error: "Aktivität wurde nicht gefunden." });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating catalog activity metadata:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to update activity metadata" });
+    }
+  });
+
+  // POST /api/activities/bulk-delete: Transactional bulk delete across mixed sources
+  app.post("/api/activities/bulk-delete", (req, res) => {
+    try {
+      const { items, selectAllFiltered, filters } = req.body || {};
+
+      let refs: CatalogActivityRef[] = [];
+      if (selectAllFiltered === true) {
+        const filterOpts = parseCatalogQueryOptions(filters || {});
+        refs = getFilteredActivityRefs(filterOpts, 20000);
+      } else if (Array.isArray(items)) {
+        refs = items
+          .filter(
+            (i: any) =>
+              i &&
+              (i.source === "library" || i.source === "garmin") &&
+              typeof i.id === "string" &&
+              i.id.length > 0 &&
+              i.id.length <= 128
+          )
+          .map((i: any) => ({ source: i.source as CatalogSource, id: i.id }));
+      } else {
+        return res.status(400).json({ success: false, error: "Invalid request payload for bulk-delete." });
+      }
+
+      const deletedCount = bulkDeleteCatalogActivities(refs);
+      res.json({ success: true, deletedCount });
+    } catch (err: any) {
+      console.error("Error in bulk-delete activities:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to delete selected activities" });
     }
   });
 

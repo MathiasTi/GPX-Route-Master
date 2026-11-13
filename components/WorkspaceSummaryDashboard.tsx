@@ -12,15 +12,10 @@ import {
   EyeOff,
   ChevronDown,
   ChevronUp,
-  Maximize2,
-  Activity,
-  Bike,
-  Sparkles,
   BarChart3,
-  X,
   Target
 } from 'lucide-react';
-import { GPXTrack, GPXPoint } from '../types';
+import { GPXTrack } from '../types';
 
 export interface WorkspaceSummaryStats {
   totalTracks: number;
@@ -239,7 +234,7 @@ interface WorkspaceSummaryDashboardProps {
   tracks: GPXTrack[];
   userWeight?: number;
   estimatedSpeed?: number;
-  variant?: 'sidebar' | 'map-hud' | 'modal';
+  variant?: 'sidebar' | 'modal';
   isDark?: boolean;
   markedTrackId?: string | null;
   onMarkTrack?: (trackId: string) => void;
@@ -254,26 +249,20 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
   tracks,
   userWeight = 75,
   estimatedSpeed = 25,
-  variant = 'sidebar',
   isDark = false,
   markedTrackId,
   onMarkTrack,
-  onToggleTrackVisibility,
   onToggleAllVisibility,
-  onFitVisibleTracks,
-  onClose,
-  onOpenIntensiveAnalysis
+  onFitVisibleTracks
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTrackBreakdown, setShowTrackBreakdown] = useState(false);
-  const [isHudMinimized, setIsHudMinimized] = useState(false);
 
   const stats = useMemo(() => {
     return calculateWorkspaceSummary(tracks, userWeight, estimatedSpeed);
   }, [tracks, userWeight, estimatedSpeed]);
 
   const allVisible = stats.totalTracks > 0 && stats.visibleTracksCount === stats.totalTracks;
-  const noneVisible = stats.totalTracks > 0 && stats.visibleTracksCount === 0;
 
   const handleFitAll = () => {
     if (!onFitVisibleTracks) return;
@@ -290,196 +279,6 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
 
   if (stats.totalTracks === 0) {
     return null;
-  }
-
-  // MAP HUD VARIANT (Floating over Map)
-  if (variant === 'map-hud') {
-    return (
-      <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[400] select-none font-sans pointer-events-auto max-w-[calc(100vw-80px)] sm:max-w-md">
-        <div
-          className={`rounded-2xl border shadow-xl backdrop-blur-md transition-all duration-300 overflow-hidden ${
-            isDark
-              ? 'bg-slate-900/90 border-slate-800 text-slate-100 shadow-slate-950/50'
-              : 'bg-white/95 border-slate-200/80 text-slate-900 shadow-slate-200/60'
-          }`}
-        >
-          {/* HUD Header Bar */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200/60 dark:border-slate-800/80 gap-2 bg-slate-50/50 dark:bg-slate-800/30">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <div className="p-1 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                <Layers className="w-3.5 h-3.5" />
-              </div>
-              <div className="flex items-center gap-1.5 truncate">
-                <span className="text-xs font-black tracking-tight truncate">
-                  Gesamtübersicht ({stats.visibleTracksCount}/{stats.totalTracks})
-                </span>
-                {stats.visibleTracksCount > 0 && (
-                  <span className="text-[9.5px] px-1.5 py-0.5 rounded-full font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 font-mono">
-                    {stats.totalDistanceKm} km
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1 shrink-0">
-              {stats.visibleTracksCount > 0 && onFitVisibleTracks && (
-                <button
-                  type="button"
-                  onClick={handleFitAll}
-                  className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                  title="Alle sichtbaren Strecken auf der Karte zentrieren"
-                >
-                  <Target className="w-3.5 h-3.5" />
-                </button>
-              )}
-              {onToggleAllVisibility && (
-                <button
-                  type="button"
-                  onClick={handleToggleAll}
-                  className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                  title={allVisible ? "Alle Strecken ausblenden" : "Alle Strecken einblenden"}
-                >
-                  {allVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setIsHudMinimized(!isHudMinimized)}
-                className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                title={isHudMinimized ? "Dashboard aufklappen" : "Dashboard minimieren"}
-              >
-                {isHudMinimized ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-              </button>
-              {onClose && (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="p-1 rounded-md text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                  title="Schließen"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* HUD Content when expanded */}
-          {!isHudMinimized && (
-            <div className="p-3 space-y-2.5">
-              {stats.visibleTracksCount === 0 ? (
-                <div className="text-center py-3 text-xs text-slate-400 italic">
-                  Keine Strecken sichtbar. Klicke auf{' '}
-                  <button
-                    type="button"
-                    onClick={handleToggleAll}
-                    className="underline text-indigo-500 font-bold hover:text-indigo-600"
-                  >
-                    Alle einblenden
-                  </button>
-                  .
-                </div>
-              ) : (
-                <>
-                  {/* Top 3 Combined Metrics */}
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <div className="p-2 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 text-center flex flex-col items-center">
-                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight flex items-center gap-0.5">
-                        <Navigation className="w-2.5 h-2.5 text-blue-500 shrink-0" /> Strecke
-                      </span>
-                      <span className="font-mono font-black text-xs sm:text-sm text-slate-800 dark:text-slate-100 mt-0.5">
-                        {stats.totalDistanceKm.toLocaleString('de-DE', { minimumFractionDigits: 1 })} km
-                      </span>
-                    </div>
-
-                    <div className="p-2 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100/60 dark:border-emerald-900/30 text-center flex flex-col items-center">
-                      <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-tight flex items-center gap-0.5">
-                        <TrendingUp className="w-2.5 h-2.5 shrink-0" /> Anstieg
-                      </span>
-                      <span className="font-mono font-black text-xs sm:text-sm text-emerald-600 dark:text-emerald-400 mt-0.5">
-                        +{stats.totalAscentM.toLocaleString('de-DE')} m
-                      </span>
-                    </div>
-
-                    <div className="p-2 rounded-xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100/60 dark:border-rose-900/30 text-center flex flex-col items-center">
-                      <span className="text-[9px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-tight flex items-center gap-0.5">
-                        <TrendingDown className="w-2.5 h-2.5 shrink-0" /> Abstieg
-                      </span>
-                      <span className="font-mono font-black text-xs sm:text-sm text-rose-600 dark:text-rose-400 mt-0.5">
-                        -{stats.totalDescentM.toLocaleString('de-DE')} m
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Secondary Metrics Strip */}
-                  <div className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-slate-100/60 dark:bg-slate-800/40 text-[10px] font-mono text-slate-600 dark:text-slate-300">
-                    <span className="flex items-center gap-1" title="Geschätzte oder gemessene Gesamtdauer">
-                      <Clock className="w-3 h-3 text-indigo-500" />
-                      {stats.formattedDuration}
-                    </span>
-                    {stats.maxElevationM !== null && (
-                      <span className="flex items-center gap-1" title="Höchster Gipfel / Culmination Point">
-                        <Mountain className="w-3 h-3 text-amber-500" />
-                        Max {stats.maxElevationM}m
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1" title="Geschätzter Gesamt-Kalorienverbrauch">
-                      <Flame className="w-3 h-3 text-orange-500" />
-                      ~{stats.estimatedCaloriesKcal.toLocaleString('de-DE')} kcal
-                    </span>
-                  </div>
-
-                  {/* Sport Modality Subtotals (Cycling vs Running) */}
-                  {stats.sportStats && (stats.sportStats.cycling.count > 0 && stats.sportStats.running.count > 0) ? (
-                    <div className="grid grid-cols-2 gap-1.5 pt-0.5">
-                      <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-200/50 dark:border-indigo-900/40 text-[9.5px]">
-                        <div className="flex items-center justify-between font-bold text-indigo-700 dark:text-indigo-300">
-                          <span>🚴 Rad ({stats.sportStats.cycling.count})</span>
-                          <span className="font-mono">{stats.sportStats.cycling.distanceKm.toFixed(1)} km</span>
-                        </div>
-                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-mono mt-0.5 flex justify-between">
-                          <span>+{stats.sportStats.cycling.ascentM} hm</span>
-                          <span>~{stats.sportStats.cycling.caloriesKcal} kcal</span>
-                        </div>
-                      </div>
-
-                      <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-200/50 dark:border-emerald-900/40 text-[9.5px]">
-                        <div className="flex items-center justify-between font-bold text-emerald-700 dark:text-emerald-300">
-                          <span>🏃 Lauf ({stats.sportStats.running.count})</span>
-                          <span className="font-mono">{stats.sportStats.running.distanceKm.toFixed(1)} km</span>
-                        </div>
-                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-mono mt-0.5 flex justify-between">
-                          <span>+{stats.sportStats.running.ascentM} hm</span>
-                          <span>~{stats.sportStats.running.caloriesKcal} kcal</span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {/* Multi-Track Segmented Color Bar */}
-                  {stats.visibleTracks.length > 1 && (
-                    <div className="space-y-1">
-                      <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                        {stats.visibleTracks.map(t => {
-                          const pct = stats.totalDistanceKm > 0 ? (t.distance / stats.totalDistanceKm) * 100 : 0;
-                          return (
-                            <div
-                              key={t.id}
-                              style={{ width: `${pct}%`, backgroundColor: t.color || '#3b82f6' }}
-                              className="h-full transition-all duration-300"
-                              title={`${t.name}: ${t.distance.toFixed(1)}km (${pct.toFixed(0)}%)`}
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
   }
 
   // SIDEBAR / WORKSPACE CARD VARIANT (Embedded inside the sidebar above tracks)
@@ -501,7 +300,7 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
           <div>
             <h3 className="text-xs font-black tracking-tight text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
               <span>Sichtbare Strecken</span>
-              <span className="px-1.5 py-0.2 text-[9px] font-mono font-bold rounded-full bg-indigo-100/70 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-300">
+              <span className="font-mono text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
                 {stats.visibleTracksCount}/{stats.totalTracks}
               </span>
             </h3>

@@ -529,8 +529,8 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         )}
       </Map>
 
-      <div className="absolute bottom-6 left-6 bg-white/90 backdrop-blur-sm p-4 rounded-xl shadow-lg z-10 w-64 border border-slate-200">
-        <div className="mb-3 pb-3 border-b border-slate-200">
+      <div className="absolute bottom-6 left-6 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-4 rounded-xl shadow-lg z-10 w-64 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100">
+        <div className="mb-3 pb-3 border-b border-slate-200 dark:border-slate-800">
           <button
             type="button"
             onClick={fitToTracks}
@@ -544,9 +544,9 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           </button>
         </div>
         <div className="mb-4">
-          <label className="flex justify-between text-xs font-bold text-slate-600 mb-2">
+          <label className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300 mb-2">
             <span>Neigung (Pitch)</span>
-            <span className="font-mono text-blue-600">{Math.round(pitch)}°</span>
+            <span className="font-mono text-blue-600 dark:text-blue-400">{Math.round(pitch)}°</span>
           </label>
           <input 
             type="range" 
@@ -558,12 +558,12 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
               setPitch(p);
               mapRef.current?.getMap()?.setPitch(p);
             }}
-            className="w-full accent-blue-600 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+            className="w-full accent-blue-600 h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
           />
         </div>
         <div>
           <div className="flex justify-between items-center mb-2">
-            <label className="text-xs font-bold text-slate-600">
+            <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
               Drehung (Bearing)
             </label>
             <div className="flex items-center gap-2">
@@ -572,12 +572,12 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
                   setBearing(0);
                   mapRef.current?.getMap()?.easeTo({ bearing: 0, duration: 500 });
                 }}
-                className="text-[9px] bg-slate-200 hover:bg-slate-300 text-slate-700 px-1.5 py-0.5 rounded font-bold transition-colors"
+                className="text-[9px] bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded font-bold transition-colors cursor-pointer"
                 title="Nach Norden ausrichten"
               >
                 NORDEN
               </button>
-              <span className="font-mono text-blue-600 text-xs font-bold w-8 text-right">{Math.round(bearing)}°</span>
+              <span className="font-mono text-blue-600 dark:text-blue-400 text-xs font-bold w-8 text-right">{Math.round(bearing)}°</span>
             </div>
           </div>
           <input 
@@ -590,7 +590,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
               setBearing(b);
               mapRef.current?.getMap()?.setBearing(b);
             }}
-            className="w-full accent-blue-600 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+            className="w-full accent-blue-600 h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
           />
         </div>
       </div>

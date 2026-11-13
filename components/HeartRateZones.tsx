@@ -479,7 +479,7 @@ export const HeartRateZones: React.FC<HeartRateZonesProps> = ({
       <div className="bg-indigo-50/40 dark:bg-indigo-950/10 border border-indigo-100/40 dark:border-indigo-900/20 p-3 rounded-xl flex items-start gap-2.5">
         <Award className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
         <div className="text-[10.5px] leading-relaxed text-indigo-950 dark:text-indigo-400">
-          <span className="font-extrabold block text-indigo-800 dark:text-indigo-450 uppercase text-[9px] tracking-wider mb-0.5">Fazit & Trainingseffekt</span>
+          <span className="font-extrabold block text-indigo-800 dark:text-indigo-300 uppercase text-[9px] tracking-wider mb-0.5">Fazit & Trainingseffekt</span>
           {stats.zones[3].percent + stats.zones[4].percent > 30 ? (
             <span>Harter anaerober Reiz! Du hast viel Zeit im Schwellen- ({stats.zones[3].percent}%) und Spitzenbereich spendiert. Dies verbessert deine Laktatabbaurate und VO2max massiv. Gönne dir ausreichend Erholung!</span>
           ) : stats.zones[1].percent > 45 ? (

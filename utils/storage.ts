@@ -90,12 +90,18 @@ export function sanitizeTracksForStorage(tracks: GPXTrack[]): any[] {
   });
 }
 
+function getWorkspaceTracksStorageKey(userId?: string): string {
+  if (!userId || userId === 'default') return WORKSPACE_TRACKS_KEY;
+  return `${WORKSPACE_TRACKS_KEY}_${userId}`;
+}
+
 /**
  * Saves workspace tracks with automatic payload size check & progressive optimization
  */
-export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
+export function saveWorkspaceTracks(tracks: GPXTrack[], userId?: string): boolean {
+  const storageKey = getWorkspaceTracksStorageKey(userId);
   if (!tracks || tracks.length === 0) {
-    safeRemoveItem(WORKSPACE_TRACKS_KEY);
+    safeRemoveItem(storageKey);
     return true;
   }
 
@@ -111,7 +117,7 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
 
   // If within safe quota limit, save directly
   if (serialized.length <= MAX_SAFE_LOCALSTORAGE_BYTES) {
-    const success = safeSetItem(WORKSPACE_TRACKS_KEY, serialized);
+    const success = safeSetItem(storageKey, serialized);
     if (success) return true;
   }
 
@@ -145,7 +151,7 @@ export function saveWorkspaceTracks(tracks: GPXTrack[]): boolean {
 
     const lightweightRes = safeJsonStringify(lightweightTracks);
     if (lightweightRes.success) {
-      return safeSetItem(WORKSPACE_TRACKS_KEY, lightweightRes.data);
+      return safeSetItem(storageKey, lightweightRes.data);
     }
     return false;
   } catch (fallbackErr: any) {
@@ -169,9 +175,13 @@ export function isDefaultCuratedTrack(track: { id?: string; name?: string; tags?
  * Loads and validates workspace tracks from localStorage.
  * Default reference tours are segregated into the library, keeping the active workspace clean.
  */
-export function loadWorkspaceTracks(): GPXTrack[] {
-  const defaultsMoved = safeGetItem('velo_defaults_moved_to_library_v1') === 'true';
-  const raw = safeGetItem(WORKSPACE_TRACKS_KEY);
+export function loadWorkspaceTracks(userId?: string): GPXTrack[] {
+  const storageKey = getWorkspaceTracksStorageKey(userId);
+  const movedFlagKey = userId && userId !== 'default'
+    ? `velo_defaults_moved_to_library_v1_${userId}`
+    : 'velo_defaults_moved_to_library_v1';
+  const defaultsMoved = safeGetItem(movedFlagKey) === 'true';
+  const raw = safeGetItem(storageKey);
   if (!raw) return [];
 
   const parsedRes = safeJsonParse<GPXTrack[]>(raw, []);
@@ -180,8 +190,8 @@ export function loadWorkspaceTracks(): GPXTrack[] {
     if (!defaultsMoved) {
       // One-time migration: filter out default reference tracks from workspace so they reside solely in the Library
       const userTracksOnly = valid.filter(t => !isDefaultCuratedTrack(t));
-      safeSetItem('velo_defaults_moved_to_library_v1', 'true');
-      saveWorkspaceTracks(userTracksOnly);
+      safeSetItem(movedFlagKey, 'true');
+      saveWorkspaceTracks(userTracksOnly, userId);
       return userTracksOnly;
     }
     return valid;

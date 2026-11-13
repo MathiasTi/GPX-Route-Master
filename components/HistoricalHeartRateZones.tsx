@@ -544,7 +544,7 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
                 onClick={() => setActivityFilter('cycling')}
                 className={`flex-1 py-1 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1 ${
                   activityFilter === 'cycling'
-                    ? 'bg-white dark:bg-slate-700 text-indigo-750 dark:text-indigo-300 shadow-xs'
+                    ? 'bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
                 }`}
               >
@@ -556,7 +556,7 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
                 onClick={() => setActivityFilter('running')}
                 className={`flex-1 py-1 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1 ${
                   activityFilter === 'running'
-                    ? 'bg-white dark:bg-slate-700 text-amber-750 dark:text-amber-300 shadow-xs'
+                    ? 'bg-white dark:bg-slate-700 text-amber-700 dark:text-amber-300 shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
                 }`}
               >
@@ -840,9 +840,9 @@ export const HistoricalHeartRateZones: React.FC<HistoricalHeartRateZonesProps> =
               trainingAssessment.type === 'success' 
                 ? 'bg-emerald-50/55 border-emerald-100 dark:bg-emerald-950/15 dark:border-emerald-900/30 text-emerald-900 dark:text-emerald-400' 
                 : trainingAssessment.type === 'warning'
-                ? 'bg-amber-50/55 border-amber-100 dark:bg-amber-950/15 dark:border-amber-900/30 text-amber-900 dark:text-amber-450'
+                ? 'bg-amber-50/55 border-amber-100 dark:bg-amber-950/15 dark:border-amber-900/30 text-amber-900 dark:text-amber-300'
                 : trainingAssessment.type === 'danger'
-                ? 'bg-rose-50/55 border-rose-100 dark:bg-rose-950/15 dark:border-rose-900/30 text-rose-900 dark:text-rose-450'
+                ? 'bg-rose-50/55 border-rose-100 dark:bg-rose-950/15 dark:border-rose-900/30 text-rose-900 dark:text-rose-300'
                 : 'bg-indigo-50/55 border-indigo-100 dark:bg-indigo-950/15 dark:border-indigo-900/30 text-indigo-900 dark:text-indigo-400'
             }`}>
               <Award className={`w-6 h-6 shrink-0 mt-0.5 ${

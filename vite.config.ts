@@ -53,8 +53,6 @@ export default defineConfig(({ mode }) => {
       define: {
         '__APP_URL__': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
         'process.env.APP_URL': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.VITE_BUILD_DATE': JSON.stringify(new Date().toLocaleString('de-DE', {
           year: 'numeric',
           month: '2-digit',

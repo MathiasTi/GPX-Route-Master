@@ -9,7 +9,7 @@ import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
   Tooltip, CartesianGrid, AreaChart, Area, Legend, ScatterChart, Scatter
 } from 'recharts';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
 import { GarminActivitiesCalendar } from './GarminActivitiesCalendar';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
@@ -76,7 +76,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(getApiUrl('/api/health-metrics'));
+      const res = await apiFetch(getApiUrl('/api/health-metrics'));
       const json = await res.json();
       if (json.success && json.data && json.data.activities) {
         setActivities(json.data.activities);
@@ -171,7 +171,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
     setDownloadingFitId(act.id);
     setError(null);
     try {
-      const res = await fetch(getApiUrl(`/api/garmin/personal/activity/${encodeURIComponent(act.id)}/fit`));
+      const res = await apiFetch(getApiUrl(`/api/garmin/personal/activity/${encodeURIComponent(act.id)}/fit`));
       const json = await res.json();
       if (json.success && json.pointsCount > 0) {
         setSuccessMsg(`.FIT-Track für "${act.name}" geladen (${json.pointsCount} GPS-Punkte)`);
@@ -291,7 +291,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
 
       // Attempt to load the full path
       try {
-        const res = await fetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
         const json = await res.json();
         if (json.success && json.points_json) {
           pointsJson = json.points_json;
@@ -590,7 +590,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
               onClick={() => setActiveTab('compare')}
               className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer relative ${
                 activeTab === 'compare'
-                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-550/10'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/10'
                   : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-750'
               }`}
             >
@@ -598,7 +598,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                 <GitCompare className="w-4 h-4" />
                 <span>Aktivitäten vergleichen</span>
                 {selectedToCompare.length > 0 && (
-                  <span className="bg-red-500 text-white text-[9px] font-extrabold w-4.5 h-4.5 rounded-full flex items-center justify-center animate-pulse">
+                  <span className="bg-red-500 text-white text-[9px] font-extrabold min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center">
                     {selectedToCompare.length}
                   </span>
                 )}
@@ -879,7 +879,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                         {selectedToCompare.length >= 2 && (
                           <button
                             onClick={() => setActiveTab('compare')}
-                            className="px-4 py-1.5 text-[10px] font-black uppercase tracking-wider text-white bg-indigo-650 hover:bg-indigo-700 rounded-xl transition-all shadow-sm shadow-indigo-500/10 flex items-center gap-1 cursor-pointer"
+                            className="px-4 py-1.5 text-[10px] font-black uppercase tracking-wider text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-sm shadow-indigo-500/10 flex items-center gap-1 cursor-pointer"
                           >
                             <GitCompare className="w-3.5 h-3.5" />
                             Vergleichen ({selectedToCompare.length})
@@ -943,9 +943,9 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                 </td>
                                 <td className="p-4 font-sans font-semibold">
                                   {isRunning ? (
-                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-450 border border-emerald-200/40 dark:border-emerald-900/30">🏃 Lauf</span>
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200/40 dark:border-emerald-900/30">🏃 Lauf</span>
                                   ) : isCycling ? (
-                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-450 border border-blue-200/40 dark:border-blue-900/30">🚴 Rad</span>
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border border-blue-200/40 dark:border-blue-900/30">🚴 Rad</span>
                                   ) : (
                                     <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">Other</span>
                                   )}
@@ -959,7 +959,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                                 <td className="p-4 text-right">
                                   {formatDuration(act.duration)}
                                 </td>
-                                <td className="p-4 text-right text-emerald-650 dark:text-emerald-400">
+                                <td className="p-4 text-right text-emerald-600 dark:text-emerald-400">
                                   {act.ascent ? `+${Math.round(act.ascent)}m` : '0m'}
                                 </td>
                                 <td className="p-4 text-right text-rose-500 font-bold">
@@ -1011,7 +1011,7 @@ export const GarminActivitiesAnalysis: React.FC<GarminActivitiesAnalysisProps> =
                   {comparedActivities.length < 2 ? (
                     <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-8 rounded-3xl text-center flex flex-col items-center justify-center space-y-4">
                       <div className="p-4 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded-full">
-                        <GitCompare className="w-8 h-8 animate-pulse" />
+                        <GitCompare className="w-8 h-8" />
                       </div>
                       <div className="max-w-md space-y-1.5">
                         <h4 className="font-bold text-slate-800 dark:text-slate-200">Vergleich erfordert mindestens 2 Aktivitäten</h4>

@@ -9,7 +9,7 @@ import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -102,6 +102,7 @@ interface MapProps {
   onSplitGap?: (originalTrackId: string, splitIndex: number) => void;
   onCloseGap?: (originalTrackId: string, gap: TimeGap) => void;
   onOpenShortcuts?: () => void;
+  onOpenVideoExport?: () => void;
 }
 
 const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) => {
@@ -678,7 +679,8 @@ const Map: React.FC<MapProps> = ({
   onSelectGap,
   onSplitGap,
   onCloseGap,
-  onOpenShortcuts
+  onOpenShortcuts,
+  onOpenVideoExport
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -1425,7 +1427,7 @@ const Map: React.FC<MapProps> = ({
                           className: 'custom-end-marker',
                           html: `
                             <div class="relative flex items-center justify-center" style="width: 44px; height: 44px;">
-                              <div class="absolute w-8 h-8 rounded-full bg-rose-500/35 animate-pulse"></div>
+                              <div class="absolute w-8 h-8 rounded-full bg-rose-500/25"></div>
                               <div class="bg-gradient-to-br from-rose-500 to-rose-700 text-white font-extrabold text-[9px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none">
                                 ENDE
                               </div>
@@ -1807,7 +1809,7 @@ const Map: React.FC<MapProps> = ({
           }`}
           title={isTrackingLocation ? "GPS Standort deaktivieren" : "Meinen GPS-Standort auf der Karte anzeigen"}
         >
-          <Locate className={`w-4 h-4 ${isTrackingLocation ? 'animate-pulse text-white' : 'text-blue-500'}`} />
+          <Locate className={`w-4 h-4 ${isTrackingLocation ? 'text-white' : 'text-blue-500'}`} />
           <span className="hidden xs:inline">{isTrackingLocation ? 'GPS Aktiv' : 'Standort'}</span>
         </button>
 
@@ -1845,27 +1847,41 @@ const Map: React.FC<MapProps> = ({
         )}
       </div>
 
-      {/* Strecken-Farbmodus & POI-Filter Switcher (oben rechts) */}
+      {/* Strecken-Farbmodus, POI-Filter & 3D-Überflug Cluster (oben rechts) */}
       {!isColorMenuOpen ? (
-        <button
-          onClick={() => setIsColorMenuOpen(true)}
-          className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer pointer-events-auto hover:bg-slate-50 dark:hover:bg-slate-850 active:scale-95 transition-all text-slate-700 dark:text-slate-300 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
-          title="Karten-Optionen & Verpflegung einblenden"
-          id="btn-color-mode-toggle"
-        >
-          <Palette className="w-3.5 h-3.5 text-indigo-500" />
-          <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider hidden sm:inline">Karten-Optionen</span>
-        </button>
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] flex items-center gap-2 pointer-events-auto">
+          {onOpenVideoExport && (
+            <button
+              type="button"
+              id="btn-map-3d-flyover"
+              onClick={onOpenVideoExport}
+              className="flex items-center gap-1.5 px-3 py-2 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md border border-emerald-500/50 cursor-pointer transition-all active:scale-95 select-none"
+              title="3D-Überflug Video Studio starten"
+            >
+              <Video className="w-4 h-4 text-emerald-100" />
+              <span className="hidden xs:inline">3D-Überflug</span>
+            </button>
+          )}
+          <button
+            onClick={() => setIsColorMenuOpen(true)}
+            className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-all text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
+            title="Karten-Optionen & Verpflegung einblenden"
+            id="btn-color-mode-toggle"
+          >
+            <Palette className="w-3.5 h-3.5 text-indigo-500" />
+            <span className="text-[10px] sm:text-xs font-extrabold uppercase tracking-wider hidden sm:inline">Karten-Optionen</span>
+          </button>
+        </div>
       ) : (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-60 max-w-[90vw]">
-          <div className="font-extrabold text-[10px] text-slate-505 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-60 max-w-[90vw]">
+          <div className="font-extrabold text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
             <span className="flex items-center gap-1">
               <Palette className="w-3.5 h-3.5 text-indigo-500" />
               Karten-Optionen
             </span>
             <button
               onClick={() => setIsColorMenuOpen(false)}
-              className="text-slate-400 hover:text-slate-650 dark:hover:text-slate-200 font-extrabold text-xs cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-extrabold text-xs cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               title="Minimieren"
               id="btn-color-mode-close"
             >
@@ -2020,7 +2036,7 @@ const Map: React.FC<MapProps> = ({
 
             if (markedTrack.isVirtual) {
               return (
-                <div className="text-[10px] text-orange-650 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-955/20 border border-orange-200/50 dark:border-orange-900/40 p-2 rounded-lg leading-snug font-sans shadow-2xs">
+                <div className="text-[10px] text-orange-700 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-950/30 border border-orange-200/50 dark:border-orange-900/40 p-2 rounded-lg leading-snug font-sans shadow-xs">
                   <div className="font-extrabold flex items-center gap-1 mb-0.5 text-xs">
                     <span>⚠️</span> Keine GPS-Koordinatendaten
                   </div>
@@ -2062,8 +2078,8 @@ const Map: React.FC<MapProps> = ({
       {/* Premium Map Legend explaining Surface Types or Zone Ranges */}
       {!hideLegend && (
         isLegendVisible ? (
-          <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] bg-white/95 dark:bg-slate-905/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]">
-            <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
+          <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]">
+            <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
               <span>{colorMode === 'surface' ? 'Oberflächen-Heatmap' : colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
               <button
                 onClick={() => setIsLegendVisible(false)}
@@ -2076,28 +2092,28 @@ const Map: React.FC<MapProps> = ({
             {(colorMode === 'surface' || colorMode === 'default') ? (
               <>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#2563eb" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Asphalt (Paved)</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#2563eb" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Asphalt (Paved)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#d97706" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Schotter (Gravel)</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#d97706" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Schotter (Gravel)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#16a34a" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Singletrail / Waldweg</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#16a34a" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Singletrail / Waldweg</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#0284c7" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Fahrradweg</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#0284c7" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Fahrradweg</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#805ad5" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Kopfsteinpflaster</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#805ad5" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Kopfsteinpflaster</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10 shadow-2xs" style={{ backgroundColor: "#ca8a04" }}></span>
-                  <span className="font-bold text-slate-700 dark:text-slate-350">Unbefestigt / Natur</span>
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ca8a04" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Unbefestigt / Natur</span>
                 </div>
 
                 {/* Live Surface Distribution breakdown for marked track */}
@@ -2108,9 +2124,9 @@ const Map: React.FC<MapProps> = ({
                   if (markedTrack.surfaceStats && markedTrack.surfaceStats.length > 0) {
                     const totalDist = markedTrack.surfaceStats.reduce((acc, s) => acc + s.distance, 0) || markedTrack.distance || 1;
                     return (
-                      <div className="mt-1.5 pt-1.5 border-t border-slate-150 dark:border-slate-800 flex flex-col gap-1.5">
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-200/70 dark:border-slate-800 flex flex-col gap-1.5">
                         <div className="font-sans font-bold text-[9.5px] text-slate-700 dark:text-slate-300 truncate">
-                          📊 {markedTrack.name}
+                          {markedTrack.name}
                         </div>
                         {/* Stacked surface bar */}
                         <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-800 border border-black/10">
@@ -2128,7 +2144,7 @@ const Map: React.FC<MapProps> = ({
                             );
                           })}
                         </div>
-                        {/* Breakdown badges */}
+                        {/* Breakdown rows */}
                         <div className="flex flex-col gap-0.5">
                           {markedTrack.surfaceStats.map((stat, idx) => {
                             const pct = (stat.distance / totalDist) * 100;
@@ -2139,7 +2155,7 @@ const Map: React.FC<MapProps> = ({
                                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }}></span>
                                   <span className="truncate">{stat.type}</span>
                                 </span>
-                                <span className="font-bold text-slate-800 dark:text-slate-200 shrink-0 ml-1">
+                                <span className="font-bold font-mono text-slate-800 dark:text-slate-200 shrink-0 ml-1">
                                   {stat.distance.toFixed(1)} km ({pct.toFixed(0)}%)
                                 </span>
                               </div>
@@ -2152,7 +2168,7 @@ const Map: React.FC<MapProps> = ({
 
                   // If track lacks surface analysis, offer quick OSM trigger
                   return (
-                    <div className="mt-1.5 pt-1.5 border-t border-slate-150 dark:border-slate-800 font-sans">
+                    <div className="mt-1.5 pt-1.5 border-t border-slate-200/70 dark:border-slate-800 font-sans">
                       <button
                         type="button"
                         disabled={analyzingSurfaces?.[markedTrack.id]}
@@ -2160,9 +2176,9 @@ const Map: React.FC<MapProps> = ({
                           e.stopPropagation();
                           onAnalyzeSurface?.(markedTrack.id, true);
                         }}
-                        className={`w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] font-bold text-white shadow-2xs transition cursor-pointer ${
+                        className={`w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] font-bold text-white shadow-xs transition cursor-pointer ${
                           analyzingSurfaces?.[markedTrack.id] 
-                            ? "bg-blue-400 cursor-wait animate-pulse" 
+                            ? "bg-blue-400 cursor-wait" 
                             : "bg-blue-600 hover:bg-blue-700 active:scale-95"
                         }`}
                       >

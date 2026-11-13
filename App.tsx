@@ -1,10 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GPXTrack, GPXPoint, TextMarker, MapLayer, TimeGap } from './types';
 import Sidebar from './components/Sidebar';
+import { PasswordGate } from './components/PasswordGate';
 import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X } from 'lucide-react';
+import { ActivitiesManagerView } from './components/ActivitiesManagerView';
+import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock } from 'lucide-react';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
@@ -12,30 +14,27 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
-import AdvancedAnalytics from './components/AdvancedAnalytics';
 import { TrackComparison } from './components/TrackComparison';
-import { RawDataAnalysis } from './components/RawDataAnalysis';
 import { AnimatePresence, motion } from 'motion/react';
 import { VideoExportModal } from './components/VideoExportModal';
 import { WeatherOverlay } from './components/WeatherOverlay';
-import { ClimbsAnalysis } from './components/ClimbsAnalysis';
-import { TrainingZonesAnalysis } from './components/TrainingZonesAnalysis';
-import { SummaryReportModal } from './components/SummaryReportModal';
 import { IntensiveTrackAnalysisModal, AnalysisTab } from './components/IntensiveTrackAnalysisModal';
 import { SportMetricsGlossaryModal } from './components/SportMetricsGlossaryModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { GarminDashboard } from './components/GarminDashboard';
 import { GarminActivitiesAnalysis } from './components/GarminActivitiesAnalysis';
-import FitnessPerformanceAnalysis from './components/FitnessPerformanceAnalysis';
-import { WorkspaceSummaryDashboard } from './components/WorkspaceSummaryDashboard';
 import { MobileThumbBar } from './components/mobile/MobileThumbBar';
 import { MobileTelemetryPill } from './components/mobile/MobileTelemetryPill';
-import { getApiUrl } from './utils/api';
+import { getApiUrl, apiFetch, setSessionToken, clearSessionToken } from './utils/api';
 import { triggerHaptic } from './utils/haptics';
 import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem, safeRemoveItem, isDefaultCuratedTrack } from './utils/storage';
 import { safeStringifyOrFallback } from './domain/serialization/safeJson';
 
 const App: React.FC = () => {
+  // --- Password Lock State ---
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+
   // --- Core State Declarations ---
   const [unhydratedTracks, setTracks] = useState<GPXTrack[]>(() => {
     return loadWorkspaceTracks();
@@ -78,21 +77,16 @@ const App: React.FC = () => {
 
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [garminHealthOpen, setGarminHealthOpen] = useState(false);
   const [garminActivitiesAnalysisOpen, setGarminActivitiesAnalysisOpen] = useState(false);
   const [performanceAnalysisOpen, setPerformanceAnalysisOpen] = useState(false);
-  const [climbsOpen, setClimbsOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
-  const [trainingZonesOpen, setTrainingZonesOpen] = useState(false);
-  const [summaryReportOpen, setSummaryReportOpen] = useState(false);
   const [intensiveAnalysisOpen, setIntensiveAnalysisOpen] = useState(false);
   const [intensiveAnalysisTab, setIntensiveAnalysisTab] = useState<AnalysisTab>('overview');
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [initialGlossaryMetricId, setInitialGlossaryMetricId] = useState<string | undefined>(undefined);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [weatherOpen, setWeatherOpen] = useState(false);
-  const [rawDataOpen, setRawDataOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [timeGapModalOpen, setTimeGapModalOpen] = useState(false);
   const [timeGapTrackId, setTimeGapTrackId] = useState<string | null>(null);
@@ -100,7 +94,6 @@ const App: React.FC = () => {
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [pendingValidationTracks, setPendingValidationTracks] = useState<GPXTrack[]>([]);
   const [isValidationPreCheck, setIsValidationPreCheck] = useState(true);
-  const [showWorkspaceHud, setShowWorkspaceHud] = useState<boolean>(true);
 
   const [mapView, setMapView] = useState({
     lat: 51.1657,
@@ -122,6 +115,8 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'map' | 'activities'>('map');
+  const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
   const [showHint, setShowHint] = useState(false);
@@ -153,6 +148,7 @@ const App: React.FC = () => {
 
   // --- Refs ---
   const analysisAttempted = useRef<Set<string>>(new Set());
+  const topbarUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   // --- Memoized Values ---
   const tracks = React.useMemo(() => {
@@ -225,11 +221,91 @@ const App: React.FC = () => {
     setIntensiveAnalysisOpen(true);
   }, []);
 
+  // --- Password Lock Lifecycle (30-Day Session Verification) ---
+  useEffect(() => {
+    let mounted = true;
+    const verifySession = async () => {
+      try {
+        const res = await apiFetch(getApiUrl('/api/auth/me'));
+        if (res.ok) {
+          const data = await res.json();
+          if (mounted) {
+            if (data?.authenticated) {
+              setIsUnlocked(true);
+            } else {
+              clearSessionToken();
+              setIsUnlocked(false);
+            }
+          }
+        } else if (mounted) {
+          clearSessionToken();
+          setIsUnlocked(false);
+        }
+      } catch {
+        if (mounted) {
+          setIsUnlocked(false);
+        }
+      } finally {
+        if (mounted) {
+          setAuthChecking(false);
+        }
+      }
+    };
+
+    verifySession();
+
+    const handleUnauthorized = () => {
+      clearSessionToken();
+      setIsUnlocked(false);
+    };
+    window.addEventListener('velo:auth-unauthorized', handleUnauthorized);
+    return () => {
+      mounted = false;
+      window.removeEventListener('velo:auth-unauthorized', handleUnauthorized);
+    };
+  }, []);
+
+  const handleUnlocked = useCallback((token?: string) => {
+    if (token) {
+      setSessionToken(token);
+    }
+    setSettingsLoaded(false);
+    setIsUnlocked(true);
+  }, []);
+
+  const handleLockApp = useCallback(async () => {
+    try {
+      await apiFetch(getApiUrl('/api/auth/logout'), { method: 'POST' });
+    } catch {
+      // ignore network error on lock
+    }
+    clearSessionToken();
+    setIsUnlocked(false);
+    setSettingsLoaded(false);
+  }, []);
+
   // --- Lifecycle Effects ---
   // Auto-save workspace tracks with safe storage and quota management
   useEffect(() => {
     saveWorkspaceTracks(unhydratedTracks);
   }, [unhydratedTracks]);
+
+  // Fetch initial catalog total count once unlocked so TopNavBar shows accurate DB count
+  useEffect(() => {
+    if (!isUnlocked) return;
+    let active = true;
+    apiFetch(getApiUrl('/api/activities/catalog?limit=10&offset=0'))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data?.success && typeof data.databaseTotalCount === 'number') {
+          setCatalogTotalCount(data.databaseTotalCount);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isUnlocked]);
 
   // Online / Offline tracking
   useEffect(() => {
@@ -293,12 +369,13 @@ const App: React.FC = () => {
     }
   }, [userAge]);
 
-  // Load settings on startup from SQLite database via API
+  // Load settings on startup from SQLite database via API once unlocked
   useEffect(() => {
+    if (!isUnlocked) return;
     const loadSettings = async () => {
       try {
         const apiUrl = getApiUrl('/api/settings');
-        const response = await fetch(apiUrl);
+        const response = await apiFetch(apiUrl);
         if (response.ok) {
           const text = await response.text();
           if (text && text.trim().startsWith('{')) {
@@ -327,14 +404,14 @@ const App: React.FC = () => {
       }
     };
     loadSettings();
-  }, []);
+  }, [isUnlocked]);
 
   // Save settings when they change
   useEffect(() => {
-    if (!settingsLoaded) return;
+    if (!isUnlocked || !settingsLoaded) return;
     const saveSettings = async () => {
       try {
-        await fetch(getApiUrl('/api/settings'), {
+        await apiFetch(getApiUrl('/api/settings'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -355,7 +432,7 @@ const App: React.FC = () => {
     
     const timeout = setTimeout(saveSettings, 1000);
     return () => clearTimeout(timeout);
-  }, [ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
+  }, [isUnlocked, ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
 
   // Keep default curated reference tours in the Library, not in the active Workspace
   useEffect(() => {
@@ -426,7 +503,7 @@ const App: React.FC = () => {
       };
 
       try {
-        result = await fetch(apiUrl, {
+        result = await apiFetch(apiUrl, {
           method: "POST",
           headers: requestHeaders,
           body: requestPayload
@@ -434,7 +511,7 @@ const App: React.FC = () => {
       } catch (firstErr) {
         // Fall back to relative URL if absolute constructed URL threw a DOMException/network error
         if (apiUrl !== "/api/analyze-surface") {
-          result = await fetch("/api/analyze-surface", {
+          result = await apiFetch("/api/analyze-surface", {
             method: "POST",
             headers: requestHeaders,
             body: requestPayload
@@ -1115,12 +1192,119 @@ const App: React.FC = () => {
     }
   }, [tracks]);
 
+  const handleLoadCatalogTracksToMap = useCallback((
+    loadedTracks: GPXTrack[],
+    options?: { jumpToMap?: boolean; fitToTracks?: boolean }
+  ) => {
+    if (!loadedTracks || loadedTracks.length === 0) return;
+
+    const hydratedPrepared = loadedTracks.map((tr) => {
+      if (tr.points && tr.points.length > 0) {
+        const calcStats = calculateSurfaceStatsFromPoints(tr.points);
+        const surfaceStats = calcStats.length > 0 ? calcStats : (tr.surfaceStats && tr.surfaceStats.length > 0 ? tr.surfaceStats : []);
+        const nextTrack = { ...tr, surfaceStats, visible: true };
+        hydratePointsWithSurface(nextTrack.points, surfaceStats, nextTrack.distance);
+        return nextTrack;
+      }
+      return { ...tr, visible: true };
+    });
+
+    let primaryTrackId: string | null = null;
+    let addedCount = 0;
+
+    setTracks((prev) => {
+      const next = [...prev];
+      for (const incoming of hydratedPrepared) {
+        const byIdIdx = next.findIndex((t) => t.id === incoming.id);
+        if (byIdIdx !== -1) {
+          next[byIdIdx] = { ...next[byIdIdx], visible: true };
+          if (!primaryTrackId) primaryTrackId = next[byIdIdx].id;
+          continue;
+        }
+        const dup = checkTrackDuplicateGPS(incoming, next);
+        if (dup.isDuplicate && dup.matchedTrackId) {
+          const matchIdx = next.findIndex((t) => t.id === dup.matchedTrackId);
+          if (matchIdx !== -1) {
+            next[matchIdx] = { ...next[matchIdx], visible: true };
+            if (!primaryTrackId) primaryTrackId = next[matchIdx].id;
+          }
+          continue;
+        }
+        next.push(incoming);
+        addedCount++;
+        if (!primaryTrackId) primaryTrackId = incoming.id;
+      }
+      return next;
+    });
+
+    if (primaryTrackId) {
+      setMarkedTrackId(primaryTrackId);
+      setIsProfileCollapsed(false);
+    }
+
+    if (options?.jumpToMap !== false) {
+      setActiveWorkspaceView('map');
+      setIsMobileMenuOpen(false);
+    }
+
+    if (options?.fitToTracks !== false) {
+      let minLat = Infinity;
+      let maxLat = -Infinity;
+      let minLng = Infinity;
+      let maxLng = -Infinity;
+      for (const tr of hydratedPrepared) {
+        for (const pt of tr.points || []) {
+          if (typeof pt.lat === 'number' && typeof pt.lng === 'number' && !isNaN(pt.lat) && !isNaN(pt.lng)) {
+            if (pt.lat < minLat) minLat = pt.lat;
+            if (pt.lat > maxLat) maxLat = pt.lat;
+            if (pt.lng < minLng) minLng = pt.lng;
+            if (pt.lng > maxLng) maxLng = pt.lng;
+          }
+        }
+      }
+      if (minLat !== Infinity && maxLat !== -Infinity) {
+        const bounds = { minLat, maxLat, minLng, maxLng };
+        setTimeout(() => {
+          window.dispatchEvent(new Event('resize'));
+          handleFitVisibleTracks(bounds);
+          window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
+        }, 70);
+      }
+    }
+
+    if (hydratedPrepared.length === 1) {
+      setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" auf die Karte geladen.`);
+    } else {
+      setSuccessMessage(`${hydratedPrepared.length} Aktivitäten auf die Karte geladen (${addedCount} neu).`);
+    }
+    triggerHaptic('success');
+  }, [handleFitVisibleTracks]);
+
+  const handleCatalogActivityMetadataUpdated = useCallback((
+    workspaceTrackId: string,
+    updates: { name: string; activityType: 'cycling' | 'running'; description?: string; tags?: string[] }
+  ) => {
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === workspaceTrackId
+          ? {
+              ...t,
+              name: updates.name,
+              activityType: updates.activityType,
+              description: updates.description ?? t.description,
+              tags: updates.tags ?? t.tags
+            }
+          : t
+      )
+    );
+  }, []);
+
   const handleSaveTrackToLibrary = useCallback(async (id: string) => {
     const track = tracks.find(t => t.id === id);
     if (!track) return;
 
     try {
-      const response = await fetch(getApiUrl('/api/library'), {
+      const response = await apiFetch(getApiUrl('/api/library'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: safeStringifyOrFallback(track, '{}')
@@ -1140,7 +1324,7 @@ const App: React.FC = () => {
   const handleLoadReferenceTours = useCallback(async () => {
     try {
       setSuccessMessage('Lade Alpen-Referenztouren...');
-      const res = await fetch(getApiUrl('/api/tracks'));
+      const res = await apiFetch(getApiUrl('/api/tracks'));
       if (!res.ok) throw new Error('Netzwerkfehler');
       const data = await res.json();
       if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
@@ -1179,16 +1363,11 @@ const App: React.FC = () => {
         if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
         if (glossaryOpen) { setGlossaryOpen(false); return; }
         if (intensiveAnalysisOpen) { setIntensiveAnalysisOpen(false); return; }
-        if (analyticsOpen) { setAnalyticsOpen(false); return; }
         if (garminHealthOpen) { setGarminHealthOpen(false); return; }
         if (garminActivitiesAnalysisOpen) { setGarminActivitiesAnalysisOpen(false); return; }
         if (performanceAnalysisOpen) { setPerformanceAnalysisOpen(false); return; }
-        if (climbsOpen) { setClimbsOpen(false); return; }
         if (comparisonOpen) { setComparisonOpen(false); return; }
-        if (trainingZonesOpen) { setTrainingZonesOpen(false); return; }
-        if (summaryReportOpen) { setSummaryReportOpen(false); return; }
         if (weatherOpen) { setWeatherOpen(false); return; }
-        if (rawDataOpen) { setRawDataOpen(false); return; }
         if (timeGapModalOpen) { setTimeGapModalOpen(false); return; }
         if (validationModalOpen) { setValidationModalOpen(false); return; }
         if (isExportModalOpen) { setIsExportModalOpen(false); return; }
@@ -1245,18 +1424,6 @@ const App: React.FC = () => {
         e.preventDefault();
         triggerHaptic('light');
         setWeatherOpen(prev => !prev);
-        return;
-      }
-
-      // 'D' shortcut: Toggle Workspace Summary Dashboard HUD
-      if ((e.key === 'd' || e.key === 'D') && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        triggerHaptic('light');
-        setShowWorkspaceHud(prev => {
-          const next = !prev;
-          setSuccessMessage(next ? 'Workspace-Gesamtübersicht eingeblendet (Taste D)' : 'Workspace-Gesamtübersicht ausgeblendet (Taste D)');
-          return next;
-        });
         return;
       }
 
@@ -1438,7 +1605,6 @@ const App: React.FC = () => {
     mapView.zoom,
     setHoveredPoint,
     setMapView,
-    analyticsOpen,
     shortcutsModalOpen,
     glossaryOpen,
     intensiveAnalysisOpen,
@@ -1446,253 +1612,423 @@ const App: React.FC = () => {
     garminHealthOpen,
     garminActivitiesAnalysisOpen,
     performanceAnalysisOpen,
-    climbsOpen,
     comparisonOpen,
-    trainingZonesOpen,
-    summaryReportOpen,
     weatherOpen,
-    rawDataOpen,
     timeGapModalOpen,
     isExportModalOpen,
     selectionBounds
   ]);
 
+
+  if (authChecking) {
+    return (
+      <div className="min-h-screen w-full bg-slate-950 text-slate-400 flex items-center justify-center font-mono text-xs">
+        Workspace wird geladen...
+      </div>
+    );
+  }
+
+  if (!isUnlocked) {
+    return <PasswordGate onUnlocked={handleUnlocked} />;
+  }
+
   return (
-    <div className="relative flex h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-50" id="app-workspace-root">
-      {/* Visual Progress Bar Overlay for GPX/FIT/ZIP Uploads */}
-      <AnimatePresence>
-        {trackUploadProgress && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-4 text-center"
-          >
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-150 dark:border-slate-800 space-y-6">
-              <div className="flex justify-center">
-                <div className="p-4 bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 rounded-2xl">
-                  <RefreshCw className="w-8 h-8 animate-spin" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
-                  Verarbeite Aktivitäten...
-                </h3>
-                <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed min-h-[3rem] flex flex-col justify-center items-center gap-1.5">
-                  <span className="font-semibold text-slate-700 dark:text-slate-200">
-                    {trackUploadProgress.statusText}
-                  </span>
-                  {trackUploadProgress.currentFileName && (
-                    <span className="flex items-center gap-1.5 text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2.5 py-1 rounded-lg border border-slate-200/40 dark:border-slate-700/40 max-w-full truncate">
-                      <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />
-                      {trackUploadProgress.currentFileName}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Progress Bar Container */}
-              <div className="space-y-1.5">
-                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-3.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
-                  <motion.div 
-                    className="bg-gradient-to-r from-orange-500 to-amber-500 h-full rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${trackUploadProgress.percentage}%` }}
-                    transition={{ duration: 0.15 }}
-                  />
-                </div>
-                <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-mono">
-                  <span>Datei {trackUploadProgress.processedFiles + 1} von {trackUploadProgress.totalFiles}</span>
-                  <span>{trackUploadProgress.percentage}%</span>
-                </div>
-              </div>
-
-              <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
-                Bitte lassen Sie dieses Fenster geöffnet, bis die Aktivitätsanalyse abgeschlossen ist.
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <Sidebar 
-        tracks={tracks}
-        markedTrackId={markedTrackId}
-        onMarkTrack={(id) => {
-          setMarkedTrackId(id);
-          setIsMobileMenuOpen(false);
-          setIsProfileCollapsed(false);
+    <div className="relative flex flex-col h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-50" id="app-workspace-root">
+      {/* Hidden File Input for Topbar GPX/FIT Quick Import */}
+      <input
+        ref={topbarUploadInputRef}
+        type="file"
+        multiple
+        accept=".gpx,.fit,.zip"
+        className="hidden"
+        onChange={(e) => {
+          handleFileUpload(e);
+          e.target.value = '';
         }}
-        onChangeActivityType={handleChangeActivityType}
-        onUpload={handleFileUpload}
-        uploadProgress={trackUploadProgress}
-        onToggleVisibility={toggleVisibility}
-        onRemoveTrack={removeTrack}
-        onMergeSelected={handleMerge}
-        onUndo={handleUndo}
-        canUndo={history.length > 0}
-        onReorder={handleReorder}
-        activeLayer={activeLayer}
-        setActiveLayer={setActiveLayer}
-        is3D={is3D}
-        setIs3D={handleToggle3D}
-        isCollapsed={isSidebarCollapsed}
-        onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-        isMobileMenuOpen={isMobileMenuOpen}
-        setIsMobileMenuOpen={setIsMobileMenuOpen}
-        estimatedSpeed={estimatedSpeed}
-        setEstimatedSpeed={setEstimatedSpeed}
-        selectedDate={selectedDate}
-        setSelectedDate={setSelectedDate}
-        selectedTime={selectedTime}
-        setSelectedTime={setSelectedTime}
-        ftp={ftp}
-        setFtp={setFtp}
-        userWeight={userWeight}
-        setUserWeight={setUserWeight}
-        userAge={userAge}
-        setUserAge={setUserAge}
-        userMaxHr={userMaxHr}
-        setUserMaxHr={handleMaxHrChange}
-        suggestedFtp={suggestedFtp}
-        onLoadLibraryTrack={handleLoadLibraryTrack}
-        onSaveTrackToLibrary={handleSaveTrackToLibrary}
-        onOpenComparison={() => {
-          setComparisonOpen(true);
-          setIsMobileMenuOpen(false);
-         }}
-        onOpenGarminHealth={() => {
-          setGarminHealthOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenGarminActivitiesAnalysis={() => {
-          setGarminActivitiesAnalysisOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenPerformanceAnalysis={() => {
-          setPerformanceAnalysisOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenTrainingZones={(id) => {
-          handleOpenTrackAnalysis(id, 'zones');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenSummaryReport={(id) => {
-          handleOpenTrackAnalysis(id, 'report');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenIntensiveAnalysis={(id) => {
-          handleOpenTrackAnalysis(id, 'overview');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenGlossary={(metricId) => {
-          setInitialGlossaryMetricId(metricId);
-          setGlossaryOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenShortcuts={() => {
-          setShortcutsModalOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenAnalytics={(id) => {
-          handleOpenTrackAnalysis(id, 'power');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenClimbs={(id) => {
-          handleOpenTrackAnalysis(id, 'climbs');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenWeather={() => {
-          setWeatherOpen(true);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenRawData={(id) => {
-          handleOpenTrackAnalysis(id, 'rawdata');
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenTimeGapAnalysis={(id) => {
-          if (id) {
-            setMarkedTrackId(id);
-          }
-          handleOpenTimeGapAnalysis(id);
-          setIsMobileMenuOpen(false);
-        }}
-        onOpenValidation={handleOpenValidation}
-        onReverseTrack={handleReverseTrack}
-        onSanitizeTrack={handleSanitizeTrack}
-        textMarkers={textMarkers}
-        onAddTextMarker={handleAddTextMarker}
-        onDeleteTextMarker={handleDeleteTextMarker}
-        onUpdateTextMarker={handleUpdateTextMarker}
-        hoveredPoint={hoveredPoint}
-        onMapViewChange={(view) => {
-          setMapView({
-            lat: view.lat,
-            lng: view.lng,
-            zoom: view.zoom,
-            pitch: view.pitch,
-            bearing: view.bearing
-          });
-        }}
-        onAnalyzeSurface={analyzeTrackSurface}
-        onSetTrackSurface={handleSetTrackSurface}
-        analyzingSurfaces={analyzingSurfaces}
-        surfaceAnalysisStatuses={surfaceAnalysisStatuses}
-        selectionBounds={selectionBounds}
-        onSelection={setSelectionBounds}
-        onClearSelection={() => setSelectionBounds(null)}
-        isDark={theme === 'dark'}
-        onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
-        onToggleAllVisibility={handleToggleAllVisibility}
-        onFitVisibleTracks={handleFitVisibleTracks}
-        onLoadReferenceTours={handleLoadReferenceTours}
       />
-      <main className="flex-1 flex flex-col relative overflow-hidden">
-        {!isOnline && (
-          <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-bold flex items-center justify-between shadow-md z-[70] border-b border-amber-600">
-            <div className="flex items-center gap-2">
-              <WifiOff size={16} className="shrink-0" />
-              <span>
-                <strong>Offline-Modus:</strong> Kartenkacheln und zuvor geladene GPX-Routen werden aus dem Service-Worker-Cache bereitgestellt.
-              </span>
+
+      {/* Unified 3-Zone Top Navigation Bar */}
+      <header className="h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-[75]">
+        {/* Zone Left: Mobile Menu + Brand + Primary View Switcher */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          {activeWorkspaceView === 'map' && (
+            <button
+              type="button"
+              aria-label="Menü und Streckenliste öffnen"
+              onClick={() => {
+                triggerHaptic('medium');
+                setIsMobileMenuOpen(true);
+              }}
+              className="md:hidden min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0"
+              title="Seitenleiste öffnen"
+            >
+              <Menu size={18} />
+            </button>
+          )}
+
+          <div className="hidden sm:flex items-center gap-2 shrink-0">
+            <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/80 flex items-center justify-center">
+              <Activity className="text-indigo-600 dark:text-indigo-400" size={15} />
             </div>
+            <span className="font-black tracking-tight text-sm text-slate-950 dark:text-slate-100 whitespace-nowrap">
+              GPX Master
+            </span>
           </div>
-        )}
-        {/* Mobile Header */}
-        <div className="md:hidden flex items-center justify-between px-3.5 pb-2.5 pt-[calc(env(safe-area-inset-top,0px)+0.5rem)] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-[60] shadow-xs">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800/80 flex items-center justify-center">
-              <Activity className="text-indigo-600 dark:text-indigo-400" size={18} />
-            </div>
-            <div>
-              <span className="font-black tracking-tight text-base text-slate-950 dark:text-slate-100">GPX Master</span>
-              {tracks.length > 0 && (
-                <p className="text-[10px] text-slate-500 font-semibold leading-none">
-                  {tracks.filter(t => t.visible).length} von {tracks.length} aktiv
-                </p>
-              )}
-            </div>
-          </div>
-          <button 
-            type="button"
-            aria-label="Menü und Streckenliste öffnen"
-            onClick={() => {
-              triggerHaptic('medium');
-              setIsMobileMenuOpen(true);
-            }}
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-transform touch-manipulation shadow-xs"
-            title="Menü öffnen"
+
+          <nav
+            aria-label="Hauptnavigation"
+            className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-950 p-0.5 border border-slate-200/80 dark:border-slate-800"
           >
-            <Menu size={20} />
+            <button
+              type="button"
+              onClick={() => {
+                setActiveWorkspaceView('map');
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeWorkspaceView === 'map'
+                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              <MapIcon size={14} />
+              <span>Karte</span>
+              {tracks.length > 0 && (
+                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
+                  ({tracks.length})
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              id="nav-tab-activities-manager"
+              onClick={() => {
+                setIsMobileMenuOpen(false);
+                setActiveWorkspaceView('activities');
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeWorkspaceView === 'activities'
+                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              <ListFilter size={14} />
+              <span>Aktivitäten</span>
+              {catalogTotalCount !== null && (
+                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
+                  ({catalogTotalCount.toLocaleString('de-DE')})
+                </span>
+              )}
+            </button>
+          </nav>
+        </div>
+
+        {/* Zone Center: Quiet Workspace Context */}
+        <div className="hidden xl:flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
+          {activeWorkspaceView === 'map' ? (
+            <>
+              <span>{tracks.filter(t => t.visible).length} aktive Spuren auf Karte</span>
+              {markedTrack && (
+                <>
+                  <span>·</span>
+                  <span className="text-slate-700 dark:text-slate-300 font-semibold truncate max-w-[260px]">
+                    {markedTrack.name}
+                  </span>
+                </>
+              )}
+            </>
+          ) : (
+            <span>Hochgeschwindigkeits-Archiv · Volltext & Metriken</span>
+          )}
+        </div>
+
+        {/* Zone Right: Single-Line Quick Actions */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => topbarUploadInputRef.current?.click()}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            title="GPX, FIT oder ZIP importieren"
+          >
+            <Upload size={13} />
+            <span className="hidden sm:inline">Import</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setGarminHealthOpen(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            title="Garmin Connect Sync & Gesundheitsdaten"
+          >
+            <Database size={13} className="text-orange-500" />
+            <span className="hidden md:inline">Garmin</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+            title={theme === 'dark' ? 'Hellen Modus aktivieren' : 'Dunklen Modus aktivieren'}
+            aria-label="Theme umschalten"
+          >
+            {theme === 'dark' ? <Sun size={15} className="text-amber-400" /> : <Moon size={15} />}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLockApp}
+            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+            title="App sperren"
+            aria-label="App sperren"
+          >
+            <Lock size={15} />
           </button>
         </div>
-        {/* Mobile Telemetry Floating Pill */}
-        <MobileTelemetryPill
-          hoveredPoint={hoveredPoint}
-          trackColor={markedTrack?.color}
-          tracks={tracks}
-          onClose={() => setHoveredPoint(null)}
-        />
+      </header>
+
+      {/* Main Content Body */}
+      <div className="relative flex-1 flex min-h-0 overflow-hidden">
+        {/* Visual Progress Bar Overlay for GPX/FIT/ZIP Uploads */}
+        <AnimatePresence>
+          {trackUploadProgress && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-4 text-center"
+            >
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-150 dark:border-slate-800 space-y-6">
+                <div className="flex justify-center">
+                  <div className="p-4 bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 rounded-2xl">
+                    <RefreshCw className="w-8 h-8 animate-spin" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+                    Verarbeite Aktivitäten...
+                  </h3>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed min-h-[3rem] flex flex-col justify-center items-center gap-1.5">
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">
+                      {trackUploadProgress.statusText}
+                    </span>
+                    {trackUploadProgress.currentFileName && (
+                      <span className="flex items-center gap-1.5 text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2.5 py-1 rounded-lg border border-slate-200/40 dark:border-slate-700/40 max-w-full truncate">
+                        <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                        {trackUploadProgress.currentFileName}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress Bar Container */}
+                <div className="space-y-1.5">
+                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-3.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
+                    <motion.div 
+                      className="bg-gradient-to-r from-orange-500 to-amber-500 h-full rounded-full"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${trackUploadProgress.percentage}%` }}
+                      transition={{ duration: 0.15 }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                    <span>Datei {trackUploadProgress.processedFiles + 1} von {trackUploadProgress.totalFiles}</span>
+                    <span>{trackUploadProgress.percentage}%</span>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+                  Bitte lassen Sie dieses Fenster geöffnet, bis die Aktivitätsanalyse abgeschlossen ist.
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Full-Screen Activities Manager Workspace */}
+        {activeWorkspaceView === 'activities' && (
+          <ActivitiesManagerView
+            workspaceTracks={tracks}
+            ftp={ftp}
+            userWeight={userWeight}
+            estimatedSpeed={estimatedSpeed}
+            onLoadTracksToMap={handleLoadCatalogTracksToMap}
+            onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
+            onDatabaseCountChange={setCatalogTotalCount}
+            onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+            onOpenGarminSync={() => setGarminHealthOpen(true)}
+            onBackToMap={() => {
+              setActiveWorkspaceView('map');
+              setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+            }}
+          />
+        )}
+
+        {/* Map Workspace (kept mounted when switching to preserve map camera & loaded layers) */}
+        <div className={activeWorkspaceView === 'map' ? 'flex-1 flex min-h-0 overflow-hidden' : 'hidden'}>
+          <Sidebar 
+            tracks={tracks} 
+            markedTrackId={markedTrackId}
+            onMarkTrack={(id) => {
+              setMarkedTrackId(id);
+              setIsMobileMenuOpen(false);
+              setIsProfileCollapsed(false);
+            }}
+            onChangeActivityType={handleChangeActivityType}
+            onUpload={handleFileUpload}
+            uploadProgress={trackUploadProgress}
+            onToggleVisibility={toggleVisibility} 
+            onRemoveTrack={removeTrack} 
+            onMergeSelected={handleMerge} 
+            onUndo={handleUndo} 
+            canUndo={history.length > 0}
+            onReorder={handleReorder}
+            activeLayer={activeLayer}
+            setActiveLayer={setActiveLayer}
+            is3D={is3D}
+            setIs3D={handleToggle3D}
+            isCollapsed={isSidebarCollapsed}
+            onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            isMobileMenuOpen={isMobileMenuOpen}
+            setIsMobileMenuOpen={setIsMobileMenuOpen}
+            estimatedSpeed={estimatedSpeed}
+            setEstimatedSpeed={setEstimatedSpeed}
+            selectedDate={selectedDate}
+            setSelectedDate={setSelectedDate}
+            selectedTime={selectedTime}
+            setSelectedTime={setSelectedTime}
+            ftp={ftp}
+            setFtp={setFtp}
+            userWeight={userWeight}
+            setUserWeight={setUserWeight}
+            userAge={userAge}
+            setUserAge={setUserAge}
+            userMaxHr={userMaxHr}
+            setUserMaxHr={handleMaxHrChange}
+            suggestedFtp={suggestedFtp}
+            onLoadLibraryTrack={handleLoadLibraryTrack}
+            onSaveTrackToLibrary={handleSaveTrackToLibrary}
+            onOpenComparison={() => {
+              setComparisonOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenGarminHealth={() => {
+              setGarminHealthOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenGarminActivitiesAnalysis={() => {
+              setGarminActivitiesAnalysisOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenPerformanceAnalysis={() => {
+              setPerformanceAnalysisOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenTrainingZones={(id) => {
+              handleOpenTrackAnalysis(id, 'zones');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenSummaryReport={(id) => {
+              handleOpenTrackAnalysis(id, 'report');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenIntensiveAnalysis={(id) => {
+              handleOpenTrackAnalysis(id, 'overview');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenVideoExport={(id) => {
+              if (id) {
+                setMarkedTrackId(id);
+              }
+              setIsExportModalOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenGlossary={(metricId) => {
+              setInitialGlossaryMetricId(metricId);
+              setGlossaryOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenShortcuts={() => {
+              setShortcutsModalOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenAnalytics={(id) => {
+              handleOpenTrackAnalysis(id, 'power');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenClimbs={(id) => {
+              handleOpenTrackAnalysis(id, 'climbs');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenWeather={() => {
+              setWeatherOpen(true);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenRawData={(id) => {
+              handleOpenTrackAnalysis(id, 'rawdata');
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenTimeGapAnalysis={(id) => {
+              if (id) {
+                setMarkedTrackId(id);
+              }
+              handleOpenTimeGapAnalysis(id);
+              setIsMobileMenuOpen(false);
+            }}
+            onOpenValidation={handleOpenValidation}
+            onReverseTrack={handleReverseTrack}
+            onSanitizeTrack={handleSanitizeTrack}
+            textMarkers={textMarkers}
+            onAddTextMarker={handleAddTextMarker}
+            onDeleteTextMarker={handleDeleteTextMarker}
+            onUpdateTextMarker={handleUpdateTextMarker}
+            hoveredPoint={hoveredPoint}
+            onMapViewChange={(view) => {
+              setMapView({
+                lat: view.lat,
+                lng: view.lng,
+                zoom: view.zoom,
+                pitch: view.pitch,
+                bearing: view.bearing
+              });
+            }}
+            onAnalyzeSurface={analyzeTrackSurface}
+            onSetTrackSurface={handleSetTrackSurface}
+            analyzingSurfaces={analyzingSurfaces}
+            surfaceAnalysisStatuses={surfaceAnalysisStatuses}
+            selectionBounds={selectionBounds}
+            onSelection={setSelectionBounds}
+            onClearSelection={() => setSelectionBounds(null)}
+            isDark={theme === 'dark'}
+            onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+            onToggleAllVisibility={handleToggleAllVisibility}
+            onFitVisibleTracks={handleFitVisibleTracks}
+            onLoadReferenceTours={handleLoadReferenceTours}
+            onLockApp={handleLockApp}
+            onOpenFullActivitiesView={() => {
+              setIsMobileMenuOpen(false);
+              setActiveWorkspaceView('activities');
+            }}
+          />
+          <main className="flex-1 flex flex-col relative overflow-hidden">
+            {!isOnline && (
+              <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-bold flex items-center justify-between shadow-md z-[70] border-b border-amber-600">
+                <div className="flex items-center gap-2">
+                  <WifiOff size={16} className="shrink-0" />
+                  <span>
+                    <strong>Offline-Modus:</strong> Kartenkacheln und zuvor geladene GPX-Routen werden aus dem Service-Worker-Cache bereitgestellt.
+                  </span>
+                </div>
+              </div>
+            )}
+            {/* Mobile Telemetry Floating Pill */}
+            <MobileTelemetryPill
+              hoveredPoint={hoveredPoint}
+              trackColor={markedTrack?.color}
+              tracks={tracks}
+              onClose={() => setHoveredPoint(null)}
+            />
 
         <div className="flex-1 relative">
           <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
@@ -1727,12 +2063,20 @@ const App: React.FC = () => {
                 textMarkers={textMarkers}
                 onAddTextMarker={handleAddTextMarker}
                 onDeleteTextMarker={handleDeleteTextMarker}
-                hideLegend={trainingZonesOpen || weatherOpen || analyticsOpen || climbsOpen || comparisonOpen}
+                hideLegend={weatherOpen || comparisonOpen || intensiveAnalysisOpen}
                 isDark={theme === 'dark'}
                 onAnalyzeSurface={analyzeTrackSurface}
                 onOpenIntensiveAnalysis={(id) => {
                   handleOpenTrackAnalysis(id, 'overview');
                 }}
+                onOpenVideoExport={tracks.length > 0 ? () => {
+                  triggerHaptic('medium');
+                  if (!markedTrackId && tracks.length > 0) {
+                    const firstVisible = tracks.find(t => t.visible) || tracks[0];
+                    setMarkedTrackId(firstVisible.id);
+                  }
+                  setIsExportModalOpen(true);
+                } : undefined}
                 analyzingSurfaces={analyzingSurfaces}
                 surfaceAnalysisStatuses={surfaceAnalysisStatuses}
                 timeGaps={activeTimeGaps}
@@ -1745,24 +2089,26 @@ const App: React.FC = () => {
             )}
           </ErrorBoundary>
 
-          {/* Workspace Summary Map HUD */}
-          {showWorkspaceHud && tracks.some(t => t.visible) && !weatherOpen && !analyticsOpen && !climbsOpen && !comparisonOpen && !trainingZonesOpen && !summaryReportOpen && !intensiveAnalysisOpen && (
-            <div className="absolute top-3 left-14 z-[400] pointer-events-auto hidden sm:block">
-              <WorkspaceSummaryDashboard
-                tracks={tracks}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                variant="map-hud"
-                isDark={theme === 'dark'}
-                markedTrackId={markedTrackId}
-                onMarkTrack={setMarkedTrackId}
-                onToggleTrackVisibility={toggleVisibility}
-                onToggleAllVisibility={handleToggleAllVisibility}
-                onFitVisibleTracks={handleFitVisibleTracks}
-                onOpenIntensiveAnalysis={(id) => {
-                  handleOpenTrackAnalysis(id, 'overview');
+          {/* Direct Floating 3D Flyover Launch Button in 3D Map Mode */}
+          {is3D && tracks.length > 0 && !weatherOpen && !comparisonOpen && !intensiveAnalysisOpen && !isExportModalOpen && (
+            <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[400] pointer-events-auto">
+              <button
+                type="button"
+                id="btn-map-3d-flyover"
+                onClick={() => {
+                  triggerHaptic('medium');
+                  if (!markedTrackId && tracks.length > 0) {
+                    const firstVisible = tracks.find(t => t.visible) || tracks[0];
+                    setMarkedTrackId(firstVisible.id);
+                  }
+                  setIsExportModalOpen(true);
                 }}
-              />
+                className="flex items-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg border border-emerald-400/40 cursor-pointer transition-all active:scale-95"
+                title="3D-Überflug Video Studio starten"
+              >
+                <Video className="w-4 h-4 text-emerald-100" />
+                <span>3D-Überflug</span>
+              </button>
             </div>
           )}
 
@@ -1800,32 +2146,6 @@ const App: React.FC = () => {
                 ftp={ftp}
                 userWeight={userWeight}
                 estimatedSpeed={estimatedSpeed}
-              />
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {analyticsOpen && markedTrack && (
-              <AdvancedAnalytics 
-                track={markedTrack} 
-                ftp={ftp} 
-                userWeight={userWeight}
-                userAge={userAge}
-                selectionBounds={selectionBounds}
-                onSelection={setSelectionBounds}
-                onClose={() => setAnalyticsOpen(false)} 
-              />
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {climbsOpen && markedTrack && (
-              <ClimbsAnalysis 
-                track={markedTrack} 
-                activeLayer={activeLayer}
-                selectionBounds={selectionBounds}
-                onSelection={setSelectionBounds}
-                onClose={() => setClimbsOpen(false)} 
               />
             )}
           </AnimatePresence>
@@ -1926,31 +2246,6 @@ const App: React.FC = () => {
               />
             )}
           </AnimatePresence>
-          
-          <AnimatePresence>
-            {trainingZonesOpen && (
-              <TrainingZonesAnalysis 
-                tracks={tracks}
-                activeTrackId={markedTrackId}
-                onClose={() => setTrainingZonesOpen(false)}
-                userMaxHr={userMaxHr}
-                onMaxHrChange={handleMaxHrChange}
-              />
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {summaryReportOpen && markedTrack && (
-              <SummaryReportModal 
-                track={markedTrack} 
-                onClose={() => setSummaryReportOpen(false)}
-                ftp={ftp}
-                onAnalyzeSurface={analyzeTrackSurface}
-                isAnalyzing={analyzingSurfaces[markedTrack.id] || false}
-                onSelection={setSelectionBounds}
-              />
-            )}
-          </AnimatePresence>
 
           <AnimatePresence>
             {intensiveAnalysisOpen && (markedTrack || tracks.find(t => t.visible) || tracks[0]) && (
@@ -2017,16 +2312,6 @@ const App: React.FC = () => {
               />
             )}
           </AnimatePresence>
-
-          <AnimatePresence>
-            {rawDataOpen && (
-              <RawDataAnalysis 
-                tracks={tracks}
-                selectedTrackId={markedTrackId}
-                onClose={() => setRawDataOpen(false)}
-              />
-            )}
-          </AnimatePresence>
           
           {showHint && (
             <div 
@@ -2075,7 +2360,7 @@ const App: React.FC = () => {
           )}
 
           {successMessage && (
-            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-emerald-550/95 dark:bg-emerald-600/90 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-xs md:text-sm font-bold animate-bounce-in max-w-md text-center">
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-emerald-600/95 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-xs md:text-sm font-bold animate-bounce-in max-w-md text-center">
               <div className="flex items-center gap-3">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
@@ -2166,19 +2451,22 @@ const App: React.FC = () => {
               }
             }
           }}
-          onOpenAnalytics={() => setAnalyticsOpen(true)}
+          onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack?.id, 'overview')}
+          isCockpitOpen={intensiveAnalysisOpen}
           trackCount={tracks.length}
           visibleTrackCount={tracks.filter(t => t.visible).length}
         />
 
         <VideoExportModal
-          track={markedTrack}
+          track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}
           isOpen={isExportModalOpen}
           onClose={() => setIsExportModalOpen(false)}
           userWeight={userWeight}
           estimatedSpeed={estimatedSpeed}
         />
-      </main>
+          </main>
+        </div>
+      </div>
     </div>
   );
 };

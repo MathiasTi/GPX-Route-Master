@@ -87,16 +87,16 @@ export const VirtualizedPointsTable: React.FC<VirtualizedPointsTableProps> = ({
                     key={globalIndex}
                     onClick={() => onSelectPoint(globalIndex)}
                     style={{ height: `${ROW_HEIGHT_PX}px` }}
-                    className={`cursor-pointer transition-colors border-l-4 ${
+                    className={`cursor-pointer transition-colors ${
                       isSelected
-                        ? 'bg-indigo-50/70 dark:bg-indigo-950/30 border-l-indigo-600 dark:border-l-indigo-500 font-extrabold text-slate-900 dark:text-white'
-                        : 'border-l-transparent hover:bg-slate-50/60 dark:hover:bg-slate-900/50 text-slate-600 dark:text-slate-300'
+                        ? 'bg-indigo-50/80 dark:bg-indigo-950/40 ring-1 ring-inset ring-indigo-500/30 font-extrabold text-slate-900 dark:text-white'
+                        : 'hover:bg-slate-50/60 dark:hover:bg-slate-900/50 text-slate-600 dark:text-slate-300'
                     }`}
                   >
                     <td className="py-2 px-4 font-mono text-[10px] font-black whitespace-nowrap">
                       {isSelected ? (
-                        <span className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping" />
+                        <span className="flex items-center gap-1.5 text-indigo-600 dark:text-indigo-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400" />
                           AKTIV
                         </span>
                       ) : (

@@ -198,7 +198,7 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
               triggerHaptic('light');
               if (fileInputRef.current) fileInputRef.current.click();
             }}
-            className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-600 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/50 text-[10.5px] font-bold transition-all cursor-pointer shadow-3xs"
+            className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-600 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/50 text-[10.5px] font-bold transition-all cursor-pointer shadow-xs"
             title="Wähle mehrere GPX/FIT/ZIP Dateien aus"
           >
             <Upload className="w-3 h-3" />
@@ -212,7 +212,7 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
               triggerHaptic('light');
               if (folderInputRef.current) folderInputRef.current.click();
             }}
-            className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 text-[10.5px] font-bold transition-all cursor-pointer shadow-3xs"
+            className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 text-[10.5px] font-bold transition-all cursor-pointer shadow-xs"
             title="Einen ganzen Ordner mit GPX-Dateien importieren"
           >
             <FolderUp className="w-3 h-3 text-amber-500" />

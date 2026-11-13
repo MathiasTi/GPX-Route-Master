@@ -1,4 +1,12 @@
 
+export interface AuthUser {
+  id: string;
+  provider?: string;
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+}
+
 export interface GPXPoint {
   lat: number;
   lng: number;

@@ -3,7 +3,9 @@ import {
   classifySlope, 
   calculateSlopeAtPoint, 
   computeHoverPointTelemetry,
-  calculatePointDistanceKm 
+  calculatePointDistanceKm,
+  resolveTrackPointSpeedsKmh,
+  formatPaceFromSpeedKmh
 } from '../domain/telemetry/pointMetricsEngine';
 import { isOk, isErr } from '../domain/core/result';
 
@@ -139,6 +141,51 @@ export function runPointMetricsEngineTests(): boolean {
     assert(ft.speedKmh === 12, 'Converts FIT m/s speed (3.33 m/s) to ~12 km/h');
     assert(ft.paceFormatted === '5:00 min/km', 'Calculates 5:00 min/km Pace for 12 km/h');
   }
+
+  // --- 5. Track-wide speed parity between ElevationProfile and Map hover ---
+  // ~10.0 km/h = 2.778 m/s -> ~0.00025 deg lat every 10 seconds (0.0278 km / 10s = 10.0 km/h)
+  const kmhRunningPoints = Array.from({ length: 6 }, (_, i) => ({
+    lat: 51.5136 + i * 0.00025,
+    lng: 7.4653,
+    ele: 80,
+    speed: 10.0, // Already in km/h (as produced by parseFIT), even though < 15
+    time: new Date(Date.UTC(2026, 10, 12, 18, 33, i * 10))
+  }));
+  const resolvedKmhRun = resolveTrackPointSpeedsKmh(kmhRunningPoints, {
+    isFitFile: true,
+    activityType: 'running'
+  });
+  const mapHoverKmhRun = computeHoverPointTelemetry(kmhRunningPoints[2], kmhRunningPoints, {
+    isFitFile: true,
+    activityType: 'running'
+  });
+  assert(
+    resolvedKmhRun[0] === 10.0 && resolvedKmhRun[2] === 10.0,
+    'Does not double-multiply FIT km/h running speed (<15) by 3.6'
+  );
+  assert(
+    isOk(mapHoverKmhRun) &&
+      mapHoverKmhRun.data.speedKmh === resolvedKmhRun[2] &&
+      mapHoverKmhRun.data.paceFormatted === formatPaceFromSpeedKmh(resolvedKmhRun[2]!),
+    'ElevationProfile speed/pace matches Map hover telemetry identically for FIT km/h track'
+  );
+
+  // Raw m/s points (e.g. from Garmin DB without *3.6) must also match identically
+  const msRunningPoints = kmhRunningPoints.map(p => ({ ...p, speed: 2.78 }));
+  const resolvedMsRun = resolveTrackPointSpeedsKmh(msRunningPoints, {
+    isFitFile: true,
+    activityType: 'running'
+  });
+  const mapHoverMsRun = computeHoverPointTelemetry(msRunningPoints[2], msRunningPoints, {
+    isFitFile: true,
+    activityType: 'running'
+  });
+  assert(
+    resolvedMsRun[2] === 10.0 &&
+      isOk(mapHoverMsRun) &&
+      mapHoverMsRun.data.speedKmh === resolvedMsRun[2],
+    'ElevationProfile and Map hover both resolve raw m/s track points to 10.0 km/h'
+  );
 
   // Pure distance test
   const distKm = calculatePointDistanceKm({ lat: 47.0, lng: 11.0 }, { lat: 47.0, lng: 11.1 });

@@ -151,7 +151,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
     if (finalSlope >= 14) {
       slopeCategory = {
         label: 'Extrem-Rampe',
-        bg: 'bg-purple-550/20 text-purple-600 dark:text-purple-300 border-purple-500/40 animate-pulse',
+        bg: 'bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40',
         text: 'text-purple-500',
         icon: '▲▲'
       };
@@ -378,12 +378,12 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 3D-Terrain Hover-Vorschau
               </h3>
               {isLiveHover ? (
-                <span className="flex items-center gap-1 px-1.5 py-0.2 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[9px] font-black tracking-wider uppercase border border-emerald-500/30 animate-pulse">
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[9px] font-black tracking-wider uppercase border border-emerald-500/30">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                   Live
                 </span>
               ) : (
-                <span className="px-1.5 py-0.2 rounded-full bg-slate-200/70 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[9px] font-bold">
+                <span className="px-1.5 py-0.5 rounded-full bg-slate-200/70 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[9px] font-bold">
                   Bereit
                 </span>
               )}
@@ -485,7 +485,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 )}
 
                 {telemetry.surface && (
-                  <div className="px-1.5 py-0.2 rounded bg-slate-200 dark:bg-slate-800 text-[9px] text-slate-600 dark:text-slate-300 capitalize truncate max-w-[90px]">
+                  <div className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[9px] text-slate-600 dark:text-slate-300 capitalize truncate max-w-[90px]">
                     {telemetry.surface}
                   </div>
                 )}
@@ -505,7 +505,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 onClick={() => setLayerType('topo')}
                 className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
                   layerType === 'topo'
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-3xs'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                 }`}
                 title="Topografische Reliefkarte"
@@ -516,7 +516,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 onClick={() => setLayerType('satellite')}
                 className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
                   layerType === 'satellite'
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-3xs'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                 }`}
                 title="Satellitenansicht"
@@ -527,7 +527,7 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                 onClick={() => setLayerType('standard')}
                 className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
                   layerType === 'standard'
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-3xs'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                 }`}
                 title="OSM Standardkarte"
@@ -622,9 +622,8 @@ export const TerrainHoverPreview3D: React.FC<TerrainHoverPreview3DProps> = ({
                   anchor="center"
                 >
                   <div className="relative flex items-center justify-center pointer-events-none">
-                    {/* Glowing radar pulses */}
-                    <div className="absolute w-8 h-8 rounded-full bg-indigo-500/40 animate-ping" />
-                    <div className="absolute w-5 h-5 rounded-full bg-indigo-500/60" />
+                    <div className="absolute w-7 h-7 rounded-full bg-indigo-500/25" />
+                    <div className="absolute w-5 h-5 rounded-full bg-indigo-500/50" />
                     <div className="relative w-3.5 h-3.5 rounded-full bg-white border-2 border-indigo-600 shadow-lg" />
                   </div>
                 </Marker>

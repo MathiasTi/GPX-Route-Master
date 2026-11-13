@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
@@ -134,6 +135,9 @@ function openAndVerifyDb(): Database.Database {
 }
 
 db = openAndVerifyDb();
+try {
+  ensureCoreSchema();
+} catch {}
 
 export function closeDb(): void {
   try {
@@ -180,7 +184,7 @@ export function initDb() {
   }
 }
 
-function runInitDbStatements() {
+function ensureCoreSchema() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
@@ -201,7 +205,8 @@ function runInitDbStatements() {
       max_slope REAL,
       color TEXT,
       has_timestamps INTEGER,
-      raw_file_json TEXT
+      raw_file_json TEXT,
+      user_id TEXT DEFAULT 'default'
     )
   `);
 
@@ -262,7 +267,111 @@ function runInitDbStatements() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_settings_scoped (
+      user_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+      PRIMARY KEY (user_id, key)
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      avatar_url TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+      last_login_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+      UNIQUE(provider, provider_id)
+    );
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
+
+  // Run graceful schema migrations on existing database tables
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN max_slope REAL`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN color TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN has_timestamps INTEGER`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN raw_file_json TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN description TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN location TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN points_json TEXT`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_activities ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_sleep ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_weight ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_stress ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_rhr ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE garmin_steps ADD COLUMN user_id TEXT DEFAULT 'default'`);
+  } catch (e) {}
+
+  // Backfill NULL user_id values to 'default'
+  try {
+    db.exec(`UPDATE tracks SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_activities SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_sleep SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_weight SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_stress SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_rhr SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+    db.exec(`UPDATE garmin_steps SET user_id = 'default' WHERE user_id IS NULL OR user_id = ''`);
+  } catch (e) {}
+
+  // Create performance indexes to speed up name, description, and location searches
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_name ON garmin_activities(name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_description ON garmin_activities(description)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_location ON garmin_activities(location)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_date ON garmin_activities(date)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_type ON garmin_activities(type)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_id ON garmin_activities(user_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_date ON garmin_activities(user_id, date DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_type_dist ON garmin_activities(user_id, type, distance)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_description ON tracks(description)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks(user_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_date ON tracks(user_id, date_created DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_user_type_dist ON tracks(user_id, activity_type, distance)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)`);
+  } catch (e) {
+    console.error('Failed to create database indexes:', e);
+  }
+}
+
+function runInitDbStatements() {
+  ensureCoreSchema();
 
   // Seed with initial versions if empty
   try {
@@ -364,52 +473,18 @@ function runInitDbStatements() {
     if (!hasV281) {
       const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
       insertStmt.run('2.8.1', new Date().toISOString(), 'GPX-Touren-Bibliothek & Touren-Seeding: Integrierte Sammlung kuratierter GPX-Referenzrouten (Alpe d’Huez, Stilfser Joch, Col du Tourmalet, Isar-Radweg, Feldberg-Gravel, Berlin Marathon, Sa Calobra, Eibsee-Trailrun) mit detaillierten Höhenprofilen, Anstiegssegmenten, Telemetrie und Untergrundanalysen. 1-Klick Workspace-zu-Bibliothek Sicherung und Touren-Wiederherstellung.');
+    }
+
+    const hasV290 = (checkStmt.get('2.9.0') as { count: number }).count > 0;
+    if (!hasV290) {
+      const insertStmt = db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)');
+      insertStmt.run('2.9.0', new Date().toISOString(), 'Google & Apple Authentifizierung (OAuth 2.0 / OIDC) & Mandantenfähige Nutzerisolation: Verpflichtendes Login-Gate mit Google- und Apple-Anmeldung, kryptographisch gesicherten Sitzungen und strikter Trennung von GPX-Bibliothek, Garmin-Aktivitäten, Gesundheitsdaten und Nutzereinstellungen pro Konto.');
     } else {
       const updateStmt = db.prepare('UPDATE app_version SET updated_at = ? WHERE version = ?');
-      updateStmt.run(new Date().toISOString(), '2.8.1');
+      updateStmt.run(new Date().toISOString(), '2.9.0');
     }
   } catch (e) {
     console.error('Failed to seed app versions:', e);
-  }
-
-  // Run graceful schema migrations on existing database tables
-  try {
-    db.exec(`ALTER TABLE tracks ADD COLUMN max_slope REAL`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE tracks ADD COLUMN color TEXT`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE tracks ADD COLUMN has_timestamps INTEGER`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE tracks ADD COLUMN raw_file_json TEXT`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE garmin_activities ADD COLUMN description TEXT`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE garmin_activities ADD COLUMN location TEXT`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE garmin_activities ADD COLUMN points_json TEXT`);
-  } catch (e) {}
-  try {
-    db.exec(`ALTER TABLE garmin_activities ADD COLUMN user_id TEXT`);
-  } catch (e) {}
-
-  // Create performance indexes to speed up name, description, and location searches
-  try {
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_name ON garmin_activities(name)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_description ON garmin_activities(description)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_location ON garmin_activities(location)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_date ON garmin_activities(date)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_type ON garmin_activities(type)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_id ON garmin_activities(user_id)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_tracks_description ON tracks(description)`);
-  } catch (e) {
-    console.error('Failed to create database indexes:', e);
   }
 
   // Ensure surface stats and point surfaces for ALL tracks in database
@@ -464,7 +539,7 @@ function runInitDbStatements() {
 
   // Auto-seed real GPX files from /gpx folder on database initialization with verified start points
   try {
-    seedCuratedTours(true);
+    seedCuratedTours(true, 'default');
   } catch (e) {
     console.error('Error auto-seeding GPX folder tours:', e);
   }
@@ -472,11 +547,197 @@ function runInitDbStatements() {
   console.log('SQLite database initialized successfully at', dbPath);
 }
 
-export function seedCuratedTours(force: boolean = false): { seeded: number; total: number } {
-  // Always ensure old synthetic tours and legacy IDs are purged
+export function normalizeUserId(userId?: string): string {
+  const clean = typeof userId === 'string' ? userId.trim() : '';
+  return clean || 'default';
+}
+
+export function toScopedKey(rawKey: string, userId?: string): string {
+  const uid = normalizeUserId(userId);
+  if (uid === 'default') return rawKey;
+  const prefix = `${uid}::`;
+  return rawKey.startsWith(prefix) ? rawKey : `${prefix}${rawKey}`;
+}
+
+export function stripScopedKey(scopedKey: string, userId?: string): string {
+  if (!scopedKey || typeof scopedKey !== 'string') return '';
+  const uid = normalizeUserId(userId);
+  if (uid !== 'default') {
+    const prefix = `${uid}::`;
+    if (scopedKey.startsWith(prefix)) {
+      return scopedKey.slice(prefix.length);
+    }
+  }
+  const sepIdx = scopedKey.indexOf('::');
+  if (sepIdx > 0 && scopedKey.startsWith('usr_')) {
+    return scopedKey.slice(sepIdx + 2);
+  }
+  return scopedKey;
+}
+
+export interface DbUserRecord {
+  id: string;
+  provider?: string;
+  provider_id: string;
+  email: string;
+  name: string;
+  avatar_url?: string | null;
+  created_at?: string;
+  last_login_at?: string;
+}
+
+export function upsertOAuthUser(profile: {
+  provider?: string;
+  providerId: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+}): DbUserRecord {
+  return executeWithCorruptionRecovery(() => {
+    const provider = profile.provider || 'local';
+    const providerId = String(profile.providerId).trim().slice(0, 255);
+    const email = String(profile.email || '').trim().toLowerCase().slice(0, 255);
+    const name = String(profile.name || email.split('@')[0] || 'Nutzer').trim().slice(0, 255);
+    const avatarUrl = profile.avatarUrl ? String(profile.avatarUrl).trim().slice(0, 1024) : null;
+
+    const existing = db.prepare(
+      'SELECT * FROM users WHERE provider = ? AND provider_id = ?'
+    ).get(provider, providerId) as DbUserRecord | undefined;
+
+    if (existing) {
+      db.prepare(`
+        UPDATE users
+        SET email = ?, name = ?, avatar_url = COALESCE(?, avatar_url), last_login_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+        WHERE id = ?
+      `).run(email, name, avatarUrl, existing.id);
+
+      ensureUserCuratedTours(existing.id);
+      return db.prepare('SELECT * FROM users WHERE id = ?').get(existing.id) as DbUserRecord;
+    }
+
+    const digest = crypto.createHash('sha256').update(`${provider}:${providerId}`).digest('hex').slice(0, 20);
+    const newId = `usr_${digest}`;
+
+    db.prepare(`
+      INSERT INTO users (id, provider, provider_id, email, name, avatar_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(newId, provider, providerId, email, name, avatarUrl);
+
+    ensureUserCuratedTours(newId);
+    return db.prepare('SELECT * FROM users WHERE id = ?').get(newId) as DbUserRecord;
+  });
+}
+
+export function verifyAppPassword(candidate: unknown): boolean {
+  if (typeof candidate !== 'string' || !candidate) return false;
+  const expected = (process.env.APP_PASSWORD || 'mathias').trim() || 'mathias';
+  const candidateHash = crypto.createHash('sha256').update(candidate.trim(), 'utf8').digest();
+  const expectedHash = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(candidateHash, expectedHash);
+}
+
+export function createAuthSession(userId: string = 'default', ttlMs: number = 30 * 24 * 60 * 60 * 1000): {
+  token: string;
+  expiresAt: number;
+} {
+  return executeWithCorruptionRecovery(() => {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + ttlMs;
+    const uid = normalizeUserId(userId);
+
+    try {
+      db.prepare('DELETE FROM auth_sessions WHERE expires_at < ?').run(Date.now());
+    } catch {}
+
+    db.prepare(`
+      INSERT OR IGNORE INTO users (id, provider, provider_id, email, name)
+      VALUES (?, 'password', ?, 'mathias@local', 'Mathias')
+    `).run(uid, uid);
+
+    db.prepare(`
+      INSERT INTO auth_sessions (token, user_id, expires_at)
+      VALUES (?, ?, ?)
+    `).run(token, uid, expiresAt);
+
+    return { token, expiresAt };
+  });
+}
+
+export function verifyAuthSessionToken(token?: string | null): { valid: boolean; expiresAt?: number } {
+  if (!token || typeof token !== 'string' || token.trim().length < 16) {
+    return { valid: false };
+  }
+  return executeWithCorruptionRecovery(() => {
+    const cleanToken = token.trim();
+    const row = db.prepare(`
+      SELECT token, expires_at
+      FROM auth_sessions
+      WHERE token = ? AND expires_at > ?
+    `).get(cleanToken, Date.now()) as { token: string; expires_at: number } | undefined;
+
+    if (!row) {
+      return { valid: false };
+    }
+    return { valid: true, expiresAt: row.expires_at };
+  });
+}
+
+export function getUserBySessionToken(token?: string | null): DbUserRecord | null {
+  if (!token || typeof token !== 'string' || token.trim().length < 16) {
+    return null;
+  }
+  return executeWithCorruptionRecovery(() => {
+    const cleanToken = token.trim();
+    const row = db.prepare(`
+      SELECT u.*
+      FROM auth_sessions s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.token = ? AND s.expires_at > ?
+    `).get(cleanToken, Date.now()) as DbUserRecord | undefined;
+
+    return row || null;
+  });
+}
+
+export function deleteAuthSession(token?: string | null): boolean {
+  if (!token || typeof token !== 'string') return false;
+  return executeWithCorruptionRecovery(() => {
+    const info = db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token.trim());
+    return info.changes > 0;
+  });
+}
+
+export function ensureUserCuratedTours(userId: string): void {
+  const uid = normalizeUserId(userId);
+  if (uid === 'default') return;
+  try {
+    const alreadyInit = getSetting('curated_tours_initialized', '', uid);
+    if (alreadyInit === 'true') return;
+
+    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM tracks WHERE user_id = ?').get(uid) as { cnt: number } | undefined;
+    if (!countRow || countRow.cnt === 0) {
+      seedCuratedTours(false, uid);
+    }
+    saveSetting('curated_tours_initialized', 'true', uid);
+  } catch (e) {
+    console.warn(`[DB] Could not initialize curated tours for user ${uid}:`, e);
+  }
+}
+
+export function seedCuratedTours(force: boolean = false, userId: string = 'default'): { seeded: number; total: number } {
+  const uid = normalizeUserId(userId);
   try {
     if (force) {
-      db.prepare("DELETE FROM tracks WHERE id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-%'").run();
+      if (uid === 'default') {
+        db.prepare("DELETE FROM tracks WHERE (user_id = 'default' OR user_id IS NULL) AND (id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-%')").run();
+      } else {
+        db.prepare("DELETE FROM tracks WHERE user_id = ? AND (id LIKE ? OR id LIKE ? OR id LIKE ?)").run(
+          uid,
+          `${uid}::tour-%`,
+          `${uid}::curated-%`,
+          `${uid}::gpx-%`
+        );
+      }
     }
   } catch (e) {}
 
@@ -484,8 +745,9 @@ export function seedCuratedTours(force: boolean = false): { seeded: number; tota
   let seeded = 0;
 
   for (const tour of tours) {
+    const scopedId = toScopedKey(tour.id, uid);
     if (!force) {
-      const existing = db.prepare('SELECT id FROM tracks WHERE id = ?').get(tour.id);
+      const existing = db.prepare('SELECT id FROM tracks WHERE id = ? AND user_id = ?').get(scopedId, uid);
       if (existing) {
         seeded++;
         continue;
@@ -511,11 +773,11 @@ export function seedCuratedTours(force: boolean = false): { seeded: number; tota
       maxSlope: tour.maxSlope,
       color: tour.color,
       hasTimestamps: tour.hasTimestamps
-    });
+    }, uid);
     seeded++;
   }
 
-  console.log(`GPX folder tours loaded: ${seeded} of ${tours.length}`);
+  console.log(`GPX folder tours loaded for user ${uid}: ${seeded} of ${tours.length}`);
   return { seeded, total: tours.length };
 }
 
@@ -559,16 +821,20 @@ export function saveTrack(track: {
   color?: string;
   hasTimestamps?: boolean;
   rawFileDetails?: any;
-}) {
+}, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const cleanRawId = stripScopedKey(track.id, uid);
+    const scopedId = toScopedKey(cleanRawId, uid);
+
     const statement = db.prepare(`
       INSERT OR REPLACE INTO tracks (
         id, name, distance, ascent, descent, duration, activity_type,
         description, tags, date_created, points_json, power_stats_json,
         surface_stats_json, climbs_json, original_filename, max_slope,
-        color, has_timestamps, raw_file_json
+        color, has_timestamps, raw_file_json, user_id
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `);
 
@@ -576,7 +842,7 @@ export function saveTrack(track: {
     const dateStr = track.dateCreated || new Date().toISOString().split('T')[0];
 
     statement.run(
-      track.id,
+      scopedId,
       track.name,
       track.distance,
       track.ascent,
@@ -594,18 +860,24 @@ export function saveTrack(track: {
       track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : null,
       track.color || null,
       track.hasTimestamps ? 1 : 0,
-      track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null
+      track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null,
+      uid
     );
 
-    return track.id;
+    return cleanRawId;
   });
 }
 
-export function searchTracks(queryText: string = '', activityType?: string): DbTrackRecord[] {
+export function searchTracks(queryText: string = '', activityType?: string, userId: string = 'default'): DbTrackRecord[] {
   return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    if (uid !== 'default') {
+      ensureUserCuratedTours(uid);
+    }
+
     let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json FROM tracks`;
-    const conditions: string[] = [];
-    const params: any[] = [];
+    const conditions: string[] = [`user_id = ?`];
+    const params: any[] = [uid];
 
     const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
     if (cleanActivity && cleanActivity !== 'all') {
@@ -626,22 +898,41 @@ export function searchTracks(queryText: string = '', activityType?: string): DbT
 
     sql += ` ORDER BY date_created DESC, name ASC`;
 
-    return db.prepare(sql).all(...params) as DbTrackRecord[];
+    const rows = db.prepare(sql).all(...params) as DbTrackRecord[];
+    return rows.map(r => ({
+      ...r,
+      id: stripScopedKey(r.id, uid)
+    }));
   });
 }
 
-export function getAllTracksFull(limit: number = 20): DbTrackRecord[] {
+export function getAllTracksFull(limit: number = 20, userId: string = 'default'): DbTrackRecord[] {
   return executeWithCorruptionRecovery(() => {
-    const statement = db.prepare('SELECT * FROM tracks WHERE points_json IS NOT NULL ORDER BY date_created DESC, name ASC LIMIT ?');
-    return statement.all(limit) as DbTrackRecord[];
+    const uid = normalizeUserId(userId);
+    if (uid !== 'default') {
+      ensureUserCuratedTours(uid);
+    }
+    const statement = db.prepare('SELECT * FROM tracks WHERE user_id = ? AND points_json IS NOT NULL ORDER BY date_created DESC, name ASC LIMIT ?');
+    const rows = statement.all(uid, limit) as DbTrackRecord[];
+    return rows.map(r => ({
+      ...r,
+      id: stripScopedKey(r.id, uid)
+    }));
   });
 }
 
-export function getTrackDetails(id: string): DbTrackRecord | null {
+export function getTrackDetails(id: string, userId: string = 'default'): DbTrackRecord | null {
   return executeWithCorruptionRecovery(() => {
-    const statement = db.prepare('SELECT * FROM tracks WHERE id = ?');
-    const record = statement.get(id) as DbTrackRecord | undefined;
-    return record || null;
+    const uid = normalizeUserId(userId);
+    const cleanId = stripScopedKey(id, uid);
+    const scopedId = toScopedKey(cleanId, uid);
+    const statement = db.prepare('SELECT * FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
+    const record = statement.get(scopedId, cleanId, uid) as DbTrackRecord | undefined;
+    if (!record) return null;
+    return {
+      ...record,
+      id: stripScopedKey(record.id, uid)
+    };
   });
 }
 
@@ -651,12 +942,15 @@ export function updateTrackMetadata(id: string, metadata: {
   tags?: string;
   activityType?: string;
   dateCreated?: string;
-}) {
+}, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const cleanId = stripScopedKey(id, uid);
+    const scopedId = toScopedKey(cleanId, uid);
     const statement = db.prepare(`
       UPDATE tracks 
       SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
-      WHERE id = ?
+      WHERE (id = ? OR id = ?) AND user_id = ?
     `);
 
     statement.run(
@@ -665,31 +959,38 @@ export function updateTrackMetadata(id: string, metadata: {
       metadata.tags || '',
       metadata.activityType || 'cycling',
       metadata.dateCreated || new Date().toISOString().split('T')[0],
-      id
+      scopedId,
+      cleanId,
+      uid
     );
   });
 }
 
-export function deleteTrack(id: string) {
+export function deleteTrack(id: string, userId: string = 'default'): boolean {
   return executeWithCorruptionRecovery(() => {
-    const statement = db.prepare('DELETE FROM tracks WHERE id = ?');
-    statement.run(id);
+    const uid = normalizeUserId(userId);
+    const cleanId = stripScopedKey(id, uid);
+    const scopedId = toScopedKey(cleanId, uid);
+    const statement = db.prepare('DELETE FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
+    const info = statement.run(scopedId, cleanId, uid);
+    return info.changes > 0;
   });
 }
 
-export function clearAllTracks(): number {
+export function clearAllTracks(userId: string = 'default'): number {
   return executeWithCorruptionRecovery(() => {
-    const count = (db.prepare('SELECT COUNT(*) as count FROM tracks').get() as { count: number }).count;
-    db.prepare('DELETE FROM tracks').run();
+    const uid = normalizeUserId(userId);
+    const count = (db.prepare('SELECT COUNT(*) as count FROM tracks WHERE user_id = ?').get(uid) as { count: number }).count;
+    db.prepare('DELETE FROM tracks WHERE user_id = ?').run(uid);
     return count;
   });
 }
 
-export function getTracksInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbTrackRecord[] {
+export function getTracksInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number, userId: string = 'default'): DbTrackRecord[] {
   return executeWithCorruptionRecovery(() => {
-    // Select columns including points_json to filter by coordinates
-    const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json, raw_file_json FROM tracks');
-    const allTracks = statement.all() as DbTrackRecord[];
+    const uid = normalizeUserId(userId);
+    const statement = db.prepare('SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, points_json, raw_file_json FROM tracks WHERE user_id = ?');
+    const allTracks = statement.all(uid) as DbTrackRecord[];
     
     return allTracks.filter(track => {
       try {
@@ -702,14 +1003,18 @@ export function getTracksInBounds(minLat: number, maxLat: number, minLng: number
       } catch (e) {
         return false;
       }
-    });
+    }).map(r => ({
+      ...r,
+      id: stripScopedKey(r.id, uid)
+    }));
   });
 }
 
-export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number): DbGarminActivityRecord[] {
+export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minLng: number, maxLng: number, userId: string = 'default'): DbGarminActivityRecord[] {
   return executeWithCorruptionRecovery(() => {
-    const statement = db.prepare('SELECT * FROM garmin_activities');
-    const allActivities = statement.all() as DbGarminActivityRecord[];
+    const uid = normalizeUserId(userId);
+    const statement = db.prepare('SELECT * FROM garmin_activities WHERE user_id = ?');
+    const allActivities = statement.all(uid) as DbGarminActivityRecord[];
     
     return allActivities.filter(act => {
       try {
@@ -720,7 +1025,6 @@ export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minL
           let lat: number | undefined;
           let lng: number | undefined;
           if (Array.isArray(pt)) {
-            // parse_garmin.py stores points as [lng, lat, ele, ...]
             lat = pt[1] !== undefined ? parseFloat(pt[1]) : undefined;
             lng = pt[0] !== undefined ? parseFloat(pt[0]) : undefined;
           } else if (pt && typeof pt === 'object') {
@@ -733,57 +1037,78 @@ export function getGarminActivitiesInBounds(minLat: number, maxLat: number, minL
       } catch (e) {
         return false;
       }
-    });
+    }).map(act => ({
+      ...act,
+      id: stripScopedKey(act.id, uid)
+    }));
   });
 }
 
 // Garmin Health Metrics storage operations
-export function saveSleep(date: string, duration: number, deep?: number, light?: number, rem?: number, awake?: number) {
+export function saveSleep(date: string, duration: number, deep?: number, light?: number, rem?: number, awake?: number, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const cleanDate = stripScopedKey(date, uid);
+  const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_sleep (date, duration, deep, light, rem, awake)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_sleep (date, duration, deep, light, rem, awake, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(date, duration, deep || null, light || null, rem || null, awake || null);
+  stmt.run(scopedDate, duration, deep || null, light || null, rem || null, awake || null, uid);
 }
 
-export function saveWeight(date: string, weight: number, bmi?: number, bodyFat?: number) {
+export function saveWeight(date: string, weight: number, bmi?: number, bodyFat?: number, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const cleanDate = stripScopedKey(date, uid);
+  const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_weight (date, weight, bmi, body_fat)
-    VALUES (?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_weight (date, weight, bmi, body_fat, user_id)
+    VALUES (?, ?, ?, ?, ?)
   `);
-  stmt.run(date, weight, bmi || null, bodyFat || null);
+  stmt.run(scopedDate, weight, bmi || null, bodyFat || null, uid);
 }
 
-export function saveStress(date: string, avgStress: number) {
+export function saveStress(date: string, avgStress: number, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const cleanDate = stripScopedKey(date, uid);
+  const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_stress (date, avg_stress)
-    VALUES (?, ?)
+    INSERT OR REPLACE INTO garmin_stress (date, avg_stress, user_id)
+    VALUES (?, ?, ?)
   `);
-  stmt.run(date, avgStress);
+  stmt.run(scopedDate, avgStress, uid);
 }
 
-export function saveRhr(date: string, rhr: number) {
+export function saveRhr(date: string, rhr: number, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const cleanDate = stripScopedKey(date, uid);
+  const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_rhr (date, rhr)
-    VALUES (?, ?)
+    INSERT OR REPLACE INTO garmin_rhr (date, rhr, user_id)
+    VALUES (?, ?, ?)
   `);
-  stmt.run(date, rhr);
+  stmt.run(scopedDate, rhr, uid);
 }
 
-export function saveSteps(date: string, steps: number, calories?: number, distance?: number) {
+export function saveSteps(date: string, steps: number, calories?: number, distance?: number, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const cleanDate = stripScopedKey(date, uid);
+  const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance)
-    VALUES (?, ?, ?, ?)
+    INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance, user_id)
+    VALUES (?, ?, ?, ?, ?)
   `);
-  stmt.run(date, steps, calories || null, distance || null);
+  stmt.run(scopedDate, steps, calories || null, distance || null, uid);
 }
 
 export function saveGarminActivity(
   id: string, name: string, type: string, date: string,
   distance: number, duration: number, ascent?: number, descent?: number,
   calories?: number, avgHr?: number, description?: string, location?: string,
-  pointsJson?: string, userId?: string
+  pointsJson?: string, userId: string = 'default'
 ) {
+  const uid = normalizeUserId(userId);
+  const cleanId = stripScopedKey(id, uid);
+  const scopedId = toScopedKey(cleanId, uid);
   const finalPointsJson = pointsJson || null;
 
   const stmt = db.prepare(`
@@ -791,7 +1116,7 @@ export function saveGarminActivity(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
-    id, name, type, date, distance, duration, 
+    scopedId, name, type, date, distance, duration, 
     ascent !== undefined ? ascent : null, 
     descent !== undefined ? descent : null, 
     calories !== undefined ? calories : null, 
@@ -799,8 +1124,39 @@ export function saveGarminActivity(
     description || null, 
     location || null,
     finalPointsJson,
-    userId || null
+    uid
   );
+}
+
+export function claimUnassignedGarminDataForUser(userId?: string): void {
+  const uid = normalizeUserId(userId);
+  if (uid === 'default') return;
+
+  executeWithCorruptionRecovery(() => {
+    const trx = db.transaction(() => {
+      const dateTables = ['garmin_sleep', 'garmin_weight', 'garmin_stress', 'garmin_rhr', 'garmin_steps'];
+      for (const tbl of dateTables) {
+        const rows = db.prepare(`SELECT * FROM ${tbl} WHERE user_id IS NULL OR user_id = 'default'`).all() as any[];
+        for (const row of rows) {
+          const rawDate = stripScopedKey(String(row.date || ''), uid);
+          if (!rawDate) continue;
+          const scopedDate = toScopedKey(rawDate, uid);
+          db.prepare(`DELETE FROM ${tbl} WHERE date = ? AND user_id = ?`).run(scopedDate, uid);
+          db.prepare(`UPDATE ${tbl} SET date = ?, user_id = ? WHERE date = ? AND (user_id IS NULL OR user_id = 'default')`).run(scopedDate, uid, row.date);
+        }
+      }
+
+      const actRows = db.prepare(`SELECT id FROM garmin_activities WHERE user_id IS NULL OR user_id = 'default'`).all() as { id: string }[];
+      for (const row of actRows) {
+        const rawId = stripScopedKey(String(row.id || ''), uid);
+        if (!rawId) continue;
+        const scopedId = toScopedKey(rawId, uid);
+        db.prepare(`DELETE FROM garmin_activities WHERE id = ? AND user_id = ?`).run(scopedId, uid);
+        db.prepare(`UPDATE garmin_activities SET id = ?, user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = 'default')`).run(scopedId, uid, row.id);
+      }
+    });
+    trx();
+  });
 }
 
 export interface DbGarminActivityRecord {
@@ -837,11 +1193,13 @@ export interface GarminSearchFilterOptions {
 export function searchGarminActivities(
   queryText: string = '',
   activityType?: string,
-  extraFilters?: Omit<GarminSearchFilterOptions, 'queryText' | 'activityType'>
+  extraFilters?: Omit<GarminSearchFilterOptions, 'queryText' | 'activityType'>,
+  userId: string = 'default'
 ): DbGarminActivityRecord[] {
+  const uid = normalizeUserId(userId);
   let sql = `SELECT * FROM garmin_activities`;
-  const conditions: string[] = [];
-  const params: any[] = [];
+  const conditions: string[] = [`user_id = ?`];
+  const params: any[] = [uid];
 
   const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
   if (cleanActivity && cleanActivity !== 'all') {
@@ -897,60 +1255,90 @@ export function searchGarminActivities(
   sql += ` ORDER BY date DESC`;
 
   const activities = db.prepare(sql).all(...params) as DbGarminActivityRecord[];
-  return activities;
+  return activities.map(act => ({
+    ...act,
+    id: stripScopedKey(act.id, uid)
+  }));
 }
 
-export function searchGarminHealthMetrics(startDate?: string, endDate?: string) {
-  const dateWhere: string[] = [];
-  const params: any[] = [];
-  if (startDate && /^\d{4}-\d{2}-\d{2}/.test(startDate)) {
-    dateWhere.push(`substr(date, 1, 10) >= ?`);
-    params.push(startDate.slice(0, 10));
-  }
-  if (endDate && /^\d{4}-\d{2}-\d{2}/.test(endDate)) {
-    dateWhere.push(`substr(date, 1, 10) <= ?`);
-    params.push(endDate.slice(0, 10));
-  }
-  const whereClause = dateWhere.length > 0 ? ` WHERE ${dateWhere.join(' AND ')}` : '';
+export function searchGarminHealthMetrics(startDate?: string, endDate?: string, userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const startFilter = startDate && /^\d{4}-\d{2}-\d{2}/.test(startDate) ? startDate.slice(0, 10) : null;
+  const endFilter = endDate && /^\d{4}-\d{2}-\d{2}/.test(endDate) ? endDate.slice(0, 10) : null;
 
-  const sleep = db.prepare(`SELECT * FROM garmin_sleep${whereClause} ORDER BY date DESC`).all(...params);
-  const weight = db.prepare(`SELECT * FROM garmin_weight${whereClause} ORDER BY date DESC`).all(...params);
-  const stress = db.prepare(`SELECT * FROM garmin_stress${whereClause} ORDER BY date DESC`).all(...params);
-  const rhr = db.prepare(`SELECT * FROM garmin_rhr${whereClause} ORDER BY date DESC`).all(...params);
-  const steps = db.prepare(`SELECT * FROM garmin_steps${whereClause} ORDER BY date DESC`).all(...params);
+  const queryTable = (tableName: string) => {
+    const rows = db.prepare(`SELECT * FROM ${tableName} WHERE user_id = ?`).all(uid) as any[];
+    return rows
+      .map(r => ({
+        ...r,
+        date: stripScopedKey(String(r.date || ''), uid)
+      }))
+      .filter(r => {
+        const d = r.date.slice(0, 10);
+        if (startFilter && d < startFilter) return false;
+        if (endFilter && d > endFilter) return false;
+        return true;
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+  };
 
-  return { sleep, weight, stress, rhr, steps };
+  return {
+    sleep: queryTable('garmin_sleep'),
+    weight: queryTable('garmin_weight'),
+    stress: queryTable('garmin_stress'),
+    rhr: queryTable('garmin_rhr'),
+    steps: queryTable('garmin_steps')
+  };
 }
 
 
-export function getGarminActivityById(id: string): DbGarminActivityRecord | null {
+export function getGarminActivityById(id: string, userId: string = 'default'): DbGarminActivityRecord | null {
   try {
-    const cleanId = typeof id === 'string' ? id.slice(0, 128) : '';
-    return db.prepare('SELECT * FROM garmin_activities WHERE id = ?').get(cleanId) as DbGarminActivityRecord;
+    const uid = normalizeUserId(userId);
+    const cleanId = stripScopedKey(typeof id === 'string' ? id.slice(0, 128) : '', uid);
+    const scopedId = toScopedKey(cleanId, uid);
+    const row = db.prepare('SELECT * FROM garmin_activities WHERE (id = ? OR id = ?) AND user_id = ?').get(scopedId, cleanId, uid) as DbGarminActivityRecord | undefined;
+    if (!row) return null;
+    return {
+      ...row,
+      id: stripScopedKey(row.id, uid)
+    };
   } catch (e) {
     console.error('Failed to get Garmin activity by ID:', e);
     return null;
   }
 }
 
-export function getHealthMetrics() {
-  const sleep = db.prepare('SELECT * FROM garmin_sleep ORDER BY date ASC').all();
-  const weight = db.prepare('SELECT * FROM garmin_weight ORDER BY date ASC').all();
-  const stress = db.prepare('SELECT * FROM garmin_stress ORDER BY date ASC').all();
-  const rhr = db.prepare('SELECT * FROM garmin_rhr ORDER BY date ASC').all();
-  const steps = db.prepare('SELECT * FROM garmin_steps ORDER BY date ASC').all();
-  const activities = db.prepare('SELECT * FROM garmin_activities ORDER BY date DESC').all() as DbGarminActivityRecord[];
+export function getHealthMetrics(userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  const normalizeDateRows = (tableName: string) => {
+    const rows = db.prepare(`SELECT * FROM ${tableName} WHERE user_id = ?`).all(uid) as any[];
+    return rows
+      .map(r => ({ ...r, date: stripScopedKey(String(r.date || ''), uid) }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  };
+
+  const sleep = normalizeDateRows('garmin_sleep');
+  const weight = normalizeDateRows('garmin_weight');
+  const stress = normalizeDateRows('garmin_stress');
+  const rhr = normalizeDateRows('garmin_rhr');
+  const steps = normalizeDateRows('garmin_steps');
+  const activities = (db.prepare('SELECT * FROM garmin_activities WHERE user_id = ? ORDER BY date DESC').all(uid) as DbGarminActivityRecord[]).map(act => ({
+    ...act,
+    id: stripScopedKey(act.id, uid)
+  }));
 
   return { sleep, weight, stress, rhr, steps, activities };
 }
 
-export function clearHealthMetrics() {
-  db.exec('DELETE FROM garmin_sleep');
-  db.exec('DELETE FROM garmin_weight');
-  db.exec('DELETE FROM garmin_stress');
-  db.exec('DELETE FROM garmin_rhr');
-  db.exec('DELETE FROM garmin_steps');
-  db.exec('DELETE FROM garmin_activities');
+export function clearHealthMetrics(userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+  db.prepare('DELETE FROM garmin_sleep WHERE user_id = ?').run(uid);
+  db.prepare('DELETE FROM garmin_weight WHERE user_id = ?').run(uid);
+  db.prepare('DELETE FROM garmin_stress WHERE user_id = ?').run(uid);
+  db.prepare('DELETE FROM garmin_rhr WHERE user_id = ?').run(uid);
+  db.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(uid);
+  db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(uid);
 }
 
 export function runInTransaction(fn: () => void) {
@@ -995,28 +1383,47 @@ const SENSITIVE_SETTINGS_KEYS = new Set([
   'garmin_personal_token_expires_at'
 ]);
 
-export function getSetting(key: string, defaultValue: string): string {
+export function getSetting(key: string, defaultValue: string, userId: string = 'default'): string {
   try {
     if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
       return defaultValue;
     }
+    const uid = normalizeUserId(userId);
     const cleanKey = key.slice(0, 128);
-    const row = db.prepare('SELECT value FROM user_settings WHERE key = ?').get(cleanKey) as { value: string } | undefined;
-    return row ? row.value : defaultValue;
+
+    const scopedRow = db.prepare('SELECT value FROM user_settings_scoped WHERE user_id = ? AND key = ?').get(uid, cleanKey) as { value: string } | undefined;
+    if (scopedRow) {
+      return scopedRow.value;
+    }
+
+    if (uid === 'default') {
+      const row = db.prepare('SELECT value FROM user_settings WHERE key = ?').get(cleanKey) as { value: string } | undefined;
+      return row ? row.value : defaultValue;
+    }
+
+    return defaultValue;
   } catch (e) {
     return defaultValue;
   }
 }
 
-export function saveSetting(key: string, value: string): boolean {
+export function saveSetting(key: string, value: string, userId: string = 'default'): boolean {
   try {
     if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
       return false;
     }
+    const uid = normalizeUserId(userId);
     const cleanKey = key.slice(0, 128);
     const cleanValue = typeof value === 'string' ? value.slice(0, 50000) : String(value ?? '').slice(0, 50000);
-    const stmt = db.prepare('INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)');
-    stmt.run(cleanKey, cleanValue);
+
+    db.prepare(`
+      INSERT OR REPLACE INTO user_settings_scoped (user_id, key, value, updated_at)
+      VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+    `).run(uid, cleanKey, cleanValue);
+
+    if (uid === 'default') {
+      db.prepare('INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)').run(cleanKey, cleanValue);
+    }
     return true;
   } catch (e) {
     console.error(`Failed to save setting ${key}:`, e);
@@ -1024,26 +1431,43 @@ export function saveSetting(key: string, value: string): boolean {
   }
 }
 
-export function deleteSetting(key: string): boolean {
+export function deleteSetting(key: string, userId: string = 'default'): boolean {
   try {
     if (!key || typeof key !== 'string' || FORBIDDEN_KEYS.has(key)) {
       return false;
     }
+    const uid = normalizeUserId(userId);
     const cleanKey = key.slice(0, 128);
-    const stmt = db.prepare('DELETE FROM user_settings WHERE key = ?');
-    const info = stmt.run(cleanKey);
-    return info.changes > 0;
+    const infoScoped = db.prepare('DELETE FROM user_settings_scoped WHERE user_id = ? AND key = ?').run(uid, cleanKey);
+    let changes = infoScoped.changes;
+
+    if (uid === 'default') {
+      const infoLegacy = db.prepare('DELETE FROM user_settings WHERE key = ?').run(cleanKey);
+      changes += infoLegacy.changes;
+    }
+    return changes > 0;
   } catch (e) {
     console.error(`Failed to delete setting ${key}:`, e);
     return false;
   }
 }
 
-export function getAllSettings(): Record<string, string> {
+export function getAllSettings(userId: string = 'default'): Record<string, string> {
   try {
-    const rows = db.prepare('SELECT key, value FROM user_settings').all() as { key: string; value: string }[];
+    const uid = normalizeUserId(userId);
     const settings: Record<string, string> = Object.create(null);
-    for (const row of rows) {
+
+    if (uid === 'default') {
+      const legacyRows = db.prepare('SELECT key, value FROM user_settings').all() as { key: string; value: string }[];
+      for (const row of legacyRows) {
+        if (row.key && typeof row.key === 'string' && !FORBIDDEN_KEYS.has(row.key) && !SENSITIVE_SETTINGS_KEYS.has(row.key)) {
+          settings[row.key] = row.value;
+        }
+      }
+    }
+
+    const scopedRows = db.prepare('SELECT key, value FROM user_settings_scoped WHERE user_id = ?').all(uid) as { key: string; value: string }[];
+    for (const row of scopedRows) {
       if (row.key && typeof row.key === 'string' && !FORBIDDEN_KEYS.has(row.key) && !SENSITIVE_SETTINGS_KEYS.has(row.key)) {
         settings[row.key] = row.value;
       }
@@ -1052,4 +1476,551 @@ export function getAllSettings(): Record<string, string> {
   } catch (e) {
     return Object.create(null);
   }
+}
+
+// ============================================================================
+// HIGH-SPEED UNIFIED ACTIVITIES CATALOG (METADATA-ONLY QUERIES & BULK OPS)
+// ============================================================================
+
+export type CatalogSource = 'library' | 'garmin';
+export type CatalogActivityCategory = 'cycling' | 'running' | 'hiking' | 'other';
+export type CatalogSortBy =
+  | 'date-desc'
+  | 'date-asc'
+  | 'distance-desc'
+  | 'ascent-desc'
+  | 'duration-desc'
+  | 'name-asc';
+
+export interface CatalogQueryOptions {
+  q?: string;
+  source?: 'all' | CatalogSource;
+  activityType?: 'all' | CatalogActivityCategory;
+  startDate?: string;
+  endDate?: string;
+  minDistance?: number;
+  maxDistance?: number;
+  minAscent?: number;
+  hasGpsOnly?: boolean;
+  sortBy?: CatalogSortBy;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CatalogActivityItem {
+  key: string; // `${source}:${id}`
+  source: CatalogSource;
+  id: string;
+  workspaceTrackId: string;
+  name: string;
+  rawType: string;
+  activityCategory: CatalogActivityCategory;
+  timestampIso: string;
+  monthKey: string;
+  distanceKm: number;
+  ascentM: number;
+  descentM: number;
+  durationSec: number;
+  avgHr: number | null;
+  calories: number | null;
+  location: string;
+  description: string;
+  tags: string[];
+  originalFilename: string;
+  color: string;
+  hasGps: boolean;
+}
+
+export interface CatalogMonthSummary {
+  monthKey: string;
+  count: number;
+  totalDistanceKm: number;
+  totalAscentM: number;
+}
+
+export interface CatalogQueryResult {
+  items: CatalogActivityItem[];
+  totalCount: number;
+  databaseTotalCount: number;
+  hasMore: boolean;
+  summaryStats: {
+    totalDistanceKm: number;
+    totalAscentM: number;
+    totalDurationSec: number;
+    garminCount: number;
+    libraryCount: number;
+  };
+  monthSummaries: CatalogMonthSummary[];
+}
+
+export interface CatalogActivityRef {
+  source: CatalogSource;
+  id: string;
+}
+
+const CATALOG_UNIFIED_CTE = `
+  WITH unified_catalog AS (
+    SELECT
+      'library' AS source,
+      id AS raw_id,
+      COALESCE(NULLIF(TRIM(name), ''), 'Unbenannte Route') AS name,
+      COALESCE(activity_type, 'cycling') AS raw_type,
+      CASE
+        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%run%' OR LOWER(COALESCE(activity_type, '')) LIKE '%lauf%' OR LOWER(COALESCE(activity_type, '')) LIKE '%jog%' THEN 'running'
+        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%hike%' OR LOWER(COALESCE(activity_type, '')) LIKE '%walk%' OR LOWER(COALESCE(activity_type, '')) LIKE '%wander%' THEN 'hiking'
+        WHEN LOWER(COALESCE(activity_type, '')) LIKE '%cycle%' OR LOWER(COALESCE(activity_type, '')) LIKE '%bike%' OR LOWER(COALESCE(activity_type, '')) LIKE '%rad%' OR LOWER(COALESCE(activity_type, '')) LIKE '%gravel%' OR LOWER(COALESCE(activity_type, '')) LIKE '%mtb%' THEN 'cycling'
+        ELSE 'other'
+      END AS activity_category,
+      COALESCE(NULLIF(TRIM(date_created), ''), '') AS timestamp_iso,
+      REPLACE(SUBSTR(COALESCE(NULLIF(TRIM(date_created), ''), '1970-01-01 00:00:00'), 1, 19), 'T', ' ') AS timestamp_sort,
+      CASE
+        WHEN LENGTH(TRIM(COALESCE(date_created, ''))) >= 7 AND SUBSTR(TRIM(date_created), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+        THEN SUBSTR(TRIM(date_created), 1, 7)
+        ELSE 'unknown'
+      END AS month_key,
+      COALESCE(distance, 0) AS distance_km,
+      COALESCE(ascent, 0) AS ascent_m,
+      COALESCE(descent, 0) AS descent_m,
+      COALESCE(duration, 0) AS duration_sec,
+      NULL AS avg_hr,
+      NULL AS calories,
+      '' AS location,
+      COALESCE(description, '') AS description,
+      COALESCE(tags, '') AS tags,
+      COALESCE(original_filename, '') AS original_filename,
+      COALESCE(color, '#3b82f6') AS color,
+      CASE WHEN points_json IS NOT NULL AND length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps
+    FROM tracks
+    WHERE user_id = ?
+
+    UNION ALL
+
+    SELECT
+      'garmin' AS source,
+      id AS raw_id,
+      COALESCE(NULLIF(TRIM(name), ''), 'Garmin Aktivität') AS name,
+      COALESCE(type, 'cycling') AS raw_type,
+      CASE
+        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%hike%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%walk%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%wander%' THEN 'hiking'
+        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%run%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%lauf%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%jog%' THEN 'running'
+        WHEN LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%cycle%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%bike%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%rad%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%gravel%'
+          OR LOWER(COALESCE(type, '') || ' ' || COALESCE(name, '')) LIKE '%mtb%' THEN 'cycling'
+        ELSE 'other'
+      END AS activity_category,
+      COALESCE(NULLIF(TRIM(date), ''), '') AS timestamp_iso,
+      REPLACE(SUBSTR(COALESCE(NULLIF(TRIM(date), ''), '1970-01-01 00:00:00'), 1, 19), 'T', ' ') AS timestamp_sort,
+      CASE
+        WHEN LENGTH(TRIM(COALESCE(date, ''))) >= 7 AND SUBSTR(TRIM(date), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+        THEN SUBSTR(TRIM(date), 1, 7)
+        ELSE 'unknown'
+      END AS month_key,
+      COALESCE(distance, 0) AS distance_km,
+      COALESCE(ascent, 0) AS ascent_m,
+      COALESCE(descent, 0) AS descent_m,
+      COALESCE(duration, 0) AS duration_sec,
+      avg_hr,
+      calories,
+      COALESCE(location, '') AS location,
+      COALESCE(description, '') AS description,
+      '' AS tags,
+      '' AS original_filename,
+      '#f97316' AS color,
+      CASE WHEN points_json IS NOT NULL AND length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps
+    FROM garmin_activities
+    WHERE user_id = ?
+  )
+`;
+
+function buildCatalogWhereClause(options: CatalogQueryOptions): { whereSql: string; params: any[] } {
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (options.source === 'library' || options.source === 'garmin') {
+    conditions.push(`source = ?`);
+    params.push(options.source);
+  }
+
+  if (
+    options.activityType === 'cycling' ||
+    options.activityType === 'running' ||
+    options.activityType === 'hiking' ||
+    options.activityType === 'other'
+  ) {
+    conditions.push(`activity_category = ?`);
+    params.push(options.activityType);
+  }
+
+  const rawQuery = typeof options.q === 'string' ? options.q.trim().slice(0, 160) : '';
+  if (rawQuery) {
+    const tokens = rawQuery.split(/\s+/).filter(Boolean).slice(0, 8);
+    for (const token of tokens) {
+      const pattern = `%${token.toLowerCase()}%`;
+      conditions.push(
+        `(LOWER(name) LIKE ? OR LOWER(location) LIKE ? OR LOWER(description) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(original_filename) LIKE ? OR LOWER(raw_type) LIKE ?)`
+      );
+      params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+  }
+
+  if (options.startDate && /^\d{4}-\d{2}-\d{2}/.test(options.startDate)) {
+    conditions.push(`SUBSTR(timestamp_sort, 1, 10) >= ?`);
+    params.push(options.startDate.slice(0, 10));
+  }
+
+  if (options.endDate && /^\d{4}-\d{2}-\d{2}/.test(options.endDate)) {
+    conditions.push(`SUBSTR(timestamp_sort, 1, 10) <= ?`);
+    params.push(options.endDate.slice(0, 10));
+  }
+
+  if (typeof options.minDistance === 'number' && !isNaN(options.minDistance) && options.minDistance > 0) {
+    conditions.push(`distance_km >= ?`);
+    params.push(options.minDistance);
+  }
+
+  if (typeof options.maxDistance === 'number' && !isNaN(options.maxDistance) && options.maxDistance > 0) {
+    conditions.push(`distance_km <= ?`);
+    params.push(options.maxDistance);
+  }
+
+  if (typeof options.minAscent === 'number' && !isNaN(options.minAscent) && options.minAscent > 0) {
+    conditions.push(`ascent_m >= ?`);
+    params.push(options.minAscent);
+  }
+
+  if (options.hasGpsOnly === true) {
+    conditions.push(`has_gps = 1`);
+  }
+
+  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return { whereSql, params };
+}
+
+function getCatalogOrderBySql(sortBy?: CatalogSortBy): string {
+  switch (sortBy) {
+    case 'date-asc':
+      return `timestamp_sort ASC, name COLLATE NOCASE ASC`;
+    case 'distance-desc':
+      return `distance_km DESC, timestamp_sort DESC`;
+    case 'ascent-desc':
+      return `ascent_m DESC, timestamp_sort DESC`;
+    case 'duration-desc':
+      return `duration_sec DESC, timestamp_sort DESC`;
+    case 'name-asc':
+      return `name COLLATE NOCASE ASC, timestamp_sort DESC`;
+    case 'date-desc':
+    default:
+      return `timestamp_sort DESC, name COLLATE NOCASE ASC`;
+  }
+}
+
+export function getTotalCatalogCount(userId: string = 'default'): number {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const row = db
+      .prepare(
+        `SELECT
+          (SELECT COUNT(*) FROM tracks WHERE user_id = ?) +
+          (SELECT COUNT(*) FROM garmin_activities WHERE user_id = ?) AS total`
+      )
+      .get(uid, uid) as { total: number } | undefined;
+    return Number(row?.total || 0);
+  });
+}
+
+export function queryActivitiesCatalog(
+  options: CatalogQueryOptions = {},
+  userId: string = 'default'
+): CatalogQueryResult {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const limit = Math.min(500, Math.max(10, Math.round(Number(options.limit || 150))));
+    const offset = Math.max(0, Math.round(Number(options.offset || 0)));
+
+    const { whereSql, params } = buildCatalogWhereClause(options);
+    const orderBySql = getCatalogOrderBySql(options.sortBy);
+    const baseParams = [uid, uid, ...params];
+
+    const databaseTotalCount = getTotalCatalogCount(uid);
+
+    const summaryRow = db
+      .prepare(
+        `${CATALOG_UNIFIED_CTE}
+         SELECT
+           COUNT(*) AS total_count,
+           COALESCE(SUM(distance_km), 0) AS total_distance_km,
+           COALESCE(SUM(ascent_m), 0) AS total_ascent_m,
+           COALESCE(SUM(duration_sec), 0) AS total_duration_sec,
+           COALESCE(SUM(CASE WHEN source = 'garmin' THEN 1 ELSE 0 END), 0) AS garmin_count,
+           COALESCE(SUM(CASE WHEN source = 'library' THEN 1 ELSE 0 END), 0) AS library_count
+         FROM unified_catalog
+         ${whereSql}`
+      )
+      .get(...baseParams) as any;
+
+    const totalCount = Number(summaryRow?.total_count || 0);
+
+    const monthRows = db
+      .prepare(
+        `${CATALOG_UNIFIED_CTE}
+         SELECT
+           month_key,
+           COUNT(*) AS count,
+           COALESCE(SUM(distance_km), 0) AS total_distance_km,
+           COALESCE(SUM(ascent_m), 0) AS total_ascent_m
+         FROM unified_catalog
+         ${whereSql}
+         GROUP BY month_key
+         ORDER BY month_key DESC`
+      )
+      .all(...baseParams) as any[];
+
+    const rawItems = db
+      .prepare(
+        `${CATALOG_UNIFIED_CTE}
+         SELECT
+           source,
+           raw_id,
+           name,
+           raw_type,
+           activity_category,
+           timestamp_iso,
+           month_key,
+           distance_km,
+           ascent_m,
+           descent_m,
+           duration_sec,
+           avg_hr,
+           calories,
+           location,
+           description,
+           tags,
+           original_filename,
+           color,
+           has_gps
+         FROM unified_catalog
+         ${whereSql}
+         ORDER BY ${orderBySql}
+         LIMIT ? OFFSET ?`
+      )
+      .all(...baseParams, limit, offset) as any[];
+
+    const items: CatalogActivityItem[] = rawItems.map((r) => {
+      const cleanId = stripScopedKey(String(r.raw_id || ''), uid);
+      const source = r.source as CatalogSource;
+      const tagsList =
+        typeof r.tags === 'string' && r.tags.trim().length > 0
+          ? r.tags
+              .split(',')
+              .map((t: string) => t.trim())
+              .filter(Boolean)
+          : [];
+
+      return {
+        key: `${source}:${cleanId}`,
+        source,
+        id: cleanId,
+        workspaceTrackId: source === 'garmin' ? `garmin-act-${cleanId}` : cleanId,
+        name: String(r.name || ''),
+        rawType: String(r.raw_type || ''),
+        activityCategory: (r.activity_category || 'other') as CatalogActivityCategory,
+        timestampIso: String(r.timestamp_iso || ''),
+        monthKey: String(r.month_key || 'unknown'),
+        distanceKm: Number(r.distance_km || 0),
+        ascentM: Math.round(Number(r.ascent_m || 0)),
+        descentM: Math.round(Number(r.descent_m || 0)),
+        durationSec: Math.round(Number(r.duration_sec || 0)),
+        avgHr: r.avg_hr !== null && r.avg_hr !== undefined ? Math.round(Number(r.avg_hr)) : null,
+        calories: r.calories !== null && r.calories !== undefined ? Math.round(Number(r.calories)) : null,
+        location: String(r.location || ''),
+        description: String(r.description || ''),
+        tags: tagsList,
+        originalFilename: String(r.original_filename || ''),
+        color: String(r.color || (source === 'garmin' ? '#f97316' : '#3b82f6')),
+        hasGps: r.has_gps === 1
+      };
+    });
+
+    return {
+      items,
+      totalCount,
+      databaseTotalCount,
+      hasMore: offset + items.length < totalCount,
+      summaryStats: {
+        totalDistanceKm: Number(summaryRow?.total_distance_km || 0),
+        totalAscentM: Math.round(Number(summaryRow?.total_ascent_m || 0)),
+        totalDurationSec: Math.round(Number(summaryRow?.total_duration_sec || 0)),
+        garminCount: Number(summaryRow?.garmin_count || 0),
+        libraryCount: Number(summaryRow?.library_count || 0)
+      },
+      monthSummaries: monthRows.map((m) => ({
+        monthKey: String(m.month_key || 'unknown'),
+        count: Number(m.count || 0),
+        totalDistanceKm: Number(m.total_distance_km || 0),
+        totalAscentM: Math.round(Number(m.total_ascent_m || 0))
+      }))
+    };
+  });
+}
+
+export function getFilteredActivityRefs(
+  options: CatalogQueryOptions = {},
+  maxLimit: number = 10000,
+  userId: string = 'default'
+): CatalogActivityRef[] {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const { whereSql, params } = buildCatalogWhereClause(options);
+    const orderBySql = getCatalogOrderBySql(options.sortBy);
+    const safeLimit = Math.min(20000, Math.max(1, Math.round(maxLimit)));
+
+    const rows = db
+      .prepare(
+        `${CATALOG_UNIFIED_CTE}
+         SELECT source, raw_id
+         FROM unified_catalog
+         ${whereSql}
+         ORDER BY ${orderBySql}
+         LIMIT ?`
+      )
+      .all(uid, uid, ...params, safeLimit) as { source: CatalogSource; raw_id: string }[];
+
+    return rows.map((r) => ({
+      source: r.source,
+      id: stripScopedKey(String(r.raw_id || ''), uid)
+    }));
+  });
+}
+
+export function getActivitiesBulkFull(
+  refs: CatalogActivityRef[],
+  userId: string = 'default'
+): { libraryRecords: DbTrackRecord[]; garminRecords: DbGarminActivityRecord[] } {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const libraryRecords: DbTrackRecord[] = [];
+    const garminRecords: DbGarminActivityRecord[] = [];
+
+    const libStmt = db.prepare('SELECT * FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
+    const garminStmt = db.prepare('SELECT * FROM garmin_activities WHERE (id = ? OR id = ?) AND user_id = ?');
+
+    for (const ref of refs) {
+      if (!ref || !ref.id) continue;
+      const cleanId = stripScopedKey(String(ref.id).slice(0, 128), uid);
+      const scopedId = toScopedKey(cleanId, uid);
+      if (ref.source === 'library') {
+        const rec = libStmt.get(scopedId, cleanId, uid) as DbTrackRecord | undefined;
+        if (rec) {
+          libraryRecords.push({
+            ...rec,
+            id: stripScopedKey(rec.id, uid)
+          });
+        }
+      } else if (ref.source === 'garmin') {
+        const rec = garminStmt.get(scopedId, cleanId, uid) as DbGarminActivityRecord | undefined;
+        if (rec) {
+          garminRecords.push({
+            ...rec,
+            id: stripScopedKey(rec.id, uid)
+          });
+        }
+      }
+    }
+
+    return { libraryRecords, garminRecords };
+  });
+}
+
+export function updateCatalogActivityMetadata(
+  source: CatalogSource,
+  id: string,
+  metadata: {
+    name: string;
+    description?: string;
+    tags?: string;
+    activityType?: string;
+    date?: string;
+    location?: string;
+  },
+  userId: string = 'default'
+): boolean {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const cleanId = stripScopedKey(id, uid);
+    const scopedId = toScopedKey(cleanId, uid);
+
+    if (source === 'library') {
+      const info = db
+        .prepare(
+          `UPDATE tracks
+           SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
+           WHERE (id = ? OR id = ?) AND user_id = ?`
+        )
+        .run(
+          metadata.name,
+          metadata.description ?? '',
+          metadata.tags ?? '',
+          metadata.activityType || 'cycling',
+          metadata.date || new Date().toISOString().split('T')[0],
+          scopedId,
+          cleanId,
+          uid
+        );
+      return info.changes > 0;
+    }
+
+    const info = db
+      .prepare(
+        `UPDATE garmin_activities
+         SET name = ?, description = ?, type = ?, date = ?, location = ?
+         WHERE (id = ? OR id = ?) AND user_id = ?`
+      )
+      .run(
+        metadata.name,
+        metadata.description ?? null,
+        metadata.activityType || 'cycling',
+        metadata.date || new Date().toISOString().slice(0, 19).replace('T', ' '),
+        metadata.location ?? null,
+        scopedId,
+        cleanId,
+        uid
+      );
+    return info.changes > 0;
+  });
+}
+
+export function bulkDeleteCatalogActivities(
+  refs: CatalogActivityRef[],
+  userId: string = 'default'
+): number {
+  return executeWithCorruptionRecovery(() => {
+    if (!Array.isArray(refs) || refs.length === 0) return 0;
+    const uid = normalizeUserId(userId);
+    let deletedCount = 0;
+
+    const trx = db.transaction((items: CatalogActivityRef[]) => {
+      const delLib = db.prepare('DELETE FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?');
+      const delGarmin = db.prepare('DELETE FROM garmin_activities WHERE (id = ? OR id = ?) AND user_id = ?');
+
+      for (const item of items) {
+        if (!item || !item.id) continue;
+        const cleanId = stripScopedKey(String(item.id).slice(0, 128), uid);
+        const scopedId = toScopedKey(cleanId, uid);
+        if (item.source === 'library') {
+          deletedCount += delLib.run(scopedId, cleanId, uid).changes;
+        } else if (item.source === 'garmin') {
+          deletedCount += delGarmin.run(scopedId, cleanId, uid).changes;
+        }
+      }
+    });
+
+    trx(refs);
+    return deletedCount;
+  });
 }

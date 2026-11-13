@@ -24,7 +24,7 @@ import {
   Layers
 } from 'lucide-react';
 import { GPXTrack, WeatherData, GPXPoint } from '../types';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 
 interface WeatherOverlayProps {
   track: GPXTrack | undefined;
@@ -156,7 +156,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
 
       const apiUrl = getApiUrl('/api/weather');
 
-      const response = await fetch(apiUrl, {
+      const response = await apiFetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lat, lng, date: safeDate }),

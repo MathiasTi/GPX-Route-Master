@@ -10,7 +10,7 @@ import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, Tooltip, CartesianGrid, Legend, ReferenceLine, ScatterChart, Scatter
 } from 'recharts';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { parseGPX } from '../utils/gpxUtils';
 
 interface FitnessPerformanceAnalysisProps {
@@ -227,7 +227,7 @@ export default function FitnessPerformanceAnalysis({
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(getApiUrl("/api/health-metrics"));
+      const response = await apiFetch(getApiUrl("/api/health-metrics"));
       if (!response.ok) throw new Error("Konnte Daten nicht laden");
       const result = await response.json();
       if (result.success && result.data && result.data.activities) {
@@ -237,7 +237,7 @@ export default function FitnessPerformanceAnalysis({
       }
 
       // Also fetch library tracks for a complete view of loaded track data
-      const libResponse = await fetch(getApiUrl("/api/library"));
+      const libResponse = await apiFetch(getApiUrl("/api/library"));
       if (libResponse.ok) {
         const libResult = await libResponse.json();
         if (libResult.success && libResult.tracks) {

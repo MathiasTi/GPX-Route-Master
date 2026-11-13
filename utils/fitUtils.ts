@@ -1,5 +1,5 @@
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateElevationStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
+import { calculateElevationStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
 
 const HIGH_CONTRAST_COLORS = [
   '#2563eb', // Velo Royal Blue
@@ -1976,6 +1976,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
   try {
     const fit = new DataView(arrayBuffer);
     const points: GPXPoint[] = [];
+    const nonGpsRecords: Array<{ time?: Date; power?: number; hr?: number; cadence?: number; temp?: number; speed?: number; ele?: number }> = [];
     const localMessageDefinitions: Record<number, LocalDefinition> = {};
     let latestTimestamp = 0;
 
@@ -2285,39 +2286,44 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             time = new Date((realTimestamp + 631065600) * 1000);
           }
 
-          // Save trackpoint if position is valid
-          if (globalMsgNum === 20 && lat !== undefined && lng !== undefined) {
-            // Convert semicircles to degrees if necessary
-            if (Math.abs(lat) > 180) lat = lat * (180 / Math.pow(2, 31));
-            if (Math.abs(lng) > 180) lng = lng * (180 / Math.pow(2, 31));
+          // Save trackpoint if position is valid, or collect indoor record for stationary/virtual workouts
+          if (globalMsgNum === 20) {
+            let ele: number | undefined;
+            if (enhancedAltitude !== undefined && enhancedAltitude !== null && !isNaN(enhancedAltitude) && enhancedAltitude !== 4294967295) {
+              ele = enhancedAltitude / 5 - 500;
+            }
+            if ((ele === undefined || ele === null || isNaN(ele)) && altitude !== undefined && altitude !== null && !isNaN(altitude) && altitude !== 65535) {
+              ele = altitude / 5 - 500;
+            }
 
-            if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001) {
-              // CRITICAL: FIT SDK Altitude and Enhanced Altitude both use a scale of 5 and offset of 500 meters.
-              // Formula: decodedValue = (rawValue / 5) - 500. DO NOT CHANGE THIS TO 3000!
-              // Changing this to / 3000 will result in flat/zero elevation statistics for Garmin FIT files.
-              let ele: number | undefined;
-              if (enhancedAltitude !== undefined && enhancedAltitude !== null && !isNaN(enhancedAltitude) && enhancedAltitude !== 4294967295) {
-                ele = enhancedAltitude / 5 - 500;
-              }
-              if ((ele === undefined || ele === null || isNaN(ele)) && altitude !== undefined && altitude !== null && !isNaN(altitude) && altitude !== 65535) {
-                ele = altitude / 5 - 500;
-              }
-              
-              let pointTime = time;
-              if (!pointTime && latestTimestamp !== undefined) {
-                pointTime = new Date((latestTimestamp + 631065600) * 1000);
-              }
-              
-              let pointSpeed: number | undefined = undefined;
-              if (enhancedSpeed !== undefined && enhancedSpeed !== null && !isNaN(enhancedSpeed) && enhancedSpeed !== 4294967295) {
-                // FIT specification: enhanced_speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
-                pointSpeed = Number(((enhancedSpeed / 1000) * 3.6).toFixed(2));
-              } else if (speed !== undefined && speed !== null && !isNaN(speed) && speed !== 65535) {
-                // FIT specification: speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
-                pointSpeed = Number(((speed / 1000) * 3.6).toFixed(2));
-              }
+            let pointTime = time;
+            if (!pointTime && latestTimestamp !== undefined) {
+              pointTime = new Date((latestTimestamp + 631065600) * 1000);
+            }
 
-              points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed });
+            let pointSpeed: number | undefined = undefined;
+            if (enhancedSpeed !== undefined && enhancedSpeed !== null && !isNaN(enhancedSpeed) && enhancedSpeed !== 4294967295) {
+              // FIT specification: enhanced_speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
+              pointSpeed = Number(((enhancedSpeed / 1000) * 3.6).toFixed(2));
+            } else if (speed !== undefined && speed !== null && !isNaN(speed) && speed !== 65535) {
+              // FIT specification: speed has scale 1000, value in m/s. Convert to km/h (* 3.6)
+              pointSpeed = Number(((speed / 1000) * 3.6).toFixed(2));
+            }
+
+            let hasValidCoords = false;
+            if (lat !== undefined && lng !== undefined && lat !== 0x7FFFFFFF && lng !== 0x7FFFFFFF) {
+              // Convert semicircles to degrees if necessary
+              if (Math.abs(lat) > 180) lat = lat * (180 / Math.pow(2, 31));
+              if (Math.abs(lng) > 180) lng = lng * (180 / Math.pow(2, 31));
+
+              if (Math.abs(lat - 180) > 0.0001 && Math.abs(lng - 180) > 0.0001 && !(lat === 0 && lng === 0)) {
+                points.push({ lat, lng, ele, time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed });
+                hasValidCoords = true;
+              }
+            }
+
+            if (!hasValidCoords) {
+              nonGpsRecords.push({ time: pointTime, power, hr, cadence: cad, temp, speed: pointSpeed, ele });
             }
           }
 
@@ -2353,11 +2359,53 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       pointer += 2; // skip CRC
     }
 
-    const sanitizedPoints = sanitizeGPXPoints(points);
+    let sanitizedPoints = sanitizeGPXPoints(points);
+    let isVirtual = false;
 
     if (sanitizedPoints.length === 0) {
-      console.error("FIT parsing error: No valid position records found");
-      return null;
+      if (nonGpsRecords.length > 0) {
+        isVirtual = true;
+        const n = nonGpsRecords.length;
+        const distanceKm = sessionDistance ? (sessionDistance / 1000) : (sessionDuration ? (sessionDuration / 3600) * 28 : Math.max(1, (n / 3600) * 28));
+        const startLat = 48.137154;
+        const startLng = 11.576124;
+        const circumference = distanceKm || 1;
+        const radiusKm = circumference / (2 * Math.PI);
+        const rLat = radiusKm / 111;
+        const rLng = radiusKm / (111 * Math.cos(startLat * Math.PI / 180));
+
+        for (let i = 0; i < n; i++) {
+          const rec = nonGpsRecords[i];
+          const angle = (i / Math.max(1, n - 1)) * 2 * Math.PI;
+          const lat = startLat + rLat * Math.sin(angle);
+          const lng = startLng + rLng * (1 - Math.cos(angle)) * 0.5;
+          sanitizedPoints.push({
+            lat,
+            lng,
+            ele: rec.ele ?? 500,
+            time: rec.time,
+            power: rec.power,
+            hr: rec.hr,
+            cadence: rec.cadence,
+            temp: rec.temp,
+            speed: rec.speed
+          });
+        }
+      } else if (sessionDuration !== undefined || sessionDistance !== undefined) {
+        isVirtual = true;
+        sanitizedPoints = generateVirtualRoute(
+          48.137154,
+          11.576124,
+          sessionDistance ? sessionDistance / 1000 : 10,
+          sessionDuration || 1800,
+          50,
+          50,
+          undefined,
+          sportName?.toLowerCase().includes('run') ? 'running' : 'cycling'
+        );
+      } else {
+        return null;
+      }
     }
 
     // Validate elevation data existence and provide a meaningful default if missing
@@ -2449,6 +2497,8 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       duration,
       hasTimestamps,
       climbs,
+      isVirtual,
+      tags: isVirtual ? ['Indoor/Virtuell'] : undefined,
       description: fitNotes || "",
       rawFileDetails: {
         fileType: 'fit',

@@ -294,6 +294,160 @@ export function calculateSlopeAtPoint(
   return classifySlope(0);
 }
 
+export interface TrackSpeedResolveOptions {
+  readonly isFitFile?: boolean;
+  readonly activityType?: 'cycling' | 'running';
+  readonly trackDistanceKm?: number;
+  readonly trackDurationSec?: number;
+}
+
+/**
+ * Computes ±2-point rolling GPS ground speed (km/h) at a given index.
+ */
+export function computeGpsGroundSpeedAtIndex(
+  trackPoints: readonly HoverPointCoordinate[],
+  ptIndex: number
+): number | null {
+  if (!trackPoints || trackPoints.length < 2 || ptIndex < 0 || ptIndex >= trackPoints.length) {
+    return null;
+  }
+  const startIdx = Math.max(0, ptIndex - 2);
+  const endIdx = Math.min(trackPoints.length - 1, ptIndex + 2);
+  if (startIdx === endIdx) return null;
+
+  const pStart = trackPoints[startIdx];
+  const pEnd = trackPoints[endIdx];
+  if (!pStart?.time || !pEnd?.time) return null;
+
+  const t1 = pStart.time instanceof Date ? pStart.time.getTime() : new Date(pStart.time).getTime();
+  const t2 = pEnd.time instanceof Date ? pEnd.time.getTime() : new Date(pEnd.time).getTime();
+  if (!Number.isFinite(t1) || !Number.isFinite(t2)) return null;
+
+  const dtSec = (t2 - t1) / 1000;
+  if (dtSec <= 0.5 || dtSec >= 120) return null;
+
+  let distAccKm = 0;
+  for (let k = startIdx; k < endIdx; k++) {
+    distAccKm += calculatePointDistanceKm(trackPoints[k], trackPoints[k + 1]);
+  }
+  if (distAccKm <= 0) return null;
+
+  return distAccKm / (dtSec / 3600);
+}
+
+/**
+ * Determines whether recorded `point.speed` values on a track are already in km/h (1),
+ * in m/s (3.6), or affected by the legacy /3000 scaling bug (10.8), by cross-referencing
+ * up to 150 sampled points against GPS coordinate+timestamp ground speeds.
+ */
+export function resolveTrackSpeedScaleFactor(
+  trackPoints: readonly HoverPointCoordinate[],
+  options?: TrackSpeedResolveOptions
+): 1 | 3.6 | 10.8 | null {
+  if (!trackPoints || trackPoints.length === 0) return null;
+
+  const sampleStep = Math.max(1, Math.floor(trackPoints.length / 150));
+  let errDirect = 0;
+  let errMs = 0;
+  let errBug = 0;
+  let sampleCount = 0;
+
+  for (let i = 0; i < trackPoints.length; i += sampleStep) {
+    const pt = trackPoints[i];
+    if (pt.speed === undefined || !Number.isFinite(pt.speed) || pt.speed <= 0) continue;
+    const gps = computeGpsGroundSpeedAtIndex(trackPoints, i);
+    if (gps === null || gps <= 1.0) continue;
+
+    errDirect += Math.abs(pt.speed - gps);
+    errMs += Math.abs(pt.speed * 3.6 - gps);
+    errBug += Math.abs(pt.speed * 10.8 - gps);
+    sampleCount++;
+  }
+
+  if (sampleCount > 0) {
+    if (errBug < errMs && errBug < errDirect && errBug / sampleCount < 6.0) return 10.8;
+    if (errMs < errDirect && errMs / sampleCount < 6.0) return 3.6;
+    return 1;
+  }
+
+  // Secondary reference: track-level average speed from distance & duration
+  if (
+    options?.trackDistanceKm &&
+    options.trackDistanceKm > 0 &&
+    options?.trackDurationSec &&
+    options.trackDurationSec > 0
+  ) {
+    const avgKmh = options.trackDistanceKm / (options.trackDurationSec / 3600);
+    const positiveSpeeds = trackPoints
+      .map(p => p.speed)
+      .filter((s): s is number => s !== undefined && Number.isFinite(s) && s > 0);
+    if (positiveSpeeds.length > 0 && avgKmh > 1.0) {
+      const sorted = [...positiveSpeeds].sort((a, b) => a - b);
+      const medianSpeed = sorted[Math.floor(sorted.length / 2)];
+      const dDirect = Math.abs(medianSpeed - avgKmh);
+      const dMs = Math.abs(medianSpeed * 3.6 - avgKmh);
+      const dBug = Math.abs(medianSpeed * 10.8 - avgKmh);
+      if (dBug < dMs && dBug < dDirect && dBug < 6.0) return 10.8;
+      if (dMs < dDirect && dMs < 6.0) return 3.6;
+      return 1;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves speed (in km/h, rounded to 1 decimal place) for every point of a track
+ * using identical unit inference and ±2-point GPS ground-speed fallback as Map hover telemetry.
+ */
+export function resolveTrackPointSpeedsKmh(
+  trackPoints: readonly HoverPointCoordinate[],
+  options?: TrackSpeedResolveOptions
+): (number | undefined)[] {
+  if (!trackPoints || trackPoints.length === 0) return [];
+
+  const isFitFile = Boolean(options?.isFitFile);
+  const trackScale = resolveTrackSpeedScaleFactor(trackPoints, options);
+
+  return trackPoints.map((pt, i) => {
+    const gps = computeGpsGroundSpeedAtIndex(trackPoints, i);
+    const rawSpeed = pt.speed;
+
+    if (rawSpeed !== undefined && Number.isFinite(rawSpeed) && rawSpeed > 0) {
+      let candidate: number;
+      if ((pt as any).speedIsKmh === true) {
+        candidate = rawSpeed;
+      } else if (trackScale !== null) {
+        candidate = rawSpeed * trackScale;
+      } else if (gps !== null && gps > 1.0) {
+        const diffDirect = Math.abs(rawSpeed - gps);
+        const diffMs = Math.abs(rawSpeed * 3.6 - gps);
+        const diffBug = Math.abs(rawSpeed * 10.8 - gps);
+        if (diffBug < diffMs && diffBug < diffDirect && diffBug < 6.0) {
+          candidate = rawSpeed * 10.8;
+        } else if (diffMs < diffDirect && diffMs < 6.0) {
+          candidate = rawSpeed * 3.6;
+        } else {
+          candidate = rawSpeed;
+        }
+      } else {
+        candidate = isFitFile && rawSpeed < 15 ? rawSpeed * 3.6 : rawSpeed;
+      }
+
+      if (gps !== null && gps > 1.0 && Math.abs(candidate - gps) >= 12.0) {
+        return Math.round(gps * 10) / 10;
+      }
+      return Math.round(candidate * 10) / 10;
+    }
+
+    if (gps !== null) {
+      return Math.round(gps * 10) / 10;
+    }
+
+    return undefined;
+  });
+}
+
 /**
  * Aggregates complete hover telemetry safely into a unified data structure.
  */
@@ -377,35 +531,32 @@ export function computeHoverPointTelemetry(
 
   // First, calculate ground speed from GPS coordinate and timestamp deltas
   let gpsGroundSpeedKmh: number | null = null;
+  let trackScale: 1 | 3.6 | 10.8 | null = null;
   if (trackPoints && trackPoints.length > 1) {
     const ptIndex = trackPoints.findIndex(
       p => Math.abs(p.lat - point.lat) < 0.00005 && Math.abs(p.lng - point.lng) < 0.00005
     );
     if (ptIndex >= 0) {
-      // Use rolling window of +- 2 points for smooth, robust ground velocity
-      const startIdx = Math.max(0, ptIndex - 2);
-      const endIdx = Math.min(trackPoints.length - 1, ptIndex + 2);
-      const pStart = trackPoints[startIdx];
-      const pEnd = trackPoints[endIdx];
-      if (pStart?.time && pEnd?.time && startIdx !== endIdx) {
-        const t1 = pStart.time instanceof Date ? pStart.time.getTime() : new Date(pStart.time).getTime();
-        const t2 = pEnd.time instanceof Date ? pEnd.time.getTime() : new Date(pEnd.time).getTime();
-        const dtSec = (t2 - t1) / 1000;
-        if (dtSec > 0.5 && dtSec < 120) {
-          let distAccKm = 0;
-          for (let k = startIdx; k < endIdx; k++) {
-            distAccKm += calculatePointDistanceKm(trackPoints[k], trackPoints[k + 1]);
-          }
-          if (distAccKm > 0) {
-            gpsGroundSpeedKmh = (distAccKm / (dtSec / 3600));
-          }
-        }
-      }
+      gpsGroundSpeedKmh = computeGpsGroundSpeedAtIndex(trackPoints, ptIndex);
     }
+    trackScale = resolveTrackSpeedScaleFactor(trackPoints, { isFitFile, activityType });
   }
 
   if (point.speed !== undefined && Number.isFinite(point.speed) && point.speed > 0) {
-    if (gpsGroundSpeedKmh !== null && gpsGroundSpeedKmh > 1.0) {
+    if ((point as any).speedIsKmh === true) {
+      if (gpsGroundSpeedKmh !== null && gpsGroundSpeedKmh > 1.0 && Math.abs(point.speed - gpsGroundSpeedKmh) >= 12.0) {
+        calculatedSpeedKmh = Math.round(gpsGroundSpeedKmh * 10) / 10;
+      } else {
+        calculatedSpeedKmh = Math.round(point.speed * 10) / 10;
+      }
+    } else if (trackScale !== null) {
+      const candidate = point.speed * trackScale;
+      if (gpsGroundSpeedKmh !== null && gpsGroundSpeedKmh > 1.0 && Math.abs(candidate - gpsGroundSpeedKmh) >= 12.0) {
+        calculatedSpeedKmh = Math.round(gpsGroundSpeedKmh * 10) / 10;
+      } else {
+        calculatedSpeedKmh = Math.round(candidate * 10) / 10;
+      }
+    } else if (gpsGroundSpeedKmh !== null && gpsGroundSpeedKmh > 1.0) {
       // Cross-reference point.speed with GPS ground speed:
       // 1. Direct match (already in km/h)
       // 2. m/s match (point.speed * 3.6)

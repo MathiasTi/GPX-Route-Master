@@ -25,23 +25,15 @@ import {
 } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { getSessionGarminKey } from '../utils/garminSessionKey';
 import {
   hydrateGarminActivityPayload,
-  hydrateLibraryTrackPayload,
-  isTwoPointSeedStub
+  hydrateLibraryTrackPayload
 } from '../utils/activityHydration';
-
-function isGarminPointsStubOrEmpty(pointsJson: unknown, distanceKm: number): boolean {
-  if (!pointsJson) return true;
-  try {
-    const parsed = typeof pointsJson === 'string' ? JSON.parse(pointsJson) : pointsJson;
-    if (!Array.isArray(parsed) || parsed.length <= 1) return true;
-    return isTwoPointSeedStub(parsed, distanceKm);
-  } catch {
-    return true;
-  }
-}
+import {
+  isGarminPointsStubOrEmpty,
+  tryFetchGarminFitTrack
+} from '../utils/garminClient';
+import { getSessionGarminKey } from '../utils/garminSessionKey';
 
 export type CatalogSource = 'library' | 'garmin';
 export type CatalogActivityCategory = 'cycling' | 'running' | 'hiking' | 'other';
@@ -712,24 +704,10 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
             );
             if (needsFit && garminKey && autoFitRemaining > 0) {
               autoFitRemaining--;
-              try {
-                const fitRes = await apiFetch(
-                  getApiUrl(`/api/garmin/personal/activity/${encodeURIComponent(rawGarmin.id)}/fit`),
-                  { headers: { 'x-garmin-personal-key': garminKey } }
-                );
-                const fitJson = await fitRes.json();
-                if (fitRes.ok && fitJson.success && fitJson.track) {
-                  hydratedTracks.push({
-                    ...fitJson.track,
-                    points: (fitJson.track.points || []).map((pt: any) => ({
-                      ...pt,
-                      time: pt.time ? new Date(pt.time) : undefined
-                    }))
-                  });
-                  continue;
-                }
-              } catch {
-                // Fall back to standard hydration if FIT endpoint is unavailable
+              const fitTrack = await tryFetchGarminFitTrack(rawGarmin.id);
+              if (fitTrack) {
+                hydratedTracks.push(fitTrack);
+                continue;
               }
             }
             hydratedTracks.push(

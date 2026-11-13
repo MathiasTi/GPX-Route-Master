@@ -77,9 +77,7 @@ const App: React.FC = () => {
 
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
-  const [garminHealthOpen, setGarminHealthOpen] = useState(false);
   const [garminActivitiesAnalysisOpen, setGarminActivitiesAnalysisOpen] = useState(false);
-  const [performanceAnalysisOpen, setPerformanceAnalysisOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [intensiveAnalysisOpen, setIntensiveAnalysisOpen] = useState(false);
   const [intensiveAnalysisTab, setIntensiveAnalysisTab] = useState<AnalysisTab>('overview');
@@ -296,22 +294,22 @@ const App: React.FC = () => {
     saveWorkspaceTracks(unhydratedTracks);
   }, [unhydratedTracks]);
 
-  // Fetch initial catalog total count once unlocked so TopNavBar shows accurate DB count
-  useEffect(() => {
+  const refreshCatalogTotalCount = useCallback(() => {
     if (!isUnlocked) return;
-    let active = true;
     apiFetch(getApiUrl('/api/activities/catalog?limit=10&offset=0'))
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (active && data?.success && typeof data.databaseTotalCount === 'number') {
+        if (data?.success && typeof data.databaseTotalCount === 'number') {
           setCatalogTotalCount(data.databaseTotalCount);
         }
       })
       .catch(() => {});
-    return () => {
-      active = false;
-    };
   }, [isUnlocked]);
+
+  // Fetch initial catalog total count once unlocked so TopNavBar shows accurate DB count
+  useEffect(() => {
+    refreshCatalogTotalCount();
+  }, [refreshCatalogTotalCount]);
 
   // Online / Offline tracking
   useEffect(() => {
@@ -1385,9 +1383,7 @@ const App: React.FC = () => {
         if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
         if (glossaryOpen) { setGlossaryOpen(false); return; }
         if (intensiveAnalysisOpen) { setIntensiveAnalysisOpen(false); return; }
-        if (garminHealthOpen) { setGarminHealthOpen(false); return; }
         if (garminActivitiesAnalysisOpen) { setGarminActivitiesAnalysisOpen(false); return; }
-        if (performanceAnalysisOpen) { setPerformanceAnalysisOpen(false); return; }
         if (comparisonOpen) { setComparisonOpen(false); return; }
         if (weatherOpen) { setWeatherOpen(false); return; }
         if (timeGapModalOpen) { setTimeGapModalOpen(false); return; }
@@ -1636,10 +1632,10 @@ const App: React.FC = () => {
     glossaryOpen,
     intensiveAnalysisOpen,
     validationModalOpen,
-    garminHealthOpen,
     garminActivitiesAnalysisOpen,
-    performanceAnalysisOpen,
     comparisonOpen,
+    activeWorkspaceView,
+    openFitnessPage,
     weatherOpen,
     timeGapModalOpen,
     isExportModalOpen,
@@ -1704,7 +1700,7 @@ const App: React.FC = () => {
 
           <nav
             aria-label="Hauptnavigation"
-            className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-950 p-0.5 border border-slate-200/80 dark:border-slate-800"
+            className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-950 p-0.5 border border-slate-200/80 dark:border-slate-800 overflow-x-auto max-w-full"
           >
             <button
               type="button"
@@ -1712,7 +1708,7 @@ const App: React.FC = () => {
                 setActiveWorkspaceView('map');
                 setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeWorkspaceView === 'map'
                   ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
@@ -1734,7 +1730,7 @@ const App: React.FC = () => {
                 setIsMobileMenuOpen(false);
                 setActiveWorkspaceView('activities');
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeWorkspaceView === 'activities'
                   ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
@@ -1753,14 +1749,15 @@ const App: React.FC = () => {
               type="button"
               id="nav-tab-fitness-health"
               onClick={() => openFitnessPage('performance')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeWorkspaceView === 'fitness'
                   ? 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 shadow-2xs border border-slate-200/80 dark:border-slate-700'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
               <Activity size={14} />
-              <span>Fitness &amp; Gesundheit</span>
+              <span className="sm:hidden">Fitness</span>
+              <span className="hidden sm:inline">Fitness &amp; Gesundheit</span>
             </button>
           </nav>
         </div>
@@ -1916,7 +1913,9 @@ const App: React.FC = () => {
             onLoadTrack={(tr) => {
               handleLoadLibraryTrack(tr);
               setActiveWorkspaceView('map');
+              setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
             }}
+            onDataSynced={refreshCatalogTotalCount}
             userWeight={userWeight}
             userAge={userAge}
             userMaxHr={userMaxHr}
@@ -2262,42 +2261,10 @@ const App: React.FC = () => {
           </AnimatePresence>
 
           <AnimatePresence>
-            {garminHealthOpen && (
-              <GarminDashboard 
-                initialTab="overview"
-                onClose={() => setGarminHealthOpen(false)}
-                onLoadTrack={handleLoadLibraryTrack}
-                userWeight={userWeight}
-                userAge={userAge}
-                userMaxHr={userMaxHr}
-                ftp={ftp}
-                onUpdateFtp={setFtp}
-                onUpdateMaxHr={handleMaxHrChange}
-              />
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
             {garminActivitiesAnalysisOpen && (
               <GarminActivitiesAnalysis 
                 onClose={() => setGarminActivitiesAnalysisOpen(false)}
                 onLoadTrack={handleLoadLibraryTrack}
-              />
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {performanceAnalysisOpen && (
-              <GarminDashboard 
-                initialTab="performance"
-                onClose={() => setPerformanceAnalysisOpen(false)}
-                onLoadTrack={handleLoadLibraryTrack}
-                userWeight={userWeight}
-                userAge={userAge}
-                userMaxHr={userMaxHr}
-                ftp={ftp}
-                onUpdateFtp={setFtp}
-                onUpdateMaxHr={handleMaxHrChange}
               />
             )}
           </AnimatePresence>
@@ -2488,29 +2455,31 @@ const App: React.FC = () => {
           </button>
         )}
 
-        {/* Mobile Ergonomic Thumb-Zone Navigation */}
-        <MobileThumbBar
-          isSidebarOpen={isMobileMenuOpen}
-          onToggleSidebar={() => setIsMobileMenuOpen(prev => !prev)}
-          hasTrack={!!markedTrack}
-          isProfileCollapsed={isProfileCollapsed}
-          onToggleProfile={() => setIsProfileCollapsed(prev => !prev)}
-          mobileProfileSnap={mobileProfileSnap}
-          is3D={is3D}
-          onToggle3D={() => setIs3D(prev => !prev)}
-          onFitTrack={() => {
-            if (markedTrack) {
-              const bounds = calculateTrackCenterAndBounds(markedTrack);
-              if (bounds) {
-                window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
+        {/* Mobile Ergonomic Thumb-Zone Navigation (Map Workspace only) */}
+        {activeWorkspaceView === 'map' && (
+          <MobileThumbBar
+            isSidebarOpen={isMobileMenuOpen}
+            onToggleSidebar={() => setIsMobileMenuOpen(prev => !prev)}
+            hasTrack={!!markedTrack}
+            isProfileCollapsed={isProfileCollapsed}
+            onToggleProfile={() => setIsProfileCollapsed(prev => !prev)}
+            mobileProfileSnap={mobileProfileSnap}
+            is3D={is3D}
+            onToggle3D={() => setIs3D(prev => !prev)}
+            onFitTrack={() => {
+              if (markedTrack) {
+                const bounds = calculateTrackCenterAndBounds(markedTrack);
+                if (bounds) {
+                  window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
+                }
               }
-            }
-          }}
-          onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack?.id, 'overview')}
-          isCockpitOpen={intensiveAnalysisOpen}
-          trackCount={tracks.length}
-          visibleTrackCount={tracks.filter(t => t.visible).length}
-        />
+            }}
+            onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack?.id, 'overview')}
+            isCockpitOpen={intensiveAnalysisOpen}
+            trackCount={tracks.length}
+            visibleTrackCount={tracks.filter(t => t.visible).length}
+          />
+        )}
 
         <VideoExportModal
           track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}

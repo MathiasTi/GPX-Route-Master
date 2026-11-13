@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
-import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
+import { calculateDistance, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
 import { getCuratedSeedTours } from './seedTours';
 import { resolveActivityCountry, normalizeCountryLabel } from './countryLookup';
 
@@ -836,7 +836,7 @@ export function repairStoredActivityDates(): { repairedTracks: number; repairedG
 export function repairGarminSeedPointStubs(): number {
   return executeWithCorruptionRecovery(() => {
     const rows = db
-      .prepare('SELECT id, distance, points_json FROM garmin_activities WHERE points_json IS NOT NULL AND length(points_json) < 400 AND distance > 0.5')
+      .prepare('SELECT id, distance, points_json FROM garmin_activities WHERE points_json IS NOT NULL AND length(points_json) < 400')
       .all() as { id: string; distance: number; points_json: string }[];
 
     const clearStmt = db.prepare('UPDATE garmin_activities SET points_json = NULL WHERE id = ?');
@@ -845,22 +845,41 @@ export function repairGarminSeedPointStubs(): number {
     for (const row of rows) {
       try {
         const pts = JSON.parse(row.points_json);
-        if (
-          Array.isArray(pts) &&
-          pts.length > 0 &&
-          pts.length <= 2 &&
-          !pts.some(
-            (p: any) =>
-              p &&
-              (p.time !== undefined ||
-                p.hr !== undefined ||
-                p.power !== undefined ||
-                p.cadence !== undefined ||
-                p.speed !== undefined)
-          )
-        ) {
+        if (!Array.isArray(pts) || pts.length === 0 || pts.length > 2) {
+          continue;
+        }
+        const hasTelemetry = pts.some(
+          (p: any) =>
+            p &&
+            (p.time !== undefined ||
+              p.hr !== undefined ||
+              p.power !== undefined ||
+              p.cadence !== undefined ||
+              p.speed !== undefined)
+        );
+        if (hasTelemetry) continue;
+
+        if (pts.length === 1) {
           clearStmt.run(row.id);
           cleared++;
+          continue;
+        }
+
+        if (row.distance > 1.0) {
+          const lat0 = Number(pts[0]?.lat);
+          const lng0 = Number(pts[0]?.lng);
+          const lat1 = Number(pts[1]?.lat);
+          const lng1 = Number(pts[1]?.lng);
+          if (
+            Number.isFinite(lat0) &&
+            Number.isFinite(lng0) &&
+            Number.isFinite(lat1) &&
+            Number.isFinite(lng1) &&
+            calculateDistance({ lat: lat0, lng: lng0 }, { lat: lat1, lng: lng1 }) > 1.0
+          ) {
+            clearStmt.run(row.id);
+            cleared++;
+          }
         }
       } catch {
         // Ignore invalid JSON

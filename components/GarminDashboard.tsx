@@ -10,7 +10,7 @@ import {
   Tooltip, CartesianGrid, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend 
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { parseLocationCoords, generateVirtualRoute, calculateElevationStats } from '../utils/gpxUtils';
+import { resolveGarminTrackForMap } from '../utils/garminClient';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 
@@ -19,6 +19,7 @@ export type GarminDashboardTab = 'overview' | 'performance' | 'activities' | 'an
 interface GarminDashboardProps {
   onClose?: () => void;
   onLoadTrack?: (track: any) => void;
+  onDataSynced?: () => void;
   initialTab?: GarminDashboardTab;
   variant?: 'modal' | 'page';
   userWeight?: number;
@@ -87,90 +88,6 @@ interface HealthData {
   activities: GarminActivity[];
 }
 
-// Robust helper to extract heart rate
-function extractHeartRate(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["hr", "heartrate", "heart_rate", "average_hr", "avg_hr", "hf", "herzfrequenz", "puls", "heartrate_bpm", "heart_rate_bpm"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val) && val > 0) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val) && val > 0) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract cadence
-function extractCadence(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["cadence", "cad", "average_cadence", "avg_cadence", "bike_cadence", "run_cadence", "trittfrequenz", "cadence_rpm"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract power
-function extractPower(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["power", "watts", "average_power", "avg_power", "pwr", "leistung", "power_watts"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
-// Robust helper to extract speed
-function extractSpeed(p: any): number | undefined {
-  if (!p) return undefined;
-  const keys = ["speed", "velocity", "enhanced_speed", "speed_m_s", "geschwindigkeit"];
-  for (const key of keys) {
-    if (p[key] !== undefined && p[key] !== null) {
-      const val = parseFloat(p[key]);
-      if (!isNaN(val)) return val;
-    }
-  }
-  if (typeof p === 'object') {
-    for (const key of Object.keys(p)) {
-      if (keys.includes(key.toLowerCase())) {
-        const val = parseFloat(p[key]);
-        if (!isNaN(val)) return val;
-      }
-    }
-  }
-  return undefined;
-}
-
 // Robust helper to normalize activity type
 function isRunningType(type: string | undefined, name?: string): boolean {
   if (!type && !name) return false;
@@ -188,176 +105,10 @@ function isCyclingType(type: string | undefined, name?: string): boolean {
          n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
 }
 
-function normalizeCoordinateClient(val: number, isLng: boolean = false): number {
-  if (isNaN(val)) return val;
-  const absVal = Math.abs(val);
-  if (absVal <= 180) return val;
-
-  const maxLimit = isLng ? 180 : 90;
-
-  // Candidate conversions
-  const semi = val * 180 / 2147483648;
-  const e7 = val / 10000000;
-  const e6 = val / 1000000;
-  const e5 = val / 100000;
-
-  const candidates = [
-    { name: 'semicircles', val: semi },
-    { name: 'e7', val: e7 },
-    { name: 'e6', val: e6 },
-    { name: 'e5', val: e5 }
-  ];
-
-  let bestCand = candidates[0];
-  let bestScore = -1;
-
-  for (const cand of candidates) {
-    const absC = Math.abs(cand.val);
-    if (absC > maxLimit) continue; // mathematically invalid
-
-    let score = 0;
-    // Human inhabited latitude/longitude bias
-    if (absC >= 15 && absC <= 80) {
-      score += 10;
-    } else if (absC >= 2 && absC <= 85) {
-      score += 5;
-    } else {
-      score += 1;
-    }
-
-    // Slight tie-breaker preference for semicircles and E7/E6 over E5
-    if (cand.name === 'semicircles') score += 0.1;
-    if (cand.name === 'e7') score += 0.05;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestCand = cand;
-    }
-  }
-
-  return bestCand.val;
-}
-
-// Helper to calculate total track distance in kilometers on the client
-function calculateTotalTrackDistanceClient(pts: { lat: number, lng: number }[]): number {
-  let d = 0;
-  for (let i = 0; i < pts.length - 1; i++) {
-    d += calculateHaversineClient(pts[i].lat, pts[i].lng, pts[i + 1].lat, pts[i + 1].lng);
-  }
-  return d;
-}
-
-function calculateHaversineClient(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371; // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-// Adaptive scale detector to support Degrees, Semicircles, E7, E6, E5 on the client
-function normalizeTrackPointsWithScaleDetectionClient(rawPoints: any[], targetDistanceKm: number = 0): any[] {
-  if (!rawPoints || rawPoints.length === 0) return [];
-
-  // Find first point with non-zero coordinates to inspect raw values
-  const sample = rawPoints.find(p => p.lat !== undefined && p.lng !== undefined && p.lat !== 0 && p.lng !== 0) || rawPoints[0];
-  if (!sample) return rawPoints;
-
-  const rawLat = Math.abs(parseFloat(sample.lat));
-  const rawLng = Math.abs(parseFloat(sample.lng));
-
-  if (isNaN(rawLat) || isNaN(rawLng)) return rawPoints;
-
-  if (rawLat <= 180 && rawLng <= 180) {
-    // Already in degrees
-    return rawPoints.map(p => ({
-      ...p,
-      lat: parseFloat(p.lat),
-      lng: parseFloat(p.lng)
-    }));
-  }
-
-  // Candidate scales
-  const candidates = [
-    { name: 'semicircles', scale: 180 / 2147483648 },
-    { name: 'e7', scale: 1 / 10000000 },
-    { name: 'e6', scale: 1 / 1000000 },
-    { name: 'e5', scale: 1 / 100000 }
-  ];
-
-  let bestCandidate = candidates[0];
-
-  if (targetDistanceKm > 0.1) {
-    // Choose scale that gets closest to target distance
-    let minDiff = Infinity;
-    for (const cand of candidates) {
-      // Project a subset of points (e.g. first 200 points for speed) to compute track distance
-      const subsetPts = rawPoints.slice(0, 200).map(p => ({
-        lat: parseFloat(p.lat) * cand.scale,
-        lng: parseFloat(p.lng) * cand.scale
-      }));
-      const subsetDist = calculateTotalTrackDistanceClient(subsetPts);
-      // Estimate full distance based on subset ratio
-      const estFullDist = subsetDist * (rawPoints.length / Math.min(rawPoints.length, 200));
-      const diff = Math.abs(estFullDist - targetDistanceKm);
-      
-      // Ensure resulting coordinates are mathematically valid
-      const testLat = rawLat * cand.scale;
-      const testLng = rawLng * cand.scale;
-      const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
-
-      if (isValid && diff < minDiff) {
-        minDiff = diff;
-        bestCandidate = cand;
-      }
-    }
-  } else {
-    // Fallback to range-based detection
-    let bestScore = -1;
-    for (const cand of candidates) {
-      const testLat = rawLat * cand.scale;
-      const testLng = rawLng * cand.scale;
-      const isValid = Math.abs(testLat) <= 90 && Math.abs(testLng) <= 180;
-      if (!isValid) continue;
-
-      let score = 0;
-      if (Math.abs(testLat) >= 15 && Math.abs(testLat) <= 80) {
-        score += 10;
-      } else if (Math.abs(testLat) >= 2 && Math.abs(testLat) <= 85) {
-        score += 5;
-      } else {
-        score += 1;
-      }
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestCandidate = cand;
-      }
-    }
-  }
-
-  // Apply the chosen scale factor to all points
-  return rawPoints.map(p => ({
-    ...p,
-    lat: parseFloat(p.lat) * bestCandidate.scale,
-    lng: parseFloat(p.lng) * bestCandidate.scale
-  }));
-}
-
-function parseFloatOrUndefined(val: any): number | undefined {
-  if (val === undefined || val === null) return undefined;
-  const parsed = parseFloat(val);
-  return isNaN(parsed) ? undefined : parsed;
-}
-
-
 export const GarminDashboard: React.FC<GarminDashboardProps> = ({ 
   onClose, 
   onLoadTrack,
+  onDataSynced,
   initialTab = 'overview',
   variant = 'modal',
   userWeight = 75,
@@ -543,7 +294,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     }
   }, []);
 
-  // Load Garmin Activity into current workspace (generates virtual route)
+  // Load Garmin Activity into current workspace using unified hydration + optional auto-FIT fetch
   const handleLoadActivity = useCallback(async (act: GarminActivity) => {
     if (!onLoadTrack) return;
     try {
@@ -551,7 +302,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       
       // Attempt to load the full, un-downsampled track from the server!
       try {
-        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${act.id}`));
+        const res = await apiFetch(getApiUrl(`/api/activity-track-full?id=${encodeURIComponent(act.id)}`));
         const json = await res.json();
         if (json.success && json.points_json) {
           pointsJson = json.points_json;
@@ -560,145 +311,28 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         console.error('Failed to fetch full track points, using fallback list track:', err);
       }
 
-      // Find starting coordinates
-      let startCoords = parseLocationCoords((act as any).location);
-      if (!startCoords) {
-        // Fallback: Munich, Germany
-        startCoords = { lat: 48.1351, lng: 11.5820 };
-      }
-      
-      const durationSec = act.duration || 3600;
-      const distanceKm = act.distance || 10;
-      const ascent = Math.round(act.ascent || 0);
-      const descent = Math.round(act.descent || 0);
-      const avgHr = act.avg_hr || undefined;
-      const activityType = isRunningType(act.type, act.name) ? 'running' : 'cycling';
-      
-      let isVirtual = false;
-      let points: any[] = [];
-      if (pointsJson) {
-        try {
-          let parsed = JSON.parse(pointsJson);
-          // Auto-unwrap nested coordinate object lists if needed
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
-            if (arrayKey) {
-              parsed = (parsed as any)[arrayKey];
-            }
-          }
-
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            // Determine lat/lng index if they are nested arrays
-            let latIndex = 0;
-            let lngIndex = 1;
-            const firstArrayItem = parsed.find(item => Array.isArray(item));
-            if (firstArrayItem) {
-              const val0 = parseFloat(firstArrayItem[0]);
-              const val1 = parseFloat(firstArrayItem[1]);
-              if (!isNaN(val0) && !isNaN(val1)) {
-                const norm0 = normalizeCoordinateClient(val0, false);
-                if (Math.abs(norm0) > 90) {
-                  latIndex = 1;
-                  lngIndex = 0;
-                }
-              }
-            }
-
-            points = parsed.map((p: any) => {
-              if (!p) return null;
-              if (Array.isArray(p)) {
-                const rawLat = parseFloat(p[latIndex]);
-                const rawLng = parseFloat(p[lngIndex]);
-                if (isNaN(rawLat) || isNaN(rawLng)) return null;
-                return {
-                  lat: rawLat,
-                  lng: rawLng,
-                  ele: p[2] !== undefined && p[2] !== null ? parseFloatOrUndefined(p[2]) : undefined,
-                  time: p[3] ? new Date(p[3]) : undefined,
-                  hr: p[4] !== undefined && p[4] !== null ? parseFloatOrUndefined(p[4]) : undefined,
-                  cadence: p[5] !== undefined && p[5] !== null ? parseFloatOrUndefined(p[5]) : undefined,
-                  power: p[6] !== undefined && p[6] !== null ? parseFloatOrUndefined(p[6]) : undefined,
-                  speed: p[7] !== undefined && p[7] !== null ? parseFloatOrUndefined(p[7]) : undefined,
-                };
-              } else if (typeof p === 'object') {
-                const latKey = Object.keys(p).find(k => ["lat", "latitude", "lat_deg", "position_lat", "position_latitude", "y"].includes(k.toLowerCase()));
-                const lngKey = Object.keys(p).find(k => ["lng", "longitude", "lon", "lon_deg", "lng_deg", "position_lon", "position_longitude", "x"].includes(k.toLowerCase()));
-                if (!latKey || !lngKey) return null;
-                
-                const rawLat = parseFloat(p[latKey]);
-                const rawLng = parseFloat(p[lngKey]);
-                if (isNaN(rawLat) || isNaN(rawLng)) return null;
-
-                const eleKey = Object.keys(p).find(k => ["ele", "elevation", "alt", "altitude", "altitude_m", "height", "enhanced_altitude", "enhanced_altitude_m"].includes(k.toLowerCase()));
-                const timeKey = Object.keys(p).find(k => ["time", "timestamp", "date", "ts", "time_val"].includes(k.toLowerCase()));
-
-                return {
-                  lat: rawLat,
-                  lng: rawLng,
-                  ele: eleKey && p[eleKey] !== undefined && p[eleKey] !== null ? parseFloatOrUndefined(p[eleKey]) : undefined,
-                  time: timeKey && p[timeKey] ? new Date(p[timeKey]) : undefined,
-                  hr: extractHeartRate(p),
-                  cadence: extractCadence(p),
-                  power: extractPower(p),
-                  speed: extractSpeed(p),
-                };
-              }
-              return null;
-            }).filter((p): p is any => p !== null);
-
-            // Apply track-wide adaptive scale detection to resolve raw coordinate scales correctly
-            points = normalizeTrackPointsWithScaleDetectionClient(points, distanceKm);
-          }
-        } catch (pe) {
-          console.error('Failed to parse points_json from database:', pe);
-        }
-      }
-
-      if (points.length <= 1) {
-        isVirtual = true;
-        points = generateVirtualRoute(
-          startCoords.lat,
-          startCoords.lng,
-          distanceKm,
-          durationSec,
-          ascent,
-          descent,
-          avgHr,
-          activityType
-        );
-      }
-      
-      const { maxSlope: calculatedMaxSlope } = points && points.length > 1
-        ? calculateElevationStats(points)
-        : { maxSlope: 0 };
-
-      const track = {
-        id: `garmin-act-${act.id || Date.now()}`,
-        name: act.name || 'Garmin Aktivität',
-        points,
-        color: '#f97316', // Orange Garmin-branding
-        distance: distanceKm,
-        ascent,
-        descent,
-        maxSlope: calculatedMaxSlope,
-        visible: true,
-        activityType,
-        duration: durationSec,
-        hasTimestamps: true,
-        description: (act as any).description || `Garmin Aktivität in ${(act as any).location || 'Unbekannt'}`,
-        isVirtual
-      };
+      const track = await resolveGarminTrackForMap(
+        {
+          ...act,
+          points_json: pointsJson
+        },
+        { ftp, userWeight }
+      );
       
       onLoadTrack(track);
       setSuccessMsg('Aktivität erfolgreich in den Workspace geladen!');
-      // Clear success after 3 seconds
       setTimeout(() => setSuccessMsg(null), 3500);
     } catch (err) {
       console.error('Failed to load Garmin activity:', err);
       setError('Konnte Garmin-Aktivität nicht in Workspace laden.');
       setTimeout(() => setError(null), 4000);
     }
-  }, [onLoadTrack]);
+  }, [onLoadTrack, ftp, userWeight]);
+
+  const handlePanelDataSynced = useCallback(() => {
+    fetchHealthMetrics();
+    onDataSynced?.();
+  }, [fetchHealthMetrics, onDataSynced]);
 
   useEffect(() => {
     fetchHealthMetrics();
@@ -862,7 +496,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                 </div>
               </div>
               <GarminPersonalApiPanel
-                onDataSynced={fetchHealthMetrics}
+                onDataSynced={handlePanelDataSynced}
                 onLoadTrack={onLoadTrack}
                 onCloseModal={onClose}
               />
@@ -975,7 +609,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       className="w-full flex-1 flex flex-col"
                     >
                       <GarminPersonalApiPanel
-                        onDataSynced={fetchHealthMetrics}
+                        onDataSynced={handlePanelDataSynced}
                         onLoadTrack={onLoadTrack}
                         onCloseModal={onClose}
                       />

@@ -1,5 +1,6 @@
 import { GPXPoint, GPXTrack } from '../types';
 import {
+  calculateDistance,
   calculateElevationStats,
   calculatePowerStats,
   calculateSurfaceStatsFromPoints,
@@ -201,21 +202,26 @@ export function hydrateLibraryTrackPayload(rawTrack: any): GPXTrack {
 }
 
 export function isTwoPointSeedStub(points: any[], distanceKm: number): boolean {
-  return (
-    Array.isArray(points) &&
-    points.length > 0 &&
-    points.length <= 2 &&
-    distanceKm > 0.5 &&
-    !points.some(
-      (p) =>
-        p &&
-        (p.time !== undefined ||
-          p.hr !== undefined ||
-          p.power !== undefined ||
-          p.cadence !== undefined ||
-          p.speed !== undefined)
-    )
+  if (!Array.isArray(points) || points.length !== 2 || distanceKm <= 1.0) {
+    return false;
+  }
+  const hasTelemetry = points.some(
+    (p) =>
+      p &&
+      (p.time !== undefined ||
+        p.hr !== undefined ||
+        p.power !== undefined ||
+        p.cadence !== undefined ||
+        p.speed !== undefined)
   );
+  if (hasTelemetry) return false;
+
+  const p0 = extractPointCoordinates(points[0]);
+  const p1 = extractPointCoordinates(points[1]);
+  if (!p0 || !p1) return false;
+
+  // A 2-point track spanning > 1 km in a single straight segment is a start/end seed stub, not a real route
+  return calculateDistance(p0, p1) > 1.0;
 }
 
 export function hydrateGarminActivityPayload(

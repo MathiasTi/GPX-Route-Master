@@ -4,7 +4,7 @@ import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, R
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { calculateElevationStats } from '../utils/gpxUtils';
-import { hydrateGarminActivityPayload } from '../utils/activityHydration';
+import { resolveGarminTrackForMap } from '../utils/garminClient';
 
 interface TrackLibraryProps {
   onLoadTrack: (track: GPXTrack) => void;
@@ -343,7 +343,7 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
         console.error('Failed to fetch full track points, using fallback list track:', err);
       }
 
-      const track = hydrateGarminActivityPayload({
+      const track = await resolveGarminTrackForMap({
         ...act,
         points_json: pointsJson
       });

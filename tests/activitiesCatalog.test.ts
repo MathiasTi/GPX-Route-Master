@@ -414,9 +414,28 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
       'Expected 2-point Garmin seed stub to be marked isVirtual and hidden from 2D/3D maps instead of drawing a straight line'
     );
 
+    saveGarminActivity(
+      'alpengravel-stub-5',
+      'Alpengravel Transalp 5 Prad - St. Caterina',
+      'cycling',
+      '2026-08-14 09:00:00',
+      59.58,
+      14400,
+      2414,
+      1546,
+      2800,
+      155,
+      'Stelvio',
+      'Prad',
+      JSON.stringify([
+        { lat: 46.621227, lng: 10.589952, ele: 861.8 },
+        { lat: 46.411751, lng: 10.495158, ele: 2762.4 }
+      ]),
+      testUser
+    );
     const clearedCount = repairGarminSeedPointStubs();
-    assert(clearedCount >= 1, `Expected repairGarminSeedPointStubs to clear garmin-stelvio-italy stub, got ${clearedCount}`);
-    const afterStubRepair = queryActivitiesCatalog({ q: 'Passo dello Stelvio' }, testUser);
+    assert(clearedCount >= 1, `Expected repairGarminSeedPointStubs to clear alpengravel-stub-5 stub, got ${clearedCount}`);
+    const afterStubRepair = queryActivitiesCatalog({ q: 'Alpengravel Transalp 5' }, testUser);
     assert(
       afterStubRepair.items[0]?.hasGps === false,
       'Expected cleared 2-point Garmin stub to have hasGps === false in catalog'

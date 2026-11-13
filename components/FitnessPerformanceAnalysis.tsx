@@ -14,7 +14,7 @@ import { getApiUrl, apiFetch } from '../utils/api';
 import { parseGPX } from '../utils/gpxUtils';
 
 interface FitnessPerformanceAnalysisProps {
-  onClose: () => void;
+  onClose?: () => void;
   userWeight: number;
   userAge: number;
   userMaxHr: number;
@@ -24,6 +24,7 @@ interface FitnessPerformanceAnalysisProps {
   onUpdateWeight?: (weight: number) => void;
   onUpdateAge?: (age: number) => void;
   isEmbedded?: boolean;
+  initialActivities?: GarminActivity[];
 }
 
 interface GarminActivity {
@@ -68,15 +69,19 @@ export default function FitnessPerformanceAnalysis({
   onUpdateMaxHr,
   onUpdateWeight,
   onUpdateAge,
-  isEmbedded = false
+  isEmbedded = false,
+  initialActivities
 }: FitnessPerformanceAnalysisProps) {
   // Local adjustable sports metrics
   const [ftp, setFtp] = useState(initialFtp || 250);
   const [maxHr, setMaxHr] = useState(initialMaxHr || 185);
   const [rhr, setRhr] = useState(55); // Default Resting Heart Rate for calculations
 
-  const [activities, setActivities] = useState<GarminActivity[]>([]);
-  const [loading, setLoading] = useState(true);
+  const hasInitialActivities = Boolean(initialActivities && initialActivities.length > 0);
+  const [activities, setActivities] = useState<GarminActivity[]>(() =>
+    hasInitialActivities && initialActivities ? initialActivities : []
+  );
+  const [loading, setLoading] = useState(!hasInitialActivities);
   const [error, setError] = useState<string | null>(null);
   
   // UI filter states
@@ -112,6 +117,7 @@ export default function FitnessPerformanceAnalysis({
   const [performanceMetric, setPerformanceMetric] = useState<'speed' | 'hr' | 'both'>('both');
 
   useEffect(() => {
+    if (isEmbedded || !onClose) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose();
@@ -119,7 +125,7 @@ export default function FitnessPerformanceAnalysis({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [isEmbedded, onClose]);
 
   // Sync default presets when goalType changes
   useEffect(() => {
@@ -226,7 +232,29 @@ export default function FitnessPerformanceAnalysis({
     setGoalElevation(prev => Math.max(0, Math.round(prev - trackToRemove.ascent)));
   };
 
-  // Load activities on mount
+  // Sync initialActivities when provided by parent dashboard
+  useEffect(() => {
+    if (initialActivities && initialActivities.length > 0) {
+      setActivities(initialActivities);
+      setLoading(false);
+    }
+  }, [initialActivities]);
+
+  // Load activities and library tracks
+  const fetchLibraryTracks = useCallback(async () => {
+    try {
+      const libResponse = await apiFetch(getApiUrl("/api/library"));
+      if (libResponse.ok) {
+        const libResult = await libResponse.json();
+        if (libResult.success && libResult.tracks) {
+          setLibraryTracks(libResult.tracks);
+        }
+      }
+    } catch (err) {
+      console.error("Error loading library tracks for science:", err);
+    }
+  }, []);
+
   const fetchHealthMetrics = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -241,24 +269,22 @@ export default function FitnessPerformanceAnalysis({
       }
 
       // Also fetch library tracks for a complete view of loaded track data
-      const libResponse = await apiFetch(getApiUrl("/api/library"));
-      if (libResponse.ok) {
-        const libResult = await libResponse.json();
-        if (libResult.success && libResult.tracks) {
-          setLibraryTracks(libResult.tracks);
-        }
-      }
+      await fetchLibraryTracks();
     } catch (err: any) {
       console.error("Error loading activities for science:", err);
       setError(err.message || "Verbindung zum Server fehlgeschlagen");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchLibraryTracks]);
 
   useEffect(() => {
-    fetchHealthMetrics();
-  }, [fetchHealthMetrics]);
+    if (hasInitialActivities) {
+      fetchLibraryTracks();
+    } else {
+      fetchHealthMetrics();
+    }
+  }, [hasInitialActivities, fetchHealthMetrics, fetchLibraryTracks]);
 
   // Sync props to state if they change
   useEffect(() => {
@@ -300,57 +326,75 @@ export default function FitnessPerformanceAnalysis({
     setActivityPoints([]);
   }, [selectedActivity]);
 
-  // Fast power curve sliding window peak pre-calculation per activity
-  const calculatedActivities = useMemo(() => {
+  // Stage 1: Parse points_json & pre-compute heavy telemetry ONCE when activities change (independent of FTP / maxHr)
+  const parsedActivitiesTelemetry = useMemo(() => {
+    const peakDurations = [1, 5, 15, 60, 300, 1200, 3600];
     return activities.map(act => {
       let points: any[] = [];
       if (act.points_json) {
         try {
-          points = JSON.parse(act.points_json);
+          const parsed = JSON.parse(act.points_json);
+          if (Array.isArray(parsed)) points = parsed;
         } catch (e) {}
       }
 
-      const powerVals = points.map(p => p.power).filter(p => p !== undefined && p !== null);
-      const hrVals = points.map(p => p.hr).filter(p => p !== undefined && p !== null);
-      
-      const safeDuration = Number.isFinite(Number(act.duration)) && Number(act.duration) > 0 ? Number(act.duration) : 0;
-      let calculatedTss = 0;
-      let calculatedNp = 0;
-      let calculatedIf = 0.7;
-      let calculatedVi = 1.0;
-      let hasPower = powerVals.length > 5;
-      let hasHr = hrVals.length > 5;
+      const powerSamples: number[] = [];
+      const hrSamples: number[] = [];
+      let powerSum = 0;
+      let hrSum = 0;
 
-      // Peak powers calculation for this activity
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        if (p?.power !== undefined && p?.power !== null && p.power >= 0) {
+          const pw = Number(p.power);
+          if (Number.isFinite(pw)) {
+            powerSamples.push(pw);
+            powerSum += pw;
+          }
+        }
+        if (p?.hr !== undefined && p?.hr !== null && p.hr > 0) {
+          const h = Number(p.hr);
+          if (Number.isFinite(h)) {
+            hrSamples.push(h);
+            hrSum += h;
+          }
+        }
+      }
+
+      const safeDuration = Number.isFinite(Number(act.duration)) && Number(act.duration) > 0 ? Number(act.duration) : 0;
+      const hasPower = powerSamples.length > 5;
+      const hasHr = hrSamples.length > 5;
+      const avgHrSampled = hrSamples.length > 0 ? hrSum / hrSamples.length : 0;
+
+      let calculatedNp = 0;
+      let calculatedVi = 1.0;
       const peaks: Record<number, number> = {};
+
       if (hasPower) {
         // Calculate NP (Normalized Power)
         let rollSum = 0;
         const windowSize = 30;
-        const power30s: number[] = [];
+        let sum4th = 0;
+        const powers = new Float64Array(points.length);
         for (let i = 0; i < points.length; i++) {
-          const p = points[i];
-          const pwr = p.power || 0;
+          const pwr = Number(points[i]?.power) || 0;
+          powers[i] = pwr;
           rollSum += pwr;
+          let rolledAvg: number;
           if (i >= windowSize) {
-            rollSum -= points[i - windowSize].power || 0;
-            power30s.push(rollSum / windowSize);
+            rollSum -= powers[i - windowSize];
+            rolledAvg = rollSum / windowSize;
           } else {
-            power30s.push(rollSum / (i + 1));
+            rolledAvg = rollSum / (i + 1);
           }
+          sum4th += rolledAvg * rolledAvg * rolledAvg * rolledAvg;
         }
-        const sum4th = power30s.reduce((sum, p) => sum + Math.pow(p, 4), 0);
-        calculatedNp = Math.round(Math.pow(sum4th / power30s.length, 0.25));
-        const avgPower = powerVals.reduce((a, b) => a + b, 0) / powerVals.length;
+        calculatedNp = points.length > 0 ? Math.round(Math.pow(sum4th / points.length, 0.25)) : 0;
+        const avgPower = powerSum / powerSamples.length;
         calculatedVi = avgPower > 0 ? calculatedNp / avgPower : 1.0;
-        
-        calculatedIf = ftp > 0 ? calculatedNp / ftp : 0.7;
-        calculatedTss = ftp > 0 ? ((safeDuration * calculatedNp * calculatedIf) / (ftp * 3600)) * 100 : 60;
 
         // Sliding window peaks for Power Duration MMP (1s, 5s, 15s, 1m, 5m, 20m, 1h)
-        const durations = [1, 5, 15, 60, 300, 1200, 3600];
-        const powers = points.map(p => p.power || 0);
-        for (const d of durations) {
+        for (const d of peakDurations) {
           if (powers.length < d) continue;
           let currentSum = 0;
           for (let i = 0; i < d; i++) currentSum += powers[i];
@@ -361,9 +405,37 @@ export default function FitnessPerformanceAnalysis({
           }
           peaks[d] = Math.round(maxSum / d);
         }
-      } else if (act.avg_hr || hrVals.length > 0) {
+      }
+
+      return {
+        act,
+        safeDuration,
+        hasPower,
+        hasHr,
+        avgHrSampled,
+        np: calculatedNp,
+        variabilityIndex: calculatedVi,
+        peaks,
+        pointsCount: points.length,
+        powerSamples,
+        hrSamples
+      };
+    });
+  }, [activities]);
+
+  // Stage 2: Lightweight O(N) FTP & MaxHR metric calculation without re-parsing points_json
+  const calculatedActivities = useMemo(() => {
+    return parsedActivitiesTelemetry.map(entry => {
+      const { act, safeDuration, hasPower, avgHrSampled, np, hrSamples } = entry;
+      let calculatedTss = 0;
+      let calculatedIf = 0.7;
+
+      if (hasPower) {
+        calculatedIf = ftp > 0 ? np / ftp : 0.7;
+        calculatedTss = ftp > 0 ? ((safeDuration * np * calculatedIf) / (ftp * 3600)) * 100 : 60;
+      } else if (act.avg_hr || hrSamples.length > 0) {
         // TRIMP or hrTSS approximation
-        const avgHr = act.avg_hr || (hrVals.reduce((a, b) => a + b, 0) / hrVals.length);
+        const avgHr = act.avg_hr || avgHrSampled;
         const lthr = maxHr * 0.85; // Est Lactate Threshold HR
         calculatedIf = lthr > 0 ? avgHr / lthr : 0.7;
         const durationHours = safeDuration / 3600;
@@ -372,7 +444,7 @@ export default function FitnessPerformanceAnalysis({
       } else {
         // Default estimate based on type
         const isCycling = isCyclingType(act.type, act.name);
-        const intensity = isCycling ? 45 : 65; 
+        const intensity = isCycling ? 45 : 65;
         calculatedTss = (safeDuration / 3600) * intensity;
       }
 
@@ -381,17 +453,18 @@ export default function FitnessPerformanceAnalysis({
       return {
         ...act,
         tss: safeTss,
-        np: calculatedNp,
+        np,
         intensityFactor: calculatedIf,
-        variabilityIndex: calculatedVi,
+        variabilityIndex: entry.variabilityIndex,
         hasPower,
-        hasHr,
-        peaks,
-        pointsCount: points.length,
-        points
+        hasHr: entry.hasHr,
+        peaks: entry.peaks,
+        pointsCount: entry.pointsCount,
+        powerSamples: entry.powerSamples,
+        hrSamples
       };
     });
-  }, [activities, ftp, maxHr]);
+  }, [parsedActivitiesTelemetry, ftp, maxHr]);
 
   // Overall sports distribution and breakdown
   const sportBreakdown = useMemo(() => {
@@ -816,11 +889,12 @@ export default function FitnessPerformanceAnalysis({
     const pwrZonesSeconds = isRunningView ? [0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0];
 
     sportFilteredActivities.forEach(act => {
-      const points = (act as any).points || [];
+      const hrSamples: number[] = act.hrSamples || [];
+      const powerSamples: number[] = act.powerSamples || [];
       const isRun = isRunningType(act.type, act.name);
 
       // If no points, split overall duration proportionally
-      if (points.length === 0) {
+      if (act.pointsCount === 0) {
         if (act.avg_hr) {
           const hr = act.avg_hr;
           const ratio = hr / maxHr;
@@ -858,33 +932,38 @@ export default function FitnessPerformanceAnalysis({
         return;
       }
 
-      // We have point-by-point data!
-      points.forEach(p => {
-        const pwr = p.power;
-        const hr = p.hr;
-
-        if (hr) {
-          const ratio = hr / maxHr;
+      // Iterate compact HR and Power numeric arrays directly
+      if (hrSamples.length > 0) {
+        const dt = act.duration > 0 ? act.duration / hrSamples.length : 1;
+        for (let i = 0; i < hrSamples.length; i++) {
+          const ratio = hrSamples[i] / maxHr;
           let zoneIdx = 0;
           if (ratio < 0.60) zoneIdx = 0;
           else if (ratio < 0.70) zoneIdx = 1;
           else if (ratio < 0.80) zoneIdx = 2;
           else if (ratio < 0.90) zoneIdx = 3;
           else zoneIdx = 4;
-          hrZonesSeconds[zoneIdx]++;
+          hrZonesSeconds[zoneIdx] += dt;
         }
+      }
 
-        if (pwr !== undefined && pwr !== null) {
-          const ratio = pwr / ftp;
-          if (isRunningView || isRun) {
+      if (powerSamples.length > 0) {
+        const dt = act.duration > 0 ? act.duration / powerSamples.length : 1;
+        const maxZIdx = pwrZonesSeconds.length - 1;
+        if (isRunningView || isRun) {
+          for (let i = 0; i < powerSamples.length; i++) {
+            const ratio = powerSamples[i] / ftp;
             let zIdx = 0;
             if (ratio < 0.80) zIdx = 0;
             else if (ratio < 0.90) zIdx = 1;
             else if (ratio < 1.00) zIdx = 2;
             else if (ratio < 1.15) zIdx = 3;
             else zIdx = 4;
-            pwrZonesSeconds[Math.min(zIdx, pwrZonesSeconds.length - 1)]++;
-          } else {
+            pwrZonesSeconds[Math.min(zIdx, maxZIdx)] += dt;
+          }
+        } else {
+          for (let i = 0; i < powerSamples.length; i++) {
+            const ratio = powerSamples[i] / ftp;
             let zoneIdx = 0;
             if (ratio < 0.55) zoneIdx = 0;
             else if (ratio < 0.75) zoneIdx = 1;
@@ -893,10 +972,10 @@ export default function FitnessPerformanceAnalysis({
             else if (ratio < 1.20) zoneIdx = 4;
             else if (ratio < 1.50) zoneIdx = 5;
             else zoneIdx = 6;
-            pwrZonesSeconds[Math.min(zoneIdx, pwrZonesSeconds.length - 1)]++;
+            pwrZonesSeconds[Math.min(zoneIdx, maxZIdx)] += dt;
           }
         }
-      });
+      }
     });
 
     const hrTotal = hrZonesSeconds.reduce((a, b) => a + b, 0);

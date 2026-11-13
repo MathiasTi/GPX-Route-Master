@@ -275,7 +275,15 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
   // Inline Edit Drawer / Modal
   const [editingItem, setEditingItem] = useState<CatalogActivityItem | null>(null);
-  const [editForm, setEditForm] = useState({
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    activityType: 'running' | 'cycling' | 'hiking' | 'other';
+    date: string;
+    location: string;
+    country: string;
+    tags: string;
+    description: string;
+  }>({
     name: '',
     activityType: 'cycling',
     date: '',
@@ -290,6 +298,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const hasLoadedOnceRef = useRef(false);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(640);
 
@@ -400,7 +409,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     activeExtendedFilterCount > 0;
 
   const fetchCatalogPage = useCallback(
-    async (offset: number, append: boolean) => {
+    async (offset: number, append: boolean, preserveScroll: boolean = false) => {
       if (!append) {
         if (abortControllerRef.current) {
           abortControllerRef.current.abort();
@@ -411,7 +420,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
       if (append) {
         setIsLoadingMore(true);
-      } else if (items.length === 0) {
+      } else if (!hasLoadedOnceRef.current) {
         setIsInitialLoading(true);
       } else {
         setIsRefreshing(true);
@@ -453,6 +462,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
         }
 
         const fetchedItems: CatalogActivityItem[] = Array.isArray(data.items) ? data.items : [];
+        hasLoadedOnceRef.current = true;
         if (append) {
           setItems((prev) => {
             const seen = new Set(prev.map((i) => i.key));
@@ -464,7 +474,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
           });
         } else {
           setItems(fetchedItems);
-          if (scrollContainerRef.current) {
+          if (!preserveScroll && scrollContainerRef.current) {
             scrollContainerRef.current.scrollTop = 0;
             setScrollTop(0);
           }
@@ -789,7 +799,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
           text: `${data.deletedCount || 1} Aktivität(en) aus der Datenbank gelöscht.`,
           type: 'info'
         });
-        await fetchCatalogPage(0, false);
+        await fetchCatalogPage(0, false, true);
       } catch (err: any) {
         console.error('Bulk delete failed:', err);
         setStatusBanner({
@@ -808,10 +818,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     setEditingItem(item);
     setEditForm({
       name: item.name,
-      activityType:
-        item.activityCategory === 'running' || item.activityCategory === 'hiking'
-          ? 'running'
-          : 'cycling',
+      activityType: item.activityCategory,
       date: item.timestampIso ? item.timestampIso.slice(0, 19).replace('T', ' ') : '',
       location: item.location || '',
       country: item.country || '',
@@ -861,7 +868,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
       setEditingItem(null);
       setStatusBanner({ text: 'Metadaten aktualisiert.', type: 'info' });
-      await fetchCatalogPage(0, false);
+      await fetchCatalogPage(0, false, true);
     } catch (err: any) {
       setStatusBanner({
         text: err?.message || 'Speichern fehlgeschlagen.',
@@ -1901,11 +1908,18 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                   </label>
                   <select
                     value={editForm.activityType}
-                    onChange={(e) => setEditForm((f) => ({ ...f, activityType: e.target.value }))}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        activityType: e.target.value as 'running' | 'cycling' | 'hiking' | 'other'
+                      }))
+                    }
                     className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
                   >
                     <option value="cycling">Radsport</option>
-                    <option value="running">Laufen / Wandern</option>
+                    <option value="running">Laufen</option>
+                    <option value="hiking">Wandern</option>
+                    <option value="other">Sonstige</option>
                   </select>
                 </div>
                 <div>

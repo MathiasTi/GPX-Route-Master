@@ -276,16 +276,6 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [recordsYearFilter, setRecordsYearFilter] = useState<string>('all');
   const [showAthleteSettings, setShowAthleteSettings] = useState(false);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   const activityPoints = useMemo(() => {
     return analyticsData?.activityCorrelations?.points || [];
   }, [analyticsData]);
@@ -1961,6 +1951,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       <FitnessPerformanceAnalysis 
                         isEmbedded={true}
                         onClose={onClose}
+                        initialActivities={data?.activities}
                         userWeight={userWeight}
                         userAge={userAge}
                         userMaxHr={userMaxHr}

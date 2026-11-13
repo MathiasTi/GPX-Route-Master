@@ -2109,8 +2109,9 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
   tx();
 }
 
-export function getHealthMetrics(userId: string = 'default') {
+export function getHealthMetrics(userId: string = 'default', options?: { includePoints?: boolean }) {
   const uid = normalizeUserId(userId);
+  const includePoints = options?.includePoints !== false;
   backfillMissingHealthMetricsFromExistingData(uid);
   const normalizeDateRows = (tableName: string) => {
     const rows = db.prepare(`SELECT * FROM ${tableName} WHERE user_id = ?`).all(uid) as any[];
@@ -2124,7 +2125,12 @@ export function getHealthMetrics(userId: string = 'default') {
   const stress = normalizeDateRows('garmin_stress');
   const rhr = normalizeDateRows('garmin_rhr');
   const steps = normalizeDateRows('garmin_steps');
-  const activities = (db.prepare('SELECT * FROM garmin_activities WHERE user_id = ? ORDER BY date DESC').all(uid) as DbGarminActivityRecord[]).map(act => ({
+  const activityColumns = includePoints
+    ? '*'
+    : 'id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, user_id, country';
+  const activities = (
+    db.prepare(`SELECT ${activityColumns} FROM garmin_activities WHERE user_id = ? ORDER BY date DESC`).all(uid) as DbGarminActivityRecord[]
+  ).map(act => ({
     ...act,
     id: stripScopedKey(act.id, uid)
   }));

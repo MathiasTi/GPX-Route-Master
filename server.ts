@@ -2079,21 +2079,54 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  const downsampledPointsCache = new Map<string, { rawLen: number; result: string }>();
+
   // Helper to downsample points_json inside an activity record to prevent "Invalid string length" on the client
   function downsampleActivity(act: any, maxPoints: number = 1000): any {
-    if (act && act.points_json) {
-      try {
-        const parsed = safeJsonParse(act.points_json, []).data;
-        if (Array.isArray(parsed) && parsed.length > maxPoints) {
-          const downsampled = downsamplePoints(parsed, maxPoints);
-          return {
-            ...act,
-            points_json: safeStringifyOrFallback(downsampled, '[]')
-          };
-        }
-      } catch (e) {
-        console.error(`Error downsampling points for activity ${act.id}:`, e);
+    if (!act || !act.points_json || typeof act.points_json !== 'string') {
+      return act;
+    }
+
+    // Fast path: each serialized point object is >20 chars, so strings shorter than maxPoints * 20 cannot exceed maxPoints
+    if (act.points_json.length <= maxPoints * 20) {
+      return act;
+    }
+
+    const cacheKey = act.id ? `${act.id}:${maxPoints}` : '';
+    const rawLen = act.points_json.length;
+    if (cacheKey) {
+      const cached = downsampledPointsCache.get(cacheKey);
+      if (cached && cached.rawLen === rawLen) {
+        return cached.result === act.points_json ? act : { ...act, points_json: cached.result };
       }
+    }
+
+    try {
+      const parsed = safeJsonParse(act.points_json, []).data;
+      if (Array.isArray(parsed) && parsed.length > maxPoints) {
+        const downsampled = downsamplePoints(parsed, maxPoints);
+        const serialized = safeStringifyOrFallback(downsampled, '[]');
+        if (cacheKey) {
+          if (downsampledPointsCache.size >= 2000) {
+            const oldestKey = downsampledPointsCache.keys().next().value;
+            if (oldestKey !== undefined) downsampledPointsCache.delete(oldestKey);
+          }
+          downsampledPointsCache.set(cacheKey, { rawLen, result: serialized });
+        }
+        return {
+          ...act,
+          points_json: serialized
+        };
+      }
+      if (cacheKey) {
+        if (downsampledPointsCache.size >= 2000) {
+          const oldestKey = downsampledPointsCache.keys().next().value;
+          if (oldestKey !== undefined) downsampledPointsCache.delete(oldestKey);
+        }
+        downsampledPointsCache.set(cacheKey, { rawLen, result: act.points_json });
+      }
+    } catch (e) {
+      console.error(`Error downsampling points for activity ${act.id}:`, e);
     }
     return act;
   }
@@ -2631,7 +2664,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
   // Deep Analytical calculation engine
   function calculateHealthAnalytics() {
-    const data = getHealthMetrics() as any;
+    const data = getHealthMetrics('default', { includePoints: false }) as any;
     
     // 1. Pearson Correlation helper
     const pearsonCorrelation = (x: number[], y: number[]): number => {

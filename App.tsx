@@ -250,11 +250,17 @@ const App: React.FC = () => {
     tracksRef.current = tracks;
   }, [tracks]);
 
+  const timeGapsCacheRef = useRef<WeakMap<GPXPoint[], TimeGap[]>>(new WeakMap());
+
   const activeTimeGaps = React.useMemo(() => {
     const list: TimeGap[] = [];
     for (const track of tracks) {
       if (track.visible) {
-        const gaps = detectTimeGaps(track, 30);
+        let gaps = timeGapsCacheRef.current.get(track.points);
+        if (!gaps) {
+          gaps = detectTimeGaps(track, 30);
+          timeGapsCacheRef.current.set(track.points, gaps);
+        }
         list.push(...gaps);
       }
     }
@@ -364,10 +370,24 @@ const App: React.FC = () => {
   }, []);
 
   // --- Lifecycle Effects ---
-  // Auto-save workspace tracks with safe storage and quota management
+  // Auto-save workspace tracks with debounced safe storage and flush on page unload
+  const unhydratedTracksRef = useRef(unhydratedTracks);
+  unhydratedTracksRef.current = unhydratedTracks;
+
   useEffect(() => {
-    saveWorkspaceTracks(unhydratedTracks);
+    const timer = window.setTimeout(() => {
+      saveWorkspaceTracks(unhydratedTracksRef.current);
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [unhydratedTracks]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      saveWorkspaceTracks(unhydratedTracksRef.current);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
 
   const refreshCatalogTotalCount = useCallback(() => {
     if (!isUnlocked) return;
@@ -528,12 +548,15 @@ const App: React.FC = () => {
     }
   }, [unhydratedTracks]);
 
-  // Recalculate power stats when FTP, weight, or estimated Speed changes
+  // Recalculate power stats when FTP, weight, or estimated Speed changes (debounced to keep typing fluid)
   useEffect(() => {
-    setTracks(prev => prev.map(track => {
-      const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed, track.activityType);
-      return { ...track, powerStats };
-    }));
+    const timer = window.setTimeout(() => {
+      setTracks(prev => prev.map(track => {
+        const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed, track.activityType);
+        return { ...track, powerStats };
+      }));
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [ftp, userWeight, estimatedSpeed]);
 
   const analyzeTrackSurface = useCallback(async (trackId: string, force = false) => {

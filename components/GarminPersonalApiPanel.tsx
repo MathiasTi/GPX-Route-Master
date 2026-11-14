@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Key, RefreshCw, Download, Search, CheckCircle, AlertCircle, Trash2,
   Eye, EyeOff, Calendar, Activity, Heart, Moon, Footprints, Scale,
-  MapPin, ExternalLink, Sparkles, Clock, Flame, TrendingUp, Filter, ShieldCheck
+  MapPin, ExternalLink, Sparkles, Clock, Flame, TrendingUp, Filter, ShieldCheck, X
 } from 'lucide-react';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { calculateElevationStats } from '../utils/gpxUtils';
@@ -65,6 +65,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   const [deleteSyncedDataWithKey, setDeleteSyncedDataWithKey] = useState(false);
   const [isSyncingActivities, setIsSyncingActivities] = useState(false);
   const [isSyncingHealth, setIsSyncingHealth] = useState(false);
+  const [isCancellingSync, setIsCancellingSync] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{
     active: boolean;
     phase: string;
@@ -104,6 +105,8 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   }>({ sleep: [], rhr: [], stress: [], steps: [] });
 
   const skipNextStatusRefreshRef = useRef(false);
+  const prevProgressActiveRef = useRef(false);
+  const cancelledRunRef = useRef(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -185,8 +188,36 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
     executeSearch();
   }, [executeSearch]);
 
+  // Reflect any active or recently finished background sync on mount
   useEffect(() => {
-    if (!isSyncingActivities && !isSyncingHealth) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress'));
+        if (!res.ok) return;
+        const json = await res.json().catch(() => null);
+        if (cancelled || !json?.success || !json.progress) return;
+        const p = json.progress;
+        const hasStats =
+          (p.stats?.newActivities || 0) > 0 ||
+          (p.stats?.updatedActivities || 0) > 0 ||
+          (p.stats?.fitDownloaded || 0) > 0 ||
+          (p.stats?.healthDays || 0) > 0;
+        if (p.active || (p.phase !== 'idle' && hasStats)) {
+          prevProgressActiveRef.current = Boolean(p.active);
+          setSyncProgress(p);
+        }
+      } catch {
+        // Ignore initial sync-progress check errors
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isSyncingActivities && !isSyncingHealth && !syncProgress?.active) return;
     let cancelled = false;
 
     const pollProgress = async () => {
@@ -195,7 +226,27 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
         if (!res.ok) return;
         const json = await res.json();
         if (!cancelled && json?.success && json.progress) {
-          setSyncProgress(json.progress);
+          const nextProg = json.progress;
+          const wasActive = prevProgressActiveRef.current;
+          prevProgressActiveRef.current = Boolean(nextProg.active);
+          setSyncProgress(nextProg);
+
+          // Auto-recover & refresh when a background sync finishes after a client request timeout
+          if (wasActive && !nextProg.active && !isSyncingActivities && !isSyncingHealth) {
+            if (nextProg.phase === 'done' && !cancelledRunRef.current) {
+              setFeedback((prev) =>
+                prev?.type === 'success'
+                  ? prev
+                  : {
+                      type: 'success',
+                      message: `Hintergrund-Synchronisation abgeschlossen: ${nextProg.stats?.newActivities ?? 0} neu, ${nextProg.stats?.updatedActivities ?? 0} aktualisiert, ${nextProg.stats?.fitDownloaded ?? 0} FIT-Routen dekodiert.`
+                    }
+              );
+            }
+            await fetchStatus();
+            await executeSearch();
+            onDataSynced?.();
+          }
         }
       } catch {
         // Ignore transient polling errors
@@ -208,7 +259,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isSyncingActivities, isSyncingHealth]);
+  }, [isSyncingActivities, isSyncingHealth, syncProgress?.active, fetchStatus, executeSearch, onDataSynced]);
 
   const applyDatePreset = (days: number | 'all') => {
     const end = new Date();
@@ -388,9 +439,37 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
     }
   };
 
+  const handleCancelSync = async () => {
+    cancelledRunRef.current = true;
+    setIsCancellingSync(true);
+    try {
+      const res = await garminFetch(getApiUrl('/api/garmin/personal/cancel-sync'), { method: 'POST' });
+      const json = await res.json().catch(() => null);
+      prevProgressActiveRef.current = false;
+      if (json?.success && json.progress) {
+        setSyncProgress(json.progress);
+      }
+      setIsSyncingActivities(false);
+      setIsSyncingHealth(false);
+      setFeedback({
+        type: 'warning',
+        message: 'Synchronisation abgebrochen. Bereits importierte Aktivitäten & FIT-Routen wurden gespeichert.'
+      });
+      await fetchStatus();
+      await executeSearch();
+      onDataSynced?.();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Fehler beim Abbrechen der Synchronisation.' });
+    } finally {
+      setIsCancellingSync(false);
+    }
+  };
+
   const handleSyncActivities = async (overrideStart?: string, overrideEnd?: string) => {
     const effectiveStart = overrideStart ?? startDate;
     const effectiveEnd = overrideEnd ?? endDate;
+    cancelledRunRef.current = false;
+    prevProgressActiveRef.current = true;
     setIsSyncingActivities(true);
     setFeedback(null);
     try {
@@ -405,30 +484,54 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       });
       const json = await res.json();
       if (json.success) {
-        const parts = [
-          `${json.newActivities ?? json.syncedCount ?? 0} neu`,
-          `${json.updatedActivities ?? 0} aktualisiert`,
-          `${json.skippedDuplicates ?? 0} Dupletten übersprungen`,
-          `${json.fitDownloadedCount ?? 0} FIT-Routen dekodiert`
-        ];
-        if ((json.fitRepairedCount ?? 0) > 0) {
-          parts.push(`${json.fitRepairedCount} FIT-Dateien repariert`);
+        if (!cancelledRunRef.current) {
+          const parts = [
+            `${json.newActivities ?? json.syncedCount ?? 0} neu`,
+            `${json.updatedActivities ?? 0} aktualisiert`,
+            `${json.skippedDuplicates ?? 0} Dupletten übersprungen`,
+            `${json.fitDownloadedCount ?? 0} FIT-Routen dekodiert`
+          ];
+          if ((json.fitRepairedCount ?? 0) > 0) {
+            parts.push(`${json.fitRepairedCount} FIT-Dateien repariert`);
+          }
+          setFeedback({
+            type: 'success',
+            message: `Aktivitäten-Sync abgeschlossen: ${parts.join(' · ')}.`
+          });
         }
-        setFeedback({
-          type: 'success',
-          message: `Aktivitäten-Sync abgeschlossen: ${parts.join(' · ')}.`
-        });
         const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
         const progJson = progRes ? await progRes.json().catch(() => null) : null;
-        if (progJson?.success && progJson.progress) setSyncProgress(progJson.progress);
+        if (progJson?.success && progJson.progress) {
+          prevProgressActiveRef.current = Boolean(progJson.progress.active);
+          setSyncProgress(progJson.progress);
+        }
         await fetchStatus();
         await executeSearch();
         onDataSynced?.();
       } else {
-        setFeedback({ type: 'error', message: json.error || 'Aktivitäten-Sync fehlgeschlagen.' });
+        if (!cancelledRunRef.current) {
+          setFeedback({ type: 'error', message: json.error || 'Aktivitäten-Sync fehlgeschlagen.' });
+        }
       }
     } catch (err: any) {
-      setFeedback({ type: 'error', message: err.message || 'Netzwerkfehler beim Aktivitäten-Sync.' });
+      if (!cancelledRunRef.current) {
+        const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
+        const progJson = progRes ? await progRes.json().catch(() => null) : null;
+        if (progJson?.success && progJson.progress?.active) {
+          prevProgressActiveRef.current = true;
+          setSyncProgress(progJson.progress);
+          setFeedback({
+            type: 'warning',
+            message: 'Synchronisation läuft auf dem Server im Hintergrund weiter – Fortschritt wird live aktualisiert...'
+          });
+        } else {
+          if (progJson?.success && progJson.progress) {
+            prevProgressActiveRef.current = false;
+            setSyncProgress(progJson.progress);
+          }
+          setFeedback({ type: 'error', message: err.message || 'Netzwerkfehler beim Aktivitäten-Sync.' });
+        }
+      }
     } finally {
       setIsSyncingActivities(false);
     }
@@ -474,6 +577,8 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
   };
 
   const handleFullSync = async () => {
+    cancelledRunRef.current = false;
+    prevProgressActiveRef.current = true;
     setIsSyncingActivities(true);
     setIsSyncingHealth(true);
     setFeedback(null);
@@ -493,34 +598,56 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       const actJson = await actRes.json();
       const healthJson = await healthRes.json();
 
+      const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
+      const progJson = progRes ? await progRes.json().catch(() => null) : null;
+      if (progJson?.success && progJson.progress) {
+        prevProgressActiveRef.current = !!progJson.progress.active;
+        setSyncProgress(progJson.progress);
+      } else {
+        prevProgressActiveRef.current = false;
+      }
+
       if (actJson.success || healthJson.success) {
-        const parts: string[] = [];
-        if (actJson.success) {
-          const dupNote = (actJson.skippedDuplicates ?? 0) > 0 ? `, ${actJson.skippedDuplicates} Dupletten übersprungen` : '';
-          const repNote = (actJson.fitRepairedCount ?? 0) > 0 ? `, ${actJson.fitRepairedCount} FIT repariert` : '';
-          parts.push(`${actJson.syncedCount} Aktivitäten (${actJson.fitDownloadedCount} FIT${dupNote}${repNote})`);
+        if (!cancelledRunRef.current) {
+          const parts: string[] = [];
+          if (actJson.success) {
+            const dupNote = (actJson.skippedDuplicates ?? 0) > 0 ? `, ${actJson.skippedDuplicates} Dupletten übersprungen` : '';
+            const repNote = (actJson.fitRepairedCount ?? 0) > 0 ? `, ${actJson.fitRepairedCount} FIT repariert` : '';
+            parts.push(`${actJson.syncedCount} Aktivitäten (${actJson.fitDownloadedCount} FIT${dupNote}${repNote})`);
+          }
+          if (healthJson.success) {
+            parts.push(`${healthJson.sleepCount} Schlaf · ${healthJson.rhrCount} RHR · ${healthJson.stepsCount} Schritte`);
+          }
+          setFeedback({
+            type: 'success',
+            message: `Komplett-Synchronisation abgeschlossen: ${parts.join(' | ')}`
+          });
         }
-        if (healthJson.success) {
-          parts.push(`${healthJson.sleepCount} Schlaf · ${healthJson.rhrCount} RHR · ${healthJson.stepsCount} Schritte`);
-        }
-        setFeedback({
-          type: 'success',
-          message: `Komplett-Synchronisation abgeschlossen: ${parts.join(' | ')}`
-        });
-        const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
-        const progJson = progRes ? await progRes.json().catch(() => null) : null;
-        if (progJson?.success && progJson.progress) setSyncProgress(progJson.progress);
         await fetchStatus();
         await executeSearch();
         onDataSynced?.();
-      } else {
+      } else if (!cancelledRunRef.current) {
         setFeedback({
           type: 'error',
           message: actJson.error || healthJson.error || 'Synchronisation fehlgeschlagen.'
         });
       }
     } catch (err: any) {
-      setFeedback({ type: 'error', message: err.message || 'Fehler bei der Komplett-Synchronisation.' });
+      const progRes = await garminFetch(getApiUrl('/api/garmin/personal/sync-progress')).catch(() => null);
+      const progJson = progRes ? await progRes.json().catch(() => null) : null;
+      if (progJson?.success && progJson.progress?.active) {
+        prevProgressActiveRef.current = true;
+        setSyncProgress(progJson.progress);
+        setFeedback({
+          type: 'warning',
+          message: 'Synchronisation läuft auf dem Server im Hintergrund weiter – Fortschritt wird live aktualisiert...'
+        });
+      } else {
+        prevProgressActiveRef.current = false;
+        if (!cancelledRunRef.current) {
+          setFeedback({ type: 'error', message: err.message || 'Fehler bei der Komplett-Synchronisation.' });
+        }
+      }
     } finally {
       setIsSyncingActivities(false);
       setIsSyncingHealth(false);
@@ -1014,9 +1141,23 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                   {syncProgress?.message || 'Synchronisiere mit Garmin Connect Cloud...'}
                 </span>
               </div>
-              <span className="text-xs font-mono font-bold text-sky-600 dark:text-sky-400 shrink-0">
-                {Math.min(100, Math.max(0, syncProgress?.percent ?? (isSyncingActivities || isSyncingHealth ? 15 : 100)))}%
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs font-mono font-bold text-sky-600 dark:text-sky-400">
+                  {Math.min(100, Math.max(0, syncProgress?.percent ?? (isSyncingActivities || isSyncingHealth ? 15 : 100)))}%
+                </span>
+                {(isSyncingActivities || isSyncingHealth || syncProgress?.active) && (
+                  <button
+                    type="button"
+                    onClick={handleCancelSync}
+                    disabled={isCancellingSync}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-red-100 hover:bg-red-200 dark:bg-red-950/60 dark:hover:bg-red-900/70 text-red-700 dark:text-red-300 border border-red-200/80 dark:border-red-800/60 transition-colors cursor-pointer disabled:opacity-50"
+                    title="Laufende Synchronisation abbrechen"
+                  >
+                    <X className="w-3 h-3" />
+                    {isCancellingSync ? 'Bricht ab...' : 'Abbrechen'}
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
@@ -1051,6 +1192,11 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                 {syncProgress.stats.fitRepaired > 0 && (
                   <span className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300">
                     FIT repariert: {syncProgress.stats.fitRepaired}
+                  </span>
+                )}
+                {syncProgress.stats.fitFailed > 0 && (
+                  <span className="px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300">
+                    FIT ohne GPS/übersprungen: {syncProgress.stats.fitFailed}
                   </span>
                 )}
                 {syncProgress.stats.healthDays > 0 && (

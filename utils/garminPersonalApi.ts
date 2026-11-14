@@ -64,6 +64,10 @@ export interface GarminSyncProgress {
 }
 
 let activeSyncJobs = 0;
+let activeSyncAbortController: AbortController | null = null;
+let activeActivitiesSyncPromise: Promise<any> | null = null;
+let preferredBinaryEndpointIndex = 0;
+
 let syncProgressState: GarminSyncProgress = {
   active: false,
   phase: 'idle',
@@ -82,10 +86,40 @@ let syncProgressState: GarminSyncProgress = {
 };
 
 export function getGarminSyncProgress(): GarminSyncProgress {
+  if (syncProgressState.active && activeSyncJobs === 0) {
+    const updatedMs = new Date(syncProgressState.updatedAt).getTime();
+    if (!Number.isFinite(updatedMs) || Date.now() - updatedMs > 45_000) {
+      updateSyncProgress({
+        active: false,
+        phase: 'done',
+        percent: 100
+      });
+    }
+  }
   return {
     ...syncProgressState,
     stats: { ...syncProgressState.stats }
   };
+}
+
+export function cancelGarminSync(): GarminSyncProgress {
+  if (activeSyncAbortController) {
+    try {
+      activeSyncAbortController.abort();
+    } catch {
+      // Ignore abort errors
+    }
+    activeSyncAbortController = null;
+  }
+  activeSyncJobs = 0;
+  activeActivitiesSyncPromise = null;
+  updateSyncProgress({
+    active: false,
+    phase: 'idle',
+    message: 'Synchronisation wurde abgebrochen.',
+    percent: 0
+  });
+  return getGarminSyncProgress();
 }
 
 function resetSyncProgressIfIdle() {
@@ -531,15 +565,20 @@ function isEmptyGarminPayload(parsed: any): boolean {
 async function fetchGarminJsonWithFallback(
   urls: string[],
   accessToken: string,
-  options?: { allowNotFoundAsEmpty?: boolean }
+  options?: { allowNotFoundAsEmpty?: boolean; signal?: AbortSignal }
 ): Promise<{ data: any; usedUrl: string }> {
   const errors: string[] = [];
   let allNotFound = true;
   let lastEmptyResult: { data: any; usedUrl: string } | null = null;
 
   for (const url of urls) {
+    if (options?.signal?.aborted) {
+      throw new Error('Synchronisation abgebrochen.');
+    }
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const onExternalAbort = () => controller.abort();
+    options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -582,9 +621,14 @@ async function fetchGarminJsonWithFallback(
       }
     } catch (e: any) {
       clearTimeout(timeoutId);
+      if (options?.signal?.aborted) {
+        throw new Error('Synchronisation abgebrochen.');
+      }
       if (e?.message?.includes('HTTP 401')) throw e;
       allNotFound = false;
       errors.push(`${url}: ${e?.message || 'Netzwerkfehler'}`);
+    } finally {
+      options?.signal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -602,12 +646,23 @@ async function fetchGarminJsonWithFallback(
 const MAX_BINARY_DOWNLOAD_BYTES = 30 * 1024 * 1024; // 30 MB
 const MAX_UNZIPPED_FIT_BYTES = 100 * 1024 * 1024; // 100 MB
 
-async function fetchGarminBinaryWithFallback(urls: string[], accessToken: string): Promise<{ buffer: Buffer; contentType: string; usedUrl: string }> {
+async function fetchGarminBinaryWithFallback(
+  urls: string[],
+  accessToken: string,
+  options?: { signal?: AbortSignal; timeoutMs?: number }
+): Promise<{ buffer: Buffer; contentType: string; usedUrl: string; usedIndex: number }> {
   const errors: string[] = [];
+  const timeoutMs = options?.timeoutMs ?? 10000;
 
-  for (const url of urls) {
+  for (let idx = 0; idx < urls.length; idx++) {
+    const url = urls[idx];
+    if (options?.signal?.aborted) {
+      throw new Error('Synchronisation abgebrochen.');
+    }
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const onExternalAbort = () => controller.abort();
+    options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -634,15 +689,25 @@ async function fetchGarminBinaryWithFallback(urls: string[], accessToken: string
           return {
             buffer: buf,
             contentType: res.headers.get('content-type') || 'application/octet-stream',
-            usedUrl: url
+            usedUrl: url,
+            usedIndex: idx
           };
         }
       } else {
         errors.push(`${res.status} (${new URL(url).pathname})`);
+        if (res.status === 401) {
+          throw new Error(`OAuth2 Token abgelaufen oder unautorisiert (HTTP 401).`);
+        }
       }
     } catch (e: any) {
       clearTimeout(timeoutId);
+      if (options?.signal?.aborted) {
+        throw new Error('Synchronisation abgebrochen.');
+      }
+      if (e?.message?.includes('HTTP 401')) throw e;
       errors.push(`${new URL(url).pathname}: ${e?.message || 'Fehler'}`);
+    } finally {
+      options?.signal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -657,6 +722,10 @@ function hasDetailedGpsPointsJson(rawJson?: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+function hasCheckedFitNoGps(rawJson?: string | null): boolean {
+  return typeof rawJson === 'string' && rawJson.trim() === '[]';
 }
 
 function normalizeGarminSportType(rawType: any): string {
@@ -756,7 +825,7 @@ function extractPointsFromGarminDetailsJson(details: any): GPXPoint[] {
  */
 export async function downloadAndParseGarminActivityFit(
   activityId: string,
-  options?: { saveToWorkspaceTracks?: boolean; overrideApiKey?: string; accessToken?: string }
+  options?: { saveToWorkspaceTracks?: boolean; overrideApiKey?: string; accessToken?: string; signal?: AbortSignal }
 ): Promise<{
   track: GPXTrack;
   pointsCount: number;
@@ -764,6 +833,9 @@ export async function downloadAndParseGarminActivityFit(
   integrityStatus: 'valid' | 'repaired' | 'fallback';
   repairedIssues: string[];
 }> {
+  if (options?.signal?.aborted) {
+    throw new Error('Synchronisation abgebrochen.');
+  }
   const cleanId = String(activityId).trim().replace(/^garmin-act-/, '');
   const { baseUrl } = getActiveGarminApiKey(options?.overrideApiKey);
   const accessToken = options?.accessToken
@@ -772,18 +844,29 @@ export async function downloadAndParseGarminActivityFit(
 
   const existingRecord = getGarminActivityById(cleanId);
 
-  const binaryUrls = [
-    `${baseUrl}/personal-api/activities/${encodeURIComponent(cleanId)}/fit`,
+  const rawBinaryUrls = [
     `${baseUrl}/download-service/files/activity/${encodeURIComponent(cleanId)}`,
     `${baseUrl}/wellness-api/rest/activityFile?id=${encodeURIComponent(cleanId)}`,
+    `${baseUrl}/personal-api/activities/${encodeURIComponent(cleanId)}/fit`,
     `${baseUrl}/download-service/export/gpx/activity/${encodeURIComponent(cleanId)}`
   ];
+  const preferredIdx = Math.max(0, Math.min(rawBinaryUrls.length - 1, preferredBinaryEndpointIndex));
+  const binaryUrls = preferredIdx > 0
+    ? [rawBinaryUrls[preferredIdx], ...rawBinaryUrls.filter((_, idx) => idx !== preferredIdx)]
+    : rawBinaryUrls;
 
   let parsedTrack: GPXTrack | null = null;
   let sourceFormat: 'fit' | 'gpx' | 'json_details' = 'fit';
 
   try {
-    const { buffer } = await fetchGarminBinaryWithFallback(binaryUrls, accessToken);
+    const { buffer, usedUrl } = await fetchGarminBinaryWithFallback(binaryUrls, accessToken, {
+      signal: options?.signal,
+      timeoutMs: 10000
+    });
+    const matchedBaseIdx = rawBinaryUrls.indexOf(usedUrl);
+    if (matchedBaseIdx >= 0) {
+      preferredBinaryEndpointIndex = matchedBaseIdx;
+    }
 
     // Check if buffer is a PK ZIP archive (0x50 0x4B 0x03 0x04)
     let fitBuffer: Uint8Array = new Uint8Array(buffer);
@@ -816,12 +899,18 @@ export async function downloadAndParseGarminActivityFit(
     } else {
       sourceFormat = 'fit';
       const arrayBuf = fitBuffer.buffer.slice(fitBuffer.byteOffset, fitBuffer.byteOffset + fitBuffer.byteLength);
-      parsedTrack = await parseFIT(arrayBuf as ArrayBuffer, `garmin_${cleanId}.fit`);
+      parsedTrack = await parseFIT(arrayBuf as ArrayBuffer, `garmin_${cleanId}.fit`, {
+        skipLocationLookup: Boolean(existingRecord?.name),
+        lightweightGpsOnly: !options?.saveToWorkspaceTracks
+      });
       if (!parsedTrack || !parsedTrack.points || parsedTrack.points.length === 0) {
         throw new Error('FIT-Datei korrupt oder ohne verwertbare Datensätze');
       }
     }
-  } catch {
+  } catch (binaryErr: any) {
+    if (options?.signal?.aborted) {
+      throw binaryErr;
+    }
     // Fallback to JSON activity details if binary FIT endpoint is unavailable for this activity
     try {
       const detailUrls = [
@@ -829,7 +918,10 @@ export async function downloadAndParseGarminActivityFit(
         `${baseUrl}/activity-service/activity/${encodeURIComponent(cleanId)}/details`,
         `${baseUrl}/activity-service/activity/${encodeURIComponent(cleanId)}`
       ];
-      const { data: detailData } = await fetchGarminJsonWithFallback(detailUrls, accessToken, { allowNotFoundAsEmpty: true });
+      const { data: detailData } = await fetchGarminJsonWithFallback(detailUrls, accessToken, {
+        allowNotFoundAsEmpty: true,
+        signal: options?.signal
+      });
       const pts = extractPointsFromGarminDetailsJson(detailData);
       if (pts.length > 1) {
         sourceFormat = 'json_details';
@@ -858,9 +950,16 @@ export async function downloadAndParseGarminActivityFit(
           climbs
         };
       }
-    } catch {
+    } catch (detailErr: any) {
+      if (options?.signal?.aborted) {
+        throw detailErr;
+      }
       // Continue to virtual route fallback below
     }
+  }
+
+  if (options?.signal?.aborted) {
+    throw new Error('FIT-Download abgebrochen oder Timeout überschritten.');
   }
 
   if (!parsedTrack || !parsedTrack.points || parsedTrack.points.length === 0) {
@@ -934,7 +1033,7 @@ export async function downloadAndParseGarminActivityFit(
     existingRecord?.avg_hr,
     existingRecord?.description || parsedTrack.description,
     existingRecord?.location,
-    compactPoints ? JSON.stringify(compactPoints) : existingRecord?.points_json || undefined
+    compactPoints ? JSON.stringify(compactPoints) : existingRecord?.points_json || '[]'
   );
 
   if (options?.saveToWorkspaceTracks === true) {
@@ -1009,295 +1108,375 @@ export async function syncGarminPersonalActivities(options: {
   activities: any[];
   endpointUsed: string;
 }> {
-  resetSyncProgressIfIdle();
-  activeSyncJobs++;
-  try {
+  if (activeActivitiesSyncPromise && !activeSyncAbortController?.signal.aborted) {
+    return activeActivitiesSyncPromise;
+  }
+
+  const runAbortController = new AbortController();
+  activeSyncAbortController = runAbortController;
+
+  const runPromise = (async () => {
+    resetSyncProgressIfIdle();
     updateSyncProgress({
       active: true,
       phase: 'auth',
       message: 'Prüfe OAuth2-Token & lade Aktivitätenliste...',
-      percent: 10
+      percent: 10,
+      stats: {
+        newActivities: 0,
+        updatedActivities: 0,
+        skippedDuplicates: 0,
+        fitDownloaded: 0,
+        fitRepaired: 0,
+        fitFailed: 0
+      }
     });
-    const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
-    const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
+    activeSyncJobs++;
+    try {
+      const { baseUrl } = getActiveGarminApiKey(options.overrideApiKey);
+      const { accessToken } = await getGarminBearerToken(options.overrideApiKey);
 
-    const end = options.endDate || new Date().toISOString().slice(0, 10);
-    const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
-    // Internal page size: 50 is reliable on Garmin Connect; falls back to 20 if needed
-    const pageSize = options.limit ? Math.min(50, Math.max(10, Number(options.limit))) : 50;
-    const maxPages = 20;
+      const end = options.endDate || new Date().toISOString().slice(0, 10);
+      const start = options.startDate || new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+      // Internal page size: 50 is reliable on Garmin Connect; falls back to 20 if needed
+      const pageSize = options.limit ? Math.min(50, Math.max(10, Number(options.limit))) : 50;
+      const maxPages = 20;
 
-    const startEpochSec = Math.floor(new Date(`${start}T00:00:00Z`).getTime() / 1000);
-    const endEpochSec = Math.floor(new Date(`${end}T23:59:59Z`).getTime() / 1000);
+      const startEpochSec = Math.floor(new Date(`${start}T00:00:00Z`).getTime() / 1000);
+      const endEpochSec = Math.floor(new Date(`${end}T23:59:59Z`).getTime() / 1000);
 
-    const collectedItems: any[] = [];
-    const seenActivityIds = new Set<string>();
-    let offset = 0;
-    let lastUsedUrl = '';
+      const collectedItems: any[] = [];
+      const seenActivityIds = new Set<string>();
+      let offset = 0;
+      let lastUsedUrl = '';
 
-    for (let page = 0; page < maxPages; page++) {
-      const candidateUrls = [
-        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
-        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}`,
-        `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=20`,
-        `${baseUrl}/activitylist-service/activities?start=${offset}&limit=20`,
-        ...(offset === 0
-          ? [
-              `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${pageSize}`,
-              `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
-            ]
-          : [])
-      ];
+      for (let page = 0; page < maxPages; page++) {
+        if (runAbortController.signal.aborted) break;
+        const candidateUrls = [
+          `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`,
+          `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=${pageSize}`,
+          `${baseUrl}/activitylist-service/activities/search/activities?start=${offset}&limit=20`,
+          `${baseUrl}/activitylist-service/activities?start=${offset}&limit=20`,
+          ...(offset === 0
+            ? [
+                `${baseUrl}/personal-api/activities?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}&limit=${pageSize}`,
+                `${baseUrl}/wellness-api/rest/activities?uploadStartTimeInSeconds=${startEpochSec}&uploadEndTimeInSeconds=${endEpochSec}`
+              ]
+            : [])
+        ];
+
+        updateSyncProgress({
+          phase: 'activities_list',
+          message: `Rufe Aktivitäten (${start} bis ${end}, Seite ${page + 1}) ab...`,
+          percent: Math.min(40, 15 + page * 3)
+        });
+
+        const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken, {
+          allowNotFoundAsEmpty: page > 0,
+          signal: runAbortController.signal
+        });
+        lastUsedUrl = usedUrl;
+
+        const pageItems = extractActivityArrayFromPayload(rawPayload);
+        if (pageItems.length === 0) {
+          break;
+        }
+
+        let reachedBeforeStart = false;
+        for (const item of pageItems) {
+          const id = String(item.activityId || item.id || item.summaryId || '');
+          const dateYmd = extractActivityDateStr(item).slice(0, 10);
+
+          if (dateYmd && dateYmd < start) {
+            reachedBeforeStart = true;
+            continue;
+          }
+          if (dateYmd && dateYmd > end) {
+            continue;
+          }
+          if (id && seenActivityIds.has(id)) {
+            continue;
+          }
+          if (id) seenActivityIds.add(id);
+          collectedItems.push(item);
+        }
+
+        offset += pageItems.length;
+
+        // Determine effective limit used by the winning URL to detect the final page
+        const limitMatch = usedUrl.match(/[?&]limit=(\d+)/);
+        const effectiveLimit = limitMatch ? Number(limitMatch[1]) : pageSize;
+        if (reachedBeforeStart || pageItems.length < effectiveLimit || usedUrl.includes('/wellness-api/')) {
+          break;
+        }
+      }
+
+      const rawList = collectedItems;
+      const usedUrl = lastUsedUrl;
+
+      const normalizedActivities: any[] = [];
+      let newActivities = 0;
+      let updatedActivities = 0;
+      let skippedDuplicates = 0;
+
+      runInTransaction(() => {
+        for (const item of rawList) {
+          const id = String(item.activityId || item.id || item.summaryId || `${Date.now()}-${Math.random()}`);
+          const name = String(item.activityName || item.name || item.activityType?.typeKey || 'Garmin Aktivität');
+          const sportType = normalizeGarminSportType(item.activityType || item.sportType || item.type);
+
+          const rawDate =
+            item.startTimeLocal ||
+            item.startTimeGMT ||
+            (item.startTimeInSeconds ? new Date(item.startTimeInSeconds * 1000).toISOString() : null) ||
+            item.date ||
+            new Date().toISOString();
+
+          // Garmin API returns distance in meters
+          const rawDist = Number(item.distance ?? item.distanceInMeters ?? 0);
+          const distanceKm = rawDist > 300 ? Number((rawDist / 1000).toFixed(2)) : Number(rawDist.toFixed(2));
+
+          const durationSec = Math.round(Number(item.duration ?? item.durationInSeconds ?? item.movingDuration ?? 0));
+          const ascentM = item.elevationGain !== undefined
+            ? Math.round(Number(item.elevationGain))
+            : item.totalElevationGainInMeters !== undefined
+            ? Math.round(Number(item.totalElevationGainInMeters))
+            : undefined;
+          const descentM = item.elevationLoss !== undefined
+            ? Math.round(Number(item.elevationLoss))
+            : item.totalElevationLossInMeters !== undefined
+            ? Math.round(Number(item.totalElevationLossInMeters))
+            : undefined;
+          const calories = item.calories !== undefined
+            ? Math.round(Number(item.calories))
+            : item.activeKilocalories !== undefined
+            ? Math.round(Number(item.activeKilocalories))
+            : undefined;
+          const avgHr = item.averageHR !== undefined
+            ? Math.round(Number(item.averageHR))
+            : item.averageHeartRateInBeatsPerMinute !== undefined
+            ? Math.round(Number(item.averageHeartRateInBeatsPerMinute))
+            : undefined;
+
+          const location = item.locationName || item.location || undefined;
+          const description = item.description || undefined;
+
+          // 2-stage duplicate check (ID + Timestamp/Distance/Duration fingerprint across garmin_activities & tracks)
+          const dupMatch = findExistingActivityDuplicate({
+            id,
+            date: String(rawDate),
+            distanceKm,
+            durationSec,
+            name
+          });
+
+          let samplePointsJson: string | undefined;
+          if (Array.isArray(item.samples)) {
+            const pts = extractPointsFromGarminDetailsJson(item);
+            if (pts.length > 2) {
+              samplePointsJson = JSON.stringify(pts);
+            }
+          }
+
+          const targetId = dupMatch.matched && dupMatch.source === 'garmin' && dupMatch.existingId
+            ? dupMatch.existingId
+            : id;
+
+          const existing = getGarminActivityById(targetId);
+          const fitAlreadyChecked = hasCheckedFitNoGps(existing?.points_json);
+
+          if (dupMatch.matched && (dupMatch.hasDetailedGps || fitAlreadyChecked)) {
+            skippedDuplicates++;
+            continue;
+          }
+
+          const pointsJson = hasDetailedGpsPointsJson(existing?.points_json) || fitAlreadyChecked
+            ? existing?.points_json
+            : samplePointsJson;
+
+          if (dupMatch.matched) {
+            updatedActivities++;
+          } else {
+            newActivities++;
+          }
+
+          saveGarminActivity(
+            targetId,
+            name,
+            sportType,
+            String(rawDate),
+            distanceKm,
+            durationSec,
+            ascentM,
+            descentM,
+            calories,
+            avgHr,
+            description,
+            location,
+            pointsJson
+          );
+
+          const hasGps = hasDetailedGpsPointsJson(pointsJson);
+          normalizedActivities.push({
+            id: targetId,
+            name,
+            type: sportType,
+            date: String(rawDate),
+            distance: distanceKm,
+            duration: durationSec,
+            ascent: ascentM,
+            descent: descentM,
+            calories,
+            avg_hr: avgHr,
+            location,
+            description,
+            hasGps,
+            skipFitDownload: hasGps || hasCheckedFitNoGps(pointsJson)
+          });
+        }
+      });
 
       updateSyncProgress({
-        phase: 'activities_list',
-        message: `Rufe Aktivitäten (${start} bis ${end}, Seite ${page + 1}) ab...`,
-        percent: Math.min(40, 15 + page * 3)
+        phase: 'fit_download',
+        message: `${newActivities} neu, ${updatedActivities} aktualisiert, ${skippedDuplicates} Dupletten übersprungen.`,
+        percent: 45,
+        stats: {
+          newActivities,
+          updatedActivities,
+          skippedDuplicates
+        }
       });
 
-      const { data: rawPayload, usedUrl } = await fetchGarminJsonWithFallback(candidateUrls, accessToken, {
-        allowNotFoundAsEmpty: page > 0
-      });
-      lastUsedUrl = usedUrl;
+      let fitDownloadedCount = 0;
+      let fitRepairedCount = 0;
+      let fitFailedCount = 0;
 
-      const pageItems = extractActivityArrayFromPayload(rawPayload);
-      if (pageItems.length === 0) {
-        break;
-      }
+      if (options.downloadFitRoutes && normalizedActivities.length > 0 && !runAbortController.signal.aborted) {
+        const batch = normalizedActivities.filter((a) => !a.skipFitDownload);
+        const CONCURRENCY = 3;
+        const PER_ACTIVITY_TIMEOUT_MS = 15_000;
+        let nextIndex = 0;
+        let completedCount = 0;
 
-      let reachedBeforeStart = false;
-      for (const item of pageItems) {
-        const id = String(item.activityId || item.id || item.summaryId || '');
-        const dateYmd = extractActivityDateStr(item).slice(0, 10);
+        const worker = async () => {
+          while (nextIndex < batch.length && !runAbortController.signal.aborted) {
+            const currentIndex = nextIndex++;
+            const act = batch[currentIndex];
+            const displayIndex = Math.min(batch.length, completedCount + 1);
+            updateSyncProgress({
+              phase: 'fit_download',
+              message: `Lade & prüfe FIT-Datei ${displayIndex}/${batch.length}: ${act.name}`,
+              percent: 45 + Math.round((completedCount / Math.max(1, batch.length)) * 50)
+            });
 
-        if (dateYmd && dateYmd < start) {
-          reachedBeforeStart = true;
-          continue;
-        }
-        if (dateYmd && dateYmd > end) {
-          continue;
-        }
-        if (id && seenActivityIds.has(id)) {
-          continue;
-        }
-        if (id) seenActivityIds.add(id);
-        collectedItems.push(item);
-      }
+            const itemController = new AbortController();
+            const onParentAbort = () => itemController.abort();
+            runAbortController.signal.addEventListener('abort', onParentAbort, { once: true });
+            let timerId: ReturnType<typeof setTimeout> | undefined;
 
-      offset += pageItems.length;
+            try {
+              const timeoutPromise = new Promise<never>((_resolve, reject) => {
+                timerId = setTimeout(() => {
+                  itemController.abort();
+                  reject(new Error('Zeitüberschreitung beim FIT-Download'));
+                }, PER_ACTIVITY_TIMEOUT_MS);
+              });
 
-      // Determine effective limit used by the winning URL to detect the final page
-      const limitMatch = usedUrl.match(/[?&]limit=(\d+)/);
-      const effectiveLimit = limitMatch ? Number(limitMatch[1]) : pageSize;
-      if (reachedBeforeStart || pageItems.length < effectiveLimit || usedUrl.includes('/wellness-api/')) {
-        break;
-      }
-    }
+              const fitRes = await Promise.race([
+                downloadAndParseGarminActivityFit(act.id, {
+                  // Avoid creating redundant garmin-fit-* rows in tracks; store GPS directly on garmin_activities
+                  saveToWorkspaceTracks: false,
+                  overrideApiKey: options.overrideApiKey,
+                  accessToken,
+                  signal: itemController.signal
+                }),
+                timeoutPromise
+              ]);
+              fitDownloadedCount++;
+              if (fitRes.integrityStatus === 'repaired') {
+                fitRepairedCount++;
+              }
+              act.hasGps = fitRes.pointsCount > 0;
+            } catch {
+              if (!runAbortController.signal.aborted) {
+                fitFailedCount++;
+              }
+            } finally {
+              if (timerId !== undefined) clearTimeout(timerId);
+              runAbortController.signal.removeEventListener('abort', onParentAbort);
+            }
 
-    const rawList = collectedItems;
-    const usedUrl = lastUsedUrl;
+            if (runAbortController.signal.aborted) break;
 
-    const normalizedActivities: any[] = [];
-    let newActivities = 0;
-    let updatedActivities = 0;
-    let skippedDuplicates = 0;
-
-    runInTransaction(() => {
-      for (const item of rawList) {
-        const id = String(item.activityId || item.id || item.summaryId || `${Date.now()}-${Math.random()}`);
-        const name = String(item.activityName || item.name || item.activityType?.typeKey || 'Garmin Aktivität');
-        const sportType = normalizeGarminSportType(item.activityType || item.sportType || item.type);
-
-        const rawDate =
-          item.startTimeLocal ||
-          item.startTimeGMT ||
-          (item.startTimeInSeconds ? new Date(item.startTimeInSeconds * 1000).toISOString() : null) ||
-          item.date ||
-          new Date().toISOString();
-
-        // Garmin API returns distance in meters
-        const rawDist = Number(item.distance ?? item.distanceInMeters ?? 0);
-        const distanceKm = rawDist > 300 ? Number((rawDist / 1000).toFixed(2)) : Number(rawDist.toFixed(2));
-
-        const durationSec = Math.round(Number(item.duration ?? item.durationInSeconds ?? item.movingDuration ?? 0));
-        const ascentM = item.elevationGain !== undefined
-          ? Math.round(Number(item.elevationGain))
-          : item.totalElevationGainInMeters !== undefined
-          ? Math.round(Number(item.totalElevationGainInMeters))
-          : undefined;
-        const descentM = item.elevationLoss !== undefined
-          ? Math.round(Number(item.elevationLoss))
-          : item.totalElevationLossInMeters !== undefined
-          ? Math.round(Number(item.totalElevationLossInMeters))
-          : undefined;
-        const calories = item.calories !== undefined
-          ? Math.round(Number(item.calories))
-          : item.activeKilocalories !== undefined
-          ? Math.round(Number(item.activeKilocalories))
-          : undefined;
-        const avgHr = item.averageHR !== undefined
-          ? Math.round(Number(item.averageHR))
-          : item.averageHeartRateInBeatsPerMinute !== undefined
-          ? Math.round(Number(item.averageHeartRateInBeatsPerMinute))
-          : undefined;
-
-        const location = item.locationName || item.location || undefined;
-        const description = item.description || undefined;
-
-        // 2-stage duplicate check (ID + Timestamp/Distance/Duration fingerprint across garmin_activities & tracks)
-        const dupMatch = findExistingActivityDuplicate({
-          id,
-          date: String(rawDate),
-          distanceKm,
-          durationSec,
-          name
-        });
-
-        let samplePointsJson: string | undefined;
-        if (Array.isArray(item.samples)) {
-          const pts = extractPointsFromGarminDetailsJson(item);
-          if (pts.length > 2) {
-            samplePointsJson = JSON.stringify(pts);
+            completedCount++;
+            if (completedCount % 15 === 0) {
+              saveSetting('garmin_personal_last_sync_at', new Date().toISOString());
+            }
+            const pct = 45 + Math.round((completedCount / Math.max(1, batch.length)) * 50);
+            updateSyncProgress({
+              phase: 'fit_download',
+              message: `Lade & prüfe FIT-Datei ${completedCount}/${batch.length}: ${act.name}`,
+              percent: pct,
+              stats: {
+                fitDownloaded: fitDownloadedCount,
+                fitRepaired: fitRepairedCount,
+                fitFailed: fitFailedCount
+              }
+            });
           }
+        };
+
+        const workerCount = Math.min(CONCURRENCY, batch.length);
+        if (workerCount > 0) {
+          await Promise.all(Array.from({ length: workerCount }, () => worker()));
         }
-
-        if (dupMatch.matched && dupMatch.hasDetailedGps) {
-          skippedDuplicates++;
-          continue;
-        }
-
-        const targetId = dupMatch.matched && dupMatch.source === 'garmin' && dupMatch.existingId
-          ? dupMatch.existingId
-          : id;
-
-        const existing = getGarminActivityById(targetId);
-        const pointsJson = hasDetailedGpsPointsJson(existing?.points_json)
-          ? existing?.points_json
-          : samplePointsJson;
-
-        if (dupMatch.matched) {
-          updatedActivities++;
-        } else {
-          newActivities++;
-        }
-
-        saveGarminActivity(
-          targetId,
-          name,
-          sportType,
-          String(rawDate),
-          distanceKm,
-          durationSec,
-          ascentM,
-          descentM,
-          calories,
-          avgHr,
-          description,
-          location,
-          pointsJson
-        );
-
-        normalizedActivities.push({
-          id: targetId,
-          name,
-          type: sportType,
-          date: String(rawDate),
-          distance: distanceKm,
-          duration: durationSec,
-          ascent: ascentM,
-          descent: descentM,
-          calories,
-          avg_hr: avgHr,
-          location,
-          description,
-          hasGps: hasDetailedGpsPointsJson(pointsJson)
-        });
       }
-    });
 
-    updateSyncProgress({
-      phase: 'fit_download',
-      message: `${newActivities} neu, ${updatedActivities} aktualisiert, ${skippedDuplicates} Dupletten übersprungen.`,
-      percent: 45,
-      stats: {
+      const nowIso = new Date().toISOString();
+      saveSetting('garmin_personal_last_sync_at', nowIso);
+
+      return {
+        syncedCount: newActivities + updatedActivities,
         newActivities,
         updatedActivities,
-        skippedDuplicates
-      }
-    });
-
-    let fitDownloadedCount = 0;
-    let fitRepairedCount = 0;
-    let fitFailedCount = 0;
-
-    if (options.downloadFitRoutes && normalizedActivities.length > 0) {
-      const batch = normalizedActivities.filter((a) => !a.hasGps);
-      for (let i = 0; i < batch.length; i++) {
-        const act = batch[i];
-        const pct = 45 + Math.round(((i + 1) / Math.max(1, batch.length)) * 45);
+        skippedDuplicates,
+        fitDownloadedCount,
+        fitRepairedCount,
+        fitFailedCount,
+        activities: normalizedActivities,
+        endpointUsed: usedUrl
+      };
+    } catch (err: any) {
+      if (!runAbortController.signal.aborted) {
         updateSyncProgress({
-          phase: 'fit_download',
-          message: `Lade & prüfe FIT-Datei ${i + 1}/${batch.length}: ${act.name}`,
-          percent: pct
-        });
-        try {
-          const fitRes = await downloadAndParseGarminActivityFit(act.id, {
-            // Avoid creating redundant garmin-fit-* rows in tracks; store GPS directly on garmin_activities
-            saveToWorkspaceTracks: false,
-            overrideApiKey: options.overrideApiKey,
-            accessToken
-          });
-          fitDownloadedCount++;
-          if (fitRes.integrityStatus === 'repaired') {
-            fitRepairedCount++;
-          }
-          act.hasGps = fitRes.pointsCount > 0;
-        } catch {
-          fitFailedCount++;
-        }
-        updateSyncProgress({
-          stats: {
-            fitDownloaded: fitDownloadedCount,
-            fitRepaired: fitRepairedCount,
-            fitFailed: fitFailedCount
-          }
+          phase: 'error',
+          message: err?.message || 'Aktivitäten-Sync fehlgeschlagen'
         });
       }
+      throw err;
+    } finally {
+      if (activeSyncAbortController === runAbortController) {
+        activeSyncAbortController = null;
+      }
+      if (activeActivitiesSyncPromise === runPromise) {
+        activeActivitiesSyncPromise = null;
+      }
+      activeSyncJobs = Math.max(0, activeSyncJobs - 1);
+      if (activeSyncJobs === 0 && !runAbortController.signal.aborted && syncProgressState.phase !== 'error') {
+        updateSyncProgress({
+          active: false,
+          phase: 'done',
+          percent: 100,
+          message: 'Cloud-Synchronisation abgeschlossen.'
+        });
+      } else if (activeSyncJobs === 0) {
+        updateSyncProgress({ active: false });
+      }
     }
+  })();
 
-    const nowIso = new Date().toISOString();
-    saveSetting('garmin_personal_last_sync_at', nowIso);
-
-    return {
-      syncedCount: newActivities + updatedActivities,
-      newActivities,
-      updatedActivities,
-      skippedDuplicates,
-      fitDownloadedCount,
-      fitRepairedCount,
-      fitFailedCount,
-      activities: normalizedActivities,
-      endpointUsed: usedUrl
-    };
-  } catch (err: any) {
-    updateSyncProgress({
-      phase: 'error',
-      message: err?.message || 'Aktivitäten-Sync fehlgeschlagen'
-    });
-    throw err;
-  } finally {
-    activeSyncJobs = Math.max(0, activeSyncJobs - 1);
-    if (activeSyncJobs === 0 && syncProgressState.phase !== 'error') {
-      updateSyncProgress({
-        active: false,
-        phase: 'done',
-        percent: 100,
-        message: 'Cloud-Synchronisation abgeschlossen.'
-      });
-    } else if (activeSyncJobs === 0) {
-      updateSyncProgress({ active: false });
-    }
-  }
+  activeActivitiesSyncPromise = runPromise;
+  return runPromise;
 }
 
 /**

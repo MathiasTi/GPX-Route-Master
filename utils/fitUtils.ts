@@ -1972,7 +1972,11 @@ function readDataField(baseType: number, view: DataView, pointer: number, size: 
   return undefined;
 }
 
-export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Promise<GPXTrack | null> => {
+export const parseFIT = async (
+  arrayBuffer: ArrayBuffer,
+  fileName: string,
+  options?: { skipLocationLookup?: boolean; lightweightGpsOnly?: boolean }
+): Promise<GPXTrack | null> => {
   try {
     const fit = new DataView(arrayBuffer);
     const points: GPXPoint[] = [];
@@ -2020,6 +2024,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     }
 
     while (pointer < fit.byteLength - 2) {
+      const outerLoopStart = pointer;
       if (pointer + 12 > fit.byteLength) break;
       
       // 1. Read Header
@@ -2049,6 +2054,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
 
       // 2. Read Records sequentially
       while (pointer < endOfDataRecords) {
+        const innerLoopStart = pointer;
         if (pointer >= fit.byteLength) break;
         const headerByte = fit.getUint8(pointer);
         const recordHeader = parseRecordHeader(headerByte);
@@ -2094,7 +2100,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             developerFields: recordHeader.developerData ? devFields : undefined,
           };
 
-          pointer = nextPointer;
+          pointer = nextPointer > innerLoopStart ? nextPointer : innerLoopStart + 1;
         } else {
           // Parse Data Record
           const recordTemplate = localMessageDefinitions[recordHeader.localMessageType];
@@ -2108,7 +2114,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             (recordTemplate.developerFields
               ? recordTemplate.developerFields.reduce((sum, f) => sum + f.size, 0)
               : 0);
-          if (pointer + 1 + expectedDataBytes > endOfDataRecords || pointer + 1 + expectedDataBytes > fit.byteLength) {
+          if (expectedDataBytes <= 0 || pointer + 1 + expectedDataBytes > endOfDataRecords || pointer + 1 + expectedDataBytes > fit.byteLength) {
             addRepairIssue('Abgeschnittener Datensatz am Dateiende verworfen');
             break;
           }
@@ -2436,11 +2442,12 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
             });
           }
 
-          pointer = recordPointer;
+          pointer = recordPointer > pointer ? recordPointer : pointer + 1 + expectedDataBytes;
         }
       }
 
       pointer += 2; // skip CRC
+      if (pointer <= outerLoopStart) break;
     }
 
     let sanitizedPoints = sanitizeGPXPoints(points);
@@ -2572,7 +2579,7 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
       });
       
       name = `${dateStr}, ${timeStr}`;
-      if (firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
+      if (!options?.skipLocationLookup && firstPoint?.lat !== undefined && firstPoint?.lng !== undefined) {
         const location = await getLocationName(firstPoint.lat, firstPoint.lng);
         name += ` (${location})`;
       } else {
@@ -2594,11 +2601,16 @@ export const parseFIT = async (arrayBuffer: ArrayBuffer, fileName: string): Prom
     const totalDist = sessionDistKm && sessionDistKm > 0 ? sessionDistKm : gpsDistKm;
 
     const activityType = detectActivityType(sanitizedPoints, name, fileName, sportName);
-    const powerStats = calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
-    const realSurfaceStats = calculateSurfaceStatsFromPoints(sanitizedPoints);
-    const surfaceStats = realSurfaceStats;
-    hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
-    const climbs = findClimbs(sanitizedPoints);
+    const powerStats = options?.lightweightGpsOnly
+      ? undefined
+      : calculatePowerStats(sanitizedPoints, 250, 75, 15, activityType);
+    const surfaceStats = options?.lightweightGpsOnly
+      ? undefined
+      : calculateSurfaceStatsFromPoints(sanitizedPoints);
+    if (!options?.lightweightGpsOnly && surfaceStats) {
+      hydratePointsWithSurface(sanitizedPoints, surfaceStats, totalDist);
+    }
+    const climbs = options?.lightweightGpsOnly ? [] : findClimbs(sanitizedPoints);
     
     // Prefer FIT session.total_timer_time (active timer duration), then pause-free active time, then gross elapsed
     let duration: number | undefined;

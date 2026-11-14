@@ -59,6 +59,7 @@ import {
   getGarminBearerToken,
   syncGarminPersonalActivities,
   getGarminSyncProgress,
+  cancelGarminSync,
   syncGarminPersonalHealth,
   downloadAndParseGarminActivityFit
 } from "./utils/garminPersonalApi.js";
@@ -2531,8 +2532,18 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     });
   });
 
+  // POST /api/garmin/personal/cancel-sync: Cancel an active Garmin Cloud Sync job
+  app.post("/api/garmin/personal/cancel-sync", (_req, res) => {
+    res.json({
+      success: true,
+      progress: cancelGarminSync()
+    });
+  });
+
   // POST /api/garmin/personal/sync-activities: Pull activities and optional .FIT routes from Garmin Personal API
   app.post("/api/garmin/personal/sync-activities", async (req, res) => {
+    req.setTimeout(10 * 60 * 1000);
+    res.setTimeout(10 * 60 * 1000);
     try {
       const headerKey = extractRequestGarminKey(req);
       const { startDate, endDate, limit, downloadFitRoutes } = req.body || {};
@@ -2558,6 +2569,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
   // POST /api/garmin/personal/sync-health: Pull Sleep, RHR, Stress, Steps, Weight from Garmin Personal API
   app.post("/api/garmin/personal/sync-health", async (req, res) => {
+    req.setTimeout(10 * 60 * 1000);
+    res.setTimeout(10 * 60 * 1000);
     try {
       const headerKey = extractRequestGarminKey(req);
       const { startDate, endDate } = req.body || {};

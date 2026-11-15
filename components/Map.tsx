@@ -9,7 +9,7 @@ import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2 } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -103,6 +103,182 @@ interface MapProps {
   onCloseGap?: (originalTrackId: string, gap: TimeGap) => void;
   onOpenShortcuts?: () => void;
   onOpenVideoExport?: () => void;
+  compareTrackId?: string | null;
+  onStartMapComparison?: (track1Id?: string, track2Id?: string) => void;
+  onExitMapComparison?: () => void;
+  onOpenComparisonModal?: () => void;
+}
+
+interface TrackSeriesPoint {
+  lat: number;
+  lng: number;
+  ele?: number;
+  speed?: number;
+  hr?: number;
+  power?: number;
+  distKm: number;
+  progress: number;
+  elapsedSec: number;
+}
+
+interface TrackSeries {
+  pts: TrackSeriesPoint[];
+  totalDistKm: number;
+}
+
+function buildTrackSeries(track: GPXTrack | null | undefined): TrackSeries | null {
+  if (!track || !track.points || track.points.length === 0) return null;
+  const pts: TrackSeriesPoint[] = [];
+  let totalDist = 0;
+  const startMs = toValidTimestampMs(track.points[0]?.time);
+
+  for (let i = 0; i < track.points.length; i++) {
+    const p = track.points[i];
+    if (!p) continue;
+    const lat = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+    const lng = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+    if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) continue;
+
+    if (pts.length > 0) {
+      totalDist += calculateDistance(pts[pts.length - 1], { lat, lng });
+    }
+    const curMs = toValidTimestampMs(p.time);
+    const elapsedSec = startMs !== undefined && curMs !== undefined ? Math.max(0, (curMs - startMs) / 1000) : 0;
+
+    pts.push({
+      lat,
+      lng,
+      ele: p.ele,
+      speed: p.speed,
+      hr: p.hr,
+      power: p.power,
+      distKm: totalDist,
+      progress: 0,
+      elapsedSec,
+    });
+  }
+
+  if (pts.length === 0) return null;
+  const denom = totalDist > 0 ? totalDist : 1;
+  for (let i = 0; i < pts.length; i++) {
+    pts[i].progress = totalDist > 0 ? pts[i].distKm / denom : (pts.length > 1 ? i / (pts.length - 1) : 0);
+  }
+
+  return {
+    pts,
+    totalDistKm: totalDist > 0 ? totalDist : (track.distance || 0),
+  };
+}
+
+function findClosestSeriesPointByTarget(
+  series: TrackSeries,
+  mode: 'distance' | 'progress',
+  targetValue: number
+): TrackSeriesPoint | null {
+  const { pts } = series;
+  if (pts.length === 0) return null;
+  if (pts.length === 1) return pts[0];
+
+  const key = mode === 'distance' ? 'distKm' : 'progress';
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid][key] < targetValue) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo > 0) {
+    const prevDiff = Math.abs(pts[lo - 1][key] - targetValue);
+    const curDiff = Math.abs(pts[lo][key] - targetValue);
+    if (prevDiff <= curDiff) return pts[lo - 1];
+  }
+  return pts[lo];
+}
+
+function findNearestSeriesPointToCoord(series: TrackSeries, lat: number, lng: number): TrackSeriesPoint | null {
+  const { pts } = series;
+  if (pts.length === 0) return null;
+  let best = pts[0];
+  let bestDiff = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const diff = Math.abs(p.lat - lat) + Math.abs(p.lng - lng);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = p;
+    }
+  }
+  return best;
+}
+
+function buildDualElevationSvgData(
+  seriesA: TrackSeries | null,
+  seriesB: TrackSeries | null,
+  mode: 'distance' | 'progress'
+): { pathA: string; areaA: string; pathB: string; areaB: string; minEle: number; maxEle: number } | null {
+  if (!seriesA || !seriesB) return null;
+  const elePtsA = seriesA.pts.filter(p => p.ele !== undefined && Number.isFinite(p.ele));
+  const elePtsB = seriesB.pts.filter(p => p.ele !== undefined && Number.isFinite(p.ele));
+  if (elePtsA.length < 2 && elePtsB.length < 2) return null;
+
+  let minEle = Infinity;
+  let maxEle = -Infinity;
+  for (const p of elePtsA) {
+    if (p.ele! < minEle) minEle = p.ele!;
+    if (p.ele! > maxEle) maxEle = p.ele!;
+  }
+  for (const p of elePtsB) {
+    if (p.ele! < minEle) minEle = p.ele!;
+    if (p.ele! > maxEle) maxEle = p.ele!;
+  }
+  if (!Number.isFinite(minEle) || !Number.isFinite(maxEle)) return null;
+  const span = Math.max(10, maxEle - minEle);
+
+  const width = 360;
+  const height = 74;
+  const padY = 6;
+  const usableH = height - padY * 2;
+  const maxDist = Math.max(seriesA.totalDistKm, seriesB.totalDistKm, 0.01);
+
+  const buildPath = (series: TrackSeries) => {
+    const valid = series.pts.filter(p => p.ele !== undefined && Number.isFinite(p.ele));
+    if (valid.length < 2) return { line: '', area: '' };
+    const step = Math.max(1, Math.floor(valid.length / 90));
+    const sampled: TrackSeriesPoint[] = [];
+    for (let i = 0; i < valid.length; i += step) {
+      sampled.push(valid[i]);
+    }
+    if (sampled[sampled.length - 1] !== valid[valid.length - 1]) {
+      sampled.push(valid[valid.length - 1]);
+    }
+
+    const coords = sampled.map(p => {
+      const xFrac = mode === 'distance' ? (p.distKm / maxDist) : p.progress;
+      const x = Math.max(0, Math.min(width, xFrac * width));
+      const y = height - padY - (((p.ele! - minEle) / span) * usableH);
+      return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+    });
+
+    const line = coords.map((c, idx) => `${idx === 0 ? 'M' : 'L'}${c.x},${c.y}`).join(' ');
+    const area = `${line} L${coords[coords.length - 1].x},${height} L${coords[0].x},${height} Z`;
+    return { line, area };
+  };
+
+  const a = buildPath(seriesA);
+  const b = buildPath(seriesB);
+  return {
+    pathA: a.line,
+    areaA: a.area,
+    pathB: b.line,
+    areaB: b.area,
+    minEle: Math.round(minEle),
+    maxEle: Math.round(maxEle)
+  };
 }
 
 const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) => {
@@ -118,84 +294,193 @@ const FocusGapController = ({ selectedGap }: { selectedGap: TimeGap | null }) =>
   return null;
 };
 
-const ZoomToTracks = ({ tracks }: { tracks: GPXTrack[] }) => {
+const TIGHT_FIT_PADDING: [number, number] = [16, 16];
+
+function extractValidLatLngs(points: GPXPoint[] | undefined): [number, number][] {
+  if (!points || points.length === 0) return [];
+  const coords: [number, number][] = [];
+  for (const p of points) {
+    if (!p) continue;
+    const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
+    const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
+    if (Number.isFinite(latVal) && Number.isFinite(lngVal)) {
+      coords.push([latVal, lngVal]);
+    }
+  }
+  return coords;
+}
+
+function buildTracksBounds(targetTracks: GPXTrack[]): L.LatLngBounds | null {
+  const allCoords: [number, number][] = [];
+  for (const t of targetTracks) {
+    if (!hasRealGpsData(t)) continue;
+    const coords = extractValidLatLngs(t.points);
+    for (const c of coords) {
+      allCoords.push(c);
+    }
+  }
+  if (allCoords.length === 0) return null;
+  const bounds = L.latLngBounds(allCoords);
+  return bounds.isValid() ? bounds : null;
+}
+
+function fitMapBoundsTight(map: L.Map, bounds: L.LatLngBounds | null, animate = false): void {
+  if (!bounds || !bounds.isValid()) return;
+  const container = map.getContainer();
+  if (!container || container.clientWidth === 0 || container.clientHeight === 0) return;
+  map.invalidateSize({ animate: false });
+  map.fitBounds(bounds, {
+    padding: TIGHT_FIT_PADDING,
+    maxZoom: 18,
+    animate
+  });
+}
+
+const ZoomToTracks = ({ tracks, markedTrackId }: { tracks: GPXTrack[]; markedTrackId: string | null }) => {
   const map = useMap();
-  const prevTracksLength = useRef(tracks.filter(t => t.visible && hasRealGpsData(t)).length);
+  const prevTrackIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const visibleGpsTracks = tracks.filter(t => t.visible && hasRealGpsData(t));
-    if (visibleGpsTracks.length > prevTracksLength.current && visibleGpsTracks.length > 0) {
-      const firstPts = visibleGpsTracks[0].points.filter(p => p && Number.isFinite(p.lat) && Number.isFinite(p.lng));
-      if (firstPts.length > 0) {
-        const bounds = L.latLngBounds(firstPts.map(p => [p.lat, p.lng]));
-        visibleGpsTracks.forEach(t => {
-          t.points.forEach(p => {
-            if (p && Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
-              bounds.extend([p.lat, p.lng]);
-            }
-          });
-        });
-        if (bounds.isValid()) {
-          map.fitBounds(bounds, { padding: [50, 50] });
-        }
+    const currentIds = new Set(visibleGpsTracks.map(t => t.id));
+    const addedTracks = visibleGpsTracks.filter(t => !prevTrackIdsRef.current.has(t.id));
+
+    if (addedTracks.length > 0) {
+      // Fit to newly added track(s) (or marked track among added ones if present) so existing distant tracks don't force zooming way out
+      const targetTracks = addedTracks.length > 1 && markedTrackId
+        ? (() => {
+            const marked = addedTracks.find(t => t.id === markedTrackId);
+            return marked && prevTrackIdsRef.current.size === 0 && addedTracks.length === 1 ? [marked] : addedTracks;
+          })()
+        : addedTracks;
+
+      const bounds = buildTracksBounds(targetTracks);
+      if (bounds) {
+        fitMapBoundsTight(map, bounds, false);
+        const timer = window.setTimeout(() => fitMapBoundsTight(map, bounds, false), 120);
+        prevTrackIdsRef.current = currentIds;
+        return () => window.clearTimeout(timer);
       }
     }
-    prevTracksLength.current = visibleGpsTracks.length;
-  }, [tracks, map]);
-  return null;
-};
 
-const ZoomToMarkedTrack = ({ markedTrackId, tracks }: { markedTrackId: string | null; tracks: GPXTrack[] }) => {
-  const map = useMap();
-  const prevMarkedId = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (markedTrackId && markedTrackId !== prevMarkedId.current) {
-      const track = tracks.find(t => t.id === markedTrackId);
-      if (track && hasRealGpsData(track)) {
-        const validPoints = track.points
-          .map(p => {
-            if (!p) return null;
-            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
-            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-            if (isNaN(latVal) || isNaN(lngVal)) return null;
-            return { ...p, lat: latVal, lng: lngVal };
-          })
-          .filter((p): p is GPXPoint => p !== null);
-
-        if (validPoints.length > 0) {
-          const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
-          map.fitBounds(bounds, { padding: [50, 50] });
-        }
-      }
-    }
-    prevMarkedId.current = markedTrackId;
-  }, [markedTrackId, tracks, map]);
+    prevTrackIdsRef.current = currentIds;
+  }, [tracks, markedTrackId, map]);
 
   return null;
 };
 
-const ZoomToActiveTrack = ({ activeTrack, recenterTrigger }: { activeTrack: GPXTrack | null; recenterTrigger: number }) => {
+const ZoomToMarkedTrack = ({
+  markedTrackId,
+  compareTrackId,
+  tracks
+}: {
+  markedTrackId: string | null;
+  compareTrackId?: string | null;
+  tracks: GPXTrack[];
+}) => {
+  const map = useMap();
+  const prevPairRef = useRef<string>('');
+  const tracksRef = useRef(tracks);
+  const markedTrackIdRef = useRef(markedTrackId);
+  const compareTrackIdRef = useRef(compareTrackId);
+  const pendingBoundsRef = useRef<L.LatLngBounds | null>(null);
+
+  tracksRef.current = tracks;
+  markedTrackIdRef.current = markedTrackId;
+  compareTrackIdRef.current = compareTrackId;
+
+  useEffect(() => {
+    const pairKey = `${markedTrackId || ''}|${compareTrackId || ''}`;
+    if (markedTrackId && pairKey !== prevPairRef.current) {
+      const trackA = tracks.find(t => t.id === markedTrackId);
+      const trackB = compareTrackId ? tracks.find(t => t.id === compareTrackId && t.id !== markedTrackId) : null;
+      const targets = [trackA, trackB].filter((t): t is GPXTrack => Boolean(t && hasRealGpsData(t)));
+
+      if (targets.length > 0) {
+        const bounds = buildTracksBounds(targets);
+        if (bounds) {
+          pendingBoundsRef.current = bounds;
+          fitMapBoundsTight(map, bounds, true);
+          const timer = window.setTimeout(() => fitMapBoundsTight(map, bounds, false), 340);
+          prevPairRef.current = pairKey;
+          return () => window.clearTimeout(timer);
+        }
+      }
+    }
+    prevPairRef.current = pairKey;
+  }, [markedTrackId, compareTrackId, tracks, map]);
+
+  useEffect(() => {
+    let t1: number | undefined;
+    let t2: number | undefined;
+
+    const handleFitActiveTrackEvent = (evt: Event) => {
+      const customEvt = evt as CustomEvent<{ minLat?: number; maxLat?: number; minLng?: number; maxLng?: number } | null>;
+      const detail = customEvt?.detail;
+
+      let bounds: L.LatLngBounds | null = null;
+      if (
+        detail &&
+        typeof detail.minLat === 'number' &&
+        typeof detail.maxLat === 'number' &&
+        typeof detail.minLng === 'number' &&
+        typeof detail.maxLng === 'number'
+      ) {
+        const candidate = L.latLngBounds(
+          [detail.minLat, detail.minLng],
+          [detail.maxLat, detail.maxLng]
+        );
+        if (candidate.isValid()) {
+          bounds = candidate;
+        }
+      }
+
+      if (!bounds) {
+        const curTracks = tracksRef.current;
+        const active = (markedTrackIdRef.current && curTracks.find(t => t.id === markedTrackIdRef.current && hasRealGpsData(t)))
+          || null;
+        const compared = (compareTrackIdRef.current && curTracks.find(t => t.id === compareTrackIdRef.current && t.id !== markedTrackIdRef.current && hasRealGpsData(t)))
+          || null;
+        const targets = [active, compared].filter((t): t is GPXTrack => Boolean(t));
+        if (targets.length > 0) {
+          bounds = buildTracksBounds(targets);
+        } else {
+          const visible = curTracks.filter(t => t.visible && hasRealGpsData(t));
+          bounds = buildTracksBounds(visible);
+        }
+      }
+
+      if (bounds) {
+        pendingBoundsRef.current = bounds;
+        fitMapBoundsTight(map, bounds, false);
+        window.clearTimeout(t1);
+        window.clearTimeout(t2);
+        t1 = window.setTimeout(() => fitMapBoundsTight(map, bounds, false), 90);
+        t2 = window.setTimeout(() => fitMapBoundsTight(map, bounds, false), 340);
+      }
+    };
+
+    window.addEventListener('fit-active-track', handleFitActiveTrackEvent);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.removeEventListener('fit-active-track', handleFitActiveTrackEvent);
+    };
+  }, [map]);
+
+  return null;
+};
+
+const ZoomToActiveTrack = ({ activeTrack, comparedTrack, recenterTrigger }: { activeTrack: GPXTrack | null; comparedTrack?: GPXTrack | null; recenterTrigger: number }) => {
   const map = useMap();
 
   useEffect(() => {
-    if (activeTrack && hasRealGpsData(activeTrack) && recenterTrigger > 0) {
-      const validPoints = activeTrack.points
-        .map(p => {
-          if (!p) return null;
-          const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
-          const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-          if (isNaN(latVal) || isNaN(lngVal)) return null;
-          return { ...p, lat: latVal, lng: lngVal };
-        })
-        .filter((p): p is GPXPoint => p !== null);
-
-      if (validPoints.length > 0) {
-        const bounds = L.latLngBounds(validPoints.map(p => [p.lat, p.lng]));
-        map.fitBounds(bounds, { padding: [50, 50] });
-      }
+    const targets = [activeTrack, comparedTrack].filter((t): t is GPXTrack => Boolean(t && hasRealGpsData(t)));
+    if (targets.length > 0 && recenterTrigger > 0) {
+      const bounds = buildTracksBounds(targets);
+      fitMapBoundsTight(map, bounds, true);
     }
-  }, [recenterTrigger, activeTrack, map]);
+  }, [recenterTrigger, activeTrack, comparedTrack, map]);
 
   return null;
 };
@@ -204,17 +489,27 @@ const ZoomToSelection = ({ bounds }: { bounds: {minLat: number, maxLat: number, 
   const map = useMap();
   useEffect(() => {
     if (bounds) {
-      map.fitBounds([
+      const b = L.latLngBounds(
         [bounds.minLat, bounds.minLng],
         [bounds.maxLat, bounds.maxLng]
-      ], { padding: [50, 50] });
+      );
+      fitMapBoundsTight(map, b, true);
     }
   }, [bounds, map]);
   return null;
 };
 
-const MapResizer = ({ markedTrackId, tracksLength }: { markedTrackId: string | null, tracksLength: number }) => {
+const MapResizer = ({ markedTrackId, compareTrackId, tracksLength, tracks }: { markedTrackId: string | null; compareTrackId?: string | null; tracksLength: number; tracks: GPXTrack[] }) => {
   const map = useMap();
+  const wasZeroSizeRef = useRef<boolean>(false);
+  const tracksRef = useRef(tracks);
+  const markedTrackIdRef = useRef(markedTrackId);
+  const compareTrackIdRef = useRef(compareTrackId);
+
+  tracksRef.current = tracks;
+  markedTrackIdRef.current = markedTrackId;
+  compareTrackIdRef.current = compareTrackId;
+
   useEffect(() => {
     // Wait for CSS transitions (like the elevation profile opening) to finish
     const timeout = setTimeout(() => {
@@ -229,10 +524,36 @@ const MapResizer = ({ markedTrackId, tracksLength }: { markedTrackId: string | n
     window.addEventListener('orientationchange', handleResize);
 
     const container = map.getContainer();
+    if (container && (container.clientWidth === 0 || container.clientHeight === 0)) {
+      wasZeroSizeRef.current = true;
+    }
+
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined' && container) {
-      ro = new ResizeObserver(() => {
-        map.invalidateSize();
+      ro = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        const w = entry?.contentRect?.width ?? container.clientWidth;
+        const h = entry?.contentRect?.height ?? container.clientHeight;
+        map.invalidateSize({ animate: false });
+
+        if (wasZeroSizeRef.current && w > 0 && h > 0) {
+          wasZeroSizeRef.current = false;
+          const curTracks = tracksRef.current;
+          const marked = markedTrackIdRef.current
+            ? curTracks.find(t => t.id === markedTrackIdRef.current && hasRealGpsData(t))
+            : null;
+          const compared = compareTrackIdRef.current
+            ? curTracks.find(t => t.id === compareTrackIdRef.current && t.id !== markedTrackIdRef.current && hasRealGpsData(t))
+            : null;
+          const pairTargets = [marked, compared].filter((t): t is GPXTrack => Boolean(t));
+          const target = pairTargets.length > 0 ? pairTargets : curTracks.filter(t => t.visible && hasRealGpsData(t));
+          const bounds = buildTracksBounds(target);
+          if (bounds) {
+            setTimeout(() => fitMapBoundsTight(map, bounds, false), 40);
+          }
+        } else if (w === 0 || h === 0) {
+          wasZeroSizeRef.current = true;
+        }
       });
       ro.observe(container);
     }
@@ -243,7 +564,7 @@ const MapResizer = ({ markedTrackId, tracksLength }: { markedTrackId: string | n
       window.removeEventListener('orientationchange', handleResize);
       if (ro) ro.disconnect();
     };
-  }, [markedTrackId, tracksLength, map]);
+  }, [markedTrackId, compareTrackId, tracksLength, map]);
   return null;
 };
 
@@ -359,20 +680,8 @@ const MobileZoomControls = ({
       const candidate = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible && hasRealGpsData(t))) || tracks.find(t => hasRealGpsData(t));
       const trackToFit = candidate && hasRealGpsData(candidate) ? candidate : tracks.find(t => t.visible && hasRealGpsData(t));
       if (trackToFit && hasRealGpsData(trackToFit)) {
-        const validPoints: [number, number][] = [];
-        trackToFit.points.forEach(p => {
-          if (p) {
-            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
-            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-            if (!isNaN(latVal) && !isNaN(lngVal)) {
-              validPoints.push([latVal, lngVal]);
-            }
-          }
-        });
-        if (validPoints.length > 0) {
-          const bounds = L.latLngBounds(validPoints);
-          map.fitBounds(bounds, { padding: [50, 50], animate: true });
-        }
+        const bounds = buildTracksBounds([trackToFit]);
+        fitMapBoundsTight(map, bounds, true);
       }
     }
   };
@@ -383,22 +692,8 @@ const MobileZoomControls = ({
     triggerHaptic('medium');
 
     const targetTracks = tracks.filter(t => (t.visible || t.id === markedTrackId) && hasRealGpsData(t));
-    const allPoints: [number, number][] = [];
-
-    targetTracks.forEach(t => {
-      if (t.points && t.points.length > 0) {
-        t.points.forEach(p => {
-          if (p && typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng)) {
-            allPoints.push([p.lat, p.lng]);
-          }
-        });
-      }
-    });
-
-    if (allPoints.length > 0) {
-      const bounds = L.latLngBounds(allPoints);
-      map.fitBounds(bounds, { padding: [50, 50], animate: true });
-    }
+    const bounds = buildTracksBounds(targetTracks);
+    fitMapBoundsTight(map, bounds, true);
   };
 
   const currentActive = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible));
@@ -690,7 +985,11 @@ const Map: React.FC<MapProps> = ({
   onSplitGap,
   onCloseGap,
   onOpenShortcuts,
-  onOpenVideoExport
+  onOpenVideoExport,
+  compareTrackId = null,
+  onStartMapComparison,
+  onExitMapComparison,
+  onOpenComparisonModal
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -698,6 +997,9 @@ const Map: React.FC<MapProps> = ({
   const [isLegendVisible, setIsLegendVisible] = useState(false);
   const [colorMode, setColorMode] = useState<'default' | 'surface' | 'hr' | 'power' | 'speed'>('surface');
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(true);
+  const [isCompareCollapsed, setIsCompareCollapsed] = useState(false);
+  const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
+  const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
   const [isTrackingLocation, setIsTrackingLocation] = useState(false);
   const [autoCenterLocation, setAutoCenterLocation] = useState(true);
@@ -887,12 +1189,92 @@ const Map: React.FC<MapProps> = ({
     return tracks.find(t => t.visible) || null;
   }, [tracks, markedTrackId]);
 
+  const comparedTrack = useMemo(() => {
+    if (!compareTrackId) return null;
+    return tracks.find(t => t.id === compareTrackId && t.id !== activeTrack?.id) || null;
+  }, [tracks, compareTrackId, activeTrack]);
+
+  const isComparisonMode = Boolean(activeTrack && comparedTrack && activeTrack.id !== comparedTrack.id);
+
+  useEffect(() => {
+    if (!isComparisonMode) {
+      setCompareScrubFraction(null);
+    } else {
+      setIsCompareCollapsed(false);
+    }
+  }, [isComparisonMode, compareTrackId]);
+
+  const seriesA = useMemo(() => (isComparisonMode ? buildTrackSeries(activeTrack) : null), [isComparisonMode, activeTrack]);
+  const seriesB = useMemo(() => (isComparisonMode ? buildTrackSeries(comparedTrack) : null), [isComparisonMode, comparedTrack]);
+
+  const dualElevationChart = useMemo(
+    () => buildDualElevationSvgData(seriesA, seriesB, compareSyncMode),
+    [seriesA, seriesB, compareSyncMode]
+  );
+
+  const syncedComparisonPair = useMemo(() => {
+    if (!isComparisonMode || !seriesA || !seriesB) return null;
+
+    let ptA: TrackSeriesPoint | null = null;
+    let ptB: TrackSeriesPoint | null = null;
+    let activeFraction: number | null = compareScrubFraction;
+
+    if (activeFraction !== null) {
+      if (compareSyncMode === 'progress') {
+        ptA = findClosestSeriesPointByTarget(seriesA, 'progress', activeFraction);
+        ptB = findClosestSeriesPointByTarget(seriesB, 'progress', activeFraction);
+      } else {
+        const maxDist = Math.max(seriesA.totalDistKm, seriesB.totalDistKm, 0.01);
+        const targetKm = activeFraction * maxDist;
+        ptA = findClosestSeriesPointByTarget(seriesA, 'distance', targetKm);
+        ptB = findClosestSeriesPointByTarget(seriesB, 'distance', targetKm);
+      }
+    } else if (hoveredPoint) {
+      const hoveredId = (hoveredPoint as any).trackId;
+      const onB = hoveredId && comparedTrack && hoveredId === comparedTrack.id;
+      const sourceSeries = onB ? seriesB : seriesA;
+      const hoveredPt = findNearestSeriesPointToCoord(sourceSeries, hoveredPoint.lat, hoveredPoint.lng);
+      if (hoveredPt) {
+        if (compareSyncMode === 'progress') {
+          activeFraction = hoveredPt.progress;
+          ptA = findClosestSeriesPointByTarget(seriesA, 'progress', hoveredPt.progress);
+          ptB = findClosestSeriesPointByTarget(seriesB, 'progress', hoveredPt.progress);
+        } else {
+          const maxDist = Math.max(seriesA.totalDistKm, seriesB.totalDistKm, 0.01);
+          activeFraction = hoveredPt.distKm / maxDist;
+          ptA = findClosestSeriesPointByTarget(seriesA, 'distance', hoveredPt.distKm);
+          ptB = findClosestSeriesPointByTarget(seriesB, 'distance', hoveredPt.distKm);
+        }
+      }
+    }
+
+    if (!ptA || !ptB || activeFraction === null) return null;
+    const spatialGapKm = calculateDistance(ptA, ptB);
+    const eleDiffM = ptA.ele !== undefined && ptB.ele !== undefined ? Math.round(ptA.ele - ptB.ele) : null;
+    return {
+      ptA,
+      ptB,
+      fraction: Math.max(0, Math.min(1, activeFraction)),
+      spatialGapKm,
+      eleDiffM,
+      midLat: (ptA.lat + ptB.lat) / 2,
+      midLng: (ptA.lng + ptB.lng) / 2
+    };
+  }, [isComparisonMode, seriesA, seriesB, compareScrubFraction, compareSyncMode, hoveredPoint, comparedTrack]);
+
   const movingTimeSecs = useMemo(() => {
     if (!activeTrack) return 0;
     return activeTrack.duration 
       ? activeTrack.duration 
       : (activeTrack.distance / estimatedSpeed) * 3600;
   }, [activeTrack, estimatedSpeed]);
+
+  const comparedMovingTimeSecs = useMemo(() => {
+    if (!comparedTrack) return 0;
+    return comparedTrack.duration
+      ? comparedTrack.duration
+      : (comparedTrack.distance / estimatedSpeed) * 3600;
+  }, [comparedTrack, estimatedSpeed]);
 
   const formatDurationText = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -1027,10 +1409,11 @@ const Map: React.FC<MapProps> = ({
   }), []);
 
   const preparedTracks = useMemo(() => {
-    return tracks
+    const items = tracks
       .filter(t => t.visible && hasRealGpsData(t))
       .map(track => {
         const isMarked = track.id === markedTrackId;
+        const isCompared = Boolean(isComparisonMode && comparedTrack && track.id === comparedTrack.id);
         const validPoints = (track.points || [])
           .map(p => {
             if (!p) return null;
@@ -1066,7 +1449,9 @@ const Map: React.FC<MapProps> = ({
           }
         }
 
-        const displayTrackColor = sanitizeColor(track.color);
+        const displayTrackColor = isComparisonMode
+          ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : sanitizeColor(track.color))
+          : sanitizeColor(track.color);
 
         // Build continuous coalesced segments of identical surface types over simplified renderPoints
         const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
@@ -1171,9 +1556,9 @@ const Map: React.FC<MapProps> = ({
           }
         }
 
-        // Active route flow directional arrows
+        // Active / compared route flow directional arrows
         const arrows: { lat: number; lng: number; angle: number; idx: number }[] = [];
-        if (isMarked && rawPts.length >= 2) {
+        if ((isMarked || isCompared) && rawPts.length >= 2) {
           const cumDist: number[] = [0];
           let totalD = 0;
           for (let i = 1; i < rawPts.length; i++) {
@@ -1183,7 +1568,7 @@ const Map: React.FC<MapProps> = ({
           }
 
           if (totalD > 0) {
-            const numArrows = 12; // Spaced evenly along the entire route
+            const numArrows = isCompared ? 8 : 12; // Spaced evenly along the entire route
             for (let j = 1; j < numArrows; j++) {
               const targetDist = (totalD * j) / numArrows;
               let idx = 0;
@@ -1203,6 +1588,7 @@ const Map: React.FC<MapProps> = ({
         return {
           track,
           isMarked,
+          isCompared,
           validPoints,
           positions,
           selectedPolylines,
@@ -1214,7 +1600,16 @@ const Map: React.FC<MapProps> = ({
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);
-  }, [tracks, markedTrackId, selectionBounds, colorMode, getPointColorMode, calculateDistance]);
+
+    if (isComparisonMode) {
+      items.sort((a, b) => {
+        const rank = (item: typeof items[number]) => (item.isCompared ? 2 : item.isMarked ? 1 : 0);
+        return rank(a) - rank(b);
+      });
+    }
+
+    return items;
+  }, [tracks, markedTrackId, isComparisonMode, comparedTrack, selectionBounds, colorMode, getPointColorMode, calculateDistance]);
 
   const isDarkTile = isDark && activeLayer !== MapLayer.SATELLITE;
 
@@ -1223,6 +1618,8 @@ const Map: React.FC<MapProps> = ({
       <LeafletMapContainer 
         center={[mapView.lat, mapView.lng]} 
         zoom={mapView.zoom} 
+        zoomSnap={0.25}
+        zoomDelta={0.5}
         scrollWheelZoom={true}
         boxZoom={false}
         zoomControl={false}
@@ -1241,6 +1638,7 @@ const Map: React.FC<MapProps> = ({
         {preparedTracks.map(({
           track,
           isMarked,
+          isCompared,
           validPoints,
           positions,
           selectedPolylines,
@@ -1250,6 +1648,9 @@ const Map: React.FC<MapProps> = ({
           pauses,
           arrows,
         }) => {
+          const isCompareHighlighted = isComparisonMode && (isMarked || isCompared);
+          const isCompareDimmed = isComparisonMode && !isMarked && !isCompared;
+
           return (
             <React.Fragment key={track.id}>
               {/* Invisible thick line for easier hovering/clicking that holds the Popup */}
@@ -1261,8 +1662,10 @@ const Map: React.FC<MapProps> = ({
                 eventHandlers={{
                   click: (e) => {
                     L.DomEvent.stopPropagation(e);
-                    onMarkTrack(track.id);
-                    setRecenterTrigger(prev => prev + 1);
+                    if (!isComparisonMode) {
+                      onMarkTrack(track.id);
+                      setRecenterTrigger(prev => prev + 1);
+                    }
                   },
                   mousemove: (e) => {
                     if (!onHoverPoint) return;
@@ -1344,8 +1747,35 @@ const Map: React.FC<MapProps> = ({
                 </Popup>
               </LeafletPolyline>
 
-              {/* Visible line(s) either segmented by surface, training zones or solid default */}
-              {(colorMode === 'hr' || colorMode === 'power' || colorMode === 'speed') && zoneSegments.length > 0 ? (
+              {/* Visible line(s): in 2-track comparison mode render crisp A (Blue) & B (Orange) comparison lines; otherwise normal modes */}
+              {isCompareHighlighted ? (
+                <>
+                  {/* Outer high-contrast white halo */}
+                  <LeafletPolyline
+                    positions={positions}
+                    color="#ffffff"
+                    weight={isMarked ? 12 : 9}
+                    opacity={0.9}
+                    interactive={false}
+                  />
+                  {/* Primary core line (A wider so overlapping sections stay dual-colored) */}
+                  <LeafletPolyline
+                    positions={positions}
+                    color={displayTrackColor}
+                    weight={isMarked ? 8 : 5}
+                    opacity={0.95}
+                    interactive={false}
+                  />
+                </>
+              ) : isCompareDimmed ? (
+                <LeafletPolyline
+                  positions={positions}
+                  color={displayTrackColor}
+                  weight={3}
+                  opacity={0.25}
+                  interactive={false}
+                />
+              ) : (colorMode === 'hr' || colorMode === 'power' || colorMode === 'speed') && zoneSegments.length > 0 ? (
                 zoneSegments.map((seg, sIdx) => (
                   <LeafletPolyline
                     key={`zone-seg-${track.id}-${sIdx}`}
@@ -1423,7 +1853,7 @@ const Map: React.FC<MapProps> = ({
                 </LeafletMarker>
               ))}
 
-              {/* Active Route Flow Directional Arrows */}
+              {/* Active & Compared Route Flow Directional Arrows */}
               {arrows.map(arrow => (
                 <LeafletMarker
                   key={`arrow-${track.id}-${arrow.idx}`}
@@ -1435,7 +1865,7 @@ const Map: React.FC<MapProps> = ({
                       <div style="transform: rotate(${arrow.angle}deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">
                         <svg viewBox="0 0 24 24" width="22" height="22" style="filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.65));">
                           <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" />
-                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${track.color || '#3b82f6'}" />
+                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${isComparisonMode ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : (track.color || '#3b82f6')) : (track.color || '#3b82f6')}" />
                         </svg>
                       </div>
                     `,
@@ -1445,10 +1875,19 @@ const Map: React.FC<MapProps> = ({
                 />
               ))}
 
-              {/* Start- and Endepunkte für die aktive Route */}
-              {isMarked && validPoints.length > 0 && (() => {
+              {/* Start- and Endepunkte für aktive und verglichene Route */}
+              {(isMarked || isCompared) && validPoints.length > 0 && (() => {
                 const startPt = validPoints[0];
                 const endPt = validPoints[validPoints.length - 1];
+                const startBadgeLabel = isComparisonMode ? (isMarked ? 'START A' : 'START B') : 'START';
+                const endBadgeLabel = isComparisonMode ? (isMarked ? 'ZIEL A' : 'ZIEL B') : 'ENDE';
+                const startBgStyle = isComparisonMode
+                  ? (isMarked ? 'background: linear-gradient(135deg, #3b82f6, #1d4ed8);' : 'background: linear-gradient(135deg, #fb923c, #ea580c);')
+                  : '';
+                const endBgStyle = isComparisonMode
+                  ? (isMarked ? 'background: linear-gradient(135deg, #1d4ed8, #1e3a8a);' : 'background: linear-gradient(135deg, #ea580c, #9a3412);')
+                  : '';
+                const markerAnchor: [number, number] = isComparisonMode && isCompared ? [16, 26] : [22, 22];
                 
                 return (
                   <>
@@ -1459,19 +1898,19 @@ const Map: React.FC<MapProps> = ({
                         className: 'custom-start-marker',
                         html: `
                           <div class="relative flex items-center justify-center" style="width: 44px; height: 44px;">
-                            <div class="absolute w-8 h-8 rounded-full bg-emerald-500/35 animate-ping"></div>
-                            <div class="bg-gradient-to-br from-emerald-500 to-emerald-700 text-white font-extrabold text-[9px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none">
-                              START
+                            ${!isComparisonMode ? '<div class="absolute w-8 h-8 rounded-full bg-emerald-500/35 animate-ping"></div>' : ''}
+                            <div class="${isComparisonMode ? '' : 'bg-gradient-to-br from-emerald-500 to-emerald-700'} text-white font-extrabold text-[8.5px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none text-center leading-none" style="${startBgStyle}">
+                              ${startBadgeLabel}
                             </div>
                           </div>
                         `,
                         iconSize: [44, 44],
-                        iconAnchor: [22, 22]
+                        iconAnchor: markerAnchor
                       })}
                     >
                       <Popup>
                         <div className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 text-sm">
-                          <span>🚩</span> Startpunkt: {track.name}
+                          <span>🚩</span> Startpunkt {isComparisonMode ? (isMarked ? '(Track A)' : '(Track B)') : ''}: {track.name}
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-300 mt-1.5 font-sans space-y-1">
                           <div><strong>Koordinaten:</strong> {startPt.lat.toFixed(5)}°, {startPt.lng.toFixed(5)}°</div>
@@ -1492,18 +1931,18 @@ const Map: React.FC<MapProps> = ({
                           html: `
                             <div class="relative flex items-center justify-center" style="width: 44px; height: 44px;">
                               <div class="absolute w-8 h-8 rounded-full bg-rose-500/25"></div>
-                              <div class="bg-gradient-to-br from-rose-500 to-rose-700 text-white font-extrabold text-[9px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none">
-                                ENDE
+                              <div class="${isComparisonMode ? '' : 'bg-gradient-to-br from-rose-500 to-rose-700'} text-white font-extrabold text-[8.5px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none text-center leading-none" style="${endBgStyle}">
+                                ${endBadgeLabel}
                               </div>
                             </div>
                           `,
                           iconSize: [44, 44],
-                          iconAnchor: [22, 22]
+                          iconAnchor: markerAnchor
                         })}
                       >
                         <Popup>
                           <div className="font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1.5 text-sm">
-                            <span>🏁</span> Zielpunkt: {track.name}
+                            <span>🏁</span> Zielpunkt {isComparisonMode ? (isMarked ? '(Track A)' : '(Track B)') : ''}: {track.name}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-300 mt-1.5 font-sans space-y-1">
                             <div><strong>Koordinaten:</strong> {endPt.lat.toFixed(5)}°, {endPt.lng.toFixed(5)}°</div>
@@ -1522,11 +1961,83 @@ const Map: React.FC<MapProps> = ({
           );
         })}
 
-        <ZoomToTracks tracks={tracks} />
-        <ZoomToMarkedTrack markedTrackId={markedTrackId} tracks={tracks} />
-        <ZoomToActiveTrack activeTrack={activeTrack} recenterTrigger={recenterTrigger} />
+        {/* Synchronized Dual-Track Live Markers & Spatial Gap Line */}
+        {isComparisonMode && syncedComparisonPair && (
+          <>
+            {syncedComparisonPair.spatialGapKm >= 0.005 && (
+              <LeafletPolyline
+                positions={[
+                  [syncedComparisonPair.ptA.lat, syncedComparisonPair.ptA.lng],
+                  [syncedComparisonPair.ptB.lat, syncedComparisonPair.ptB.lng]
+                ]}
+                color="#4f46e5"
+                weight={2.5}
+                dashArray="6, 6"
+                opacity={0.95}
+                interactive={false}
+              />
+            )}
+
+            {syncedComparisonPair.spatialGapKm >= 0.015 && (
+              <LeafletMarker
+                position={[syncedComparisonPair.midLat, syncedComparisonPair.midLng]}
+                interactive={false}
+                icon={new L.DivIcon({
+                  className: 'dual-compare-gap-badge',
+                  html: `
+                    <div style="transform: translate(-50%, -50%); white-space: nowrap; background: rgba(15, 23, 42, 0.88); color: #ffffff; border: 1.5px solid #818cf8; border-radius: 9999px; padding: 2px 8px; font-size: 10px; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-family: ui-monospace, monospace;">
+                      ↔ ${syncedComparisonPair.spatialGapKm < 1 ? `${Math.round(syncedComparisonPair.spatialGapKm * 1000)} m` : `${syncedComparisonPair.spatialGapKm.toFixed(2)} km`}${syncedComparisonPair.eleDiffM !== null ? ` · Δ ${syncedComparisonPair.eleDiffM >= 0 ? '+' : ''}${syncedComparisonPair.eleDiffM} m` : ''}
+                    </div>
+                  `,
+                  iconSize: [0, 0],
+                  iconAnchor: [0, 0]
+                })}
+              />
+            )}
+
+            <LeafletMarker
+              position={[syncedComparisonPair.ptA.lat, syncedComparisonPair.ptA.lng]}
+              interactive={false}
+              icon={new L.DivIcon({
+                className: 'dual-compare-marker-a',
+                html: `
+                  <div style="position: relative; transform: translate(-50%, -50%);">
+                    <div style="width: 22px; height: 22px; border-radius: 9999px; background: #2563eb; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(37,99,235,0.65);">A</div>
+                    <div style="position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: #1d4ed8; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
+                      A: ${syncedComparisonPair.ptA.distKm.toFixed(1)} km${syncedComparisonPair.ptA.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptA.ele)}m` : ''}
+                    </div>
+                  </div>
+                `,
+                iconSize: [0, 0],
+                iconAnchor: [0, 0]
+              })}
+            />
+
+            <LeafletMarker
+              position={[syncedComparisonPair.ptB.lat, syncedComparisonPair.ptB.lng]}
+              interactive={false}
+              icon={new L.DivIcon({
+                className: 'dual-compare-marker-b',
+                html: `
+                  <div style="position: relative; transform: translate(-50%, -50%);">
+                    <div style="width: 22px; height: 22px; border-radius: 9999px; background: #f97316; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(249,115,22,0.65);">B</div>
+                    <div style="position: absolute; top: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: #ea580c; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
+                      B: ${syncedComparisonPair.ptB.distKm.toFixed(1)} km${syncedComparisonPair.ptB.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptB.ele)}m` : ''}
+                    </div>
+                  </div>
+                `,
+                iconSize: [0, 0],
+                iconAnchor: [0, 0]
+              })}
+            />
+          </>
+        )}
+
+        <ZoomToTracks tracks={tracks} markedTrackId={markedTrackId} />
+        <ZoomToMarkedTrack markedTrackId={markedTrackId} compareTrackId={compareTrackId} tracks={tracks} />
+        <ZoomToActiveTrack activeTrack={activeTrack} comparedTrack={comparedTrack} recenterTrigger={recenterTrigger} />
         <ZoomToSelection bounds={selectionBounds} />
-        <MapResizer markedTrackId={markedTrackId} tracksLength={tracks.length} />
+        <MapResizer markedTrackId={markedTrackId} compareTrackId={compareTrackId} tracksLength={tracks.length} tracks={tracks} />
         <SyncView mapView={mapView} onMapViewChange={onMapViewChange} />
         <SelectionTool active={true} onSelection={onSelection} currentBounds={selectionBounds} />
         
@@ -2380,8 +2891,435 @@ const Map: React.FC<MapProps> = ({
         )
       )}
 
+      {/* 2-Track Karten-Vergleich Floating HUD Card */}
+      {isComparisonMode && activeTrack && comparedTrack && (
+        <div
+          id="map-dual-compare-hud"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+          className="absolute top-2 left-12 sm:top-3 sm:left-14 z-[450] max-w-[calc(100vw-8.5rem)] sm:max-w-[520px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl border border-indigo-200/80 dark:border-indigo-800/70 shadow-xl pointer-events-auto select-none font-sans overflow-hidden transition-all duration-200"
+        >
+          {isCompareCollapsed ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setIsCompareCollapsed(false)}
+                className="flex items-center gap-2 min-w-0 flex-1 text-left hover:opacity-85 cursor-pointer"
+                title="2-Track Karten-Vergleich ausklappen"
+              >
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 font-black text-[10px] shrink-0">
+                  <span className="w-2 h-2 rounded-full bg-blue-600" />
+                  A vs B
+                  <span className="w-2 h-2 rounded-full bg-orange-500" />
+                </span>
+                <span className="font-bold text-slate-800 dark:text-slate-100 truncate">
+                  {activeTrack.name}
+                </span>
+                <span className="text-slate-400 font-bold shrink-0">vs</span>
+                <span className="font-bold text-slate-800 dark:text-slate-100 truncate">
+                  {comparedTrack.name}
+                </span>
+                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic('light');
+                  setCompareScrubFraction(null);
+                  onExitMapComparison?.();
+                }}
+                className="px-2 py-1 rounded-lg text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer shrink-0 transition-colors"
+                title="Karten-Vergleich beenden"
+              >
+                Beenden
+              </button>
+            </div>
+          ) : (
+            <div className="p-3 sm:p-3.5 space-y-2.5">
+              {/* Header Bar */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <GitCompare className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-black text-slate-800 dark:text-slate-100 tracking-tight truncate">
+                      2-Track Karten-Vergleich
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setRecenterTrigger(prev => prev + 1);
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+                    title="Beide verglichenen Tracks optimal im Kartenfenster zentrieren"
+                  >
+                    <Maximize2 className="w-3 h-3 text-indigo-500" />
+                    <span className="hidden sm:inline">Beide zentrieren</span>
+                  </button>
+                  {onOpenComparisonModal && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('light');
+                        onOpenComparisonModal();
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/70 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-200 border border-indigo-200/70 dark:border-indigo-700/60 cursor-pointer transition-colors"
+                      title="Ausführliche Detail-Analyse im Vergleichs-Dialog öffnen"
+                    >
+                      <BarChart2 className="w-3 h-3" />
+                      <span className="hidden sm:inline">Detail-Analyse</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsCompareCollapsed(true)}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+                    title="Vergleichs-HUD minimieren"
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setCompareScrubFraction(null);
+                      onExitMapComparison?.();
+                    }}
+                    className="p-1 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer transition-colors"
+                    title="2-Track Karten-Vergleich beenden"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Track A & B Selectors + Swap */}
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl bg-blue-50/90 dark:bg-blue-950/40 border border-blue-200/80 dark:border-blue-800/70 min-w-0">
+                  <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] font-black flex items-center justify-center shrink-0">
+                    A
+                  </span>
+                  <select
+                    aria-label="Track A auswählen"
+                    value={activeTrack.id}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      if (!onStartMapComparison) return;
+                      if (nextId === comparedTrack.id) {
+                        onStartMapComparison(comparedTrack.id, activeTrack.id);
+                      } else {
+                        onStartMapComparison(nextId, comparedTrack.id);
+                      }
+                    }}
+                    className="w-full min-w-0 bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-100 focus:outline-none truncate cursor-pointer"
+                  >
+                    {tracks.map(t => (
+                      <option key={t.id} value={t.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+                        {t.name} ({t.distance.toFixed(1)} km)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('light');
+                    onStartMapComparison?.(comparedTrack.id, activeTrack.id);
+                  }}
+                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer transition-colors shrink-0"
+                  title="Tracks A und B tauschen"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                </button>
+
+                <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl bg-orange-50/90 dark:bg-orange-950/40 border border-orange-200/80 dark:border-orange-800/70 min-w-0">
+                  <span className="w-4 h-4 rounded-full bg-orange-500 text-white text-[9px] font-black flex items-center justify-center shrink-0">
+                    B
+                  </span>
+                  <select
+                    aria-label="Track B auswählen"
+                    value={comparedTrack.id}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      if (!onStartMapComparison) return;
+                      if (nextId === activeTrack.id) {
+                        onStartMapComparison(comparedTrack.id, activeTrack.id);
+                      } else {
+                        onStartMapComparison(activeTrack.id, nextId);
+                      }
+                    }}
+                    className="w-full min-w-0 bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-100 focus:outline-none truncate cursor-pointer"
+                  >
+                    {tracks.map(t => (
+                      <option key={t.id} value={t.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+                        {t.name} ({t.distance.toFixed(1)} km)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* 4-Column KPI Comparison & Deltas */}
+              {(() => {
+                const distDiff = activeTrack.distance - comparedTrack.distance;
+                const eleA = activeTrack.ascent ?? 0;
+                const eleB = comparedTrack.ascent ?? 0;
+                const eleDiff = Math.round(eleA - eleB);
+                const timeDiffSecs = Math.round(movingTimeSecs - comparedMovingTimeSecs);
+                const speedA = activeTrack.duration && activeTrack.duration > 0
+                  ? activeTrack.distance / (activeTrack.duration / 3600)
+                  : estimatedSpeed;
+                const speedB = comparedTrack.duration && comparedTrack.duration > 0
+                  ? comparedTrack.distance / (comparedTrack.duration / 3600)
+                  : estimatedSpeed;
+                const speedDiff = speedA - speedB;
+                const tempoLabelA = activeTrack.duration
+                  ? (activeTrack.activityType === 'running'
+                    ? formatPace(activeTrack.duration, activeTrack.distance)
+                    : `${speedA.toFixed(1)} km/h`)
+                  : (activeTrack.activityType === 'running'
+                    ? getPaceString(estimatedSpeed)
+                    : `${estimatedSpeed} km/h`);
+                const tempoLabelB = comparedTrack.duration
+                  ? (comparedTrack.activityType === 'running'
+                    ? formatPace(comparedTrack.duration, comparedTrack.distance)
+                    : `${speedB.toFixed(1)} km/h`)
+                  : (comparedTrack.activityType === 'running'
+                    ? getPaceString(estimatedSpeed)
+                    : `${estimatedSpeed} km/h`);
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px]">
+                    <div className="px-2 py-1.5 rounded-xl bg-slate-50/90 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Distanz</div>
+                      <div className="mt-0.5 font-mono font-bold text-blue-600 dark:text-blue-400">
+                        A: {activeTrack.distance.toFixed(1)} km
+                      </div>
+                      <div className="font-mono font-bold text-orange-600 dark:text-orange-400">
+                        B: {comparedTrack.distance.toFixed(1)} km
+                      </div>
+                      <div className="mt-0.5 text-[9px] font-mono font-extrabold text-indigo-600 dark:text-indigo-300">
+                        Δ {distDiff >= 0 ? '+' : ''}{distDiff.toFixed(1)} km
+                      </div>
+                    </div>
+
+                    <div className="px-2 py-1.5 rounded-xl bg-slate-50/90 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Anstieg</div>
+                      <div className="mt-0.5 font-mono font-bold text-blue-600 dark:text-blue-400">
+                        A: {Math.round(eleA)} hm
+                      </div>
+                      <div className="font-mono font-bold text-orange-600 dark:text-orange-400">
+                        B: {Math.round(eleB)} hm
+                      </div>
+                      <div className="mt-0.5 text-[9px] font-mono font-extrabold text-indigo-600 dark:text-indigo-300">
+                        Δ {eleDiff >= 0 ? '+' : ''}{eleDiff} hm
+                      </div>
+                    </div>
+
+                    <div className="px-2 py-1.5 rounded-xl bg-slate-50/90 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Dauer</div>
+                      <div className="mt-0.5 font-mono font-bold text-blue-600 dark:text-blue-400 truncate">
+                        A: {formatDurationText(movingTimeSecs)}
+                      </div>
+                      <div className="font-mono font-bold text-orange-600 dark:text-orange-400 truncate">
+                        B: {formatDurationText(comparedMovingTimeSecs)}
+                      </div>
+                      <div className="mt-0.5 text-[9px] font-mono font-extrabold text-indigo-600 dark:text-indigo-300 truncate">
+                        Δ {Math.abs(timeDiffSecs) < 1 ? 'gleich' : `${timeDiffSecs >= 0 ? '+' : '-'}${formatDurationText(Math.abs(timeDiffSecs))}`}
+                      </div>
+                    </div>
+
+                    <div className="px-2 py-1.5 rounded-xl bg-slate-50/90 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Ø Tempo</div>
+                      <div className="mt-0.5 font-mono font-bold text-blue-600 dark:text-blue-400 truncate">
+                        A: {tempoLabelA}
+                      </div>
+                      <div className="font-mono font-bold text-orange-600 dark:text-orange-400 truncate">
+                        B: {tempoLabelB}
+                      </div>
+                      <div className="mt-0.5 text-[9px] font-mono font-extrabold text-indigo-600 dark:text-indigo-300">
+                        Δ {speedDiff >= 0 ? '+' : ''}{speedDiff.toFixed(1)} km/h
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Sync Axis Mode & Interactive Dual Elevation Profile */}
+              <div className="rounded-xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-700/60 p-2 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                    <TrendingUp className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>Synchroner Höhen- &amp; Positionsabgleich</span>
+                  </div>
+                  <div className="inline-flex rounded-lg bg-slate-200/70 dark:bg-slate-900 p-0.5 text-[10px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setCompareSyncMode('distance')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${
+                        compareSyncMode === 'distance'
+                          ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 shadow-xs'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Strecke (km)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCompareSyncMode('progress')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${
+                        compareSyncMode === 'progress'
+                          ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 shadow-xs'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Fortschritt (%)
+                    </button>
+                  </div>
+                </div>
+
+                {dualElevationChart ? (
+                  <div className="relative">
+                    <svg
+                      viewBox="0 0 360 74"
+                      preserveAspectRatio="none"
+                      className="w-full h-[74px] rounded-lg bg-white/80 dark:bg-slate-900/70 border border-slate-200/60 dark:border-slate-700/50 cursor-crosshair touch-none"
+                      onMouseMove={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                        setCompareScrubFraction(frac);
+                      }}
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                        setCompareScrubFraction(frac);
+                      }}
+                      onTouchMove={(e) => {
+                        if (e.touches.length === 0) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const frac = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / Math.max(1, rect.width)));
+                        setCompareScrubFraction(frac);
+                      }}
+                    >
+                      <line x1="0" y1="18" x2="360" y2="18" stroke="currentColor" strokeOpacity="0.08" strokeDasharray="3,3" />
+                      <line x1="0" y1="37" x2="360" y2="37" stroke="currentColor" strokeOpacity="0.08" strokeDasharray="3,3" />
+                      <line x1="0" y1="56" x2="360" y2="56" stroke="currentColor" strokeOpacity="0.08" strokeDasharray="3,3" />
+
+                      {dualElevationChart.areaA && (
+                        <path d={dualElevationChart.areaA} fill="rgba(37, 99, 235, 0.14)" />
+                      )}
+                      {dualElevationChart.areaB && (
+                        <path d={dualElevationChart.areaB} fill="rgba(249, 115, 22, 0.12)" />
+                      )}
+                      {dualElevationChart.pathA && (
+                        <path d={dualElevationChart.pathA} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinejoin="round" />
+                      )}
+                      {dualElevationChart.pathB && (
+                        <path d={dualElevationChart.pathB} fill="none" stroke="#f97316" strokeWidth="2" strokeLinejoin="round" />
+                      )}
+
+                      {syncedComparisonPair && (() => {
+                        const cursorX = Number((syncedComparisonPair.fraction * 360).toFixed(1));
+                        const span = Math.max(10, dualElevationChart.maxEle - dualElevationChart.minEle);
+                        const eleY = (ele?: number) => {
+                          if (ele === undefined || !Number.isFinite(ele)) return null;
+                          const raw = 74 - 6 - (((ele - dualElevationChart.minEle) / span) * (74 - 12));
+                          return Number(Math.max(3, Math.min(71, raw)).toFixed(1));
+                        };
+                        const yA = eleY(syncedComparisonPair.ptA.ele);
+                        const yB = eleY(syncedComparisonPair.ptB.ele);
+                        return (
+                          <>
+                            <line
+                              x1={cursorX}
+                              y1={0}
+                              x2={cursorX}
+                              y2={74}
+                              stroke="#4f46e5"
+                              strokeWidth="1.5"
+                              strokeDasharray="3,2"
+                            />
+                            {yA !== null && (
+                              <circle cx={cursorX} cy={yA} r="3.2" fill="#2563eb" stroke="#ffffff" strokeWidth="1.5" />
+                            )}
+                            {yB !== null && (
+                              <circle cx={cursorX} cy={yB} r="3.2" fill="#f97316" stroke="#ffffff" strokeWidth="1.5" />
+                            )}
+                          </>
+                        );
+                      })()}
+                    </svg>
+                    <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-0.5 px-0.5">
+                      <span>Min: {dualElevationChart.minEle} m</span>
+                      <span>Max: {dualElevationChart.maxEle} m</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-slate-400 italic py-1">
+                    Keine gemeinsamen Höhendaten vorhanden – Positionssynchronisation über Regler oder Karte aktiv.
+                  </div>
+                )}
+
+                {/* Scrubber Range Slider */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    aria-label="Synchroner Vergleichs-Regler"
+                    min={0}
+                    max={1000}
+                    value={Math.round((syncedComparisonPair?.fraction ?? compareScrubFraction ?? 0) * 1000)}
+                    onChange={(e) => setCompareScrubFraction(Number(e.target.value) / 1000)}
+                    className="w-full h-1.5 accent-indigo-600 cursor-pointer"
+                  />
+                  {compareScrubFraction !== null && (
+                    <button
+                      type="button"
+                      onClick={() => setCompareScrubFraction(null)}
+                      className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-slate-200/80 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-200 cursor-pointer shrink-0"
+                      title="Scrubbing zurücksetzen (Hover auf Karte wieder aktiv)"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                {/* Live Position Delta Readout */}
+                {syncedComparisonPair ? (
+                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pt-1 border-t border-slate-200/60 dark:border-slate-700/60 text-[10px] font-mono">
+                    <span className="font-bold text-blue-600 dark:text-blue-400">
+                      A: {syncedComparisonPair.ptA.distKm.toFixed(2)} km{syncedComparisonPair.ptA.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptA.ele)} m` : ''}
+                    </span>
+                    <span className="font-bold text-orange-600 dark:text-orange-400">
+                      B: {syncedComparisonPair.ptB.distKm.toFixed(2)} km{syncedComparisonPair.ptB.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptB.ele)} m` : ''}
+                    </span>
+                    <span className="font-extrabold text-indigo-600 dark:text-indigo-300">
+                      Luftlinie: {syncedComparisonPair.spatialGapKm < 1
+                        ? `${Math.round(syncedComparisonPair.spatialGapKm * 1000)} m`
+                        : `${syncedComparisonPair.spatialGapKm.toFixed(2)} km`}
+                      {syncedComparisonPair.eleDiffM !== null ? ` · Δ Höhe ${syncedComparisonPair.eleDiffM >= 0 ? '+' : ''}${syncedComparisonPair.eleDiffM} m` : ''}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-0.5">
+                    Tipp: Über eine Route auf der Karte fahren oder Regler verschieben, um beide Punkte live abzugleichen.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Active Track Stats Overlay Card */}
-      {activeTrack && (
+      {!isComparisonMode && activeTrack && (
         <div 
           className={`absolute top-2 left-12 sm:top-4 sm:left-14 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg pointer-events-auto select-none font-sans transition-all duration-300 overflow-hidden max-w-[calc(100vw-3.75rem)] sm:max-w-[340px] ${
             hoveredPoint ? 'opacity-0 pointer-events-none sm:opacity-100 sm:pointer-events-auto' : 'opacity-100'
@@ -2525,6 +3463,24 @@ const Map: React.FC<MapProps> = ({
                 >
                   <Sparkles className="w-3.5 h-3.5 text-purple-200" />
                   <span>Intensive Track & Pacing Analyse</span>
+                </button>
+              )}
+
+              {/* Quick 2-Track Map Comparison Trigger */}
+              {tracks.length >= 2 && onStartMapComparison && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    triggerHaptic('medium');
+                    onStartMapComparison(activeTrack.id);
+                  }}
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[11px] font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/70 border border-indigo-200/80 dark:border-indigo-700/60 shadow-xs cursor-pointer transition-all"
+                  title="Diesen Track mit einem zweiten GPX-Track direkt auf der Karte vergleichen"
+                  id="btn-map-quick-compare"
+                >
+                  <GitCompare className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
+                  <span>Mit 2. Track auf Karte vergleichen</span>
                 </button>
               )}
             </div>

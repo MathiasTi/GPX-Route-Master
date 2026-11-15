@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
@@ -35,11 +35,16 @@ import { CSS } from '@dnd-kit/utilities';
 interface TrackItemProps {
   track: GPXTrack;
   isMarked: boolean;
+  isCompared?: boolean;
+  isMapComparing?: boolean;
   isExpanded?: boolean;
   onToggleExpand?: (id: string) => void;
   onMark: (id: string) => void;
+  onCompareTrackOnMap?: (id: string) => void;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
+  onKeepOnlyTrack?: (id: string) => void;
+  totalTracks?: number;
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   estimatedSpeed: number;
   onOpenAnalytics?: (id: string) => void;
@@ -63,11 +68,16 @@ interface TrackItemProps {
 const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({ 
   track, 
   isMarked, 
+  isCompared = false,
+  isMapComparing = false,
   isExpanded,
   onToggleExpand,
   onMark, 
+  onCompareTrackOnMap,
   onToggleVisibility, 
   onRemoveTrack, 
+  onKeepOnlyTrack,
+  totalTracks = 1,
   onChangeActivityType, 
   estimatedSpeed, 
   onOpenAnalytics, 
@@ -157,6 +167,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
       } ${
         isMarked 
           ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/10 shadow-sm bg-blue-50/10 dark:bg-blue-950/20' 
+          : isCompared
+          ? 'border-orange-500 dark:border-orange-400 ring-2 ring-orange-500/15 shadow-sm bg-orange-50/15 dark:bg-orange-950/20'
           : 'border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/10'
       }`}
     >
@@ -169,8 +181,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
           {/* Header row: color dot, title, badges, visibility button, fold/unfold button */}
           <div className="flex items-center justify-between gap-1.5 min-w-0">
             <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
-              <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: track.color || '#3b82f6' }}></div>
-              <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
+              <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: isMapComparing && isMarked ? '#2563eb' : isMapComparing && isCompared ? '#f97316' : (track.color || '#3b82f6') }}></div>
+              {isMapComparing && isMarked && (
+                <span className="shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-600 text-white leading-none">
+                  A
+                </span>
+              )}
+              {isMapComparing && isCompared && (
+                <span className="shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded bg-orange-500 text-white leading-none">
+                  B
+                </span>
+              )}
+              <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : isCompared ? 'text-orange-700 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
                 {track.name}
               </span>
               {startValidation.issue && (
@@ -225,6 +247,45 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                 title={track.visible ? "Sichtbar (Klicken zum Ausblenden)" : "Ausgeblendet (Klicken zum Einblenden)"}
               >
                 {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Quick Compare on Map button */}
+              {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
+                <button
+                  type="button"
+                  onClick={() => onCompareTrackOnMap(track.id)}
+                  className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
+                    isCompared
+                      ? 'bg-orange-500 hover:bg-orange-600 text-white border-orange-500 shadow-xs'
+                      : 'bg-slate-50 hover:bg-orange-50 text-slate-400 hover:text-orange-600 border-slate-200/70 hover:border-orange-200 dark:bg-slate-800 dark:hover:bg-orange-950/50 dark:text-slate-400 dark:hover:text-orange-400 dark:border-slate-700 dark:hover:border-orange-900/50'
+                  }`}
+                  title={isCompared ? "Karten-Vergleich mit dieser Strecke beenden" : "Mit aktiver Strecke auf der Karte vergleichen"}
+                >
+                  <GitCompare className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* Keep only this track (1-click isolate) */}
+              {totalTracks > 1 && onKeepOnlyTrack && (
+                <button
+                  type="button"
+                  onClick={() => onKeepOnlyTrack(track.id)}
+                  className="p-1.5 rounded-md border bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border-slate-200/70 hover:border-indigo-200 dark:bg-slate-800 dark:hover:bg-indigo-950/50 dark:text-slate-400 dark:hover:text-indigo-400 dark:border-slate-700 dark:hover:border-indigo-900/50 transition-colors cursor-pointer flex items-center justify-center"
+                  title="Nur diese Tour im Workspace behalten (andere entfernen)"
+                >
+                  <Target className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* Direct 1-click remove button */}
+              <button
+                type="button"
+                onClick={() => onRemoveTrack(track.id)}
+                className="p-1.5 rounded-md border bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border-slate-200/70 hover:border-rose-200 dark:bg-slate-800 dark:hover:bg-rose-950/50 dark:text-slate-400 dark:hover:text-rose-400 dark:border-slate-700 dark:hover:border-rose-900/50 transition-colors cursor-pointer flex items-center justify-center"
+                title="Tour sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
+                aria-label={`"${track.name}" aus Workspace entfernen`}
+              >
+                <X className="w-3.5 h-3.5" />
               </button>
 
               {/* Fold / Unfold chevron toggle button */}
@@ -815,12 +876,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
 interface SidebarProps {
   tracks: GPXTrack[];
   markedTrackId: string | null;
+  compareTrackId?: string | null;
+  onStartMapComparison?: (track1Id?: string, track2Id?: string) => void;
+  onExitMapComparison?: () => void;
   onMarkTrack: (id: string) => void;
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   onUpload: (files: FileList | File[] | React.ChangeEvent<HTMLInputElement>) => Promise<void> | void;
   uploadProgress?: UploadProgressInfo | null;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
+  onClearAllTracks?: () => void;
+  onKeepOnlyTrack?: (id: string) => void;
+  onRemoveHiddenTracks?: () => void;
   onMergeSelected: () => void;
   onUndo: () => void;
   canUndo: boolean;
@@ -888,17 +955,24 @@ interface SidebarProps {
   onLoadReferenceTours?: () => void;
   onLockApp?: () => void;
   onOpenFullActivitiesView?: () => void;
+  onOpenPlannedToursView?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
   tracks, 
   markedTrackId,
+  compareTrackId = null,
+  onStartMapComparison,
+  onExitMapComparison,
   onMarkTrack,
   onChangeActivityType,
   onUpload, 
   uploadProgress,
   onToggleVisibility, 
   onRemoveTrack, 
+  onClearAllTracks,
+  onKeepOnlyTrack,
+  onRemoveHiddenTracks,
   onMergeSelected,
   onUndo,
   canUndo,
@@ -965,7 +1039,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onFitVisibleTracks,
   onLoadReferenceTours,
   onLockApp,
-  onOpenFullActivitiesView
+  onOpenFullActivitiesView,
+  onOpenPlannedToursView
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
@@ -1228,6 +1303,37 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   </div>
                   <ChevronRight className="w-4 h-4 text-indigo-200 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              )}
+
+              {onStartMapComparison && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (compareTrackId && onExitMapComparison) {
+                      onExitMapComparison();
+                    } else {
+                      onStartMapComparison();
+                    }
+                  }}
+                  disabled={tracks.length < 2 && !compareTrackId}
+                  id="btn-sidebar-map-compare-2-tracks"
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold border shadow-2xs transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    compareTrackId
+                      ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-800 dark:text-orange-200 border-orange-300 dark:border-orange-700'
+                      : 'bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                  title={tracks.length < 2 ? 'Lade mindestens 2 GPX-Strecken, um sie auf der Karte zu vergleichen' : compareTrackId ? '2-Track Karten-Vergleich beenden' : '2 GPX Tracks gleichzeitig auf der Karte anzeigen und vergleichen'}
+                >
+                  <div className="flex items-center gap-2">
+                    <GitCompare className={`w-4 h-4 ${compareTrackId ? 'text-orange-600 dark:text-orange-400' : 'text-indigo-600 dark:text-indigo-400'}`} />
+                    <span>{compareTrackId ? 'Karten-Vergleich aktiv (Beenden)' : '2 Tracks auf Karte vergleichen'}</span>
+                  </div>
+                  {compareTrackId ? (
+                    <X className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                  ) : (
+                    <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400 font-bold">A vs B</span>
+                  )}
                 </button>
               )}
 
@@ -1648,38 +1754,78 @@ const Sidebar: React.FC<SidebarProps> = ({
                       variant="sidebar"
                       isDark={isDark}
                       markedTrackId={markedTrackId}
+                      compareTrackId={compareTrackId}
                       onMarkTrack={onMarkTrack}
+                      onStartMapComparison={onStartMapComparison}
+                      onExitMapComparison={onExitMapComparison}
                       onToggleTrackVisibility={onToggleVisibility}
                       onToggleAllVisibility={onToggleAllVisibility}
                       onFitVisibleTracks={onFitVisibleTracks}
+                      onClearAllTracks={onClearAllTracks}
                       onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
                     />
                   )}
 
                   {tracks.length > 0 && (
                     <div className="flex flex-col gap-2">
-                      <div className="flex items-center justify-between px-2 py-1 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 px-2 py-1.5 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
                         <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
                           Strecken ({tracks.length})
                         </span>
-                        <button
-                          type="button"
-                          onClick={handleToggleExpandAll}
-                          className="flex items-center gap-1 px-2 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
-                          title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
-                        >
-                          {allTracksExpanded ? (
-                            <>
-                              <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
-                              <span>Alle einklappen</span>
-                            </>
-                          ) : (
-                            <>
-                              <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
-                              <span>Alle ausklappen</span>
-                            </>
+                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                          {tracks.some(t => !t.visible) && onRemoveHiddenTracks && (
+                            <button
+                              type="button"
+                              onClick={onRemoveHiddenTracks}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-700 dark:text-amber-300 rounded border border-amber-200/80 dark:border-amber-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
+                              title="Alle ausgeblendeten Strecken aus dem Workspace entfernen"
+                            >
+                              <EyeOff size={10} />
+                              <span>Ausgeblendete</span>
+                            </button>
                           )}
-                        </button>
+                          {tracks.length > 1 && markedTrackId && onKeepOnlyTrack && (
+                            <button
+                              type="button"
+                              onClick={() => onKeepOnlyTrack(markedTrackId)}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 rounded border border-indigo-200/80 dark:border-indigo-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
+                              title="Nur aktive Strecke behalten (alle anderen entfernen)"
+                            >
+                              <Target size={10} />
+                              <span>Nur Aktive</span>
+                            </button>
+                          )}
+                          {onClearAllTracks && (
+                            <button
+                              type="button"
+                              onClick={onClearAllTracks}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded border border-rose-200/80 dark:border-rose-900/60 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
+                              title="Alle Strecken sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
+                              id="btn-sidebar-clear-all-tracks"
+                            >
+                              <Trash2 size={10} />
+                              <span>Alle entfernen</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handleToggleExpandAll}
+                            className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
+                            title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
+                          >
+                            {allTracksExpanded ? (
+                              <>
+                                <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
+                                <span>Einklappen</span>
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
+                                <span>Ausklappen</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
 
                       {/* Touch-Ergonomic Mobile Activity Filter Chips */}
@@ -1726,14 +1872,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                   )}
 
                   {tracks.length === 0 && (
-                    <div className="text-center py-6 px-4 bg-slate-50/80 dark:bg-slate-900/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-3">
+                    <div className="text-center py-6 px-4 bg-slate-50/80 dark:bg-slate-900/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-2.5">
                       <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Noch keine Routen im Workspace vorhanden.</p>
+                      {onOpenPlannedToursView && (
+                        <button
+                          type="button"
+                          onClick={onOpenPlannedToursView}
+                          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
+                        >
+                          <Compass className="w-4 h-4 text-emerald-100" />
+                          Geplante Touren öffnen
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setActiveTab('library')}
-                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
+                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200/80 dark:border-indigo-800 active:scale-95 rounded-xl shadow-2xs transition-all cursor-pointer"
                       >
-                        <Sparkles className="w-4 h-4 text-indigo-200" />
+                        <Sparkles className="w-4 h-4 text-indigo-500" />
                         Bibliothek öffnen (7 Alpen-Touren)
                       </button>
                       {onLoadReferenceTours && (
@@ -1765,11 +1921,22 @@ const Sidebar: React.FC<SidebarProps> = ({
                             key={track.id} 
                             track={track} 
                             isMarked={markedTrackId === track.id}
+                            isCompared={compareTrackId === track.id}
+                            isMapComparing={Boolean(compareTrackId)}
                             isExpanded={expandedTrackMap[track.id] || false}
                             onToggleExpand={(id) => setExpandedTrackMap(prev => ({ ...prev, [id]: !prev[id] }))}
                             onMark={onMarkTrack}
+                            onCompareTrackOnMap={onStartMapComparison ? (id) => {
+                              if (compareTrackId === id && onExitMapComparison) {
+                                onExitMapComparison();
+                              } else {
+                                onStartMapComparison(markedTrackId || undefined, id);
+                              }
+                            } : undefined}
                             onToggleVisibility={onToggleVisibility} 
                             onRemoveTrack={onRemoveTrack} 
+                            onKeepOnlyTrack={onKeepOnlyTrack}
+                            totalTracks={tracks.length}
                             onChangeActivityType={onChangeActivityType}
                             estimatedSpeed={estimatedSpeed}
                             onOpenAnalytics={onOpenAnalytics}

@@ -12,6 +12,9 @@ interface TrackComparisonProps {
   userWeight: number;
   userAge: number;
   estimatedSpeed: number;
+  initialTrack1Id?: string | null;
+  initialTrack2Id?: string | null;
+  onCompareOnMap?: (track1Id: string, track2Id: string) => void;
 }
 
 function samplePoints<T>(points: T[], limit: number): T[] {
@@ -109,10 +112,20 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
   ftp,
   userWeight,
   userAge,
-  estimatedSpeed
+  estimatedSpeed,
+  initialTrack1Id,
+  initialTrack2Id,
+  onCompareOnMap
 }) => {
-  const [track1Id, setTrack1Id] = useState<string>(tracks[0]?.id || '');
-  const [track2Id, setTrack2Id] = useState<string>(tracks[1]?.id || tracks[0]?.id || '');
+  const resolvedInitial1 = (initialTrack1Id && tracks.some(t => t.id === initialTrack1Id))
+    ? initialTrack1Id
+    : (tracks[0]?.id || '');
+  const resolvedInitial2 = (initialTrack2Id && initialTrack2Id !== resolvedInitial1 && tracks.some(t => t.id === initialTrack2Id))
+    ? initialTrack2Id
+    : (tracks.find(t => t.id !== resolvedInitial1)?.id || tracks[0]?.id || '');
+
+  const [track1Id, setTrack1Id] = useState<string>(resolvedInitial1);
+  const [track2Id, setTrack2Id] = useState<string>(resolvedInitial2);
 
   const track1 = useMemo(() => tracks.find(t => t.id === track1Id), [tracks, track1Id]);
   const track2 = useMemo(() => tracks.find(t => t.id === track2Id), [tracks, track2Id]);
@@ -347,14 +360,27 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
               </p>
             </div>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-xl transition-all shrink-0 cursor-pointer"
-            title="Schließen"
-            aria-label="Schließen"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onCompareOnMap && track1 && track2 && track1.id !== track2.id && (
+              <button
+                type="button"
+                onClick={() => onCompareOnMap(track1.id, track2.id)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[44px] rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-colors cursor-pointer"
+                title="Diese 2 Tracks direkt auf der Karte anzeigen und vergleichen"
+              >
+                <Compass size={16} />
+                <span className="hidden sm:inline">Auf Karte vergleichen</span>
+              </button>
+            )}
+            <button 
+              onClick={onClose}
+              className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-xl transition-all shrink-0 cursor-pointer"
+              title="Schließen"
+              aria-label="Schließen"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* Drodown Selectors & Check */}

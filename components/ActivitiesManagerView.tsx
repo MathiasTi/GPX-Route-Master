@@ -119,6 +119,7 @@ export interface ActivitiesManagerViewProps {
   onLoadTracksToMap: (tracks: GPXTrack[], options?: { jumpToMap?: boolean; fitToTracks?: boolean; openStatsModal?: boolean }) => void;
   onActivityMetadataUpdated?: (workspaceTrackId: string, updates: { name: string; activityType: 'cycling' | 'running'; description?: string; tags?: string[] }) => void;
   onDatabaseCountChange?: (totalCount: number) => void;
+  onOpenDashboard?: () => void;
   onOpenUploadPicker?: () => void;
   onOpenGarminSync?: () => void;
   onBackToMap: () => void;
@@ -224,6 +225,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
   onLoadTracksToMap,
   onActivityMetadataUpdated,
   onDatabaseCountChange,
+  onOpenDashboard,
   onOpenUploadPicker,
   onOpenGarminSync,
   onBackToMap
@@ -1203,6 +1205,17 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onOpenDashboard && (
+              <button
+                type="button"
+                id="btn-activities-open-dashboard"
+                onClick={onOpenDashboard}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/70 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <BarChart3 size={13} />
+                <span>Dashboard</span>
+              </button>
+            )}
             {hasAnyFilter && !showAdvancedFilters && (
               <button
                 type="button"

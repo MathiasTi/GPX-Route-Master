@@ -6,7 +6,9 @@ import Map from './components/Map';
 import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
-import { Activity, BarChart2, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders } from 'lucide-react';
+import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
+import { PlannedToursView } from './components/PlannedToursView';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass } from 'lucide-react';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
@@ -44,19 +46,54 @@ const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'stress'
 ];
 
-function parseWorkspaceHash(hash: string): { view: 'map' | 'activities' | 'fitness'; fitnessTab?: GarminDashboardTab } {
+type WorkspaceView = 'map' | 'planned' | 'activities' | 'dashboard' | 'fitness';
+
+function parseWorkspaceHash(hash: string): { view: WorkspaceView; fitnessTab?: GarminDashboardTab } {
   const cleaned = hash.replace(/^#\/?/, '').trim().toLowerCase();
+  if (cleaned === 'planned' || cleaned.startsWith('planned/') || cleaned === 'tours' || cleaned.startsWith('tours/')) {
+    return { view: 'planned' };
+  }
   if (cleaned === 'activities' || cleaned.startsWith('activities/')) {
     return { view: 'activities' };
   }
+  if (
+    cleaned === 'dashboard' ||
+    cleaned === 'activity-dashboard' ||
+    cleaned.startsWith('dashboard/')
+  ) {
+    return { view: 'dashboard' };
+  }
   if (cleaned === 'fitness' || cleaned.startsWith('fitness/')) {
     const rawTab = cleaned.slice('fitness'.length).replace(/^\//, '');
-    const fitnessTab = VALID_FITNESS_TABS.includes(rawTab as GarminDashboardTab)
-      ? (rawTab as GarminDashboardTab)
-      : 'performance';
+    const normalizedTab = rawTab === 'cockpit' ? 'overview' : rawTab;
+    const fitnessTab = VALID_FITNESS_TABS.includes(normalizedTab as GarminDashboardTab)
+      ? (normalizedTab as GarminDashboardTab)
+      : 'overview';
     return { view: 'fitness', fitnessTab };
   }
   return { view: 'map' };
+}
+
+function computeTightTrackBounds(targetTracks: GPXTrack[]): { minLat: number; maxLat: number; minLng: number; maxLng: number } | null {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const t of targetTracks) {
+    if (!hasRealGpsData(t)) continue;
+    for (const p of t.points || []) {
+      if (p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng))) {
+        const lat = Number(p.lat);
+        const lng = Number(p.lng);
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+      }
+    }
+  }
+  if (minLat === Infinity || maxLat === -Infinity) return null;
+  return { minLat, maxLat, minLng, maxLng };
 }
 
 const App: React.FC = () => {
@@ -103,6 +140,7 @@ const App: React.FC = () => {
   const [markedTrackId, setMarkedTrackId] = useState<string | null>(() => {
     return safeGetItem('velo_workspace_marked_track');
   });
+  const [compareTrackId, setCompareTrackId] = useState<string | null>(null);
 
   const [is3D, setIs3D] = useState(false);
   const [ftp, setFtp] = useState(250);
@@ -141,24 +179,24 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'map' | 'activities' | 'fitness'>(() =>
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(() =>
     parseWorkspaceHash(window.location.hash).view
   );
   const [fitnessPageInitialTab, setFitnessPageInitialTab] = useState<GarminDashboardTab>(() =>
-    parseWorkspaceHash(window.location.hash).fitnessTab ?? 'performance'
+    parseWorkspaceHash(window.location.hash).fitnessTab ?? 'overview'
   );
 
-  const syncWorkspaceHash = useCallback((view: 'map' | 'activities' | 'fitness', tab?: GarminDashboardTab) => {
-    const nextHash = view === 'fitness' ? `#fitness/${tab || 'performance'}` : `#${view}`;
+  const syncWorkspaceHash = useCallback((view: WorkspaceView, tab?: GarminDashboardTab) => {
+    const nextHash = view === 'fitness' ? `#fitness/${tab || 'overview'}` : `#${view}`;
     if (window.location.hash !== nextHash) {
       window.location.hash = nextHash;
     }
   }, []);
 
-  const navigateWorkspace = useCallback((view: 'map' | 'activities' | 'fitness', tab?: GarminDashboardTab) => {
+  const navigateWorkspace = useCallback((view: WorkspaceView, tab?: GarminDashboardTab) => {
     setIsMobileMenuOpen(false);
     if (view === 'fitness') {
-      const resolvedTab = tab ?? 'performance';
+      const resolvedTab = tab ?? 'overview';
       setFitnessPageInitialTab(resolvedTab);
       setActiveWorkspaceView('fitness');
       syncWorkspaceHash('fitness', resolvedTab);
@@ -171,7 +209,7 @@ const App: React.FC = () => {
     }
   }, [syncWorkspaceHash]);
 
-  const openFitnessPage = useCallback((tab: GarminDashboardTab = 'performance') => {
+  const openFitnessPage = useCallback((tab: GarminDashboardTab = 'overview') => {
     navigateWorkspace('fitness', tab);
   }, [navigateWorkspace]);
 
@@ -195,6 +233,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
   const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
+  const [plannedToursCount, setPlannedToursCount] = useState<number | null>(null);
   const [athleteProfileOpen, setAthleteProfileOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
@@ -249,6 +288,14 @@ const App: React.FC = () => {
   useEffect(() => {
     tracksRef.current = tracks;
   }, [tracks]);
+
+  useEffect(() => {
+    if (compareTrackId && !tracks.some(t => t.id === compareTrackId)) {
+      setCompareTrackId(null);
+    } else if (compareTrackId && markedTrackId && compareTrackId === markedTrackId) {
+      setCompareTrackId(null);
+    }
+  }, [tracks, compareTrackId, markedTrackId]);
 
   const timeGapsCacheRef = useRef<WeakMap<GPXPoint[], TimeGap[]>>(new WeakMap());
 
@@ -396,6 +443,22 @@ const App: React.FC = () => {
       .then((data) => {
         if (data?.success && typeof data.databaseTotalCount === 'number') {
           setCatalogTotalCount(data.databaseTotalCount);
+        }
+      })
+      .catch(() => {});
+
+    apiFetch(getApiUrl('/api/library'))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success && Array.isArray(data.tracks)) {
+          const count = data.tracks.filter((t: any) => {
+            const idLower = String(t.id || '').toLowerCase();
+            if (idLower.startsWith('garmin-')) return false;
+            if (t.rawFileDetails?.fileType === 'fit') return false;
+            if (t.originalFilename && String(t.originalFilename).toLowerCase().endsWith('.fit')) return false;
+            return true;
+          }).length;
+          setPlannedToursCount(count);
         }
       })
       .catch(() => {});
@@ -1214,33 +1277,120 @@ const App: React.FC = () => {
 
   const handleToggleAllVisibility = useCallback((makeAllVisible: boolean) => {
     setTracks(prev => prev.map(t => ({ ...t, visible: makeAllVisible })));
-    setSuccessMessage(makeAllVisible ? 'Alle Strecken eingeblendet' : 'Alle Strecken ausgeblendet');
   }, []);
 
-  const handleFitVisibleTracks = useCallback((bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
-    const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
-    const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
-    const maxDelta = Math.max(latDiff, lngDiff);
-    
-    let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
-    estimatedZoom = Math.min(17, Math.max(6, estimatedZoom - 1));
+  const handleFitVisibleTracks = useCallback((fallbackBounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
+    const visibleGpsTracks = tracksRef.current.filter(t => t.visible && hasRealGpsData(t));
+    const tightBounds = computeTightTrackBounds(visibleGpsTracks) || fallbackBounds || null;
+    if (!tightBounds) return;
 
-    setMapView(prev => ({
-      ...prev,
-      lat: (bounds.minLat + bounds.maxLat) / 2,
-      lng: (bounds.minLng + bounds.maxLng) / 2,
-      zoom: estimatedZoom
-    }));
+    if (is3D) {
+      const latDiff = Math.max(0.002, tightBounds.maxLat - tightBounds.minLat);
+      const lngDiff = Math.max(0.002, tightBounds.maxLng - tightBounds.minLng);
+      const maxDelta = Math.max(latDiff, lngDiff);
+      let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
+      estimatedZoom = Math.min(18, Math.max(6, estimatedZoom));
+
+      setMapView(prev => ({
+        ...prev,
+        lat: (tightBounds.minLat + tightBounds.maxLat) / 2,
+        lng: (tightBounds.minLng + tightBounds.maxLng) / 2,
+        zoom: estimatedZoom
+      }));
+    } else {
+      window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+    }
 
     triggerHaptic('light');
-    setSuccessMessage('Kartenansicht auf alle sichtbaren Strecken angepasst');
-  }, []);
+  }, [is3D]);
  
   const removeTrack = useCallback((id: string) => {
     saveToHistory();
-    setTracks(prev => prev.filter(t => t.id !== id));
-    if (markedTrackId === id) setMarkedTrackId(null);
-  }, [saveToHistory, markedTrackId]);
+    setTracks(prev => {
+      const next = prev.filter(t => t.id !== id);
+      if (markedTrackId === id) {
+        setMarkedTrackId(next[0]?.id ?? null);
+      }
+      return next;
+    });
+    if (compareTrackId === id) {
+      setCompareTrackId(null);
+    }
+  }, [saveToHistory, markedTrackId, compareTrackId]);
+
+  const clearWorkspaceTracks = useCallback(() => {
+    if (tracks.length === 0) return;
+    saveToHistory();
+    setTracks([]);
+    setMarkedTrackId(null);
+    setCompareTrackId(null);
+  }, [tracks.length, saveToHistory]);
+
+  const keepOnlyTrack = useCallback((id: string) => {
+    if (tracks.length <= 1) return;
+    saveToHistory();
+    setTracks(prev => prev.filter(t => t.id === id));
+    setMarkedTrackId(id);
+    setCompareTrackId(null);
+  }, [tracks.length, saveToHistory]);
+
+  const removeHiddenTracks = useCallback(() => {
+    if (!tracks.some(t => !t.visible)) return;
+    saveToHistory();
+    setTracks(prev => prev.filter(t => t.visible));
+  }, [tracks, saveToHistory]);
+
+  const hydrateTrackSurface = useCallback((tr: GPXTrack): GPXTrack => {
+    if (tr.points && tr.points.length > 0) {
+      const calcStats = calculateSurfaceStatsFromPoints(tr.points);
+      const surfaceStats = calcStats.length > 0 ? calcStats : (tr.surfaceStats && tr.surfaceStats.length > 0 ? tr.surfaceStats : []);
+      const nextTrack = { ...tr, surfaceStats, visible: true };
+      hydratePointsWithSurface(nextTrack.points, surfaceStats, nextTrack.distance);
+      return nextTrack;
+    }
+    return { ...tr, visible: true };
+  }, []);
+
+  const replaceWorkspaceWithTracks = useCallback((incomingTracks: GPXTrack[], jumpToMap = true) => {
+    if (!incomingTracks || incomingTracks.length === 0) return;
+    const prepared = incomingTracks.map(hydrateTrackSurface);
+    saveToHistory();
+    setTracks(prepared);
+    const primary = prepared[0];
+    setMarkedTrackId(primary?.id ?? null);
+    setCompareTrackId(null);
+    setIsProfileCollapsed(false);
+
+    const gpsTracks = prepared.filter(tr => hasRealGpsData(tr));
+    if (jumpToMap) {
+      navigateWorkspace('map');
+    }
+    const tightBounds = computeTightTrackBounds(gpsTracks);
+    if (tightBounds) {
+      if (is3D) {
+        const latDiff = Math.max(0.002, tightBounds.maxLat - tightBounds.minLat);
+        const lngDiff = Math.max(0.002, tightBounds.maxLng - tightBounds.minLng);
+        const maxDelta = Math.max(latDiff, lngDiff);
+        let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
+        estimatedZoom = Math.min(18, Math.max(6, estimatedZoom));
+        setMapView(prev => ({
+          ...prev,
+          lat: (tightBounds.minLat + tightBounds.maxLat) / 2,
+          lng: (tightBounds.minLng + tightBounds.maxLng) / 2,
+          zoom: estimatedZoom
+        }));
+      } else {
+        setTimeout(() => {
+          window.dispatchEvent(new Event('resize'));
+          window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+        }, 40);
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+        }, 260);
+      }
+    }
+    triggerHaptic('success');
+  }, [hydrateTrackSurface, saveToHistory, navigateWorkspace, is3D]);
  
   const handleMerge = useCallback(() => {
     if (tracks.length < 2) return;
@@ -1249,6 +1399,7 @@ const App: React.FC = () => {
     merged.powerStats = calculatePowerStats(merged.points, ftp, userWeight, estimatedSpeed);
     setTracks([merged]);
     setMarkedTrackId(merged.id);
+    setCompareTrackId(null);
     setSuccessMessage(`${tracks.length} Abschnitte erfolgreich zu einer Gesamttour zusammengeführt!`);
     triggerHaptic('medium');
   }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed]);
@@ -1269,38 +1420,32 @@ const App: React.FC = () => {
   }, [saveToHistory, ftp, userWeight, estimatedSpeed]);
 
   const handleLoadLibraryTrack = useCallback((track: GPXTrack) => {
-    if (track && track.points && track.points.length > 0) {
-      const calcStats = calculateSurfaceStatsFromPoints(track.points);
-      const surfaceStats = calcStats.length > 0 ? calcStats : (track.surfaceStats && track.surfaceStats.length > 0 ? track.surfaceStats : []);
-      track.surfaceStats = surfaceStats;
-      hydratePointsWithSurface(track.points, surfaceStats, track.distance);
-    }
-
-    const dupCheck = checkTrackDuplicateGPS(track, tracks);
-    const alreadyExists = dupCheck.isDuplicate;
+    const preparedTrack = hydrateTrackSurface(track);
+    const dupCheck = checkTrackDuplicateGPS(preparedTrack, tracks);
 
     setTracks(prev => {
-      if (prev.some(t => t.id === track.id)) {
-        return prev.map(t => t.id === track.id ? { ...t, visible: true } : t);
+      if (prev.some(t => t.id === preparedTrack.id)) {
+        return prev.map(t => t.id === preparedTrack.id ? { ...t, visible: true } : t);
       }
       if (dupCheck.isDuplicate && dupCheck.matchedTrackId) {
         return prev.map(t => t.id === dupCheck.matchedTrackId ? { ...t, visible: true } : t);
       }
-      return [...prev, { ...track, visible: true }];
+      return [...prev, preparedTrack];
     });
 
     if (dupCheck.matchedTrackId) {
       setMarkedTrackId(dupCheck.matchedTrackId);
     } else {
-      setMarkedTrackId(track.id);
+      setMarkedTrackId(preparedTrack.id);
     }
 
-    if (alreadyExists) {
-      setSuccessMessage(`Hinweis: "${track.name}" ist bereits im Workspace geladen (${dupCheck.reason || 'Identischer GPX-Verlauf'}).`);
-    } else {
-      setSuccessMessage(`Aktivität "${track.name}" wurde erfolgreich in den Workspace geladen.`);
+    const tightBounds = computeTightTrackBounds([preparedTrack]);
+    if (tightBounds) {
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+      }, 40);
     }
-  }, [tracks]);
+  }, [tracks, hydrateTrackSurface]);
 
   const handleLoadCatalogTracksToMap = useCallback((
     loadedTracks: GPXTrack[],
@@ -1362,43 +1507,24 @@ const App: React.FC = () => {
     }
 
     if (options?.fitToTracks !== false && gpsTracks.length > 0) {
-      let minLat = Infinity;
-      let maxLat = -Infinity;
-      let minLng = Infinity;
-      let maxLng = -Infinity;
-      for (const tr of gpsTracks) {
-        for (const pt of tr.points || []) {
-          if (typeof pt.lat === 'number' && typeof pt.lng === 'number' && !isNaN(pt.lat) && !isNaN(pt.lng)) {
-            if (pt.lat < minLat) minLat = pt.lat;
-            if (pt.lat > maxLat) maxLat = pt.lat;
-            if (pt.lng < minLng) minLng = pt.lng;
-            if (pt.lng > maxLng) maxLng = pt.lng;
-          }
+      const tightBounds = computeTightTrackBounds(gpsTracks);
+      if (tightBounds) {
+        if (is3D) {
+          handleFitVisibleTracks(tightBounds);
+        } else {
+          setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+            window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+          }, 50);
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+          }, 260);
         }
-      }
-      if (minLat !== Infinity && maxLat !== -Infinity) {
-        const bounds = { minLat, maxLat, minLng, maxLng };
-        setTimeout(() => {
-          window.dispatchEvent(new Event('resize'));
-          handleFitVisibleTracks(bounds);
-          window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
-        }, 70);
       }
     }
 
-    if (hydratedPrepared.length === 1) {
-      if (gpsTracks.length === 0) {
-        setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" geladen (ohne GPS-Spur – Statistik & Analyse aktiv).`);
-      } else {
-        setSuccessMessage(`Aktivität "${hydratedPrepared[0].name}" auf die Karte geladen.`);
-      }
-    } else if (gpsTracks.length === 0) {
-      setSuccessMessage(`${hydratedPrepared.length} Aktivitäten ohne GPS-Spur für Statistik & Analyse geladen.`);
-    } else {
-      setSuccessMessage(`${hydratedPrepared.length} Aktivitäten auf die Karte geladen (${addedCount} neu).`);
-    }
     triggerHaptic('success');
-  }, [handleFitVisibleTracks]);
+  }, [handleFitVisibleTracks, navigateWorkspace, is3D]);
 
   const handleCatalogActivityMetadataUpdated = useCallback((
     workspaceTrackId: string,
@@ -1443,24 +1569,118 @@ const App: React.FC = () => {
 
   const handleLoadReferenceTours = useCallback(async () => {
     try {
-      setSuccessMessage('Lade Alpen-Referenztouren...');
       const res = await apiFetch(getApiUrl('/api/tracks'));
       if (!res.ok) throw new Error('Netzwerkfehler');
       const data = await res.json();
       if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
-        setTracks(data.tracks);
-        if (data.tracks[0]?.id) {
-          setMarkedTrackId(data.tracks[0].id);
-        }
-        setSuccessMessage(`${data.tracks.length} Alpen-Referenztouren erfolgreich geladen!`);
-        triggerHaptic('success');
+        replaceWorkspaceWithTracks(data.tracks, true);
       } else {
         setErrorMessage('Keine Referenztouren in der Datenbank gefunden.');
       }
     } catch (e: any) {
       setErrorMessage('Fehler beim Laden der Referenztouren: ' + (e.message || 'Unbekannt'));
     }
+  }, [replaceWorkspaceWithTracks]);
+
+  const handleStartMapComparison = useCallback((track1Id?: string, track2Id?: string) => {
+    const currentTracks = tracksRef.current;
+    if (currentTracks.length < 2) {
+      setErrorMessage('Bitte lade mindestens 2 Strecken in den Workspace, um sie auf der Karte zu vergleichen.');
+      return;
+    }
+
+    const resolved1 = (track1Id && currentTracks.find(t => t.id === track1Id))
+      || (markedTrackId && currentTracks.find(t => t.id === markedTrackId))
+      || currentTracks.find(t => t.visible)
+      || currentTracks[0];
+
+    const resolved2 = (track2Id && track2Id !== resolved1?.id && currentTracks.find(t => t.id === track2Id))
+      || (compareTrackId && compareTrackId !== resolved1?.id && currentTracks.find(t => t.id === compareTrackId))
+      || currentTracks.find(t => t.id !== resolved1?.id && t.visible)
+      || currentTracks.find(t => t.id !== resolved1?.id);
+
+    if (!resolved1 || !resolved2 || resolved1.id === resolved2.id) {
+      setErrorMessage('Es müssen zwei unterschiedliche Strecken für den Karten-Vergleich ausgewählt sein.');
+      return;
+    }
+
+    setTracks(prev => prev.map(t =>
+      (t.id === resolved1.id || t.id === resolved2.id) && !t.visible
+        ? { ...t, visible: true }
+        : t
+    ));
+
+    setMarkedTrackId(resolved1.id);
+    setCompareTrackId(resolved2.id);
+    setIs3D(false);
+    setIsMobileMenuOpen(false);
+    setIsProfileCollapsed(false);
+    navigateWorkspace('map');
+
+    const pairBounds = computeTightTrackBounds([resolved1, resolved2].filter(t => hasRealGpsData(t)));
+    setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+      window.dispatchEvent(new CustomEvent('fit-active-track', pairBounds ? { detail: pairBounds } : undefined));
+    }, 60);
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('fit-active-track', pairBounds ? { detail: pairBounds } : undefined));
+    }, 280);
+
+    triggerHaptic('medium');
+  }, [markedTrackId, compareTrackId, navigateWorkspace]);
+
+  const handleExitMapComparison = useCallback(() => {
+    setCompareTrackId(null);
   }, []);
+
+  const handleCompareTwoToursOnMap = useCallback((tour1: GPXTrack, tour2: GPXTrack) => {
+    const prepared1 = hydrateTrackSurface(tour1);
+    const prepared2 = hydrateTrackSurface(tour2);
+
+    const existing = tracksRef.current;
+    const findOrNewId = (tr: GPXTrack, list: GPXTrack[]): string => {
+      const byId = list.find(t => t.id === tr.id);
+      if (byId) return byId.id;
+      const dup = checkTrackDuplicateGPS(tr, list);
+      if (dup.isDuplicate && dup.matchedTrackId) return dup.matchedTrackId;
+      return tr.id;
+    };
+
+    const id1 = findOrNewId(prepared1, existing);
+    const id2 = findOrNewId(prepared2, [...existing, prepared1]);
+
+    setTracks(prev => {
+      const next = [...prev];
+      const upsert = (tr: GPXTrack, targetId: string) => {
+        const idx = next.findIndex(t => t.id === targetId);
+        if (idx !== -1) {
+          next[idx] = { ...next[idx], visible: true };
+        } else {
+          next.push(tr);
+        }
+      };
+      upsert(prepared1, id1);
+      upsert(prepared2, id2);
+      return next;
+    });
+
+    setMarkedTrackId(id1);
+    setCompareTrackId(id1 !== id2 ? id2 : null);
+    setIs3D(false);
+    setIsProfileCollapsed(false);
+    navigateWorkspace('map');
+
+    const pairBounds = computeTightTrackBounds([prepared1, prepared2].filter(t => hasRealGpsData(t)));
+    setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+      window.dispatchEvent(new CustomEvent('fit-active-track', pairBounds ? { detail: pairBounds } : undefined));
+    }, 60);
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('fit-active-track', pairBounds ? { detail: pairBounds } : undefined));
+    }, 280);
+
+    triggerHaptic('success');
+  }, [hydrateTrackSurface, navigateWorkspace]);
 
   const markedTrack = tracks.find(t => t.id === markedTrackId) || tracks[0];
   const suggestedFtp = markedTrack?.powerStats?.best20m ? Math.round(markedTrack.powerStats.best20m * 0.95) : null;
@@ -1535,7 +1755,7 @@ const App: React.FC = () => {
         if (activeWorkspaceView === 'fitness') {
           navigateWorkspace('map');
         } else {
-          openFitnessPage('performance');
+          openFitnessPage('overview');
         }
         return;
       }
@@ -1600,27 +1820,27 @@ const App: React.FC = () => {
           const targetTrack = visibleTracks[nextTrackIndex];
           setMarkedTrackId(targetTrack.id);
 
-          const trackBounds = calculateTrackCenterAndBounds(targetTrack);
+          const trackBounds = computeTightTrackBounds([targetTrack]);
           if (trackBounds) {
-            // Compute an appropriate zoom level that comfortably frames the track bounding box
-            const latDiff = Math.max(0.002, trackBounds.maxLat - trackBounds.minLat);
-            const lngDiff = Math.max(0.002, trackBounds.maxLng - trackBounds.minLng);
-            const maxDelta = Math.max(latDiff, lngDiff);
-            
-            // Approximate Web Mercator zoom from bounding box delta (in degrees)
-            let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
-            estimatedZoom = Math.min(17, Math.max(6, estimatedZoom - 1));
+            if (is3D) {
+              const latDiff = Math.max(0.002, trackBounds.maxLat - trackBounds.minLat);
+              const lngDiff = Math.max(0.002, trackBounds.maxLng - trackBounds.minLng);
+              const maxDelta = Math.max(latDiff, lngDiff);
+              let estimatedZoom = Math.floor(Math.log2(360 / maxDelta));
+              estimatedZoom = Math.min(18, Math.max(6, estimatedZoom));
 
-            setMapView(prev => ({
-              ...prev,
-              lat: trackBounds.centerLat,
-              lng: trackBounds.centerLng,
-              zoom: estimatedZoom
-            }));
+              setMapView(prev => ({
+                ...prev,
+                lat: (trackBounds.minLat + trackBounds.maxLat) / 2,
+                lng: (trackBounds.minLng + trackBounds.maxLng) / 2,
+                zoom: estimatedZoom
+              }));
+            } else {
+              window.dispatchEvent(new CustomEvent('fit-active-track', { detail: trackBounds }));
+            }
           }
 
           triggerHaptic('light');
-          setSuccessMessage(`Fokus auf Strecke gewechselt (${nextTrackIndex + 1}/${visibleTracks.length}): "${targetTrack.name}"`);
         }
         return;
       }
@@ -1737,7 +1957,8 @@ const App: React.FC = () => {
     weatherOpen,
     timeGapModalOpen,
     isExportModalOpen,
-    selectionBounds
+    selectionBounds,
+    is3D
   ]);
 
 
@@ -1820,6 +2041,25 @@ const App: React.FC = () => {
 
             <button
               type="button"
+              id="nav-tab-planned-tours"
+              onClick={() => navigateWorkspace('planned')}
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeWorkspaceView === 'planned'
+                  ? 'bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              <Compass size={14} />
+              <span>Geplante Touren</span>
+              {plannedToursCount !== null && (
+                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
+                  ({plannedToursCount.toLocaleString('de-DE')})
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
               id="nav-tab-activities-manager"
               onClick={() => navigateWorkspace('activities')}
               className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
@@ -1839,8 +2079,23 @@ const App: React.FC = () => {
 
             <button
               type="button"
+              id="nav-tab-activities-dashboard"
+              onClick={() => navigateWorkspace('dashboard')}
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeWorkspaceView === 'dashboard'
+                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              <BarChart3 size={14} />
+              <span className="hidden lg:inline">Aktivitäten-Dashboard</span>
+              <span className="lg:hidden">Dashboard</span>
+            </button>
+
+            <button
+              type="button"
               id="nav-tab-fitness-health"
-              onClick={() => openFitnessPage('performance')}
+              onClick={() => openFitnessPage('overview')}
               className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeWorkspaceView === 'fitness'
                   ? 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 shadow-2xs border border-slate-200/80 dark:border-slate-700'
@@ -1868,8 +2123,12 @@ const App: React.FC = () => {
                 </>
               )}
             </>
+          ) : activeWorkspaceView === 'planned' ? (
+            <span>Gespeicherte Touren &amp; Etappen · Planung &amp; Direkt-Export</span>
+          ) : activeWorkspaceView === 'dashboard' ? (
+            <span>Wochen-, Monats- &amp; Jahresauswertung · Gefahrene Kilometer &amp; Metriken</span>
           ) : activeWorkspaceView === 'fitness' ? (
-            <span>Leistungs- &amp; Fitness-Analyse · Trends · Gesundheit</span>
+            <span>Fitness- &amp; Gesundheits-Cockpit · Readiness · Training &amp; Rekorde</span>
           ) : (
             <span>Hochgeschwindigkeits-Archiv · Volltext &amp; Metriken</span>
           )}
@@ -2104,6 +2363,29 @@ const App: React.FC = () => {
           )}
         </AnimatePresence>
 
+        {/* Full-Screen Planned Tours (Komoot-Style Library) */}
+        {activeWorkspaceView === 'planned' && (
+          <PlannedToursView
+            workspaceTracks={tracks}
+            ftp={ftp}
+            userWeight={userWeight}
+            estimatedSpeed={estimatedSpeed}
+            onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
+            onOpenToursBatch={(batchTracks, replaceWorkspace) => {
+              if (replaceWorkspace) {
+                replaceWorkspaceWithTracks(batchTracks, true);
+              } else {
+                handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
+              }
+            }}
+            onAddTourToWorkspace={handleLoadLibraryTrack}
+            onRemoveTourFromWorkspace={removeTrack}
+            onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
+            onNavigateToMap={() => navigateWorkspace('map')}
+            onLibraryCountChange={setPlannedToursCount}
+          />
+        )}
+
         {/* Full-Screen Activities Manager Workspace */}
         {activeWorkspaceView === 'activities' && (
           <ActivitiesManagerView
@@ -2114,6 +2396,22 @@ const App: React.FC = () => {
             onLoadTracksToMap={handleLoadCatalogTracksToMap}
             onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
             onDatabaseCountChange={setCatalogTotalCount}
+            onOpenDashboard={() => navigateWorkspace('dashboard')}
+            onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+            onOpenGarminSync={() => openFitnessPage('personal-api')}
+            onBackToMap={() => navigateWorkspace('map')}
+          />
+        )}
+
+        {/* Full-Screen Activities Dashboard Workspace */}
+        {activeWorkspaceView === 'dashboard' && (
+          <ActivitiesDashboardView
+            workspaceTracks={tracks}
+            ftp={ftp}
+            userWeight={userWeight}
+            estimatedSpeed={estimatedSpeed}
+            onLoadTracksToMap={handleLoadCatalogTracksToMap}
+            onOpenActivitiesArchive={() => navigateWorkspace('activities')}
             onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
             onOpenGarminSync={() => openFitnessPage('personal-api')}
             onBackToMap={() => navigateWorkspace('map')}
@@ -2126,6 +2424,7 @@ const App: React.FC = () => {
             variant="page"
             initialTab={fitnessPageInitialTab}
             onTabChange={handleFitnessTabChange}
+            onClose={() => navigateWorkspace('map')}
             onLoadTrack={(tr) => {
               handleLoadLibraryTrack(tr);
               if (hasRealGpsData(tr)) {
@@ -2152,8 +2451,16 @@ const App: React.FC = () => {
           <Sidebar 
             tracks={tracks} 
             markedTrackId={markedTrackId}
+            compareTrackId={compareTrackId}
+            onStartMapComparison={handleStartMapComparison}
+            onExitMapComparison={handleExitMapComparison}
             onMarkTrack={(id) => {
-              setMarkedTrackId(id);
+              if (compareTrackId && id === compareTrackId && markedTrackId && markedTrackId !== id) {
+                setCompareTrackId(markedTrackId);
+                setMarkedTrackId(id);
+              } else {
+                setMarkedTrackId(id);
+              }
               setIsMobileMenuOpen(false);
               setIsProfileCollapsed(false);
             }}
@@ -2162,6 +2469,9 @@ const App: React.FC = () => {
             uploadProgress={trackUploadProgress}
             onToggleVisibility={toggleVisibility} 
             onRemoveTrack={removeTrack} 
+            onClearAllTracks={clearWorkspaceTracks}
+            onKeepOnlyTrack={keepOnlyTrack}
+            onRemoveHiddenTracks={removeHiddenTracks}
             onMergeSelected={handleMerge} 
             onUndo={handleUndo} 
             canUndo={history.length > 0}
@@ -2280,6 +2590,7 @@ const App: React.FC = () => {
             onLoadReferenceTours={handleLoadReferenceTours}
             onLockApp={handleLockApp}
             onOpenFullActivitiesView={() => navigateWorkspace('activities')}
+            onOpenPlannedToursView={() => navigateWorkspace('planned')}
           />
           <main className="flex-1 flex flex-col relative overflow-hidden">
             {!isOnline && (
@@ -2321,6 +2632,10 @@ const App: React.FC = () => {
                 tracks={tracks} 
                 activeLayer={activeLayer}
                 markedTrackId={markedTrackId}
+                compareTrackId={compareTrackId}
+                onStartMapComparison={handleStartMapComparison}
+                onExitMapComparison={handleExitMapComparison}
+                onOpenComparisonModal={() => setComparisonOpen(true)}
                 onMarkTrack={setMarkedTrackId}
                 hoveredPoint={hoveredPoint}
                 onHoverPoint={setHoveredPoint}
@@ -2472,6 +2787,12 @@ const App: React.FC = () => {
                 userWeight={userWeight}
                 userAge={userAge}
                 estimatedSpeed={estimatedSpeed}
+                initialTrack1Id={markedTrackId}
+                initialTrack2Id={compareTrackId}
+                onCompareOnMap={(id1, id2) => {
+                  setComparisonOpen(false);
+                  handleStartMapComparison(id1, id2);
+                }}
               />
             )}
           </AnimatePresence>
@@ -2497,11 +2818,11 @@ const App: React.FC = () => {
                 }}
                 onSelection={(bounds) => {
                   setSelectionBounds(bounds);
-                  if (bounds) {
+                  if (bounds && is3D) {
                     const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
                     const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
                     const maxDelta = Math.max(latDiff, lngDiff);
-                    const estimatedZoom = Math.min(16, Math.max(11, Math.floor(Math.log2(360 / maxDelta)) - 1));
+                    const estimatedZoom = Math.min(18, Math.max(11, Math.floor(Math.log2(360 / maxDelta))));
                     setMapView(prev => ({
                       ...prev,
                       lat: (bounds.minLat + bounds.maxLat) / 2,
@@ -2542,33 +2863,6 @@ const App: React.FC = () => {
             )}
           </AnimatePresence>
           
-          {showHint && (
-            <div 
-              className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-indigo-600/90 backdrop-blur-md text-white px-6 py-3 rounded-2xl shadow-2xl text-sm font-medium transition-all hover:bg-indigo-700 flex items-center gap-4 max-w-[90vw] md:max-w-none"
-            >
-              <div className="flex items-center gap-2">
-                <span className="bg-white/20 p-1.5 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="16" x2="12" y2="12" />
-                    <line x1="12" y1="8" x2="12.01" y2="8" />
-                  </svg>
-                </span>
-                <span className="leading-tight">Auswahl: Nutze den Auswahl-Button links auf der Karte, um einen Bereich zu markieren.</span>
-              </div>
-              <button 
-                onClick={() => setShowHint(false)}
-                className="bg-white/10 hover:bg-white/20 p-2 rounded-xl transition-colors group"
-                title="Hinweis dauerhaft ausblenden"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="group-hover:scale-110 transition-transform">
-                  <path d="M18 6 6 18" />
-                  <path d="m6 6 12 12" />
-                </svg>
-              </button>
-            </div>
-          )}
-
           {errorMessage && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-red-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-sm font-medium animate-bounce-in max-w-md whitespace-pre-line text-center">
               <div className="flex items-center gap-3">
@@ -2579,24 +2873,6 @@ const App: React.FC = () => {
                 </svg>
                 <span>{errorMessage}</span>
                 <button onClick={() => setErrorMessage(null)} className="ml-2 hover:opacity-70">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 6 6 18" />
-                    <path d="m6 6 12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {successMessage && (
-            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-emerald-600/95 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-xs md:text-sm font-bold animate-bounce-in max-w-md text-center">
-              <div className="flex items-center gap-3">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                  <polyline points="22 4 12 14.01 9 11.01" />
-                </svg>
-                <span>{successMessage}</span>
-                <button onClick={() => setSuccessMessage(null)} className="ml-2 hover:opacity-70">
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 6 6 18" />
                     <path d="m6 6 12 12" />

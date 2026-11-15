@@ -3066,7 +3066,7 @@ export function queryActivitiesCatalog(
     const uid = normalizeUserId(userId);
     ensureCatalogForUser(uid);
 
-    const limit = Math.min(500, Math.max(10, Math.round(Number(options.limit || 150))));
+    const limit = Math.min(10000, Math.max(10, Math.round(Number(options.limit || 150))));
     const offset = Math.max(0, Math.round(Number(options.offset || 0)));
 
     const { whereSql, params } = buildCatalogWhereClause(options, uid);

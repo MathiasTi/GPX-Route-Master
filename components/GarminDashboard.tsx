@@ -4,7 +4,7 @@ import {
   X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, TrendingUp, Info,
   Zap, Key, Activity, Calendar, BarChart2, ShieldCheck,
-  Trophy, Award, Timer, Mountain, ArrowUpRight, Sliders
+  Trophy, Award, Timer, Mountain, ArrowUpRight, ArrowLeft, Sliders
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -280,6 +280,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [recordsSportFilter, setRecordsSportFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [recordsYearFilter, setRecordsYearFilter] = useState<string>('all');
   const [showAthleteSettings, setShowAthleteSettings] = useState(false);
+  const [selectedHeatmapDate, setSelectedHeatmapDate] = useState<string | null>(null);
 
   const activityPoints = useMemo(() => {
     return analyticsData?.activityCorrelations?.points || [];
@@ -665,7 +666,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const yearlyHeatmapData = useMemo(() => {
     const acts = data?.activities || [];
     const stepsMap = new Map(stepsData.map((s) => [s.date, s.steps]));
-    const dayMap = new Map<string, { distance: number; durationMin: number; ascent: number; steps: number; count: number; names: string[] }>();
+    const dayMap = new Map<string, { distance: number; durationMin: number; ascent: number; steps: number; count: number; names: string[]; activities: GarminActivity[] }>();
 
     let latestMs = Date.now();
     for (const act of acts) {
@@ -673,18 +674,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) continue;
       const ms = new Date(`${ymd}T12:00:00Z`).getTime();
       if (Number.isFinite(ms) && ms > latestMs) latestMs = ms;
-      const cur = dayMap.get(ymd) || { distance: 0, durationMin: 0, ascent: 0, steps: stepsMap.get(ymd) || 0, count: 0, names: [] };
+      const cur = dayMap.get(ymd) || { distance: 0, durationMin: 0, ascent: 0, steps: stepsMap.get(ymd) || 0, count: 0, names: [], activities: [] };
       cur.distance += Number(act.distance || 0);
       cur.durationMin += Math.round(Number(act.duration || 0) / 60);
       cur.ascent += Math.round(Number(act.ascent || 0));
       cur.count += 1;
       if (act.name && cur.names.length < 3) cur.names.push(act.name);
+      cur.activities.push(act);
       dayMap.set(ymd, cur);
     }
 
     for (const [ymd, steps] of stepsMap.entries()) {
       if (!dayMap.has(ymd)) {
-        dayMap.set(ymd, { distance: 0, durationMin: 0, ascent: 0, steps, count: 0, names: [] });
+        dayMap.set(ymd, { distance: 0, durationMin: 0, ascent: 0, steps, count: 0, names: [], activities: [] });
       }
     }
 
@@ -707,7 +709,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       steps: number;
       count: number;
       names: string[];
+      activities: GarminActivity[];
     }> = [];
+
+    const cellByDate: Record<string, (typeof cells)[number]> = {};
 
     let maxVal = 0;
     let activeDays = 0;
@@ -715,6 +720,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     let totalAscent = 0;
     let currentStreak = 0;
     let longestStreak = 0;
+
+    const isCellActive = (cnt: number, stps: number) => cnt > 0 || (heatmapMetric === 'steps' && stps >= 5000);
 
     for (let i = 0; i < totalCells; i++) {
       const cellDate = new Date(gridStartMs + i * 86400000);
@@ -735,7 +742,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           : steps;
 
       if (value > maxVal) maxVal = value;
-      if (count > 0 || (heatmapMetric === 'steps' && steps >= 5000)) {
+      if (isCellActive(count, steps)) {
         activeDays++;
         currentStreak++;
         if (currentStreak > longestStreak) longestStreak = currentStreak;
@@ -745,7 +752,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       totalDistance += distance;
       totalAscent += ascent;
 
-      cells.push({
+      const cell = {
         date: ymd,
         weekIndex: Math.floor(i / 7),
         dayOfWeek: i % 7,
@@ -755,8 +762,24 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         ascent,
         steps,
         count,
-        names: entry?.names || []
-      });
+        names: entry?.names || [],
+        activities: entry?.activities || []
+      };
+      cells.push(cell);
+      cellByDate[ymd] = cell;
+    }
+
+    // Current ongoing streak counting backwards from the anchor day (allowing today to be rest-in-progress if yesterday was active)
+    let activeStreak = 0;
+    let scanIdx = totalCells - 1 - daysUntilSunday;
+    if (scanIdx >= 0 && !isCellActive(cells[scanIdx].count, cells[scanIdx].steps)) {
+      if (scanIdx - 1 >= 0 && isCellActive(cells[scanIdx - 1].count, cells[scanIdx - 1].steps)) {
+        scanIdx -= 1;
+      }
+    }
+    while (scanIdx >= 0 && isCellActive(cells[scanIdx].count, cells[scanIdx].steps)) {
+      activeStreak++;
+      scanIdx--;
     }
 
     const weeks: typeof cells[] = [];
@@ -764,7 +787,37 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       weeks.push(cells.slice(w * 7, (w + 1) * 7));
     }
 
-    return { weeks, maxVal, activeDays, longestStreak, totalDistance: Math.round(totalDistance), totalAscent };
+    const monthNames = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+    const monthLabels: string[] = [];
+    let lastMonthIdx = -1;
+    let lastLabeledWeek = -10;
+    for (let w = 0; w < weeks.length; w++) {
+      const firstDate = weeks[w][0]?.date || '';
+      const monthIdx = parseInt(firstDate.slice(5, 7), 10) - 1;
+      if (monthIdx >= 0 && monthIdx < 12 && monthIdx !== lastMonthIdx) {
+        if (w - lastLabeledWeek >= 3) {
+          monthLabels.push(monthNames[monthIdx]);
+          lastLabeledWeek = w;
+        } else {
+          monthLabels.push('');
+        }
+        lastMonthIdx = monthIdx;
+      } else {
+        monthLabels.push('');
+      }
+    }
+
+    return {
+      weeks,
+      monthLabels,
+      cellByDate,
+      maxVal,
+      activeDays,
+      activeStreak,
+      longestStreak,
+      totalDistance: Math.round(totalDistance),
+      totalAscent
+    };
   }, [data?.activities, stepsData, heatmapMetric]);
 
   // Monthly Training Volume & Elevation by Sport
@@ -1164,18 +1217,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     return hrs > 0 ? `${hrs} Std. ${m} Min.` : `${m} Min.`;
   };
 
-  // Stats calculation & 7d vs 30d deltas
-  const avgRhr = rhrData.length > 0
-    ? Math.round(rhrData.reduce((acc, r) => acc + r.rhr, 0) / rhrData.length)
+  // Stats calculation (respects active timeframe filter) & 7d vs 30d deltas
+  const rhrSource = visibleRhrData.length > 0 ? visibleRhrData : rhrData;
+  const stepsSource = visibleStepsData.length > 0 ? visibleStepsData : stepsData;
+  const sleepSource = visibleSleepData.length > 0 ? visibleSleepData : sleepData;
+  const stressSource = visibleStressData.length > 0 ? visibleStressData : stressData;
+
+  const avgRhr = rhrSource.length > 0
+    ? Math.round(rhrSource.reduce((acc, r) => acc + r.rhr, 0) / rhrSource.length)
     : null;
-  const avgSteps = stepsData.length > 0
-    ? Math.round(stepsData.reduce((acc, s) => acc + s.steps, 0) / stepsData.length)
+  const avgSteps = stepsSource.length > 0
+    ? Math.round(stepsSource.reduce((acc, s) => acc + s.steps, 0) / stepsSource.length)
     : null;
-  const avgSleep = sleepData.length > 0
-    ? Math.round(sleepData.reduce((acc, s) => acc + s.duration, 0) / sleepData.length)
+  const avgSleep = sleepSource.length > 0
+    ? Math.round(sleepSource.reduce((acc, s) => acc + s.duration, 0) / sleepSource.length)
     : null;
-  const avgStress = stressData.length > 0
-    ? Math.round(stressData.reduce((acc, s) => acc + s.avg_stress, 0) / stressData.length)
+  const avgStress = stressSource.length > 0
+    ? Math.round(stressSource.reduce((acc, s) => acc + s.avg_stress, 0) / stressSource.length)
     : null;
 
   const kpiDeltas = useMemo(() => {
@@ -1194,6 +1252,56 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       stressDelta: calcDelta(stressData.map((d) => d.avg_stress))
     };
   }, [rhrData, stepsData, sleepData, stressData]);
+
+  const overviewSportSummary = useMemo(() => {
+    const allActs = data?.activities || [];
+    const sortedAsc = [...allActs].sort((a, b) => normalizeDateKey(a.date).localeCompare(normalizeDateKey(b.date)));
+    const rangedActs = filterByRange(sortedAsc, healthRangeDays);
+
+    let distanceKm = 0;
+    let ascentM = 0;
+    let totalDurationSec = 0;
+    let cyclingCount = 0;
+    let cyclingKm = 0;
+    let runningCount = 0;
+    let runningKm = 0;
+
+    for (const act of rangedActs) {
+      const dist = Number(act.distance || 0);
+      distanceKm += dist;
+      ascentM += Math.round(Number(act.ascent || 0));
+      totalDurationSec += Number(act.duration || 0);
+      if (isStrictCyclingActivity(act) || isCyclingType(act.type, act.name)) {
+        cyclingCount++;
+        cyclingKm += dist;
+      } else if (isStrictRunningActivity(act) || isRunningType(act.type, act.name)) {
+        runningCount++;
+        runningKm += dist;
+      }
+    }
+
+    const latestActivity = sortedAsc.length > 0 ? sortedAsc[sortedAsc.length - 1] : null;
+    const radarAvgRecent = athleteRadarData.length > 0
+      ? Math.round(athleteRadarData.reduce((s, r) => s + r.recent, 0) / athleteRadarData.length)
+      : null;
+    const radarAvgBaseline = athleteRadarData.length > 0
+      ? Math.round(athleteRadarData.reduce((s, r) => s + r.baseline, 0) / athleteRadarData.length)
+      : null;
+
+    return {
+      count: rangedActs.length,
+      distanceKm: Number(distanceKm.toFixed(1)),
+      ascentM,
+      hours: Number((totalDurationSec / 3600).toFixed(1)),
+      cyclingCount,
+      cyclingKm: Number(cyclingKm.toFixed(1)),
+      runningCount,
+      runningKm: Number(runningKm.toFixed(1)),
+      latestActivity,
+      radarAvgRecent,
+      radarAvgBaseline
+    };
+  }, [data?.activities, healthRangeDays, athleteRadarData]);
 
 
 
@@ -1251,6 +1359,20 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => {
+                fetchHealthMetrics();
+                if (activeTab === 'analytics') fetchAnalytics();
+              }}
+              disabled={isLoading}
+              className="p-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-200 border-slate-200 dark:border-slate-700 disabled:opacity-60"
+              title="Gesundheits- & Aktivitätsdaten neu laden"
+              id="btn-garmin-refresh"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-orange-500' : ''}`} />
+              <span className="hidden lg:inline">Aktualisieren</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setShowAthleteSettings(prev => !prev)}
               className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
                 showAthleteSettings
@@ -1272,9 +1394,21 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               }`}
             >
               <Key className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zur Übersicht' : 'Garmin Personal API'}</span>
+              <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zum Cockpit' : 'Garmin Personal API'}</span>
               <span className="sm:hidden">API</span>
             </button>
+            {variant === 'page' && onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700"
+                title="Zurück zur Kartenansicht"
+                id="btn-fitness-back-to-map"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Zurück zur Karte</span>
+              </button>
+            )}
             {variant === 'modal' && onClose && (
               <button 
                 onClick={onClose}
@@ -1419,8 +1553,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
           ) : (
             /* Main Dashboard View */
             <div className="space-y-6">
-              {/* 4 Interactive Bento KPI Cards with 7d Delta & Sparklines (shown on overview) */}
+              {/* 4 Interactive Bento KPI Cards with 7d Delta & Sparklines + 4-Card Sport/Form/Records Command Row (shown on overview) */}
               {activeTab === 'overview' && (
+              <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {/* Steps KPI */}
                 <button
@@ -1567,6 +1702,150 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </div>
                   </div>
                 </button>
+              </div>
+
+              {/* 4-Card Sport, Form, Records & Latest Activity Command Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="cockpit-command-strip">
+                {/* 1. Trainings-Volumen */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('performance')}
+                  className="text-left bg-blue-50/40 dark:bg-blue-950/15 hover:bg-blue-50/80 dark:hover:bg-blue-950/25 p-4 rounded-2xl border border-blue-100/70 dark:border-blue-900/30 transition-all cursor-pointer flex flex-col justify-between gap-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 rounded-xl group-hover:scale-105 transition-transform">
+                        <Zap className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider block">
+                          Trainings-Volumen ({healthRangeDays === 'all' ? 'Gesamt' : `${healthRangeDays}T`})
+                        </span>
+                        <span className="text-lg font-black text-slate-800 dark:text-slate-100 font-mono tabular-nums">
+                          {overviewSportSummary.distanceKm.toLocaleString('de-DE')} km
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-mono">
+                      {overviewSportSummary.count}x
+                    </span>
+                  </div>
+                  <div className="text-[10.5px] text-slate-500 dark:text-slate-400 font-mono flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span>+{overviewSportSummary.ascentM.toLocaleString('de-DE')} hm · {overviewSportSummary.hours}h</span>
+                    <span className="text-blue-600 dark:text-blue-400 font-bold">🚴 {overviewSportSummary.cyclingCount} ({overviewSportSummary.cyclingKm} km)</span>
+                    <span className="text-orange-600 dark:text-orange-400 font-bold">🏃 {overviewSportSummary.runningCount} ({overviewSportSummary.runningKm} km)</span>
+                  </div>
+                </button>
+
+                {/* 2. 5-Achsen Form-Index */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('analytics')}
+                  className="text-left bg-purple-50/40 dark:bg-purple-950/15 hover:bg-purple-50/80 dark:hover:bg-purple-950/25 p-4 rounded-2xl border border-purple-100/70 dark:border-purple-900/30 transition-all cursor-pointer flex flex-col justify-between gap-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-purple-100 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 rounded-xl group-hover:scale-105 transition-transform">
+                        <Activity className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider block">
+                          5-Achsen Form-Index
+                        </span>
+                        <span className="text-lg font-black text-slate-800 dark:text-slate-100 font-mono tabular-nums">
+                          {overviewSportSummary.radarAvgRecent !== null ? `${overviewSportSummary.radarAvgRecent}/100` : '-'}
+                        </span>
+                      </div>
+                    </div>
+                    {overviewSportSummary.radarAvgRecent !== null && overviewSportSummary.radarAvgBaseline !== null && (() => {
+                      const delta = overviewSportSummary.radarAvgRecent - overviewSportSummary.radarAvgBaseline;
+                      return (
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full font-mono ${delta >= 0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                          {delta >= 0 ? '+' : ''}{delta} vs. Basis ({overviewSportSummary.radarAvgBaseline})
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className="text-[10.5px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                    <span className="truncate">Umfang · Berg · Kardio · Schlaf · Resilienz</span>
+                    <span className="font-bold text-purple-600 dark:text-purple-400 shrink-0 ml-1">Radar →</span>
+                  </div>
+                </button>
+
+                {/* 3. Persönliche Rekord-Highlights */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('records')}
+                  className="text-left bg-orange-50/40 dark:bg-orange-950/15 hover:bg-orange-50/80 dark:hover:bg-orange-950/25 p-4 rounded-2xl border border-orange-100/70 dark:border-orange-900/30 transition-all cursor-pointer flex flex-col justify-between gap-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-orange-100 dark:bg-orange-950/60 text-orange-600 dark:text-orange-400 rounded-xl group-hover:scale-105 transition-transform">
+                        <Trophy className="w-4 h-4" />
+                      </div>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">
+                        Rekord-Highlights
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold text-orange-600 dark:text-orange-400">Alle →</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                    <div className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-orange-100 dark:border-orange-900/40">
+                      <span className="block text-[9px] font-sans font-bold text-slate-400 uppercase">🚴 Längste Tour</span>
+                      <span className="font-black text-slate-800 dark:text-slate-100">
+                        {recordsData.cycling.longestDistance ? `${recordsData.cycling.longestDistance.distance.toFixed(1)} km` : '-'}
+                      </span>
+                    </div>
+                    <div className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-orange-100 dark:border-orange-900/40">
+                      <span className="block text-[9px] font-sans font-bold text-slate-400 uppercase">🏃 Weitester Lauf</span>
+                      <span className="font-black text-slate-800 dark:text-slate-100">
+                        {recordsData.running.longestDistance ? `${recordsData.running.longestDistance.distance.toFixed(2)} km` : '-'}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 4. Letzte Einheit mit Direkt-Laden */}
+                <div className="bg-slate-50/80 dark:bg-slate-800/40 p-4 rounded-2xl border border-slate-200/70 dark:border-slate-700/60 flex flex-col justify-between gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <Timer className="w-3.5 h-3.5 text-indigo-500" />
+                      Letzte Einheit
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectTab('activities')}
+                      className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                    >
+                      Alle →
+                    </button>
+                  </div>
+                  {overviewSportSummary.latestActivity ? (
+                    <>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-slate-800 dark:text-slate-100 truncate" title={overviewSportSummary.latestActivity.name}>
+                          {overviewSportSummary.latestActivity.name}
+                        </p>
+                        <p className="text-[10.5px] text-slate-500 dark:text-slate-400 font-mono">
+                          {normalizeDateKey(overviewSportSummary.latestActivity.date)} · {overviewSportSummary.latestActivity.distance.toFixed(1)} km · {formatDurationHhMm(overviewSportSummary.latestActivity.duration)}
+                        </p>
+                      </div>
+                      {onLoadTrack && (
+                        <button
+                          type="button"
+                          onClick={() => handleLoadActivity(overviewSportSummary.latestActivity!)}
+                          className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-[11px] font-bold transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <span>Auf Karte laden</span>
+                          <ArrowUpRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-slate-400">Noch keine Aktivität importiert.</p>
+                  )}
+                </div>
+              </div>
               </div>
               )}
 
@@ -2260,7 +2539,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               365-Tage Konsistenz-Heatmap
                             </h4>
                             <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                              {yearlyHeatmapData.activeDays} aktive Tage · Längster Streak: <strong>{yearlyHeatmapData.longestStreak} Tage</strong> · {yearlyHeatmapData.totalDistance.toLocaleString('de-DE')} km · +{yearlyHeatmapData.totalAscent.toLocaleString('de-DE')} hm
+                              {yearlyHeatmapData.activeDays} aktive Tage · Aktueller Streak: <strong>{yearlyHeatmapData.activeStreak} Tage</strong> · Längster Streak: <strong>{yearlyHeatmapData.longestStreak} Tage</strong> · {yearlyHeatmapData.totalDistance.toLocaleString('de-DE')} km · +{yearlyHeatmapData.totalAscent.toLocaleString('de-DE')} hm
                             </p>
                           </div>
                           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl self-start sm:self-auto">
@@ -2287,41 +2566,112 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         </div>
 
                         <div className="overflow-x-auto pb-1">
-                          <div className="inline-flex gap-1 min-w-max">
-                            <div className="grid grid-rows-7 gap-1 pr-1 text-[9px] text-slate-400 font-semibold items-center">
-                              <span>Mo</span><span></span><span>Mi</span><span></span><span>Fr</span><span></span><span>So</span>
+                          <div className="inline-flex flex-col gap-1 min-w-max">
+                            {/* Month Labels Row */}
+                            <div className="flex gap-1 pl-5 text-[9px] font-bold text-slate-400 select-none h-3.5">
+                              {yearlyHeatmapData.monthLabels.map((lbl, wIdx) => (
+                                <div key={wIdx} className="w-3 overflow-visible whitespace-nowrap leading-none">
+                                  {lbl}
+                                </div>
+                              ))}
                             </div>
-                            {yearlyHeatmapData.weeks.map((week, wIdx) => (
-                              <div key={wIdx} className="grid grid-rows-7 gap-1">
-                                {week.map((cell) => {
-                                  const ratio = yearlyHeatmapData.maxVal > 0 ? cell.value / yearlyHeatmapData.maxVal : 0;
-                                  const colorClass = cell.value <= 0
-                                    ? 'bg-slate-100 dark:bg-slate-800/80'
-                                    : ratio < 0.25
-                                    ? 'bg-emerald-200 dark:bg-emerald-950'
-                                    : ratio < 0.5
-                                    ? 'bg-emerald-300 dark:bg-emerald-800'
-                                    : ratio < 0.75
-                                    ? 'bg-emerald-500 dark:bg-emerald-600'
-                                    : 'bg-orange-500 dark:bg-orange-400';
-                                  const tooltipText = [
-                                    cell.date,
-                                    cell.distance > 0 ? `${cell.distance} km · ${cell.durationMin} Min. · +${cell.ascent} hm` : null,
-                                    cell.steps > 0 ? `${cell.steps.toLocaleString('de-DE')} Schritte` : null,
-                                    cell.names.length > 0 ? cell.names.join(', ') : null
-                                  ].filter(Boolean).join(' | ');
-                                  return (
-                                    <div
-                                      key={cell.date}
-                                      title={tooltipText}
-                                      className={`w-3 h-3 rounded-[3px] ${colorClass} transition-transform hover:scale-125`}
-                                    />
-                                  );
-                                })}
+                            <div className="inline-flex gap-1">
+                              <div className="grid grid-rows-7 gap-1 pr-1 text-[9px] text-slate-400 font-semibold items-center w-4">
+                                <span>Mo</span><span></span><span>Mi</span><span></span><span>Fr</span><span></span><span>So</span>
                               </div>
-                            ))}
+                              {yearlyHeatmapData.weeks.map((week, wIdx) => (
+                                <div key={wIdx} className="grid grid-rows-7 gap-1">
+                                  {week.map((cell) => {
+                                    const ratio = yearlyHeatmapData.maxVal > 0 ? cell.value / yearlyHeatmapData.maxVal : 0;
+                                    const isSelected = selectedHeatmapDate === cell.date;
+                                    const colorClass = cell.value <= 0
+                                      ? 'bg-slate-100 dark:bg-slate-800/80'
+                                      : ratio < 0.25
+                                      ? 'bg-emerald-200 dark:bg-emerald-950'
+                                      : ratio < 0.5
+                                      ? 'bg-emerald-300 dark:bg-emerald-800'
+                                      : ratio < 0.75
+                                      ? 'bg-emerald-500 dark:bg-emerald-600'
+                                      : 'bg-orange-500 dark:bg-orange-400';
+                                    const tooltipText = [
+                                      cell.date,
+                                      cell.distance > 0 ? `${cell.distance} km · ${cell.durationMin} Min. · +${cell.ascent} hm` : null,
+                                      cell.steps > 0 ? `${cell.steps.toLocaleString('de-DE')} Schritte` : null,
+                                      cell.names.length > 0 ? cell.names.join(', ') : null
+                                    ].filter(Boolean).join(' | ');
+                                    return (
+                                      <button
+                                        key={cell.date}
+                                        type="button"
+                                        onClick={() => setSelectedHeatmapDate((prev) => (prev === cell.date ? null : cell.date))}
+                                        title={tooltipText}
+                                        className={`w-3 h-3 rounded-[3px] ${colorClass} transition-transform hover:scale-125 cursor-pointer ${
+                                          isSelected ? 'ring-2 ring-indigo-600 dark:ring-indigo-400 scale-125 z-10' : ''
+                                        }`}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
+
+                        {/* Interactive Selected Day Detail Strip */}
+                        {selectedHeatmapDate && yearlyHeatmapData.cellByDate[selectedHeatmapDate] && (() => {
+                          const selectedCell = yearlyHeatmapData.cellByDate[selectedHeatmapDate];
+                          return (
+                            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2 text-xs">
+                                  <span className="font-black text-slate-800 dark:text-slate-100 font-mono">
+                                    {selectedCell.date}
+                                  </span>
+                                  <span className="text-slate-500 dark:text-slate-400">
+                                    {selectedCell.count > 0
+                                      ? `${selectedCell.count} Aktivität(en) · ${selectedCell.distance} km · ${selectedCell.durationMin} Min. · +${selectedCell.ascent} hm`
+                                      : 'Keine Aktivität'}
+                                    {selectedCell.steps > 0 ? ` · ${selectedCell.steps.toLocaleString('de-DE')} Schritte` : ''}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedHeatmapDate(null)}
+                                  className="text-[11px] font-bold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                                >
+                                  Schließen
+                                </button>
+                              </div>
+                              {selectedCell.activities.length > 0 && (
+                                <div className="flex flex-wrap gap-2">
+                                  {selectedCell.activities.map((act) => (
+                                    <div
+                                      key={act.id}
+                                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-xs"
+                                    >
+                                      <span>{isRunningType(act.type, act.name) ? '🏃' : isCyclingType(act.type, act.name) ? '🚴' : '🏅'}</span>
+                                      <span className="font-bold text-slate-800 dark:text-slate-100 max-w-[200px] truncate" title={act.name}>
+                                        {act.name}
+                                      </span>
+                                      <span className="font-mono text-[11px] text-slate-500">
+                                        {act.distance.toFixed(1)} km · {formatDurationHhMm(act.duration)}
+                                      </span>
+                                      {onLoadTrack && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleLoadActivity(act)}
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-600 hover:bg-orange-700 text-white text-[10px] font-bold cursor-pointer transition-colors"
+                                        >
+                                          In Workspace laden
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* New Diagram 3: Monthly Volume & Elevation by Sport */}
@@ -2360,9 +2710,18 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         {/* Ruhepuls & 7d Rolling Average */}
                         <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
-                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between">
-                            <span>Ruhepuls Trend &amp; 7T-Mittel (bpm)</span>
-                            <Heart className="w-3.5 h-3.5 text-rose-500" />
+                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5">
+                              <Heart className="w-3.5 h-3.5 text-rose-500" />
+                              Ruhepuls Trend &amp; 7T-Mittel (bpm)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTab('rhr')}
+                              className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                            >
+                              Details →
+                            </button>
                           </h4>
                           <div className="h-48 w-full min-w-0">
                             {visibleRhrData.length === 0 ? (
@@ -2412,9 +2771,18 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
                         {/* Schritte Verlauf */}
                         <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
-                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between">
-                            <span>Tägliche Schritte &amp; 10k-Ziel</span>
-                            <Footprints className="w-3.5 h-3.5 text-emerald-500" />
+                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5">
+                              <Footprints className="w-3.5 h-3.5 text-emerald-500" />
+                              Tägliche Schritte &amp; 10k-Ziel
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTab('steps')}
+                              className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                            >
+                              Details →
+                            </button>
                           </h4>
                           <div className="h-48 w-full min-w-0">
                             {visibleStepsData.length === 0 ? (
@@ -2438,6 +2806,97 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                   <ReferenceLine y={10000} stroke="#059669" strokeDasharray="4 4" />
                                   <Bar dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.75} radius={[4, 4, 0, 0]} />
                                   <Line type="monotone" dataKey="steps7dAvg" name="7T-Schnitt" stroke="#047857" strokeWidth={2.5} dot={false} />
+                                </ComposedChart>
+                              </ResponsiveContainer>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Schlafdauer, Phasen & 8h-Ziel */}
+                        <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
+                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5">
+                              <Moon className="w-3.5 h-3.5 text-indigo-500" />
+                              Schlafdauer, Phasen &amp; 8h-Ziel
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTab('sleep')}
+                              className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                            >
+                              Details →
+                            </button>
+                          </h4>
+                          <div className="h-48 w-full min-w-0">
+                            {visibleSleepData.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                                <span>Keine Schlafdaten vorhanden.</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectTab('personal-api')}
+                                  className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                                >
+                                  Über Garmin Personal API synchronisieren
+                                </button>
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                <ComposedChart data={visibleSleepData}>
+                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
+                                  <XAxis dataKey="shortDate" stroke="#94a3b8" fontSize={9} minTickGap={16} />
+                                  <YAxis domain={[0, 'dataMax + 60']} unit="h" tickFormatter={(v) => (v / 60).toFixed(1)} stroke="#94a3b8" fontSize={9} width={34} />
+                                  <Tooltip
+                                    contentStyle={{ borderRadius: '12px', fontSize: '11px' }}
+                                    formatter={(val: any, name: any) => [formatMinutes(Number(val)), name]}
+                                  />
+                                  <ReferenceLine y={480} stroke="#6366f1" strokeDasharray="4 4" />
+                                  <Bar dataKey="deep" name="Tiefschlaf" stackId="s" fill="#1e3a8a" isAnimationActive={false} />
+                                  <Bar dataKey="rem" name="REM" stackId="s" fill="#8b5cf6" isAnimationActive={false} />
+                                  <Bar dataKey="light" name="Leichtschlaf" stackId="s" fill="#3b82f6" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                  <Line type="monotone" dataKey="sleep7dAvg" name="7T-Schnitt" stroke="#ec4899" strokeWidth={2.5} dot={false} isAnimationActive={false} />
+                                </ComposedChart>
+                              </ResponsiveContainer>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Stressbelastung & 7T-Trend */}
+                        <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
+                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5">
+                              <Flame className="w-3.5 h-3.5 text-amber-500" />
+                              Tägliche Stressbelastung &amp; 7T-Schnitt
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTab('stress')}
+                              className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                            >
+                              Details →
+                            </button>
+                          </h4>
+                          <div className="h-48 w-full min-w-0">
+                            {visibleStressData.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
+                                <span>Keine Stress-Daten vorhanden.</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectTab('personal-api')}
+                                  className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
+                                >
+                                  Über Garmin Personal API synchronisieren
+                                </button>
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                <ComposedChart data={visibleStressData}>
+                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
+                                  <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                                  <YAxis domain={[0, 100]} stroke="#94a3b8" fontSize={9} />
+                                  <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                                  <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" />
+                                  <Area type="monotone" dataKey="avg_stress" name="Ø Stress" stroke="#fca5a5" fill="#ef4444" fillOpacity={0.16} strokeWidth={1.8} isAnimationActive={false} />
+                                  <Line type="monotone" dataKey="stress7dAvg" name="7T-Schnitt" stroke="#dc2626" strokeWidth={2.5} dot={false} isAnimationActive={false} />
                                 </ComposedChart>
                               </ResponsiveContainer>
                             )}

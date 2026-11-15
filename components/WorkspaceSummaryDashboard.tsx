@@ -13,7 +13,10 @@ import {
   ChevronDown,
   ChevronUp,
   BarChart3,
-  Target
+  Target,
+  Trash2,
+  GitCompare,
+  Sparkles
 } from 'lucide-react';
 import { GPXTrack } from '../types';
 
@@ -237,10 +240,14 @@ interface WorkspaceSummaryDashboardProps {
   variant?: 'sidebar' | 'modal';
   isDark?: boolean;
   markedTrackId?: string | null;
+  compareTrackId?: string | null;
   onMarkTrack?: (trackId: string) => void;
+  onStartMapComparison?: (track1Id?: string, track2Id?: string) => void;
+  onExitMapComparison?: () => void;
   onToggleTrackVisibility?: (trackId: string) => void;
   onToggleAllVisibility?: (makeAllVisible: boolean) => void;
   onFitVisibleTracks?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
+  onClearAllTracks?: () => void;
   onClose?: () => void;
   onOpenIntensiveAnalysis?: (trackId?: string) => void;
 }
@@ -251,9 +258,14 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
   estimatedSpeed = 25,
   isDark = false,
   markedTrackId,
+  compareTrackId = null,
   onMarkTrack,
+  onStartMapComparison,
+  onExitMapComparison,
   onToggleAllVisibility,
-  onFitVisibleTracks
+  onFitVisibleTracks,
+  onClearAllTracks,
+  onOpenIntensiveAnalysis
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTrackBreakdown, setShowTrackBreakdown] = useState(false);
@@ -311,6 +323,27 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
         </div>
 
         <div className="flex items-center gap-1">
+          {stats.totalTracks >= 2 && onStartMapComparison && (
+            <button
+              type="button"
+              onClick={() => {
+                if (compareTrackId && onExitMapComparison) {
+                  onExitMapComparison();
+                } else {
+                  onStartMapComparison(markedTrackId || undefined);
+                }
+              }}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                compareTrackId
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={compareTrackId ? '2-Track Karten-Vergleich beenden' : '2 Tracks auf Karte vergleichen'}
+              id="btn-workspace-summary-compare"
+            >
+              <GitCompare className="w-3.5 h-3.5" />
+            </button>
+          )}
           {stats.visibleTracksCount > 0 && onFitVisibleTracks && (
             <button
               type="button"
@@ -331,6 +364,17 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
               id="btn-toggle-all-visibility"
             >
               {allVisible ? <Eye className="w-3.5 h-3.5 text-indigo-500" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {onClearAllTracks && (
+            <button
+              type="button"
+              onClick={onClearAllTracks}
+              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
+              title="Alle Touren aus Workspace entfernen (Strg+Z für Rückgängig)"
+              id="btn-workspace-summary-clear-all"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
           <button
@@ -514,13 +558,16 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
                     <div className="space-y-1 pt-1 max-h-36 overflow-y-auto pr-1">
                       {stats.visibleTracks.map(track => {
                         const isMarked = markedTrackId === track.id;
+                        const isCompared = compareTrackId === track.id;
                         return (
                           <div
                             key={track.id}
                             onClick={() => onMarkTrack?.(track.id)}
-                            className={`flex items-center justify-between p-1.5 rounded-lg text-[10.5px] transition-all cursor-pointer ${
+                            className={`flex items-center justify-between p-1.5 rounded-lg text-[10.5px] transition-all cursor-pointer gap-1.5 ${
                               isMarked
                                 ? 'bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800/80 font-bold'
+                                : isCompared
+                                ? 'bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800/70 font-bold'
                                 : 'hover:bg-slate-100/70 dark:hover:bg-slate-800/50 border border-transparent'
                             }`}
                           >
@@ -529,17 +576,59 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
                                 className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs"
                                 style={{ backgroundColor: track.color || '#3b82f6' }}
                               />
-                              <span className="truncate max-w-[130px] text-slate-800 dark:text-slate-200">
+                              <span className="truncate max-w-[115px] text-slate-800 dark:text-slate-200">
                                 {track.name}
                               </span>
                             </div>
-                            <div className="flex items-center gap-2 font-mono text-[10px] shrink-0">
+                            <div className="flex items-center gap-1.5 font-mono text-[10px] shrink-0">
                               <span className="text-slate-600 dark:text-slate-400">
                                 {track.distance.toFixed(1)} km
                               </span>
                               <span className="text-emerald-600 dark:text-emerald-400 font-bold">
                                 +{Math.round(track.ascent)}m
                               </span>
+                              {tracks.length >= 2 && onStartMapComparison && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isCompared || (isMarked && compareTrackId)) {
+                                      onExitMapComparison?.();
+                                    } else if (markedTrackId && markedTrackId !== track.id) {
+                                      onStartMapComparison(markedTrackId, track.id);
+                                    } else {
+                                      onStartMapComparison(track.id);
+                                    }
+                                  }}
+                                  className={`p-1 rounded transition-colors cursor-pointer ${
+                                    isCompared
+                                      ? 'bg-orange-500 text-white'
+                                      : isMarked && compareTrackId
+                                      ? 'bg-blue-600 text-white'
+                                      : 'text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700'
+                                  }`}
+                                  title={
+                                    isCompared || (isMarked && compareTrackId)
+                                      ? '2-Track Karten-Vergleich beenden'
+                                      : 'Mit diesem Track auf Karte vergleichen'
+                                  }
+                                >
+                                  <GitCompare className="w-3 h-3" />
+                                </button>
+                              )}
+                              {onOpenIntensiveAnalysis && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenIntensiveAnalysis(track.id);
+                                  }}
+                                  className="p-1 rounded text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                                  title="Analyse-Cockpit für diesen Track öffnen"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         );

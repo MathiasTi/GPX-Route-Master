@@ -115,7 +115,6 @@ export default function FitnessPerformanceAnalysis({
   const [planDuration, setPlanDuration] = useState<4 | 8 | 12>(8);
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(0);
   const [historyAnalysisRange, setHistoryAnalysisRange] = useState<'1week' | '4weeks' | 'all'>('4weeks');
-  const [libraryTracks, setLibraryTracks] = useState<any[]>([]);
   const [performanceMetric, setPerformanceMetric] = useState<'speed' | 'hr' | 'both'>('both');
 
   useEffect(() => {
@@ -242,21 +241,6 @@ export default function FitnessPerformanceAnalysis({
     }
   }, [initialActivities]);
 
-  // Load activities and library tracks
-  const fetchLibraryTracks = useCallback(async () => {
-    try {
-      const libResponse = await apiFetch(getApiUrl("/api/library"));
-      if (libResponse.ok) {
-        const libResult = await libResponse.json();
-        if (libResult.success && libResult.tracks) {
-          setLibraryTracks(libResult.tracks);
-        }
-      }
-    } catch (err) {
-      console.error("Error loading library tracks for science:", err);
-    }
-  }, []);
-
   const fetchHealthMetrics = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -269,24 +253,19 @@ export default function FitnessPerformanceAnalysis({
       } else {
         throw new Error("Fehler beim Verarbeiten der Server-Antwort");
       }
-
-      // Also fetch library tracks for a complete view of loaded track data
-      await fetchLibraryTracks();
     } catch (err: any) {
       console.error("Error loading activities for science:", err);
       setError(err.message || "Verbindung zum Server fehlgeschlagen");
     } finally {
       setLoading(false);
     }
-  }, [fetchLibraryTracks]);
+  }, []);
 
   useEffect(() => {
-    if (hasInitialActivities) {
-      fetchLibraryTracks();
-    } else {
+    if (!hasInitialActivities) {
       fetchHealthMetrics();
     }
-  }, [hasInitialActivities, fetchHealthMetrics, fetchLibraryTracks]);
+  }, [hasInitialActivities, fetchHealthMetrics]);
 
   // Sync props to state if they change
   useEffect(() => {
@@ -511,7 +490,7 @@ export default function FitnessPerformanceAnalysis({
     });
   }, [calculatedActivities, filterType]);
 
-  // Combine Garmin activities and Track Library tracks for a unified training performance dataset
+  // Strictly Garmin activities for Fitness & Gesundheit performance trends (no GPX library tracks)
   const combinedTrainings = useMemo(() => {
     const list: {
       id: string;
@@ -525,7 +504,6 @@ export default function FitnessPerformanceAnalysis({
       isTrackLibraryItem: boolean;
     }[] = [];
 
-    // Add Garmin activities
     activities.forEach(act => {
       const isRun = isRunningType(act.type, act.name);
       const isBike = isCyclingType(act.type, act.name);
@@ -545,30 +523,8 @@ export default function FitnessPerformanceAnalysis({
       });
     });
 
-    // Add Track Library tracks (if they are not already in activities by ID)
-    libraryTracks.forEach(track => {
-      const isRun = track.activityType === 'running';
-      if (filterType === 'cycling' && isRun) return;
-      if (filterType === 'running' && !isRun) return;
-
-      if (!list.some(item => item.id === track.id)) {
-        const trackDate = track.dateCreated ? track.dateCreated.split('T')[0] : new Date().toISOString().split('T')[0];
-        list.push({
-          id: track.id,
-          name: track.name,
-          type: track.activityType || 'running',
-          date: trackDate,
-          distance: track.distance,
-          duration: track.duration || Math.round((track.distance / (isRun ? 10 : 25)) * 3600),
-          avg_hr: undefined,
-          ascent: track.ascent,
-          isTrackLibraryItem: true
-        });
-      }
-    });
-
     return list;
-  }, [activities, libraryTracks, filterType]);
+  }, [activities, filterType]);
 
   // Performance Trend Data over the last 4 weeks (28 days relative to the latest session)
   const performanceTrendData = useMemo(() => {

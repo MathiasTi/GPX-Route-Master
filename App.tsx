@@ -438,7 +438,7 @@ const App: React.FC = () => {
 
   const refreshCatalogTotalCount = useCallback(() => {
     if (!isUnlocked) return;
-    apiFetch(getApiUrl('/api/activities/catalog?limit=10&offset=0'))
+    apiFetch(getApiUrl('/api/activities/catalog?source=garmin&limit=10&offset=0'))
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.success && typeof data.databaseTotalCount === 'number') {
@@ -1558,6 +1558,7 @@ const App: React.FC = () => {
       const data = await response.json();
       if (data.success) {
         setSuccessMessage(`"${track.name}" wurde erfolgreich in der SQLite-Bibliothek gespeichert!`);
+        refreshCatalogTotalCount();
       } else {
         setErrorMessage(data.error || 'Fehler beim Speichern in der Bibliothek.');
       }
@@ -1565,7 +1566,7 @@ const App: React.FC = () => {
       console.error('Failed to save track to library:', err);
       setErrorMessage('Speichern in der Bibliothek fehlgeschlagen.');
     }
-  }, [tracks]);
+  }, [tracks, refreshCatalogTotalCount]);
 
   const handleLoadReferenceTours = useCallback(async () => {
     try {
@@ -1989,10 +1990,10 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* Unified 3-Zone Top Navigation Bar */}
-      <header className="h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-[75]">
-        {/* Zone Left: Mobile Menu + Brand + Primary View Switcher */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+      {/* Clean All-Page Top Navigation Bar (Zero Horizontal Slider) */}
+      <header className="min-h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 shrink-0 z-[75]">
+        {/* Brand + Mobile Sidebar Toggle */}
+        <div className="flex items-center gap-2 shrink-0">
           {activeWorkspaceView === 'map' && (
             <button
               type="button"
@@ -2001,14 +2002,14 @@ const App: React.FC = () => {
                 triggerHaptic('medium');
                 setIsMobileMenuOpen(true);
               }}
-              className="md:hidden min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0"
+              className="md:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0"
               title="Seitenleiste öffnen"
             >
-              <Menu size={18} />
+              <Menu size={17} />
             </button>
           )}
 
-          <div className="hidden sm:flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/80 flex items-center justify-center">
               <Activity className="text-indigo-600 dark:text-indigo-400" size={15} />
             </div>
@@ -2016,126 +2017,100 @@ const App: React.FC = () => {
               GPX Master
             </span>
           </div>
+        </div>
 
-          <nav
-            aria-label="Hauptnavigation"
-            className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-950 p-0.5 border border-slate-200/80 dark:border-slate-800 overflow-x-auto max-w-full"
+        {/* All 5 Pages Always Visible (Wrap cleanly without horizontal slider) */}
+        <nav
+          aria-label="Hauptnavigation"
+          className="order-3 lg:order-2 w-full lg:w-auto flex flex-wrap items-center gap-1 pt-1 lg:pt-0 border-t lg:border-t-0 border-slate-100 dark:border-slate-800/80"
+        >
+          <button
+            type="button"
+            onClick={() => navigateWorkspace('map')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeWorkspaceView === 'map'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
+            }`}
           >
-            <button
-              type="button"
-              onClick={() => navigateWorkspace('map')}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeWorkspaceView === 'map'
-                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
-            >
-              <MapIcon size={14} />
-              <span>Karte</span>
-              {tracks.length > 0 && (
-                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                  ({tracks.length})
-                </span>
-              )}
-            </button>
+            <MapIcon size={14} />
+            <span>Karte</span>
+            {tracks.length > 0 && (
+              <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
+                {tracks.length}
+              </span>
+            )}
+          </button>
 
-            <button
-              type="button"
-              id="nav-tab-planned-tours"
-              onClick={() => navigateWorkspace('planned')}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeWorkspaceView === 'planned'
-                  ? 'bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
-            >
-              <Compass size={14} />
-              <span>Geplante Touren</span>
-              {plannedToursCount !== null && (
-                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                  ({plannedToursCount.toLocaleString('de-DE')})
-                </span>
-              )}
-            </button>
+          <button
+            type="button"
+            id="nav-tab-planned-tours"
+            onClick={() => navigateWorkspace('planned')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeWorkspaceView === 'planned'
+                ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
+            }`}
+          >
+            <Compass size={14} />
+            <span>Geplante Touren</span>
+            {plannedToursCount !== null && (
+              <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
+                {plannedToursCount.toLocaleString('de-DE')}
+              </span>
+            )}
+          </button>
 
-            <button
-              type="button"
-              id="nav-tab-activities-manager"
-              onClick={() => navigateWorkspace('activities')}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeWorkspaceView === 'activities'
-                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
-            >
-              <ListFilter size={14} />
-              <span>Aktivitäten</span>
-              {catalogTotalCount !== null && (
-                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                  ({catalogTotalCount.toLocaleString('de-DE')})
-                </span>
-              )}
-            </button>
+          <button
+            type="button"
+            id="nav-tab-activities-manager"
+            onClick={() => navigateWorkspace('activities')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeWorkspaceView === 'activities'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
+            }`}
+          >
+            <ListFilter size={14} />
+            <span>Aktivitäten</span>
+            {catalogTotalCount !== null && (
+              <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
+                {catalogTotalCount.toLocaleString('de-DE')}
+              </span>
+            )}
+          </button>
 
-            <button
-              type="button"
-              id="nav-tab-activities-dashboard"
-              onClick={() => navigateWorkspace('dashboard')}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeWorkspaceView === 'dashboard'
-                  ? 'bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 shadow-2xs border border-slate-200/80 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
-            >
-              <BarChart3 size={14} />
-              <span className="hidden lg:inline">Aktivitäten-Dashboard</span>
-              <span className="lg:hidden">Dashboard</span>
-            </button>
+          <button
+            type="button"
+            id="nav-tab-activities-dashboard"
+            onClick={() => navigateWorkspace('dashboard')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeWorkspaceView === 'dashboard'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
+            }`}
+          >
+            <BarChart3 size={14} />
+            <span>Aktivitäten-Dashboard</span>
+          </button>
 
-            <button
-              type="button"
-              id="nav-tab-fitness-health"
-              onClick={() => openFitnessPage('overview')}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeWorkspaceView === 'fitness'
-                  ? 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 shadow-2xs border border-slate-200/80 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
-            >
-              <Activity size={14} />
-              <span className="sm:hidden">Fitness</span>
-              <span className="hidden sm:inline">Fitness &amp; Gesundheit</span>
-            </button>
-          </nav>
-        </div>
+          <button
+            type="button"
+            id="nav-tab-fitness-health"
+            onClick={() => openFitnessPage('overview')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeWorkspaceView === 'fitness'
+                ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 border border-orange-200/80 dark:border-orange-800'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
+            }`}
+          >
+            <Activity size={14} />
+            <span>Fitness &amp; Gesundheit</span>
+          </button>
+        </nav>
 
-        {/* Zone Center: Quiet Workspace Context */}
-        <div className="hidden xl:flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
-          {activeWorkspaceView === 'map' ? (
-            <>
-              <span>{tracks.filter(t => t.visible).length} aktive Spuren auf Karte</span>
-              {markedTrack && (
-                <>
-                  <span>·</span>
-                  <span className="text-slate-700 dark:text-slate-300 font-semibold truncate max-w-[260px]">
-                    {markedTrack.name}
-                  </span>
-                </>
-              )}
-            </>
-          ) : activeWorkspaceView === 'planned' ? (
-            <span>Gespeicherte Touren &amp; Etappen · Planung &amp; Direkt-Export</span>
-          ) : activeWorkspaceView === 'dashboard' ? (
-            <span>Wochen-, Monats- &amp; Jahresauswertung · Gefahrene Kilometer &amp; Metriken</span>
-          ) : activeWorkspaceView === 'fitness' ? (
-            <span>Fitness- &amp; Gesundheits-Cockpit · Readiness · Training &amp; Rekorde</span>
-          ) : (
-            <span>Hochgeschwindigkeits-Archiv · Volltext &amp; Metriken</span>
-          )}
-        </div>
-
-        {/* Zone Right: Single-Line Quick Actions */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Compact Right Quick Actions */}
+        <div className="order-2 lg:order-3 flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() => topbarUploadInputRef.current?.click()}
@@ -2154,7 +2129,7 @@ const App: React.FC = () => {
               title="Garmin Connect Sync (Personal API)"
             >
               <Database size={13} className="text-orange-500" />
-              <span className="hidden md:inline">Garmin Sync</span>
+              <span className="hidden sm:inline">Garmin Sync</span>
             </button>
           )}
 
@@ -2170,10 +2145,10 @@ const App: React.FC = () => {
               title="Athleten-Profil: Alter, Gewicht, FTP & Max. Puls"
             >
               <Sliders size={13} className="text-amber-500" />
-              <span className="hidden lg:inline font-mono tabular-nums">
+              <span className="hidden xl:inline font-mono tabular-nums">
                 {ftp}W · {userWeight}kg · {userAge}J
               </span>
-              <span className="lg:hidden">Profil</span>
+              <span className="xl:hidden">Profil</span>
             </button>
 
             {athleteProfileOpen && (

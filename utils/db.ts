@@ -3048,10 +3048,19 @@ function getCatalogOrderBySql(sortBy?: CatalogSortBy): string {
   }
 }
 
-export function getTotalCatalogCount(userId: string = 'default'): number {
+export function getTotalCatalogCount(
+  userId: string = 'default',
+  source?: 'all' | CatalogSource
+): number {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
     ensureCatalogForUser(uid);
+    if (source === 'garmin' || source === 'library') {
+      const row = db
+        .prepare(`SELECT COUNT(*) AS total FROM activities_catalog WHERE user_id = ? AND source = ?`)
+        .get(uid, source) as { total: number } | undefined;
+      return Number(row?.total || 0);
+    }
     const row = db
       .prepare(`SELECT COUNT(*) AS total FROM activities_catalog WHERE user_id = ?`)
       .get(uid) as { total: number } | undefined;
@@ -3075,7 +3084,7 @@ export function queryActivitiesCatalog(
     const { whereSql: countryFacetWhere, params: countryFacetParams } = buildCatalogWhereClause(options, uid, { country: true });
     const orderBySql = getCatalogOrderBySql(options.sortBy);
 
-    const databaseTotalCount = getTotalCatalogCount(uid);
+    const databaseTotalCount = getTotalCatalogCount(uid, options.source);
 
     const summaryRow = db
       .prepare(

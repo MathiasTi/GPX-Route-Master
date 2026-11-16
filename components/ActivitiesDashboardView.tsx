@@ -13,11 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   RefreshCw,
-  Upload,
-  Database,
-  ArrowLeft,
   ArrowUpRight,
-  ListFilter,
   Award,
   Loader2,
   MapPin,
@@ -42,10 +38,7 @@ import {
 } from 'recharts';
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
-import {
-  hydrateGarminActivityPayload,
-  hydrateLibraryTrackPayload
-} from '../utils/activityHydration';
+import { hydrateGarminActivityPayload } from '../utils/activityHydration';
 import {
   isGarminPointsStubOrEmpty,
   tryFetchGarminFitTrack
@@ -421,15 +414,10 @@ function computePeriodStats(items: CatalogActivityItem[], startYmd?: string, end
 }
 
 export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = ({
-  workspaceTracks,
   ftp,
   userWeight,
   estimatedSpeed,
-  onLoadTracksToMap,
-  onOpenActivitiesArchive,
-  onOpenUploadPicker,
-  onOpenGarminSync,
-  onBackToMap
+  onLoadTracksToMap
 }) => {
   const [catalogItems, setCatalogItems] = useState<CatalogActivityItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -448,7 +436,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await apiFetch(getApiUrl('/api/activities/catalog?limit=5000&sortBy=date-desc'));
+      const res = await apiFetch(getApiUrl('/api/activities/catalog?source=garmin&limit=5000&sortBy=date-desc'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'Aktivitäten konnten nicht geladen werden.');
@@ -465,59 +453,10 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
     fetchCatalog();
   }, [fetchCatalog]);
 
-  // Keep local map of unsaved workspace tracks so any workspace track can be jumped to immediately
-  const workspaceTrackMap = useMemo(() => {
-    const map = new Map<string, GPXTrack>();
-    for (const t of workspaceTracks) {
-      map.set(t.id, t);
-    }
-    return map;
-  }, [workspaceTracks]);
-
-  // Unified items = DB catalog items + any workspace-only tracks not yet persisted
+  // Dashboard counts ONLY Garmin activities (GPX tracks belong strictly to Karte & Geplante Touren)
   const allActivities = useMemo(() => {
-    const existingWorkspaceIds = new Set(catalogItems.map((i) => i.workspaceTrackId));
-    const extraWorkspaceItems: CatalogActivityItem[] = [];
-
-    for (const tr of workspaceTracks) {
-      if (existingWorkspaceIds.has(tr.id)) continue;
-      const rawTime = tr.points?.find((p) => p.time)?.time ?? tr.dateCreated;
-      const rawStart = rawTime ? new Date(rawTime) : null;
-      const iso =
-        rawStart && !isNaN(rawStart.getTime())
-          ? rawStart.toISOString()
-          : new Date().toISOString();
-      const ymd = extractYmd(iso) || formatUtcYmd(new Date());
-      const cat: CatalogActivityCategory =
-        tr.activityType === 'running' ? 'running' : 'cycling';
-      extraWorkspaceItems.push({
-        key: `workspace:${tr.id}`,
-        source: 'library',
-        id: tr.id,
-        workspaceTrackId: tr.id,
-        name: tr.name,
-        rawType: tr.activityType || 'cycling',
-        activityCategory: cat,
-        timestampIso: iso,
-        monthKey: ymd.slice(0, 7),
-        country: '',
-        distanceKm: Number(tr.distance || 0),
-        ascentM: Math.round(Number(tr.ascent || 0)),
-        descentM: Math.round(Number(tr.descent || 0)),
-        durationSec: Math.round(Number(tr.duration || 0)),
-        avgHr: null,
-        calories: null,
-        location: '',
-        description: tr.description || '',
-        tags: tr.tags || [],
-        originalFilename: '',
-        color: tr.color || '#2563eb',
-        hasGps: hasRealGpsData(tr)
-      });
-    }
-
-    return [...catalogItems, ...extraWorkspaceItems];
-  }, [catalogItems, workspaceTracks]);
+    return catalogItems.filter((item) => item.source === 'garmin');
+  }, [catalogItems]);
 
   // Enrich each activity with parsed date keys (YMD, ISO week, month, year)
   const indexedActivities = useMemo(() => {
@@ -1063,18 +1002,13 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
       else setIsLoadingPeriodTracks(true);
 
       try {
-        const directWorkspaceTracks: GPXTrack[] = [];
         const dbRefs: Array<{ source: CatalogSource; id: string }> = [];
 
         for (const it of itemsToLoad.slice(0, 50)) {
-          if (it.key.startsWith('workspace:') && workspaceTrackMap.has(it.id)) {
-            directWorkspaceTracks.push(workspaceTrackMap.get(it.id)!);
-          } else {
-            dbRefs.push({ source: it.source, id: it.id });
-          }
+          dbRefs.push({ source: it.source, id: it.id });
         }
 
-        const hydratedTracks: GPXTrack[] = [...directWorkspaceTracks];
+        const hydratedTracks: GPXTrack[] = [];
         if (dbRefs.length > 0) {
           const res = await apiFetch(getApiUrl('/api/activities/bulk-load'), {
             method: 'POST',
@@ -1084,11 +1018,6 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
           const data = await res.json();
           if (!res.ok || !data.success) {
             throw new Error(data.error || 'Aktivitäten konnten nicht geladen werden.');
-          }
-          if (Array.isArray(data.libraryTracks)) {
-            for (const rawLib of data.libraryTracks) {
-              hydratedTracks.push(hydrateLibraryTrackPayload(rawLib));
-            }
           }
           if (Array.isArray(data.garminActivities)) {
             const garminKey = getSessionGarminKey();
@@ -1133,7 +1062,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
         setIsLoadingPeriodTracks(false);
       }
     },
-    [workspaceTrackMap, ftp, userWeight, estimatedSpeed, onLoadTracksToMap]
+    [ftp, userWeight, estimatedSpeed, onLoadTracksToMap]
   );
 
   const periodCompareNoun =
@@ -1171,78 +1100,30 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
       className="flex-1 flex flex-col min-h-0 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 select-none sm:select-auto"
     >
       {/* Top Sticky Control & Dropdown Filter Header */}
-      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3 space-y-3 shrink-0">
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 space-y-2.5 shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900/40 shrink-0">
-              <BarChart3 className="w-5 h-5" />
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900/40 shrink-0">
+              <BarChart3 className="w-4 h-4" />
             </div>
-            <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black tracking-tight text-slate-900 dark:text-slate-100 flex items-center gap-2 truncate">
-                <span>Aktivitäten-Dashboard</span>
-                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                  {allActivities.length.toLocaleString('de-DE')} Aktivitäten
-                </span>
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                Gefahrene Kilometer, Höhenmeter &amp; Trainingsmetriken nach Woche, Monat oder Jahr
-              </p>
-            </div>
+            <h2 className="text-base font-black tracking-tight text-slate-900 dark:text-slate-100 flex items-center gap-2 truncate">
+              <span>Garmin Aktivitäten-Dashboard</span>
+              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 tabular-nums">
+                {allActivities.length.toLocaleString('de-DE')}
+              </span>
+            </h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={fetchCatalog}
-              disabled={isLoading}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-60"
-              title="Aktivitäten neu laden"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-blue-500' : ''}`} />
-              <span className="hidden sm:inline">Aktualisieren</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenActivitiesArchive}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-              title="Zur vollständigen Aktivitäten-Archiv-Liste wechseln"
-            >
-              <ListFilter className="w-3.5 h-3.5 text-indigo-500" />
-              <span className="hidden md:inline">Archiv-Liste</span>
-            </button>
-
-            {onOpenUploadPicker && (
-              <button
-                type="button"
-                onClick={onOpenUploadPicker}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span className="hidden lg:inline">Import</span>
-              </button>
-            )}
-
-            {onOpenGarminSync && (
-              <button
-                type="button"
-                onClick={onOpenGarminSync}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                <Database className="w-3.5 h-3.5 text-orange-500" />
-                <span className="hidden lg:inline">Garmin Sync</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={onBackToMap}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Zur Karte</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={fetchCatalog}
+            disabled={isLoading}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-60"
+            title="Garmin-Aktivitäten neu laden"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-blue-500' : ''}`} />
+            <span className="hidden sm:inline">Aktualisieren</span>
+          </button>
         </div>
 
         {/* Period Dropdown Toolbar */}

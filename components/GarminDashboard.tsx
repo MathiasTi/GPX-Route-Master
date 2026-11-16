@@ -4,7 +4,7 @@ import {
   X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, TrendingUp, Info,
   Zap, Key, Activity, Calendar, BarChart2, ShieldCheck,
-  Trophy, Award, Timer, Mountain, ArrowUpRight, ArrowLeft, Sliders
+  Trophy, Award, Timer, Mountain, ArrowUpRight, Sliders
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -1339,22 +1339,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         onClick={variant === 'modal' ? (e) => e.stopPropagation() : undefined}
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-4 sm:p-6 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 shrink-0 gap-2">
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
-            <div className="p-2 sm:p-2.5 bg-orange-100 dark:bg-orange-950/40 rounded-xl text-orange-600 dark:text-orange-400 shrink-0">
-              <Database className="w-5 h-5 sm:w-6 sm:h-6" />
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0 gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="p-1.5 bg-orange-50 dark:bg-orange-950/40 rounded-lg text-orange-600 dark:text-orange-400 border border-orange-100 dark:border-orange-900/40 shrink-0">
+              <Database className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-sm sm:text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2 truncate">
-                Garmin Fitness &amp; Gesundheit
-                <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider hidden sm:inline-block">
-                  Personal API
-                </span>
-              </h2>
-              <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:block">
-                Synchronisiere Aktivitäten (.FIT), GPS-Tracks &amp; Gesundheitsdaten direkt über die <b>Garmin Connect Personal API</b>.
-              </p>
-            </div>
+            <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-slate-100 tracking-tight truncate">
+              Garmin Fitness &amp; Gesundheit
+            </h2>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
@@ -1364,7 +1356,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                 if (activeTab === 'analytics') fetchAnalytics();
               }}
               disabled={isLoading}
-              className="p-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-200 border-slate-200 dark:border-slate-700 disabled:opacity-60"
+              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 disabled:opacity-60"
               title="Gesundheits- & Aktivitätsdaten neu laden"
               id="btn-garmin-refresh"
             >
@@ -1374,10 +1366,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             <button
               type="button"
               onClick={() => setShowAthleteSettings(prev => !prev)}
-              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
                 showAthleteSettings
-                  ? 'bg-orange-600 text-white border-orange-600 shadow-sm'
-                  : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                  ? 'bg-orange-600 text-white border-orange-600'
+                  : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
               }`}
               title="Athleten-Profil bearbeiten (FTP, Gewicht, Alter, Max. Puls)"
             >
@@ -1387,32 +1379,20 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
             <button
               type="button"
               onClick={() => handleSelectTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
                 activeTab === 'personal-api'
-                  ? 'bg-orange-600 text-white shadow-sm'
-                  : 'bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/50 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800/60'
+                  ? 'bg-orange-600 text-white border-orange-600'
+                  : 'bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/40 dark:hover:bg-orange-900/50 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800/60'
               }`}
             >
               <Key className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zum Cockpit' : 'Garmin Personal API'}</span>
               <span className="sm:hidden">API</span>
             </button>
-            {variant === 'page' && onClose && (
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700"
-                title="Zurück zur Kartenansicht"
-                id="btn-fitness-back-to-map"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Zurück zur Karte</span>
-              </button>
-            )}
             {variant === 'modal' && onClose && (
               <button 
                 onClick={onClose}
-                className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
+                className="p-2 min-w-[40px] min-h-[40px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer shrink-0"
                 title="Schließen"
                 aria-label="Schließen"
               >
@@ -1858,39 +1838,39 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                 }> = [
                   {
                     id: 'cockpit',
-                    label: '📊 Cockpit',
+                    label: 'Cockpit',
                     tabs: [{ id: 'overview', label: 'Übersicht & Readiness' }]
                   },
                   {
                     id: 'records',
-                    label: '🏆 Rekorde',
-                    tabs: [{ id: 'records', label: '🏆 Persönliche Rekorde' }]
+                    label: 'Rekorde',
+                    tabs: [{ id: 'records', label: 'Persönliche Rekorde' }]
                   },
                   {
                     id: 'health',
-                    label: '❤️ Gesundheit & Schlaf',
+                    label: 'Gesundheit & Schlaf',
                     tabs: [
-                      { id: 'sleep', label: '🌙 Schlaf & Phasen' },
-                      { id: 'rhr', label: '❤️ Ruhepuls' },
-                      { id: 'steps', label: '👣 Schritte & Kalorien' },
-                      { id: 'stress', label: '🧘 Stressbelastung' }
+                      { id: 'sleep', label: 'Schlaf & Phasen' },
+                      { id: 'rhr', label: 'Ruhepuls' },
+                      { id: 'steps', label: 'Schritte & Kalorien' },
+                      { id: 'stress', label: 'Stressbelastung' }
                     ]
                   },
                   {
                     id: 'training',
-                    label: '⚡ Training & Diagnostik',
+                    label: 'Training & Diagnostik',
                     tabs: [
-                      { id: 'performance', label: '⚡ Leistungs-Analyse' },
-                      { id: 'analytics', label: '🕸️ Radar & Korrelationen' },
-                      { id: 'calendar', label: '📅 Kalender' },
-                      { id: 'compare', label: '⚖️ Einheiten-Vergleich' },
-                      { id: 'activities', label: '🏅 Aktivitäten-Liste' }
+                      { id: 'performance', label: 'Leistungs-Analyse' },
+                      { id: 'analytics', label: 'Radar & Korrelationen' },
+                      { id: 'calendar', label: 'Kalender' },
+                      { id: 'compare', label: 'Einheiten-Vergleich' },
+                      { id: 'activities', label: 'Aktivitäten-Liste' }
                     ]
                   },
                   {
                     id: 'sync',
-                    label: '🔑 Cloud-Sync',
-                    tabs: [{ id: 'personal-api', label: '🔑 Personal API & Suche' }]
+                    label: 'Cloud-Sync',
+                    tabs: [{ id: 'personal-api', label: 'Personal API & Suche' }]
                   }
                 ];
                 const activeGroup = groups.find((g) => g.tabs.some((t) => t.id === activeTab)) || groups[0];
@@ -1898,7 +1878,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
                 return (
                   <div className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-850 p-1.5 rounded-2xl border border-slate-100 dark:border-slate-800">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
                       <div className="flex flex-wrap items-center gap-1">
                         {groups.map((grp) => {
                           const isGrpActive = grp.id === activeGroup.id;
@@ -1907,10 +1887,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               key={grp.id}
                               type="button"
                               onClick={() => handleSelectTab(grp.tabs[0].id)}
-                              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap ${
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                                 isGrpActive
-                                  ? 'bg-orange-600 text-white shadow-sm'
-                                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800'
+                                  ? 'bg-orange-600 text-white'
+                                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                               }`}
                             >
                               {grp.label}
@@ -1920,7 +1900,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       </div>
 
                       {showRangeSelector && (
-                        <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+                        <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
                           {([
                             { val: 14 as const, label: '14T' },
                             { val: 30 as const, label: '30T' },
@@ -1932,9 +1912,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               key={String(opt.val)}
                               type="button"
                               onClick={() => setHealthRangeDays(opt.val)}
-                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                              className={`px-2 py-1 rounded-md text-[11px] font-semibold font-mono tabular-nums transition-colors cursor-pointer ${
                                 healthRangeDays === opt.val
-                                  ? 'bg-indigo-600 text-white'
+                                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
                                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                               }`}
                             >
@@ -1946,16 +1926,16 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </div>
 
                     {activeGroup.tabs.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-1.5 px-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {activeGroup.tabs.map((tab) => (
                           <button
                             key={tab.id}
                             type="button"
                             onClick={() => handleSelectTab(tab.id)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap border ${
                               activeTab === tab.id
-                                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-xs'
-                                : 'bg-white dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 hover:border-orange-400'
+                                ? 'bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100'
+                                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
                             }`}
                           >
                             {tab.label}

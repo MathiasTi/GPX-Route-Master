@@ -11,7 +11,7 @@ import {
   XAxis, YAxis, Tooltip, CartesianGrid, Legend, ReferenceLine, ScatterChart, Scatter
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { parseGPX } from '../utils/gpxUtils';
+import { parseGPX, isCyclingType, isRunningType, isStopWatchType } from '../utils/gpxUtils';
 import { NumericProfileInput } from './NumericProfileInput';
 import { estimateCriticalPowerFromBests } from '../utils/wbalEngine';
 
@@ -43,22 +43,14 @@ interface GarminActivity {
   points_json?: string;
   description?: string;
   location?: string;
-}
-
-function isRunningType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike') ||
-         n.includes('run') || n.includes('laufen') || n.includes('jog') || n.includes('walk') || n.includes('hike') || n.includes('run');
-}
-
-function isCyclingType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('cycle') || t.includes('bike') || t.includes('bik') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking') || t.includes('riding') || t.includes('bicyc') || t.includes('spin') ||
-         n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
+  powerTelemetry?: {
+    hasPower: boolean;
+    avgPower: number;
+    maxPower: number;
+    np: number;
+    variabilityIndex: number;
+    peaks: Record<number, number>;
+  };
 }
 
 export default function FitnessPerformanceAnalysis({
@@ -310,7 +302,9 @@ export default function FitnessPerformanceAnalysis({
   // Stage 1: Parse points_json & pre-compute heavy telemetry ONCE when activities change (independent of FTP / maxHr)
   const parsedActivitiesTelemetry = useMemo(() => {
     const peakDurations = [1, 5, 15, 60, 300, 1200, 3600];
-    return activities.map(act => {
+    return activities
+      .filter(act => !isStopWatchType(act.type))
+      .map(act => {
       let points: any[] = [];
       if (act.points_json) {
         try {
@@ -343,7 +337,8 @@ export default function FitnessPerformanceAnalysis({
       }
 
       const safeDuration = Number.isFinite(Number(act.duration)) && Number(act.duration) > 0 ? Number(act.duration) : 0;
-      const hasPower = powerSamples.length > 5;
+      const precomputedPower = act.powerTelemetry?.hasPower ? act.powerTelemetry : null;
+      const hasPower = Boolean(precomputedPower) || powerSamples.length > 5;
       const hasHr = hrSamples.length > 5;
       const avgHrSampled = hrSamples.length > 0 ? hrSum / hrSamples.length : 0;
 
@@ -351,40 +346,55 @@ export default function FitnessPerformanceAnalysis({
       let calculatedVi = 1.0;
       const peaks: Record<number, number> = {};
 
-      if (hasPower) {
-        // Calculate NP (Normalized Power)
+      if (precomputedPower) {
+        calculatedNp = precomputedPower.np;
+        calculatedVi = precomputedPower.variabilityIndex || 1.0;
+        for (const d of peakDurations) {
+          const peakVal = precomputedPower.peaks?.[d];
+          if (peakVal && peakVal > 0) {
+            peaks[d] = peakVal;
+          }
+        }
+      } else if (hasPower) {
+        // Infer average sampling interval when client points are downsampled or smart-recorded
+        const dtSec =
+          points.length > 1 && safeDuration > 0
+            ? Math.max(1, safeDuration / Math.max(1, points.length - 1))
+            : 1;
+        const windowSize = Math.max(1, Math.round(30 / dtSec));
         let rollSum = 0;
-        const windowSize = 30;
         let sum4th = 0;
+        let rollCount = 0;
         const powers = new Float64Array(points.length);
         for (let i = 0; i < points.length; i++) {
           const pwr = Number(points[i]?.power) || 0;
           powers[i] = pwr;
           rollSum += pwr;
-          let rolledAvg: number;
           if (i >= windowSize) {
             rollSum -= powers[i - windowSize];
-            rolledAvg = rollSum / windowSize;
-          } else {
-            rolledAvg = rollSum / (i + 1);
           }
-          sum4th += rolledAvg * rolledAvg * rolledAvg * rolledAvg;
+          if (i >= windowSize - 1 || points.length < windowSize) {
+            const rolledAvg = rollSum / Math.min(windowSize, i + 1);
+            sum4th += rolledAvg * rolledAvg * rolledAvg * rolledAvg;
+            rollCount++;
+          }
         }
-        calculatedNp = points.length > 0 ? Math.round(Math.pow(sum4th / points.length, 0.25)) : 0;
+        calculatedNp = rollCount > 0 ? Math.round(Math.pow(sum4th / rollCount, 0.25)) : 0;
         const avgPower = powerSum / powerSamples.length;
         calculatedVi = avgPower > 0 ? calculatedNp / avgPower : 1.0;
 
         // Sliding window peaks for Power Duration MMP (1s, 5s, 15s, 1m, 5m, 20m, 1h)
         for (const d of peakDurations) {
-          if (powers.length < d) continue;
+          const winPts = Math.max(1, Math.round(d / dtSec));
+          if ((safeDuration < d * 0.9 && points.length < d) || powers.length < winPts) continue;
           let currentSum = 0;
-          for (let i = 0; i < d; i++) currentSum += powers[i];
+          for (let i = 0; i < winPts; i++) currentSum += powers[i];
           let maxSum = currentSum;
-          for (let i = d; i < powers.length; i++) {
-            currentSum += powers[i] - powers[i - d];
+          for (let i = winPts; i < powers.length; i++) {
+            currentSum += powers[i] - powers[i - winPts];
             if (currentSum > maxSum) maxSum = currentSum;
           }
-          peaks[d] = Math.round(maxSum / d);
+          peaks[d] = Math.round(maxSum / winPts);
         }
       }
 
@@ -455,13 +465,12 @@ export default function FitnessPerformanceAnalysis({
     let cyclingDuration = 0, runningDuration = 0;
 
     calculatedActivities.forEach(act => {
-      const isRun = isRunningType(act.type, act.name);
-      if (isRun) {
+      if (isRunningType(act.type, act.name)) {
         runningCount++;
         runningTss += act.tss || 0;
         runningDist += act.distance || 0;
         runningDuration += act.duration || 0;
-      } else {
+      } else if (isCyclingType(act.type, act.name)) {
         cyclingCount++;
         cyclingTss += act.tss || 0;
         cyclingDist += act.distance || 0;
@@ -530,9 +539,9 @@ export default function FitnessPerformanceAnalysis({
   const performanceTrendData = useMemo(() => {
     if (combinedTrainings.length === 0) return [];
 
-    // Sort ascending by date
+    // Sort ascending by date, keeping only valid distance-bearing non-stopwatch sessions
     const sorted = [...combinedTrainings]
-      .filter(t => t.date && t.distance > 0 && t.duration > 0)
+      .filter(t => t.date && t.distance > 0.05 && t.duration > 0 && !isStopWatchType(t.type))
       .sort((a, b) => a.date.localeCompare(b.date));
 
     if (sorted.length === 0) return [];
@@ -553,8 +562,12 @@ export default function FitnessPerformanceAnalysis({
       
       // Pace: min/km
       const paceMinDec = item.distance > 0 ? (item.duration / 60) / item.distance : 0;
-      const paceMin = Math.floor(paceMinDec);
-      const paceSec = Math.round((paceMinDec - paceMin) * 60);
+      let paceMin = Math.floor(paceMinDec);
+      let paceSec = Math.round((paceMinDec - paceMin) * 60);
+      if (paceSec === 60) {
+        paceMin += 1;
+        paceSec = 0;
+      }
       const formattedPace = item.distance > 0 ? `${paceMin}:${paceSec < 10 ? '0' : ''}${paceSec}` : '-';
 
       return {
@@ -600,18 +613,24 @@ export default function FitnessPerformanceAnalysis({
     const workouts = performanceTrendData;
     const count = workouts.length;
     
-    const totalDist = workouts.reduce((sum, w) => sum + w.distance, 0);
+    const distanceWorkouts = workouts.filter(w => w.distance > 0.05 && w.duration > 0);
+    const totalDist = distanceWorkouts.reduce((sum, w) => sum + w.distance, 0);
+    const totalDurationSec = distanceWorkouts.reduce((sum, w) => sum + w.duration, 0);
     const totalHr = workouts.filter(w => w.avg_hr).reduce((sum, w) => sum + (w.avg_hr || 0), 0);
     const hrCount = workouts.filter(w => w.avg_hr).length;
     
-    const avgSpeed = workouts.reduce((sum, w) => sum + w.speed, 0) / count;
+    const avgSpeed = totalDurationSec > 0 ? totalDist / (totalDurationSec / 3600) : 0;
     const avgHr = hrCount > 0 ? totalHr / hrCount : 0;
 
-    // Running-specific pace calculation
-    const avgPaceDecimal = workouts.reduce((sum, w) => sum + (w.pace > 0 ? w.pace : 6), 0) / count;
-    const paceM = Math.floor(avgPaceDecimal);
-    const paceS = Math.round((avgPaceDecimal - paceM) * 60);
-    const avgPaceFormatted = `${paceM}:${paceS < 10 ? '0' : ''}${paceS}/km`;
+    // Distance-weighted running pace calculation
+    const avgPaceDecimal = totalDist > 0 ? (totalDurationSec / 60) / totalDist : 0;
+    let paceM = Math.floor(avgPaceDecimal);
+    let paceS = Math.round((avgPaceDecimal - paceM) * 60);
+    if (paceS === 60) {
+      paceM += 1;
+      paceS = 0;
+    }
+    const avgPaceFormatted = avgPaceDecimal > 0 ? `${paceM}:${paceS < 10 ? '0' : ''}${paceS}/km` : '--:--';
 
     // Divide into 2 halves for trend comparison: Recent 14 days and Previous 14 days
     const sorted = [...workouts].sort((a, b) => b.date.localeCompare(a.date));
@@ -716,15 +735,20 @@ export default function FitnessPerformanceAnalysis({
     if (sortedActs.length === 0) return [];
 
     const firstDateStr = sortedActs[0].date;
-    const lastDateStr = sortedActs[sortedActs.length - 1].date;
+    let lastDateStr = sortedActs[sortedActs.length - 1].date;
+    for (const act of calculatedActivities) {
+      const dStr = normalizeIsoDate(act.date);
+      if (dStr && dStr > lastDateStr) {
+        lastDateStr = dStr;
+      }
+    }
 
     const start = new Date(`${firstDateStr}T00:00:00Z`);
     const end = new Date(`${lastDateStr}T00:00:00Z`);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
 
-    // 30 days buffer before first activity to let CTL ramp up, 3 days after last activity
+    // 30 days buffer before first activity to let CTL ramp up
     start.setUTCDate(start.getUTCDate() - 30);
-    end.setUTCDate(end.getUTCDate() + 3);
 
     const bufferCutoff = new Date(start);
     bufferCutoff.setUTCDate(bufferCutoff.getUTCDate() + 25);
@@ -781,7 +805,7 @@ export default function FitnessPerformanceAnalysis({
         acwr: parseFloat(acwr.toFixed(2))
       };
     }).filter(d => d.date >= bufferCutoffStr);
-  }, [sportFilteredActivities]);
+  }, [sportFilteredActivities, calculatedActivities]);
 
   // Current Fitness values (last day in timeline)
   const currentFitness = useMemo(() => {

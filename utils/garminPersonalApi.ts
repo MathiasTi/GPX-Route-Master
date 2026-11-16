@@ -728,20 +728,45 @@ function hasCheckedFitNoGps(rawJson?: string | null): boolean {
   return typeof rawJson === 'string' && rawJson.trim() === '[]';
 }
 
+function isStationarySportKey(rawType: string): boolean {
+  const s = (rawType || '').toLowerCase();
+  return (
+    s.includes('stop_watch') ||
+    s.includes('stopwatch') ||
+    s.includes('strength') ||
+    s.includes('krafttraining') ||
+    s.includes('hiit') ||
+    s.includes('indoor_cardio') ||
+    s.includes('cardio') ||
+    s.includes('yoga') ||
+    s.includes('pilates') ||
+    s.includes('breathwork') ||
+    s.includes('meditation')
+  );
+}
+
 function normalizeGarminSportType(rawType: any): string {
   if (!rawType) return 'cycling';
   const str = typeof rawType === 'string'
     ? rawType.toLowerCase()
     : String(rawType?.typeKey || rawType?.parentTypeId || rawType?.sport || 'cycling').toLowerCase();
 
+  if (
+    str.includes('cycl') ||
+    str.includes('bike') ||
+    str.includes('biking') ||
+    str.includes('gravel') ||
+    str.includes('virtual_ride') ||
+    str.includes('mtb') ||
+    str.includes('road')
+  ) {
+    return 'cycling';
+  }
   if (str.includes('run') || str.includes('jog') || str.includes('treadmill') || str.includes('trail')) {
     return 'running';
   }
-  if (str.includes('hike') || str.includes('walk') || str.includes('mountaineer')) {
+  if (str.includes('hik') || str.includes('walk') || str.includes('mountaineer')) {
     return 'hiking';
-  }
-  if (str.includes('cycle') || str.includes('bike') || str.includes('biking') || str.includes('gravel') || str.includes('virtual_ride') || str.includes('road')) {
-    return 'cycling';
   }
   return str;
 }
@@ -963,7 +988,8 @@ export async function downloadAndParseGarminActivityFit(
   }
 
   if (!parsedTrack || !parsedTrack.points || parsedTrack.points.length === 0) {
-    const distKm = existingRecord?.distance || 5;
+    const isStationaryFallback = isStationarySportKey(String(existingRecord?.type || ''));
+    const distKm = isStationaryFallback ? 0 : Math.max(0, Number(existingRecord?.distance || 0));
     const durSec = existingRecord?.duration || 1800;
     const actType = existingRecord?.type === 'running' ? 'running' : 'cycling';
     const virtualPts = generateVirtualRoute(
@@ -1020,12 +1046,17 @@ export async function downloadAndParseGarminActivityFit(
       ? parsedTrack.points[0].time.toISOString()
       : new Date().toISOString());
 
+  const resolvedSportType = existingRecord?.type || parsedTrack.activityType || 'cycling';
+  const resolvedDistanceKm = isStationarySportKey(String(resolvedSportType))
+    ? 0
+    : (parsedTrack.distance || existingRecord?.distance || 0);
+
   saveGarminActivity(
     cleanId,
     parsedTrack.name,
-    existingRecord?.type || parsedTrack.activityType || 'cycling',
+    resolvedSportType,
     authenticGarminDate,
-    parsedTrack.distance || existingRecord?.distance || 0,
+    resolvedDistanceKm,
     parsedTrack.duration || existingRecord?.duration || 0,
     parsedTrack.ascent ?? existingRecord?.ascent,
     parsedTrack.descent ?? existingRecord?.descent,

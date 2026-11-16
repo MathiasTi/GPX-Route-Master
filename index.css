@@ -55,3 +55,168 @@ path.leaflet-interactive {
               stroke-width 0.4s cubic-bezier(0.4, 0, 0.2, 1),
               stroke-opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* ============================================================================
+   UI Density, Corner Radius & Motion Preferences
+   ============================================================================ */
+html[data-ui-density="compact"] {
+  font-size: 14.5px;
+}
+
+html[data-ui-density="comfortable"] {
+  font-size: 16px;
+}
+
+html[data-ui-density="spacious"] {
+  font-size: 16.75px;
+}
+
+html[data-ui-radius="sharp"] {
+  --radius-md: 0.2rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.35rem;
+  --radius-2xl: 0.42rem;
+  --radius-3xl: 0.55rem;
+}
+
+html[data-ui-radius="pill"] {
+  --radius-lg: 0.9rem;
+  --radius-xl: 1.15rem;
+  --radius-2xl: 1.45rem;
+  --radius-3xl: 1.85rem;
+}
+
+html[data-animations="false"] *,
+html[data-animations="false"] *::before,
+html[data-animations="false"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* ============================================================================
+   Selectable UI Style Presets (Light + Dark)
+   ============================================================================ */
+
+/* 1. Aero Glass (Sky Blue + Frosted Glass Layers) */
+html[data-ui-style="aero-glass"] {
+  --color-indigo-50: #f0f9ff;
+  --color-indigo-100: #e0f2fe;
+  --color-indigo-200: #bae6fd;
+  --color-indigo-300: #7dd3fc;
+  --color-indigo-400: #38bdf8;
+  --color-indigo-500: #0ea5e9;
+  --color-indigo-600: #0284c7;
+  --color-indigo-700: #0369a1;
+  --color-indigo-800: #075985;
+  --color-indigo-900: #0c4a6e;
+  --color-indigo-950: #082f49;
+}
+
+html[data-ui-style="aero-glass"] #app-workspace-root {
+  background-image: radial-gradient(circle at 12% 10%, rgba(14, 165, 233, 0.12), transparent 42%),
+    radial-gradient(circle at 88% 18%, rgba(56, 189, 248, 0.10), transparent 45%);
+}
+
+html[data-ui-style="aero-glass"] header {
+  background-color: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+html.dark[data-ui-style="aero-glass"] header {
+  background-color: rgba(15, 23, 42, 0.76) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* 2. Peloton Pro (Race Gold / Amber + Deep Carbon Neutrals) */
+html[data-ui-style="peloton-pro"] {
+  --color-indigo-50: #fffbeb;
+  --color-indigo-100: #fef3c7;
+  --color-indigo-200: #fde68a;
+  --color-indigo-300: #fcd34d;
+  --color-indigo-400: #fbbf24;
+  --color-indigo-500: #f59e0b;
+  --color-indigo-600: #d97706;
+  --color-indigo-700: #b45309;
+  --color-indigo-800: #92400e;
+  --color-indigo-900: #78350f;
+  --color-indigo-950: #451a03;
+}
+
+html.dark[data-ui-style="peloton-pro"] {
+  --color-slate-800: #27272a;
+  --color-slate-900: #141416;
+  --color-slate-950: #09090b;
+}
+
+/* 3. Alpine Trail (Emerald Forest + Warm Trail Neutrals) */
+html[data-ui-style="alpine-emerald"] {
+  --color-indigo-50: #ecfdf5;
+  --color-indigo-100: #d1fae5;
+  --color-indigo-200: #a7f3d0;
+  --color-indigo-300: #6ee7b7;
+  --color-indigo-400: #34d399;
+  --color-indigo-500: #10b981;
+  --color-indigo-600: #059669;
+  --color-indigo-700: #047857;
+  --color-indigo-800: #065f46;
+  --color-indigo-900: #064e3b;
+  --color-indigo-950: #022c22;
+}
+
+html[data-ui-style="alpine-emerald"] #app-workspace-root {
+  background-image: radial-gradient(circle at 80% 8%, rgba(16, 185, 129, 0.1), transparent 45%);
+}
+
+/* 4. Cyber Telemetry (Electric Violet / Cyan Lab Cockpit) */
+html[data-ui-style="cyber-telemetry"] {
+  --color-indigo-50: #f5f3ff;
+  --color-indigo-100: #ede9fe;
+  --color-indigo-200: #ddd6fe;
+  --color-indigo-300: #c4b5fd;
+  --color-indigo-400: #a78bfa;
+  --color-indigo-500: #8b5cf6;
+  --color-indigo-600: #7c3aed;
+  --color-indigo-700: #6d28d9;
+  --color-indigo-800: #5b21b6;
+  --color-indigo-900: #4c1d95;
+  --color-indigo-950: #2e1065;
+}
+
+html.dark[data-ui-style="cyber-telemetry"] #app-workspace-root {
+  background-image: radial-gradient(circle at 18% 12%, rgba(124, 58, 237, 0.16), transparent 40%),
+    radial-gradient(circle at 85% 78%, rgba(6, 182, 212, 0.12), transparent 42%);
+}
+
+html.dark[data-ui-style="cyber-telemetry"] header {
+  border-bottom-color: rgba(139, 92, 246, 0.35) !important;
+}
+
+/* 5. Nordic Minimal (Editorial Warm Paper + Sharp Monochrome) */
+html[data-ui-style="minimal-paper"] {
+  --color-indigo-50: #f4f4f5;
+  --color-indigo-100: #e4e4e7;
+  --color-indigo-200: #d4d4d8;
+  --color-indigo-300: #a1a1aa;
+  --color-indigo-400: #71717a;
+  --color-indigo-500: #3f3f46;
+  --color-indigo-600: #18181b;
+  --color-indigo-700: #27272a;
+  --color-indigo-800: #18181b;
+  --color-indigo-900: #09090b;
+  --color-indigo-950: #09090b;
+  --color-slate-50: #fafaf9;
+}
+
+html.dark[data-ui-style="minimal-paper"] {
+  --color-indigo-300: #e4e4e7;
+  --color-indigo-400: #d4d4d8;
+  --color-indigo-500: #52525b;
+  --color-indigo-600: #3f3f46;
+  --color-indigo-700: #52525b;
+  --color-slate-900: #111113;
+  --color-slate-950: #09090b;
+}

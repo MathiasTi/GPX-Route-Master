@@ -11,11 +11,27 @@ import {
   repairGarminSeedPointStubs,
   findExistingActivityDuplicate,
   deduplicateGarminAndLibraryTracks,
+  classifyActivityCategory,
+  healCorruptedHealthAndActivityMetrics,
   db
 } from '../utils/db';
-import { parseFIT } from '../utils/fitUtils';
+import { parseFIT, isStationaryNonDistanceSport } from '../utils/fitUtils';
 import { hydrateGarminActivityPayload, hydrateLibraryTrackPayload } from '../utils/activityHydration';
-import { hasRealGpsData, parseGPXStream } from '../utils/gpxUtils';
+import {
+  hasRealGpsData,
+  parseGPXStream,
+  isCyclingType,
+  isRunningType,
+  isStrictCyclingType,
+  isStrictRunningType
+} from '../utils/gpxUtils';
+import {
+  DEFAULT_APP_PREFERENCES,
+  sanitizeAppPreferences,
+  saveAppPreferences,
+  loadAppPreferences,
+  translateUiText
+} from '../utils/appSettings';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -33,6 +49,7 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     // Clean any leftover test rows for the isolated test user
     db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);
     db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(testUser);
+    db.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(testUser);
 
     // 1. Seed mixed library + garmin test records including Dortmund Garmin activity + 1,500 bulk rows for speed verification
     const t0 = performance.now();
@@ -571,9 +588,126 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
       `Expected 1 merged garmin entry with GPS after dedup, got ${JSON.stringify(afterDedupQuery.items)}`
     );
 
+    // 4) Sport classification & German "Runde"/"Umrundung" safeguards
+    assert(classifyActivityCategory('cycling', 'Pottrunde') === 'cycling', 'cycling + Pottrunde must classify as cycling');
+    assert(classifyActivityCategory('cycling', 'Pommesrunde') === 'cycling', 'cycling + Pommesrunde must classify as cycling');
+    assert(classifyActivityCategory('other', 'Rund um Köln 2025') === 'other', 'other + Rund um Köln 2025 must not misclassify as running');
+    assert(classifyActivityCategory('cycling', 'Ibiza Umrundung') === 'cycling', 'cycling + Ibiza Umrundung must classify as cycling');
+    assert(classifyActivityCategory('cycling', 'Season Trail') === 'cycling', 'cycling + Season Trail must classify as cycling');
+    assert(classifyActivityCategory('indoor_cycling', 'Zwift Watopia') === 'cycling', 'indoor_cycling must classify as cycling');
+    assert(classifyActivityCategory('hiking', 'Nachrodt-Wiblingwerde Wandern') === 'hiking', 'hiking must classify as hiking');
+    assert(classifyActivityCategory('strength_training', 'Kraft') === 'other', 'strength_training must classify as other');
+    assert(classifyActivityCategory('stop_watch', 'Stoppuhr') === 'other', 'stop_watch must classify as other');
+
+    assert(isCyclingType('cycling', 'Pottrunde') === true, 'isCyclingType must handle cycling + Pottrunde');
+    assert(isRunningType('cycling', 'Pottrunde') === false, 'isRunningType must not match cycling + Pottrunde');
+    assert(isRunningType('other', 'Ibiza Umrundung') === false, 'isRunningType must strip Umrundung');
+    assert(isStrictCyclingType('indoor_cycling', 'Zwift') === true, 'isStrictCyclingType must match indoor_cycling');
+    assert(isStrictRunningType('hiking', 'Nachrodt Wandern') === false, 'isStrictRunningType must exclude hiking');
+
+    // 5) Stationary FIT & synthetic virtual-stub distance healing
+    assert(isStationaryNonDistanceSport('stop_watch') === true, 'stop_watch must be stationary');
+    assert(isStationaryNonDistanceSport('strength_training', 'Kraft') === true, 'strength_training must be stationary');
+    assert(isStationaryNonDistanceSport('cycling', 'Runde') === false, 'cycling must not be stationary');
+
+    const buildStationarySessionFitBuffer = (): ArrayBuffer => {
+      const bytes: number[] = [];
+      bytes.push(14, 0x20, 0x00, 0x08, 0, 0, 0, 0, 0x2e, 0x46, 0x49, 0x54, 0, 0);
+      // Definition message for globalMsg 18 (session): localMsg 0, 3 fields (sport uint8, total_timer_time uint32, total_distance uint32)
+      bytes.push(0x40, 0x00, 0x00, 18, 0, 3);
+      bytes.push(5, 1, 0x00); // sport (uint8 -> 10 = training)
+      bytes.push(8, 4, 0x86); // total_timer_time (uint32 scale 1000 -> ms)
+      bytes.push(9, 4, 0x86); // total_distance (uint32 scale 100 -> cm)
+      const pushUint32LE = (v: number) => {
+        const b = new ArrayBuffer(4);
+        new DataView(b).setUint32(0, v, true);
+        bytes.push(...new Uint8Array(b));
+      };
+      bytes.push(0x00); // data record localMsg 0
+      bytes.push(10); // sport = 10 (training/strength)
+      pushUint32LE(3600 * 1000); // 1 hour
+      pushUint32LE(0); // 0 distance
+      return new Uint8Array(bytes).buffer;
+    };
+    const stationaryFit = await parseFIT(buildStationarySessionFitBuffer(), 'strength_workout.fit');
+    assert(
+      stationaryFit !== null && stationaryFit.distance === 0,
+      `Expected stationary FIT with 0 distance to stay 0 km, got ${stationaryFit?.distance}`
+    );
+
+    // Insert corrupted stationary/virtual-stub rows + cycling-polluted steps row for isolated testUser
+    saveGarminActivity('heal-stopwatch-1', 'Stoppuhr', 'stop_watch', '2026-09-12T10:00:00Z', 19.96, 3600, 0, 0, 0, 0, 'Stop_watch', '', undefined, testUser);
+    saveGarminActivity('heal-strength-2', 'Krafttraining', 'strength_training', '2026-09-12T12:00:00Z', 21.6255, 3600, 0, 0, 250, 110, 'Strength', '', undefined, testUser);
+    saveGarminActivity('heal-stub-indoor-3', 'Indoor Stub', 'indoor_cycling', '2026-09-12T14:00:00Z', 21.6255, 3600, 0, 0, 400, 130, 'Indoor', '', undefined, testUser);
+    saveGarminActivity('heal-real-cycle-4', 'Real Indoor Ride', 'indoor_cycling', '2026-09-12T16:00:00Z', 32.5, 3600, 250, 250, 700, 145, 'Real', '', undefined, testUser);
+    db.prepare(
+      `INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance, user_id) VALUES (?, ?, ?, ?, ?)`
+    ).run(`${testUser}::2026-09-12`, 10000, 2400, 251.23, testUser);
+
+    healCorruptedHealthAndActivityMetrics();
+
+    const healedRows = db
+      .prepare('SELECT id, distance FROM garmin_activities WHERE user_id = ?')
+      .all(testUser) as Array<{ id: string; distance: number }>;
+    const healedMap = new Map(
+      healedRows.map((r) => {
+        const cleanKey = r.id.includes('::') ? r.id.slice(r.id.indexOf('::') + 2) : r.id;
+        return [cleanKey, r.distance];
+      })
+    );
+    assert(healedMap.get('heal-stopwatch-1') === 0, `Expected stop_watch healed to 0, got ${healedMap.get('heal-stopwatch-1')}`);
+    assert(healedMap.get('heal-strength-2') === 0, `Expected strength_training healed to 0, got ${healedMap.get('heal-strength-2')}`);
+    assert(healedMap.get('heal-stub-indoor-3') === 0, `Expected 21.6255 km/h empty-GPS stub healed to 0, got ${healedMap.get('heal-stub-indoor-3')}`);
+    assert(healedMap.get('heal-real-cycle-4') === 32.5, `Expected genuine 32.5 km indoor ride preserved, got ${healedMap.get('heal-real-cycle-4')}`);
+
+    const healedStepsRow = db
+      .prepare('SELECT distance FROM garmin_steps WHERE date = ?')
+      .get(`${testUser}::2026-09-12`) as { distance: number } | undefined;
+    assert(
+      healedStepsRow !== undefined && healedStepsRow.distance === 7.62,
+      `Expected corrupted 251.23 km steps distance healed to 7.62 km, got ${healedStepsRow?.distance}`
+    );
+
+    // 6) App Preferences, UI Styles & Bilingual (DE <-> EN) Translation tests
+    const sanitized = sanitizeAppPreferences({
+      language: 'en',
+      uiStyle: 'aero-glass',
+      uiDensity: 'compact',
+      uiRadius: 'pill',
+      colorMode: 'dark',
+      unitSystem: 'imperial',
+      defaultView: 'fitness',
+      bikeWeight: 999, // invalid > 40 -> falls back to default 8.5
+      rhrBaseline: 48
+    });
+    assert(sanitized.language === 'en', 'sanitizeAppPreferences keeps valid EN language');
+    assert(sanitized.uiStyle === 'aero-glass', 'sanitizeAppPreferences keeps valid UI style');
+    assert(sanitized.uiDensity === 'compact', 'sanitizeAppPreferences keeps compact density');
+    assert(sanitized.uiRadius === 'pill', 'sanitizeAppPreferences keeps pill radius');
+    assert(sanitized.bikeWeight === DEFAULT_APP_PREFERENCES.bikeWeight, 'sanitizeAppPreferences clamps invalid bikeWeight');
+    assert(sanitized.rhrBaseline === 48, 'sanitizeAppPreferences preserves valid rhrBaseline');
+
+    saveAppPreferences({ language: 'en', uiStyle: 'peloton-pro', unitSystem: 'imperial' });
+    const loadedPrefs = loadAppPreferences();
+    assert(
+      loadedPrefs.language === 'en' && loadedPrefs.uiStyle === 'peloton-pro' && loadedPrefs.unitSystem === 'imperial',
+      'saveAppPreferences / loadAppPreferences roundtrip failed'
+    );
+    saveAppPreferences(DEFAULT_APP_PREFERENCES);
+
+    assert(translateUiText('Geplante Touren', 'en') === 'Planned Tours', 'Expected DE->EN Geplante Touren');
+    assert(translateUiText('Aktivitäten-Dashboard', 'en') === 'Activities Dashboard', 'Expected DE->EN Aktivitäten-Dashboard');
+    assert(translateUiText('  Höhenprofil  ', 'en') === '  Elevation Profile  ', 'Expected whitespace preservation in translateUiText');
+    assert(translateUiText('Geplante Touren', 'de') === 'Geplante Touren', 'Expected DE mode to leave German untouched');
+    assert(
+      translateUiText(translateUiText('Fitness & Gesundheit', 'en'), 'en') === 'Fitness & Health',
+      'Expected translateUiText to be idempotent for English strings'
+    );
+
     // Clean up extra test rows
     db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);
     db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(testUser);
+    db.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(testUser);
     db.prepare('DELETE FROM activities_catalog_fts WHERE user_id = ?').run(testUser);
     db.prepare('DELETE FROM activities_catalog WHERE user_id = ?').run(testUser);
 
@@ -586,6 +720,7 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     try {
       db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);
       db.prepare('DELETE FROM garmin_activities WHERE user_id = ?').run(testUser);
+      db.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(testUser);
       db.prepare('DELETE FROM activities_catalog_fts WHERE user_id = ?').run(testUser);
       db.prepare('DELETE FROM activities_catalog WHERE user_id = ?').run(testUser);
     } catch {}

@@ -110,15 +110,49 @@ function extractPointCoordinates(p: any): { lat: number; lng: number; ele?: numb
 
 export function inferTrackActivityType(rawType?: string, name?: string): 'cycling' | 'running' {
   const t = (rawType || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  const combined = `${t} ${n}`;
   if (
-    combined.includes('run') ||
-    combined.includes('lauf') ||
-    combined.includes('jog') ||
-    combined.includes('walk') ||
-    combined.includes('hike') ||
-    combined.includes('wander')
+    t.includes('cycl') ||
+    t.includes('bike') ||
+    t.includes('biking') ||
+    t.includes('rad') ||
+    t.includes('gravel') ||
+    t.includes('mtb') ||
+    t.includes('ride')
+  ) {
+    return 'cycling';
+  }
+  if (
+    t.includes('run') ||
+    t.includes('lauf') ||
+    t.includes('jog') ||
+    t.includes('walk') ||
+    t.includes('hik') ||
+    t.includes('wander') ||
+    t.includes('treadmill')
+  ) {
+    return 'running';
+  }
+
+  const sanitizedName = (name || '')
+    .toLowerCase()
+    .replace(/umrundung|rundkurs|rundfahrt|rundstrecke|rundwander|rund um|runde/g, ' ');
+  if (
+    sanitizedName.includes('cycl') ||
+    sanitizedName.includes('bike') ||
+    sanitizedName.includes('biking') ||
+    sanitizedName.includes('rad') ||
+    sanitizedName.includes('gravel') ||
+    sanitizedName.includes('mtb')
+  ) {
+    return 'cycling';
+  }
+  if (
+    sanitizedName.includes('run') ||
+    sanitizedName.includes('lauf') ||
+    sanitizedName.includes('jog') ||
+    sanitizedName.includes('walk') ||
+    sanitizedName.includes('hik') ||
+    sanitizedName.includes('wander')
   ) {
     return 'running';
   }

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Search, Edit2, Trash2, FolderOpen, Calendar, Tag, Activity, X, Check, RefreshCw, Compass, ArrowLeftRight, Navigation, MapPin, ArrowUpDown, Plus } from 'lucide-react';
 import { GPXTrack } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { calculateElevationStats } from '../utils/gpxUtils';
+import { calculateElevationStats, isCyclingType, isRunningType } from '../utils/gpxUtils';
 import { resolveGarminTrackForMap } from '../utils/garminClient';
 
 interface TrackLibraryProps {
@@ -33,24 +33,6 @@ interface LibraryTrackThin {
   isGarminActivity?: boolean;
   rawRecord?: any;
 }
-
-// Robust helper to normalize activity type
-function isRunningType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike') ||
-         n.includes('run') || n.includes('laufen') || n.includes('jog') || n.includes('walk') || n.includes('hike') || n.includes('run');
-}
-
-function isCyclingType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking') || t.includes('spin') ||
-         n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
-}
-
 
 export const TrackLibrary: React.FC<TrackLibraryProps> = ({ 
   onLoadTrack, 

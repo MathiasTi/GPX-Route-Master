@@ -1646,9 +1646,10 @@ export const detectActivityType = (
     }
   }
 
-  const combined = (name + " " + fileName).toLowerCase();
+  const rawCombined = (name + " " + fileName).toLowerCase();
+  const combined = rawCombined.replace(/umrundung|rundkurs|rundfahrt|rundstrecke|rundwander|rund um|runde/g, ' ');
   const cyclingKeywords = [
-    'cycling', 'cycle', 'bike', 'biking', 'radfahren', 'radtour', 'rennrad',
+    'cycling', 'cycle', 'cycl', 'bike', 'biking', 'radfahren', 'radtour', 'rennrad',
     'gravel', 'mtb', 'mountainbike', 'ebike', 'e-bike', 'pedelec', 'bikepacking'
   ];
   for (const kw of cyclingKeywords) {
@@ -1656,7 +1657,7 @@ export const detectActivityType = (
   }
 
   const keywords = [
-    'run', 'lauf', 'jog', 'walk', 'hiking', 'running', 'laufen', 'jogging',
+    'run', 'lauf', 'jog', 'walk', 'hik', 'hiking', 'running', 'laufen', 'jogging',
     'spazier', 'wander', 'pace', 'lauft', 'marathon', 'halbmarathon', 'trail',
     'trailrun', 'ultratrail', 'dauerlauf', 'tempodauerlauf', 'crosslauf', 'berglauf'
   ];
@@ -1690,6 +1691,123 @@ export const detectActivityType = (
   }
   return 'cycling';
 };
+
+/**
+ * Strips German loop/round-trip words ("Runde", "Umrundung", etc.) before substring-matching "run".
+ */
+export function stripGermanRoundTokens(text: string): string {
+  return (text || '')
+    .toLowerCase()
+    .replace(/umrundung|rundkurs|rundfahrt|rundstrecke|rundwander|rund um|runde/g, ' ');
+}
+
+export function isStopWatchType(type: string | undefined): boolean {
+  const t = (type || '').toLowerCase().trim();
+  return t.includes('stop_watch') || t.includes('stopwatch');
+}
+
+export function isCyclingType(type: string | undefined, name?: string): boolean {
+  if (!type && !name) return false;
+  const t = (type || '').toLowerCase().trim();
+  if (t) {
+    if (
+      t.includes('cycl') ||
+      t.includes('bike') ||
+      t.includes('biking') ||
+      t.includes('rad') ||
+      t.includes('gravel') ||
+      t.includes('mtb') ||
+      t.includes('virtual_ride') ||
+      t.includes('spin') ||
+      t.includes('rennrad') ||
+      t.includes('ebike') ||
+      t.includes('e-bike') ||
+      t.includes('pedelec') ||
+      t === 'ride'
+    ) {
+      return true;
+    }
+    if (t !== 'other' && t !== 'unknown' && t !== 'uncategorized') {
+      return false;
+    }
+  }
+  const n = stripGermanRoundTokens(name || '');
+  return (
+    n.includes('cycl') ||
+    n.includes('bike') ||
+    n.includes('biking') ||
+    n.includes('rad') ||
+    n.includes('fahrrad') ||
+    n.includes('rennrad') ||
+    n.includes('gravel') ||
+    n.includes('mtb') ||
+    n.includes('virtual_ride') ||
+    n.includes('spin') ||
+    n.includes('ebike') ||
+    n.includes('e-bike') ||
+    n.includes('pedelec')
+  );
+}
+
+export function isRunningType(type: string | undefined, name?: string): boolean {
+  if (!type && !name) return false;
+  if (isCyclingType(type, name)) return false;
+  const t = (type || '').toLowerCase().trim();
+  if (t) {
+    if (
+      t.includes('run') ||
+      t.includes('lauf') ||
+      t.includes('jog') ||
+      t.includes('walk') ||
+      t.includes('hik') ||
+      t.includes('wander') ||
+      t.includes('treadmill')
+    ) {
+      return true;
+    }
+    if (t !== 'other' && t !== 'unknown' && t !== 'uncategorized') {
+      return false;
+    }
+  }
+  const n = stripGermanRoundTokens(name || '');
+  return (
+    n.includes('run') ||
+    n.includes('lauf') ||
+    n.includes('jog') ||
+    n.includes('walk') ||
+    n.includes('hik') ||
+    n.includes('wander') ||
+    n.includes('marathon')
+  );
+}
+
+export function isStrictCyclingType(type: string | undefined, name?: string): boolean {
+  if (isStopWatchType(type)) return false;
+  return isCyclingType(type, name);
+}
+
+export function isStrictRunningType(type: string | undefined, name?: string): boolean {
+  const t = (type || '').toLowerCase().trim();
+  if (
+    isStopWatchType(t) ||
+    t.includes('walk') ||
+    t.includes('hik') ||
+    t.includes('wander') ||
+    isCyclingType(type, name)
+  ) {
+    return false;
+  }
+  if (t) {
+    if (t.includes('run') || t.includes('lauf') || t.includes('jog') || t.includes('treadmill')) {
+      return true;
+    }
+    if (t !== 'other' && t !== 'unknown' && t !== 'uncategorized') {
+      return false;
+    }
+  }
+  const n = stripGermanRoundTokens(name || '');
+  return n.includes('run') || n.includes('lauf') || n.includes('jog') || n.includes('marathon');
+}
 
 export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boolean => {
   if (!track) return false;
@@ -1867,10 +1985,10 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
     const typeNode = xml.querySelector("trk > type") || xml.querySelector("gpx > metadata > type") || xml.querySelector("type");
     const parsedType = typeNode?.textContent?.trim().toLowerCase() || "";
     let activityType: 'cycling' | 'running';
-    if (parsedType.includes('run') || parsedType.includes('lauf') || parsedType.includes('jog') || parsedType.includes('walk') || parsedType.includes('hike') || parsedType.includes('trail')) {
-      activityType = 'running';
-    } else if (parsedType.includes('cycle') || parsedType.includes('bike') || parsedType.includes('rad') || parsedType.includes('ride')) {
+    if (parsedType.includes('cycl') || parsedType.includes('bike') || parsedType.includes('rad') || parsedType.includes('ride') || parsedType.includes('gravel') || parsedType.includes('mtb')) {
       activityType = 'cycling';
+    } else if (parsedType.includes('run') || parsedType.includes('lauf') || parsedType.includes('jog') || parsedType.includes('walk') || parsedType.includes('hik') || parsedType.includes('trail')) {
+      activityType = 'running';
     } else {
       activityType = detectActivityType(points, activityName, fileName);
     }

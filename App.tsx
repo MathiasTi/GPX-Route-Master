@@ -8,7 +8,19 @@ import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
 import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
 import { PlannedToursView } from './components/PlannedToursView';
-import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass } from 'lucide-react';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass, Settings as SettingsIcon, Languages } from 'lucide-react';
+import {
+  AppPreferences,
+  DEFAULT_APP_PREFERENCES,
+  loadAppPreferences,
+  saveAppPreferences,
+  sanitizeAppPreferences,
+  resolveEffectiveTheme,
+  applyPreferencesToDom,
+  tr,
+  useDomLanguageSync
+} from './utils/appSettings';
+import { AppSettingsModal, AppSettingsTab } from './components/AppSettingsModal';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
@@ -118,6 +130,10 @@ const App: React.FC = () => {
 
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
+  const [appPrefs, setAppPrefs] = useState<AppPreferences>(() => loadAppPreferences());
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<AppSettingsTab>('style');
+
   const [activeLayer, setActiveLayer] = useState<MapLayer>(() => {
     try {
       const saved = safeGetItem('velo_workspace_active_layer');
@@ -125,13 +141,18 @@ const App: React.FC = () => {
         return saved as MapLayer;
       }
     } catch (e) {}
-    return MapLayer.OSM;
+    return loadAppPreferences().defaultMapLayer;
   });
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
+      const prefs = loadAppPreferences();
+      if (prefs.colorMode === 'system') {
+        return resolveEffectiveTheme('system');
+      }
       const saved = safeGetItem('gpx_theme');
       if (saved === 'dark' || saved === 'light') return saved;
+      return resolveEffectiveTheme(prefs.colorMode);
     } catch (e) {}
     return 'light';
   });
@@ -179,9 +200,13 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(() =>
-    parseWorkspaceHash(window.location.hash).view
-  );
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(() => {
+    const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
+    if (rawHash) {
+      return parseWorkspaceHash(window.location.hash).view;
+    }
+    return loadAppPreferences().defaultView;
+  });
   const [fitnessPageInitialTab, setFitnessPageInitialTab] = useState<GarminDashboardTab>(() =>
     parseWorkspaceHash(window.location.hash).fitnessTab ?? 'overview'
   );
@@ -235,7 +260,7 @@ const App: React.FC = () => {
   const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
   const [plannedToursCount, setPlannedToursCount] = useState<number | null>(null);
   const [athleteProfileOpen, setAthleteProfileOpen] = useState(false);
-  const [isProfileCollapsed, setIsProfileCollapsed] = useState(false);
+  const [isProfileCollapsed, setIsProfileCollapsed] = useState(() => !loadAppPreferences().showElevationProfile);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
   const [showHint, setShowHint] = useState(false);
   const [userWeight, setUserWeight] = useState(75);
@@ -315,6 +340,53 @@ const App: React.FC = () => {
   }, [tracks]);
 
   // --- Helper Handlers ---
+  const updateAppPreferences = useCallback((partial: Partial<AppPreferences>) => {
+    setAppPrefs((prev) => {
+      const next = saveAppPreferences({ ...prev, ...partial });
+      if (partial.colorMode !== undefined) {
+        setTheme(resolveEffectiveTheme(partial.colorMode));
+      }
+      if (partial.showElevationProfile !== undefined) {
+        setIsProfileCollapsed(!partial.showElevationProfile);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleThemeQuick = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      setAppPrefs((p) => saveAppPreferences({ ...p, colorMode: next }));
+      return next;
+    });
+  }, []);
+
+  const openSettingsModal = useCallback((tab: AppSettingsTab = 'style') => {
+    setSettingsInitialTab(tab);
+    setSettingsModalOpen(true);
+  }, []);
+
+  const handleResetAppPreferences = useCallback(() => {
+    const resetPrefs = saveAppPreferences({ ...DEFAULT_APP_PREFERENCES });
+    setAppPrefs(resetPrefs);
+    setTheme(resolveEffectiveTheme(resetPrefs.colorMode));
+    setFtp(250);
+    setUserWeight(75);
+    setUserAge(35);
+    setUserMaxHr(185);
+    safeSetItem('velo_user_max_hr', '185');
+    setEstimatedSpeed(15);
+    setActiveLayer(resetPrefs.defaultMapLayer);
+    setIsProfileCollapsed(!resetPrefs.showElevationProfile);
+    setSuccessMessage(
+      tr(
+        resetPrefs.language,
+        'Einstellungen auf Standardwerte zurückgesetzt.',
+        'Settings reset to defaults.'
+      )
+    );
+  }, []);
+
   const handleMaxHrChange = useCallback((newMaxHr: number) => {
     setUserMaxHr(newMaxHr);
     safeSetItem('velo_user_max_hr', String(newMaxHr));
@@ -493,16 +565,26 @@ const App: React.FC = () => {
     safeSetItem('velo_workspace_active_layer', activeLayer);
   }, [activeLayer]);
 
-  // Sync theme with document & safe storage
+  // Sync UI language (DE / EN) across rendered DOM text and tooltips
+  useDomLanguageSync(appPrefs.language);
+
+  // Sync UI style, density, radius, language & color theme with document & safe storage
   useEffect(() => {
-    const root = window.document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
+    applyPreferencesToDom(appPrefs, theme);
     safeSetItem('gpx_theme', theme);
-  }, [theme]);
+  }, [appPrefs, theme]);
+
+  // Listen to OS dark mode changes when colorMode === 'system'
+  useEffect(() => {
+    if (appPrefs.colorMode !== 'system' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => {
+      setTheme(e.matches ? 'dark' : 'light');
+    };
+    setTheme(mq.matches ? 'dark' : 'light');
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [appPrefs.colorMode]);
 
   // Sync marked track ID with safe storage
   useEffect(() => {
@@ -548,7 +630,15 @@ const App: React.FC = () => {
               if (s.userWeight) setUserWeight(Number(s.userWeight));
               if (s.userAge) setUserAge(Number(s.userAge));
               if (s.userMaxHr) setUserMaxHr(Number(s.userMaxHr));
-              if (s.theme) {
+              if (s.estimatedSpeed) setEstimatedSpeed(Number(s.estimatedSpeed));
+              if (s.app_preferences) {
+                try {
+                  const parsedPrefs = sanitizeAppPreferences(JSON.parse(s.app_preferences));
+                  const synced = saveAppPreferences(parsedPrefs);
+                  setAppPrefs(synced);
+                  setTheme(resolveEffectiveTheme(synced.colorMode));
+                } catch {}
+              } else if (s.theme) {
                 setTheme(s.theme === 'dark' ? 'dark' : 'light');
               }
               if (s.velo_text_markers) {
@@ -582,7 +672,9 @@ const App: React.FC = () => {
               userWeight: String(userWeight),
               userAge: String(userAge),
               userMaxHr: String(userMaxHr),
+              estimatedSpeed: String(estimatedSpeed),
               theme: theme,
+              app_preferences: JSON.stringify(appPrefs),
               velo_text_markers: safeStringifyOrFallback(textMarkers, '[]')
             }
           })
@@ -594,7 +686,7 @@ const App: React.FC = () => {
     
     const timeout = setTimeout(saveSettings, 1000);
     return () => clearTimeout(timeout);
-  }, [isUnlocked, ftp, userWeight, userAge, userMaxHr, theme, textMarkers, settingsLoaded]);
+  }, [isUnlocked, ftp, userWeight, userAge, userMaxHr, estimatedSpeed, theme, appPrefs, textMarkers, settingsLoaded]);
 
   // Keep default curated reference tours in the Library, not in the active Workspace
   useEffect(() => {
@@ -1701,6 +1793,7 @@ const App: React.FC = () => {
 
       // Escape key: close any open modal or clear active selection/flight
       if (e.key === 'Escape') {
+        if (settingsModalOpen) { setSettingsModalOpen(false); return; }
         if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
         if (glossaryOpen) { setGlossaryOpen(false); return; }
         if (intensiveAnalysisOpen) { setIntensiveAnalysisOpen(false); return; }
@@ -1710,6 +1803,14 @@ const App: React.FC = () => {
         if (validationModalOpen) { setValidationModalOpen(false); return; }
         if (isExportModalOpen) { setIsExportModalOpen(false); return; }
         if (selectionBounds) { setSelectionBounds(null); return; }
+        return;
+      }
+
+      // ',' shortcut: Open Settings & UI Style Menu
+      if (e.key === ',' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        triggerHaptic('light');
+        openSettingsModal('style');
         return;
       }
 
@@ -1947,6 +2048,8 @@ const App: React.FC = () => {
     mapView.zoom,
     setHoveredPoint,
     setMapView,
+    settingsModalOpen,
+    openSettingsModal,
     shortcutsModalOpen,
     glossaryOpen,
     intensiveAnalysisOpen,
@@ -2021,7 +2124,7 @@ const App: React.FC = () => {
 
         {/* All 5 Pages Always Visible (Wrap cleanly without horizontal slider) */}
         <nav
-          aria-label="Hauptnavigation"
+          aria-label={tr(appPrefs.language, 'Hauptnavigation', 'Main Navigation')}
           className="order-3 lg:order-2 w-full lg:w-auto flex flex-wrap items-center gap-1 pt-1 lg:pt-0 border-t lg:border-t-0 border-slate-100 dark:border-slate-800/80"
         >
           <button
@@ -2034,7 +2137,7 @@ const App: React.FC = () => {
             }`}
           >
             <MapIcon size={14} />
-            <span>Karte</span>
+            <span>{tr(appPrefs.language, 'Karte', 'Map')}</span>
             {tracks.length > 0 && (
               <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
                 {tracks.length}
@@ -2053,10 +2156,10 @@ const App: React.FC = () => {
             }`}
           >
             <Compass size={14} />
-            <span>Geplante Touren</span>
+            <span>{tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}</span>
             {plannedToursCount !== null && (
               <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
-                {plannedToursCount.toLocaleString('de-DE')}
+                {plannedToursCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
               </span>
             )}
           </button>
@@ -2072,10 +2175,10 @@ const App: React.FC = () => {
             }`}
           >
             <ListFilter size={14} />
-            <span>Aktivitäten</span>
+            <span>{tr(appPrefs.language, 'Aktivitäten', 'Activities')}</span>
             {catalogTotalCount !== null && (
               <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
-                {catalogTotalCount.toLocaleString('de-DE')}
+                {catalogTotalCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
               </span>
             )}
           </button>
@@ -2091,7 +2194,7 @@ const App: React.FC = () => {
             }`}
           >
             <BarChart3 size={14} />
-            <span>Aktivitäten-Dashboard</span>
+            <span>{tr(appPrefs.language, 'Aktivitäten-Dashboard', 'Activities Dashboard')}</span>
           </button>
 
           <button
@@ -2105,7 +2208,7 @@ const App: React.FC = () => {
             }`}
           >
             <Activity size={14} />
-            <span>Fitness &amp; Gesundheit</span>
+            <span>{tr(appPrefs.language, 'Fitness & Gesundheit', 'Fitness & Health')}</span>
           </button>
         </nav>
 
@@ -2115,10 +2218,10 @@ const App: React.FC = () => {
             type="button"
             onClick={() => topbarUploadInputRef.current?.click()}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            title="GPX, FIT oder ZIP importieren"
+            title={tr(appPrefs.language, 'GPX, FIT oder ZIP importieren', 'Import GPX, FIT or ZIP')}
           >
             <Upload size={13} />
-            <span className="hidden sm:inline">Import</span>
+            <span className="hidden sm:inline">{tr(appPrefs.language, 'Import', 'Import')}</span>
           </button>
 
           {activeWorkspaceView !== 'fitness' && (
@@ -2142,13 +2245,13 @@ const App: React.FC = () => {
                   ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
                   : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
               }`}
-              title="Athleten-Profil: Alter, Gewicht, FTP & Max. Puls"
+              title={tr(appPrefs.language, 'Athleten-Profil: Alter, Gewicht, FTP & Max. Puls', 'Athlete Profile: Age, Weight, FTP & Max HR')}
             >
               <Sliders size={13} className="text-amber-500" />
               <span className="hidden xl:inline font-mono tabular-nums">
-                {ftp}W · {userWeight}kg · {userAge}J
+                {ftp}W · {userWeight}kg · {userAge}{tr(appPrefs.language, 'J', 'y')}
               </span>
-              <span className="xl:hidden">Profil</span>
+              <span className="xl:hidden">{tr(appPrefs.language, 'Profil', 'Profile')}</span>
             </button>
 
             {athleteProfileOpen && (
@@ -2161,17 +2264,18 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
                     <div>
                       <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
-                        Athleten-Profil &amp; Schwellenwerte
+                        {tr(appPrefs.language, 'Athleten-Profil & Schwellenwerte', 'Athlete Profile & Thresholds')}
                       </h4>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Relativleistung: <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
+                        {tr(appPrefs.language, 'Relativleistung:', 'Power-to-weight:')}{' '}
+                        <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
                       </p>
                     </div>
                     <button
                       type="button"
                       onClick={() => setAthleteProfileOpen(false)}
                       className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                      aria-label="Schließen"
+                      aria-label={tr(appPrefs.language, 'Schließen', 'Close')}
                     >
                       <X size={14} />
                     </button>
@@ -2180,7 +2284,7 @@ const App: React.FC = () => {
                   <div className="grid grid-cols-2 gap-3 text-xs">
                     <label className="space-y-1 block">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        FTP (Watt)
+                        {tr(appPrefs.language, 'FTP (Watt)', 'FTP (Watts)')}
                       </span>
                       <input
                         type="number"
@@ -2194,7 +2298,7 @@ const App: React.FC = () => {
 
                     <label className="space-y-1 block">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        Gewicht (kg)
+                        {tr(appPrefs.language, 'Gewicht (kg)', 'Weight (kg)')}
                       </span>
                       <input
                         type="number"
@@ -2209,7 +2313,7 @@ const App: React.FC = () => {
 
                     <label className="space-y-1 block">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        Alter (Jahre)
+                        {tr(appPrefs.language, 'Alter (Jahre)', 'Age (Years)')}
                       </span>
                       <input
                         type="number"
@@ -2223,7 +2327,7 @@ const App: React.FC = () => {
 
                     <label className="space-y-1 block">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        Max. Puls (bpm)
+                        {tr(appPrefs.language, 'Max. Puls (bpm)', 'Max HR (bpm)')}
                       </span>
                       <input
                         type="number"
@@ -2242,16 +2346,27 @@ const App: React.FC = () => {
                       onClick={() => handleMaxHrChange(Math.max(120, Math.min(220, 220 - userAge)))}
                       className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
                     >
-                      HFmax = 220 − Alter ({220 - userAge})
+                      HFmax = 220 − {tr(appPrefs.language, 'Alter', 'Age')} ({220 - userAge})
                     </button>
                     <button
                       type="button"
                       onClick={() => setAthleteProfileOpen(false)}
                       className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold cursor-pointer"
                     >
-                      Fertig
+                      {tr(appPrefs.language, 'Fertig', 'Done')}
                     </button>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAthleteProfileOpen(false);
+                      openSettingsModal('athlete');
+                    }}
+                    className="w-full py-1.5 px-2.5 rounded-lg border border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/70 dark:bg-indigo-950/40 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors cursor-pointer text-center"
+                  >
+                    {tr(appPrefs.language, 'Alle Einstellungen & UI-Stile öffnen...', 'Open All Settings & UI Styles...')}
+                  </button>
                 </div>
               </>
             )}
@@ -2259,10 +2374,45 @@ const App: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+            data-no-translate="true"
+            id="btn-language-toggle"
+            onClick={() => {
+              triggerHaptic('light');
+              updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
+            }}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+            title={appPrefs.language === 'de' ? 'Switch interface to English (EN)' : 'Sprache auf Deutsch wechseln (DE)'}
+            aria-label={appPrefs.language === 'de' ? 'Switch interface to English' : 'Sprache auf Deutsch wechseln'}
+          >
+            <Languages size={14} className="text-indigo-500" />
+            <span className="font-mono">{appPrefs.language.toUpperCase()}</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-open-settings"
+            onClick={() => {
+              triggerHaptic('light');
+              openSettingsModal('style');
+            }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              settingsModalOpen
+                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+            }`}
+            title={tr(appPrefs.language, 'Einstellungen, Sprache & UI-Stile (,)', 'Settings, Language & UI Styles (,)')}
+            aria-label={tr(appPrefs.language, 'Einstellungen öffnen', 'Open Settings')}
+          >
+            <SettingsIcon size={14} className="text-indigo-500" />
+            <span className="hidden md:inline">{tr(appPrefs.language, 'Einstellungen', 'Settings')}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleThemeQuick}
             className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-            title={theme === 'dark' ? 'Hellen Modus aktivieren' : 'Dunklen Modus aktivieren'}
-            aria-label="Theme umschalten"
+            title={theme === 'dark' ? tr(appPrefs.language, 'Hellen Modus aktivieren', 'Enable Light Mode') : tr(appPrefs.language, 'Dunklen Modus aktivieren', 'Enable Dark Mode')}
+            aria-label={tr(appPrefs.language, 'Theme umschalten', 'Toggle Theme')}
           >
             {theme === 'dark' ? <Sun size={15} className="text-amber-400" /> : <Moon size={15} />}
           </button>
@@ -2271,8 +2421,8 @@ const App: React.FC = () => {
             type="button"
             onClick={handleLockApp}
             className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-            title="App sperren"
-            aria-label="App sperren"
+            title={tr(appPrefs.language, 'App sperren', 'Lock App')}
+            aria-label={tr(appPrefs.language, 'App sperren', 'Lock App')}
           >
             <Lock size={15} />
           </button>
@@ -2559,7 +2709,7 @@ const App: React.FC = () => {
             onSelection={setSelectionBounds}
             onClearSelection={() => setSelectionBounds(null)}
             isDark={theme === 'dark'}
-            onToggleTheme={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+            onToggleTheme={handleToggleThemeQuick}
             onToggleAllVisibility={handleToggleAllVisibility}
             onFitVisibleTracks={handleFitVisibleTracks}
             onLoadReferenceTours={handleLoadReferenceTours}
@@ -2949,6 +3099,32 @@ const App: React.FC = () => {
           </main>
         </div>
       </div>
+
+      {/* Global Settings & UI Style Customization Modal */}
+      <AnimatePresence>
+        {settingsModalOpen && (
+          <AppSettingsModal
+            isOpen={settingsModalOpen}
+            onClose={() => setSettingsModalOpen(false)}
+            initialTab={settingsInitialTab}
+            preferences={appPrefs}
+            onUpdatePreferences={updateAppPreferences}
+            onResetDefaults={handleResetAppPreferences}
+            ftp={ftp}
+            onUpdateFtp={setFtp}
+            userWeight={userWeight}
+            onUpdateWeight={setUserWeight}
+            userAge={userAge}
+            onUpdateAge={setUserAge}
+            userMaxHr={userMaxHr}
+            onUpdateMaxHr={handleMaxHrChange}
+            estimatedSpeed={estimatedSpeed}
+            onUpdateEstimatedSpeed={setEstimatedSpeed}
+            activeLayer={activeLayer}
+            onSelectMapLayer={setActiveLayer}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };

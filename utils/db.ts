@@ -773,6 +773,32 @@ function runInitDbStatements() {
     console.error('Failed to run 2.9.6 library/garmin dedup migration:', e);
   }
 
+  // One-time data healing migration (2.9.7-heal-metrics-and-catalog): Reset synthetic stationary/stub distances,
+  // fix garmin_steps.distance polluted by cycling km, and rebuild activities_catalog classification.
+  try {
+    const checkHeal = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasHeal = (checkHeal.get('2.9.7-heal-metrics-and-catalog') as { count: number }).count > 0;
+    if (!hasHeal) {
+      const healRes = healCorruptedHealthAndActivityMetrics();
+      if (
+        healRes.stationaryResetCount > 0 ||
+        healRes.virtualStubResetCount > 0 ||
+        healRes.stepsDistanceHealedCount > 0
+      ) {
+        console.log(
+          `[DB Migration 2.9.7] Stationary reset: ${healRes.stationaryResetCount}, stub reset: ${healRes.virtualStubResetCount}, steps healed: ${healRes.stepsDistanceHealedCount}.`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.7-heal-metrics-and-catalog',
+        new Date().toISOString(),
+        'Reset synthetic distances on stationary/virtual-stub workouts, healed garmin_steps.distance, and rebuilt activities_catalog classification.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.7 health & activity metric healing migration:', e);
+  }
+
   try {
     db.pragma('optimize');
   } catch {}
@@ -1912,11 +1938,11 @@ export function searchGarminActivities(
   const cleanActivity = activityType && typeof activityType === 'string' ? activityType.slice(0, 50) : undefined;
   if (cleanActivity && cleanActivity !== 'all') {
     if (cleanActivity === 'cycling') {
-      conditions.push(`(LOWER(type) LIKE '%cycle%' OR LOWER(type) LIKE '%bike%' OR LOWER(type) LIKE '%rad%' OR LOWER(type) = 'cycling')`);
+      conditions.push(`(LOWER(type) LIKE '%cycl%' OR LOWER(type) LIKE '%bike%' OR LOWER(type) LIKE '%rad%' OR LOWER(type) LIKE '%gravel%' OR LOWER(type) LIKE '%mtb%' OR LOWER(type) = 'cycling')`);
     } else if (cleanActivity === 'running') {
-      conditions.push(`(LOWER(type) LIKE '%run%' OR LOWER(type) LIKE '%lauf%' OR LOWER(type) = 'running')`);
+      conditions.push(`(LOWER(type) LIKE '%run%' OR LOWER(type) LIKE '%lauf%' OR LOWER(type) LIKE '%jog%' OR LOWER(type) = 'running')`);
     } else if (cleanActivity === 'hiking') {
-      conditions.push(`(LOWER(type) LIKE '%hike%' OR LOWER(type) LIKE '%walk%' OR LOWER(type) LIKE '%wander%')`);
+      conditions.push(`(LOWER(type) LIKE '%hik%' OR LOWER(type) LIKE '%walk%' OR LOWER(type) LIKE '%wander%' OR LOWER(type) = 'hiking')`);
     } else {
       conditions.push(`LOWER(type) LIKE ?`);
       params.push(`%${cleanActivity.toLowerCase()}%`);
@@ -2144,7 +2170,10 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
 
       const scopedDate = toScopedKey(dateStr, uid);
       let sleep = sleepByDate.get(dateStr);
-      const dayActs = actsByDate.get(dateStr) || [];
+      const dayActs = (actsByDate.get(dateStr) || []).filter((a) => {
+        const t = String(a.type || '').toLowerCase();
+        return !t.includes('stop_watch') && !t.includes('stopwatch');
+      });
       const daySeed = dateStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
 
       const actDurationSec = dayActs.reduce((s, a) => s + Number(a.duration || 0), 0);
@@ -2166,10 +2195,9 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
       const recoveryRatio = Math.min(1, Math.max(0.2, (deepMin + remMin) / Math.max(240, sleepMin)));
 
       const dayCalories = Math.round(dayActs.reduce((sum, a) => sum + Number(a.calories || 0), 0));
-      const dayDistKm = Number(dayActs.reduce((sum, a) => sum + Number(a.distance || 0), 0).toFixed(2));
       const dayRunSteps = dayActs.reduce((sum, a) => {
         const t = String(a.type || '').toLowerCase();
-        if (t.includes('run') || t.includes('walk') || t.includes('hike') || t.includes('soccer')) {
+        if (t.includes('run') || t.includes('walk') || t.includes('hik') || t.includes('soccer')) {
           return sum + Math.round(Number(a.distance || 0) * 1280);
         }
         return sum + Math.round(Number(a.duration || 0) * 0.15);
@@ -2192,7 +2220,7 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
         const baselineSteps = 6200 + (daySeed % 9) * 420;
         const totalSteps = baselineSteps + dayRunSteps;
         const totalCalories = 1850 + dayCalories + Math.round((totalSteps - 6000) * 0.04);
-        const totalDistKm = Number((dayDistKm + (baselineSteps / 1320)).toFixed(2));
+        const totalDistKm = Number((totalSteps * 0.000762).toFixed(2));
         insertSteps.run(scopedDate, totalSteps, totalCalories, totalDistKm, uid);
       }
     }
@@ -2470,24 +2498,113 @@ export interface CatalogActivityRef {
   id: string;
 }
 
-function classifyActivityCategory(rawType: string, name: string = ''): CatalogActivityCategory {
-  const combined = `${rawType || ''} ${name || ''}`.toLowerCase();
-  if (combined.includes('hike') || combined.includes('walk') || combined.includes('wander')) {
+export function classifyActivityCategory(rawType: string, name: string = ''): CatalogActivityCategory {
+  const typeLower = (rawType || '').toLowerCase().trim();
+  if (typeLower) {
+    if (
+      typeLower.includes('hik') ||
+      typeLower.includes('walk') ||
+      typeLower.includes('wander') ||
+      typeLower.includes('mountaineer')
+    ) {
+      return 'hiking';
+    }
+    if (
+      typeLower.includes('cycl') ||
+      typeLower.includes('bike') ||
+      typeLower.includes('biking') ||
+      typeLower.includes('rad') ||
+      typeLower.includes('gravel') ||
+      typeLower.includes('mtb') ||
+      typeLower.includes('virtual_ride') ||
+      typeLower === 'ride'
+    ) {
+      return 'cycling';
+    }
+    if (
+      typeLower.includes('run') ||
+      typeLower.includes('lauf') ||
+      typeLower.includes('jog') ||
+      typeLower.includes('treadmill')
+    ) {
+      return 'running';
+    }
+    if (typeLower !== 'other' && typeLower !== 'unknown' && typeLower !== 'uncategorized') {
+      return 'other';
+    }
+  }
+
+  const sanitizedName = (name || '')
+    .toLowerCase()
+    .replace(/umrundung|rundkurs|rundfahrt|rundstrecke|rundwander|rund um|runde/g, ' ');
+  if (sanitizedName.includes('hik') || sanitizedName.includes('walk') || sanitizedName.includes('wander')) {
     return 'hiking';
   }
-  if (combined.includes('run') || combined.includes('lauf') || combined.includes('jog')) {
-    return 'running';
-  }
   if (
-    combined.includes('cycle') ||
-    combined.includes('bike') ||
-    combined.includes('rad') ||
-    combined.includes('gravel') ||
-    combined.includes('mtb')
+    sanitizedName.includes('cycl') ||
+    sanitizedName.includes('bike') ||
+    sanitizedName.includes('biking') ||
+    sanitizedName.includes('rad') ||
+    sanitizedName.includes('gravel') ||
+    sanitizedName.includes('mtb') ||
+    sanitizedName.includes('rennrad')
   ) {
     return 'cycling';
   }
+  if (sanitizedName.includes('run') || sanitizedName.includes('lauf') || sanitizedName.includes('jog')) {
+    return 'running';
+  }
   return 'other';
+}
+
+export function healCorruptedHealthAndActivityMetrics(): {
+  stationaryResetCount: number;
+  virtualStubResetCount: number;
+  stepsDistanceHealedCount: number;
+} {
+  const tx = db.transaction(() => {
+    const stationaryRes = db
+      .prepare(
+        `UPDATE garmin_activities
+         SET distance = 0, ascent = 0, descent = 0
+         WHERE LOWER(COALESCE(type, '')) IN (
+           'stop_watch', 'stopwatch', 'strength_training', 'strength', 'krafttraining',
+           'hiit', 'indoor_cardio', 'cardio', 'yoga', 'pilates', 'breathwork', 'meditation'
+         )
+           AND (COALESCE(distance, 0) > 0 OR COALESCE(ascent, 0) > 0 OR COALESCE(descent, 0) > 0)`
+      )
+      .run();
+
+    const virtualStubRes = db
+      .prepare(
+        `UPDATE garmin_activities
+         SET distance = 0
+         WHERE (points_json IS NULL OR LENGTH(TRIM(points_json)) <= 2)
+           AND COALESCE(duration, 0) > 0
+           AND COALESCE(distance, 0) > 0
+           AND ABS((distance / (duration / 3600.0)) - 21.6255) < 0.05`
+      )
+      .run();
+
+    const stepsRes = db
+      .prepare(
+        `UPDATE garmin_steps
+         SET distance = ROUND(steps * 0.000762, 2)
+         WHERE COALESCE(steps, 0) > 0
+           AND (distance IS NULL OR distance <= 0 OR distance > steps * 0.0013)`
+      )
+      .run();
+
+    return {
+      stationaryResetCount: stationaryRes.changes,
+      virtualStubResetCount: virtualStubRes.changes,
+      stepsDistanceHealedCount: stepsRes.changes,
+    };
+  });
+
+  const result = tx();
+  rebuildActivitiesCatalog();
+  return result;
 }
 
 function computeTimestampFields(rawDate?: string | null): {

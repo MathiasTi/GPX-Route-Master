@@ -2080,7 +2080,153 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
-  const downsampledPointsCache = new Map<string, { rawLen: number; result: string }>();
+  interface PowerTelemetrySummary {
+    hasPower: boolean;
+    avgPower: number;
+    maxPower: number;
+    np: number;
+    variabilityIndex: number;
+    peaks: Record<number, number>;
+  }
+
+  function computePowerTelemetry(points: any[], fallbackDurationSec: number = 0): PowerTelemetrySummary | undefined {
+    if (!Array.isArray(points) || points.length === 0) return undefined;
+
+    let validPowerSamples = 0;
+    let maxPower = 0;
+    const secPower: number[] = [];
+    let prevTimeMs: number | null = null;
+
+    const extractPower = (p: any): number | null => {
+      const val = Number(p?.power);
+      if (!Number.isFinite(val) || val < 0 || val >= 3000) return null;
+      return val;
+    };
+
+    const parseTimeMs = (p: any): number | null => {
+      if (p?.time === undefined || p?.time === null) return null;
+      if (typeof p.time === 'number' && Number.isFinite(p.time)) return p.time;
+      const t = Date.parse(String(p.time));
+      return Number.isFinite(t) ? t : null;
+    };
+
+    let hasTimestamps = true;
+    for (let i = 0; i < points.length; i++) {
+      const t = parseTimeMs(points[i]);
+      if (t === null) {
+        hasTimestamps = false;
+        break;
+      }
+    }
+
+    if (hasTimestamps) {
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const wRaw = extractPower(p);
+        const w = wRaw ?? 0;
+        if (wRaw !== null && wRaw > 0) {
+          validPowerSamples++;
+          if (wRaw > maxPower) maxPower = wRaw;
+        }
+        const tMs = parseTimeMs(p)!;
+        if (prevTimeMs === null) {
+          secPower.push(w);
+        } else {
+          const dtSec = Math.round((tMs - prevTimeMs) / 1000);
+          if (dtSec <= 0) {
+            if (secPower.length > 0 && w > secPower[secPower.length - 1]) {
+              secPower[secPower.length - 1] = w;
+            }
+          } else if (dtSec === 1) {
+            secPower.push(w);
+          } else if (dtSec <= 10) {
+            // Fill small smart-recording gaps cleanly without stretching pause stops
+            for (let k = 0; k < dtSec; k++) {
+              secPower.push(w);
+            }
+          } else {
+            // Pause / timer stop gap: record the resumed sample once
+            secPower.push(w);
+          }
+        }
+        prevTimeMs = tMs;
+      }
+    } else {
+      const avgDt =
+        fallbackDurationSec > 0 && points.length > 1
+          ? Math.max(1, Math.min(10, Math.round(fallbackDurationSec / points.length)))
+          : 1;
+      for (let i = 0; i < points.length; i++) {
+        const wRaw = extractPower(points[i]);
+        const w = wRaw ?? 0;
+        if (wRaw !== null && wRaw > 0) {
+          validPowerSamples++;
+          if (wRaw > maxPower) maxPower = wRaw;
+        }
+        for (let k = 0; k < avgDt; k++) {
+          secPower.push(w);
+        }
+      }
+    }
+
+    if (validPowerSamples === 0 || secPower.length === 0) {
+      return undefined;
+    }
+
+    const totalSum = secPower.reduce((acc, v) => acc + v, 0);
+    const avgPower = Math.round(totalSum / secPower.length);
+
+    let np = avgPower;
+    if (secPower.length >= 30) {
+      let rollingSum = 0;
+      let pow4Sum = 0;
+      let rollingCount = 0;
+      for (let i = 0; i < secPower.length; i++) {
+        rollingSum += secPower[i];
+        if (i >= 30) {
+          rollingSum -= secPower[i - 30];
+        }
+        if (i >= 29) {
+          const avg30 = rollingSum / 30;
+          pow4Sum += avg30 * avg30 * avg30 * avg30;
+          rollingCount++;
+        }
+      }
+      if (rollingCount > 0) {
+        np = Math.round(Math.pow(pow4Sum / rollingCount, 0.25));
+      }
+    }
+
+    const durations = [1, 5, 15, 60, 300, 1200, 3600];
+    const peaks: Record<number, number> = {};
+    for (const d of durations) {
+      if (secPower.length < d) {
+        peaks[d] = 0;
+        continue;
+      }
+      let winSum = 0;
+      for (let i = 0; i < d; i++) {
+        winSum += secPower[i];
+      }
+      let bestSum = winSum;
+      for (let i = d; i < secPower.length; i++) {
+        winSum += secPower[i] - secPower[i - d];
+        if (winSum > bestSum) bestSum = winSum;
+      }
+      peaks[d] = Math.round(bestSum / d);
+    }
+
+    return {
+      hasPower: true,
+      avgPower,
+      maxPower: Math.round(maxPower),
+      np,
+      variabilityIndex: avgPower > 0 ? Number((np / avgPower).toFixed(2)) : 0,
+      peaks
+    };
+  }
+
+  const downsampledPointsCache = new Map<string, { rawLen: number; result: string; powerTelemetry?: PowerTelemetrySummary }>();
 
   // Helper to downsample points_json inside an activity record to prevent "Invalid string length" on the client
   function downsampleActivity(act: any, maxPoints: number = 1000): any {
@@ -2088,8 +2234,9 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       return act;
     }
 
-    // Fast path: each serialized point object is >20 chars, so strings shorter than maxPoints * 20 cannot exceed maxPoints
-    if (act.points_json.length <= maxPoints * 20) {
+    const mightHavePower = act.points_json.includes('"power"');
+    // Fast path: each serialized point object is >20 chars, so short non-power strings cannot exceed maxPoints
+    if (!mightHavePower && act.points_json.length <= maxPoints * 20) {
       return act;
     }
 
@@ -2098,33 +2245,40 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     if (cacheKey) {
       const cached = downsampledPointsCache.get(cacheKey);
       if (cached && cached.rawLen === rawLen) {
-        return cached.result === act.points_json ? act : { ...act, points_json: cached.result };
+        if (cached.result === act.points_json && !cached.powerTelemetry) {
+          return act;
+        }
+        return {
+          ...act,
+          points_json: cached.result,
+          ...(cached.powerTelemetry ? { powerTelemetry: cached.powerTelemetry } : {})
+        };
       }
     }
 
     try {
       const parsed = safeJsonParse(act.points_json, []).data;
-      if (Array.isArray(parsed) && parsed.length > maxPoints) {
-        const downsampled = downsamplePoints(parsed, maxPoints);
-        const serialized = safeStringifyOrFallback(downsampled, '[]');
+      if (Array.isArray(parsed)) {
+        const powerTelemetry = computePowerTelemetry(parsed, Number(act.duration || 0));
+        const shouldDownsample = parsed.length > maxPoints;
+        const serialized = shouldDownsample
+          ? safeStringifyOrFallback(downsamplePoints(parsed, maxPoints), '[]')
+          : act.points_json;
         if (cacheKey) {
           if (downsampledPointsCache.size >= 2000) {
             const oldestKey = downsampledPointsCache.keys().next().value;
             if (oldestKey !== undefined) downsampledPointsCache.delete(oldestKey);
           }
-          downsampledPointsCache.set(cacheKey, { rawLen, result: serialized });
+          downsampledPointsCache.set(cacheKey, { rawLen, result: serialized, powerTelemetry });
+        }
+        if (!shouldDownsample && !powerTelemetry) {
+          return act;
         }
         return {
           ...act,
-          points_json: serialized
+          points_json: serialized,
+          ...(powerTelemetry ? { powerTelemetry } : {})
         };
-      }
-      if (cacheKey) {
-        if (downsampledPointsCache.size >= 2000) {
-          const oldestKey = downsampledPointsCache.keys().next().value;
-          if (oldestKey !== undefined) downsampledPointsCache.delete(oldestKey);
-        }
-        downsampledPointsCache.set(cacheKey, { rawLen, result: act.points_json });
       }
     } catch (e) {
       console.error(`Error downsampling points for activity ${act.id}:`, e);
@@ -2262,9 +2416,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       };
 
       const classifySport = (typeStr?: string | null, nameStr?: string | null): 'cycling' | 'running' | 'other' => {
-        const s = `${typeStr || ''} ${nameStr || ''}`.toLowerCase();
-        if (s.includes('run') || s.includes('lauf') || s.includes('jog') || s.includes('trail')) return 'running';
-        if (s.includes('cycl') || s.includes('rad') || s.includes('bike') || s.includes('ride') || s.includes('gravel') || s.includes('mtb')) return 'cycling';
+        const t = String(typeStr || '').toLowerCase().trim();
+        if (t.includes('cycl') || t.includes('rad') || t.includes('bike') || t.includes('biking') || t.includes('ride') || t.includes('gravel') || t.includes('mtb')) return 'cycling';
+        if (t.includes('run') || t.includes('lauf') || t.includes('jog') || t.includes('hik') || t.includes('walk')) return 'running';
+        if (t && t !== 'other' && t !== 'unknown') return 'other';
+        const cleanName = String(nameStr || '')
+          .toLowerCase()
+          .replace(/umrundung|rundkurs|rundfahrt|rundstrecke|rundwander|rund um|runde/g, ' ');
+        if (cleanName.includes('cycl') || cleanName.includes('rad') || cleanName.includes('bike') || cleanName.includes('biking') || cleanName.includes('ride') || cleanName.includes('gravel') || cleanName.includes('mtb')) return 'cycling';
+        if (cleanName.includes('run') || cleanName.includes('lauf') || cleanName.includes('jog') || cleanName.includes('trail') || cleanName.includes('hik') || cleanName.includes('walk')) return 'running';
         return 'cycling';
       };
 
@@ -2882,8 +3042,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       return t || 'other';
     };
 
+    const isStopWatchActivity = (rawType?: string): boolean => {
+      const t = String(rawType || '').toLowerCase().trim();
+      return t.includes('stop_watch') || t.includes('stopwatch');
+    };
+
+    const validActivities = data.activities.filter((act) => !isStopWatchActivity(act.type));
+
     const weeklyActivities = new Map<string, { distance: number; duration: number; ascent: number; calories: number; count: number; trimpLoad: number }>();
-    for (const act of data.activities) {
+    for (const act of validActivities) {
       const wKey = getWeekKey(act.date);
       if (!wKey) continue;
       const existing = weeklyActivities.get(wKey) || { distance: 0, duration: 0, ascent: 0, calories: 0, count: 0, trimpLoad: 0 };
@@ -2928,21 +3095,26 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     const weeklyDistances: number[] = [];
     const weeklyAverageRhrs: number[] = [];
 
+    const earliestWeekMs = allWeekKeys.length > 0 ? Date.parse(`${allWeekKeys[0]}T12:00:00Z`) : 0;
+
     for (let i = 0; i < allWeekKeys.length; i++) {
       const wKey = allWeekKeys[i];
       const actStats = weeklyActivities.get(wKey) || { distance: 0, duration: 0, ascent: 0, calories: 0, count: 0, trimpLoad: 0 };
       const rStats = weeklyRhr.get(wKey);
       const avgRhrVal = rStats && rStats.count > 0 ? parseFloat((rStats.sum / rStats.count).toFixed(1)) : null;
 
-      // Rolling 4-week chronic baseline including current window
+      // Rolling 4-week calendar-aligned chronic baseline including current week
+      const weekDateMs = Date.parse(`${wKey}T12:00:00Z`);
       let loadSum = 0;
-      let loadWeeks = 0;
-      for (let j = Math.max(0, i - 3); j <= i; j++) {
-        const prevAct = weeklyActivities.get(allWeekKeys[j]);
+      for (let wOffset = 0; wOffset < 4; wOffset++) {
+        const targetWeekKey = new Date(weekDateMs - wOffset * 7 * 86400000).toISOString().slice(0, 10);
+        const prevAct = weeklyActivities.get(targetWeekKey);
         loadSum += prevAct ? prevAct.trimpLoad : 0;
-        loadWeeks++;
       }
-      const chronicLoad = loadWeeks > 0 ? loadSum / loadWeeks : 0;
+      const elapsedWeeks = earliestWeekMs > 0
+        ? Math.max(1, Math.min(4, Math.floor((weekDateMs - earliestWeekMs) / (7 * 86400000)) + 1))
+        : 1;
+      const chronicLoad = loadSum / elapsedWeeks;
       const acuteLoad = actStats.trimpLoad;
       const acwrVal = chronicLoad >= 10 ? parseFloat((acuteLoad / chronicLoad).toFixed(2)) : null;
 
@@ -2978,12 +3150,57 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
 
     const trainingVolumeRhrCorr = pearsonCorrelation(weeklyDistances, weeklyAverageRhrs);
+
+    // Rolling 7d acute vs 28d weekly chronic load anchored to the latest recorded date
+    let maxAnchorDateStr = '';
+    for (const act of validActivities) {
+      const dStr = String(act.date || '').trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxAnchorDateStr) maxAnchorDateStr = dStr;
+    }
+    for (const r of data.rhr) {
+      const dStr = String(r.date || '').trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxAnchorDateStr) maxAnchorDateStr = dStr;
+    }
+
     const latestWeek = unifiedWeeklyPoints[unifiedWeeklyPoints.length - 1];
-    const latestAcwr = latestWeek?.acwr ?? null;
+    let rollingAcuteLoad = latestWeek?.trimpLoad ?? 0;
+    let rollingChronicLoad = latestWeek?.chronicLoad ?? 0;
+    let latestAcwr = latestWeek?.acwr ?? null;
+
+    if (maxAnchorDateStr && validActivities.length > 0) {
+      const anchorMs = Date.parse(`${maxAnchorDateStr}T12:00:00Z`);
+      const cutoff7dMs = anchorMs - 6 * 86400000;
+      const cutoff28dMs = anchorMs - 27 * 86400000;
+      let load7d = 0;
+      let load28d = 0;
+      let earliestActMs = anchorMs;
+      for (const act of validActivities) {
+        const dStr = String(act.date || '').trim().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) continue;
+        const dMs = Date.parse(`${dStr}T12:00:00Z`);
+        if (dMs < earliestActMs) earliestActMs = dMs;
+        const durMin = Number(act.duration || 0) / 60;
+        const hr = Number(act.avg_hr || 0);
+        const hrFactor = hr > 50 ? Math.min(2.6, Math.max(0.45, (hr - 55) / 85)) : 0.95;
+        const trimp = durMin * hrFactor;
+        if (dMs >= cutoff28dMs && dMs <= anchorMs) {
+          load28d += trimp;
+          if (dMs >= cutoff7dMs) {
+            load7d += trimp;
+          }
+        }
+      }
+      const spanDays = Math.floor((anchorMs - earliestActMs) / 86400000) + 1;
+      const effectiveWeeks = Math.max(1, Math.min(4, spanDays / 7));
+      rollingAcuteLoad = Math.round(load7d);
+      rollingChronicLoad = Math.round(load28d / effectiveWeeks);
+      latestAcwr = rollingChronicLoad >= 10 ? parseFloat((load7d / (load28d / effectiveWeeks)).toFixed(2)) : null;
+    }
+
     const acwrSummary = {
       acwr: latestAcwr,
-      acuteLoad: latestWeek?.trimpLoad ?? 0,
-      chronicLoad: latestWeek?.chronicLoad ?? 0,
+      acuteLoad: rollingAcuteLoad,
+      chronicLoad: rollingChronicLoad,
       zone: latestAcwr === null
         ? 'insufficient'
         : latestAcwr > 1.5
@@ -3036,7 +3253,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
     const aerobicEfficiencyTrend: { date: string; name: string; type: string; ef: number; speedKmh: number; avgHr: number }[] = [];
 
-    for (const act of data.activities) {
+    for (const act of validActivities) {
       const sType = normalizeSportType(act.type);
       const durSec = Number(act.duration || 0);
       const distKm = Number(act.distance || 0);
@@ -3075,7 +3292,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
 
       if (act.avg_hr && Number(act.avg_hr) >= 50) {
-        const hrVal = Number(act.avg_hr);
+        const hrVal = Math.round(Number(act.avg_hr));
         const z = intensityZones.find((iz) => hrVal >= iz.minHr && hrVal <= iz.maxHr);
         if (z) {
           z.count += 1;

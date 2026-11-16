@@ -14,6 +14,13 @@ import {
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { resolveGarminTrackForMap } from '../utils/garminClient';
+import {
+  isCyclingType,
+  isRunningType,
+  isStopWatchType,
+  isStrictCyclingType,
+  isStrictRunningType
+} from '../utils/gpxUtils';
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import { GarminActivitiesAnalysis } from './GarminActivitiesAnalysis';
@@ -107,23 +114,6 @@ interface HealthData {
   activities: GarminActivity[];
 }
 
-// Robust helper to normalize activity type
-function isRunningType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('run') || t.includes('laufen') || t.includes('jog') || t.includes('walk') || t.includes('hike') ||
-         n.includes('run') || n.includes('laufen') || n.includes('jog') || n.includes('walk') || n.includes('hike') || n.includes('run');
-}
-
-function isCyclingType(type: string | undefined, name?: string): boolean {
-  if (!type && !name) return false;
-  const t = (type || '').toLowerCase();
-  const n = (name || '').toLowerCase();
-  return t.includes('cycle') || t.includes('bike') || t.includes('rad') || t.includes('road_biking') || t.includes('indoor_cycling') || t.includes('gravel_biking') || t.includes('mountain_biking') || t.includes('spin') ||
-         n.includes('cycle') || n.includes('bike') || n.includes('rad') || n.includes('road_biking') || n.includes('indoor_cycling') || n.includes('gravel_biking') || n.includes('mountain_biking') || n.includes('spin') || n.includes('fahrrad') || n.includes('biking') || n.includes('cycling');
-}
-
 function clampScore(v: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
@@ -171,47 +161,11 @@ function addRollingAverage<T extends Record<string, any>>(
 }
 
 function isStrictCyclingActivity(act: GarminActivity): boolean {
-  const t = (act.type || '').toLowerCase();
-  const n = (act.name || '').toLowerCase();
-  if (t.includes('stop_watch') || t.includes('strength') || t.includes('rowing') || t.includes('swim') || t.includes('soccer')) {
-    return false;
-  }
-  return (
-    t.includes('cycle') ||
-    t.includes('cycling') ||
-    t.includes('bike') ||
-    t.includes('biking') ||
-    t.includes('virtual_ride') ||
-    t.includes('spin') ||
-    n.includes('radfahrt') ||
-    n.includes('fahrrad') ||
-    n.includes('cycling') ||
-    n.includes('biking') ||
-    n.includes('gravel') ||
-    n.includes('mtb')
-  );
+  return isStrictCyclingType(act.type, act.name);
 }
 
 function isStrictRunningActivity(act: GarminActivity): boolean {
-  const t = (act.type || '').toLowerCase();
-  const n = (act.name || '').toLowerCase();
-  if (
-    t.includes('walk') ||
-    t.includes('hike') ||
-    t.includes('stop_watch') ||
-    t.includes('strength') ||
-    t.includes('soccer') ||
-    t.includes('rowing') ||
-    t.includes('swim')
-  ) {
-    return false;
-  }
-  return (
-    t.includes('run') ||
-    t.includes('laufen') ||
-    t.includes('jog') ||
-    (t === 'other' && (n.includes('lauf') || n.includes('run') || n.includes('jog')))
-  );
+  return isStrictRunningType(act.type, act.name);
 }
 
 function formatPaceMinKm(distanceKm: number, durationSec: number): string {
@@ -365,10 +319,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       .map((d: any) => {
         const steps = Number(d?.steps);
         const caloriesRaw = d?.calories !== undefined && d?.calories !== null ? Number(d.calories) : undefined;
+        const distRaw = d?.distance !== undefined && d?.distance !== null ? Number(d.distance) : undefined;
+        const validDistance =
+          distRaw !== undefined &&
+          Number.isFinite(distRaw) &&
+          distRaw >= 0 &&
+          (steps <= 0 || distRaw <= steps * 0.0013)
+            ? Number(distRaw.toFixed(2))
+            : Number((Math.max(0, steps) * 0.000762).toFixed(2));
         return {
           date: normalizeDateKey(d?.date),
           steps,
-          calories: caloriesRaw !== undefined && Number.isFinite(caloriesRaw) && caloriesRaw >= 0 ? caloriesRaw : undefined
+          calories: caloriesRaw !== undefined && Number.isFinite(caloriesRaw) && caloriesRaw >= 0 ? caloriesRaw : undefined,
+          distance: validDistance
         };
       })
       .filter((d) => Boolean(d.date) && Number.isFinite(d.steps) && d.steps >= 0)
@@ -615,10 +578,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         components.push({ score: rhrScore, weight: 0.35 });
       }
       if (daySleep && daySleep.duration > 0) {
-        const durScore = Math.min(70, (daySleep.duration / 480) * 70);
-        const qualityRatio = (daySleep.deep + daySleep.rem) / Math.max(1, daySleep.duration);
-        const qualScore = Math.min(30, qualityRatio * 68);
-        components.push({ score: clampScore(durScore + qualScore, 20, 100), weight: 0.4 });
+        components.push({ score: clampScore(daySleep.sleepScore, 15, 100), weight: 0.4 });
       }
       if (dayStress !== undefined) {
         components.push({ score: clampScore(100 - dayStress * 0.9, 15, 100), weight: 0.25 });
@@ -664,7 +624,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
   // 365-Day Activity & Consistency Heatmap
   const yearlyHeatmapData = useMemo(() => {
-    const acts = data?.activities || [];
+    const acts = (data?.activities || []).filter((a) => !isStopWatchType(a.type));
     const stepsMap = new Map(stepsData.map((s) => [s.date, s.steps]));
     const dayMap = new Map<string, { distance: number; durationMin: number; ascent: number; steps: number; count: number; names: string[]; activities: GarminActivity[] }>();
 
@@ -822,7 +782,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
   // Monthly Training Volume & Elevation by Sport
   const monthlyVolumeData = useMemo(() => {
-    const acts = data?.activities || [];
+    const acts = (data?.activities || []).filter((a) => !isStopWatchType(a.type));
     if (acts.length === 0) return [];
     const byMonth = new Map<string, { month: string; label: string; cyclingKm: number; runningKm: number; otherKm: number; ascentM: number; count: number }>();
 
@@ -890,18 +850,50 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
   // 5-Axis Athlete Radar (Last 30 days vs Overall Baseline)
   const athleteRadarData = useMemo(() => {
-    const acts = data?.activities || [];
+    const acts = (data?.activities || []).filter((a) => !isStopWatchType(a.type));
     if (acts.length === 0 && sleepData.length === 0 && rhrData.length === 0 && stepsData.length === 0) {
       return [];
     }
 
-    const computeAxes = (actSlice: GarminActivity[], sleepSlice: typeof sleepData, rhrSlice: typeof rhrData, stepsSlice: typeof stepsData, stressSlice: typeof stressData) => {
+    const computeSpanDays = (
+      actSlice: GarminActivity[],
+      sleepSlice: typeof sleepData,
+      stepsSlice: typeof stepsData,
+      fallbackDays: number
+    ) => {
+      const dates = [
+        ...actSlice.map((a) => normalizeDateKey(a.date)),
+        ...sleepSlice.map((s) => s.date),
+        ...stepsSlice.map((s) => s.date)
+      ]
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+        .sort();
+      if (dates.length >= 2) {
+        const msA = Date.parse(`${dates[0]}T12:00:00Z`);
+        const msB = Date.parse(`${dates[dates.length - 1]}T12:00:00Z`);
+        if (Number.isFinite(msA) && Number.isFinite(msB) && msB >= msA) {
+          return Math.max(7, Math.round((msB - msA) / 86400000) + 1);
+        }
+      }
+      return Math.max(7, sleepSlice.length || stepsSlice.length || fallbackDays);
+    };
+
+    const computeAxes = (
+      actSlice: GarminActivity[],
+      sleepSlice: typeof sleepData,
+      rhrSlice: typeof rhrData,
+      stepsSlice: typeof stepsData,
+      stressSlice: typeof stressData,
+      daysSpan: number
+    ) => {
       const totalDist = actSlice.reduce((s, a) => s + Number(a.distance || 0), 0);
       const totalAscent = actSlice.reduce((s, a) => s + Number(a.ascent || 0), 0);
-      const daysSpan = Math.max(7, sleepSlice.length || stepsSlice.length || 30);
-      const weeklyKm = (totalDist / daysSpan) * 7;
+      const weeklyKm = (totalDist / Math.max(7, daysSpan)) * 7;
       const volumeScore = clampScore((weeklyKm / 80) * 100);
-      const climbPerKm = totalDist > 0 ? totalAscent / totalDist : 0;
+      const outdoorActs = actSlice.filter((a) => String(a.type || '').toLowerCase() !== 'indoor_cycling');
+      const outdoorDist = outdoorActs.reduce((s, a) => s + Number(a.distance || 0), 0);
+      const climbDist = outdoorDist > 0 ? outdoorDist : totalDist;
+      const climbPerKm = climbDist > 0 ? totalAscent / climbDist : 0;
       const climbScore = clampScore((climbPerKm / 20) * 100);
 
       const meanRhr = rhrSlice.length > 0 ? rhrSlice.reduce((s, r) => s + r.rhr, 0) / rhrSlice.length : 60;
@@ -917,16 +909,43 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       return { volumeScore, climbScore, cardioScore, sleepScore, resilienceScore };
     };
 
-    const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const allDates = [
+      ...acts.map((a) => normalizeDateKey(a.date)),
+      ...sleepData.map((d) => d.date),
+      ...rhrData.map((d) => d.date),
+      ...stepsData.map((d) => d.date)
+    ]
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+    const latestMs =
+      allDates.length > 0
+        ? Date.parse(`${allDates[allDates.length - 1]}T12:00:00Z`)
+        : Date.now();
+    const cutoff30 = new Date(latestMs - 29 * 86400000).toISOString().slice(0, 10);
+
     const recentActs = acts.filter((a) => normalizeDateKey(a.date) >= cutoff30);
+    const byCutoff = <T extends { date: string }>(arr: T[]) => {
+      const sliced = arr.filter((d) => d.date >= cutoff30);
+      return sliced.length > 0 ? sliced : arr.slice(-30);
+    };
+
+    const recentActsSlice = recentActs.length > 0 ? recentActs : acts.slice(-10);
+    const recentSleepSlice = byCutoff(sleepData);
+    const recentRhrSlice = byCutoff(rhrData);
+    const recentStepsSlice = byCutoff(stepsData);
+    const recentStressSlice = byCutoff(stressData);
+    const baselineSpanDays = computeSpanDays(acts, sleepData, stepsData, 30);
+    const recentSpanDays = recentActs.length > 0 ? Math.min(30, baselineSpanDays) : computeSpanDays(recentActsSlice, recentSleepSlice, recentStepsSlice, 30);
+
     const recent = computeAxes(
-      recentActs.length > 0 ? recentActs : acts.slice(-10),
-      sleepData.slice(-30),
-      rhrData.slice(-30),
-      stepsData.slice(-30),
-      stressData.slice(-30)
+      recentActsSlice,
+      recentSleepSlice,
+      recentRhrSlice,
+      recentStepsSlice,
+      recentStressSlice,
+      recentSpanDays
     );
-    const baseline = computeAxes(acts, sleepData, rhrData, stepsData, stressData);
+    const baseline = computeAxes(acts, sleepData, rhrData, stepsData, stressData, baselineSpanDays);
 
     return [
       { axis: 'Umfang', recent: recent.volumeScore, baseline: baseline.volumeScore },
@@ -983,7 +1002,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
         : allActs.filter((a) => normalizeDateKey(a.date).startsWith(recordsYearFilter));
 
     const validActs = filteredByYear.filter(
-      (a) => Number(a.distance || 0) > 0.5 && Number(a.duration || 0) > 60
+      (a) => !isStopWatchType(a.type) && Number(a.distance || 0) > 0.5 && Number(a.duration || 0) > 60
     );
     const cyclingActs = validActs.filter(isStrictCyclingActivity);
     const runningActs = validActs.filter(isStrictRunningActivity);
@@ -1237,16 +1256,18 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     : null;
 
   const kpiDeltas = useMemo(() => {
-    const calcDelta = (arr: number[]) => {
-      if (arr.length < 2) return null;
+    const calcDelta = (arr: number[], decimals = 0) => {
+      if (arr.length < 8) return null;
       const last7 = arr.slice(-7);
-      const base30 = arr.slice(-30);
+      const prior = arr.slice(-30, -7);
+      if (prior.length === 0) return null;
       const mean7 = last7.reduce((a, b) => a + b, 0) / last7.length;
-      const mean30 = base30.reduce((a, b) => a + b, 0) / base30.length;
-      return Math.round(mean7 - mean30);
+      const meanPrior = prior.reduce((a, b) => a + b, 0) / prior.length;
+      const diff = mean7 - meanPrior;
+      return decimals > 0 ? Number(diff.toFixed(decimals)) : Math.round(diff);
     };
     return {
-      rhrDelta: calcDelta(rhrData.map((d) => d.rhr)),
+      rhrDelta: calcDelta(rhrData.map((d) => d.rhr), 1),
       stepsDelta: calcDelta(stepsData.map((d) => d.steps)),
       sleepDelta: calcDelta(sleepData.map((d) => d.duration)),
       stressDelta: calcDelta(stressData.map((d) => d.avg_stress))
@@ -1254,7 +1275,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   }, [rhrData, stepsData, sleepData, stressData]);
 
   const overviewSportSummary = useMemo(() => {
-    const allActs = data?.activities || [];
+    const allActs = (data?.activities || []).filter((a) => !isStopWatchType(a.type));
     const sortedAsc = [...allActs].sort((a, b) => normalizeDateKey(a.date).localeCompare(normalizeDateKey(b.date)));
     const rangedActs = filterByRange(sortedAsc, healthRangeDays);
 

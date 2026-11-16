@@ -44,7 +44,7 @@ import {
   tryFetchGarminFitTrack
 } from '../utils/garminClient';
 import { getSessionGarminKey } from '../utils/garminSessionKey';
-import { hasRealGpsData } from '../utils/gpxUtils';
+import { hasRealGpsData, isStopWatchType } from '../utils/gpxUtils';
 import type {
   CatalogActivityItem,
   CatalogActivityCategory,
@@ -279,6 +279,7 @@ interface PeriodStats {
   avgSpeedKmh: number;
   cyclingAvgSpeedKmh: number;
   runningPaceLabel: string;
+  vam: number;
   activeDays: number;
   longestStreakDays: number;
   longestActivity: CatalogActivityItem | null;
@@ -299,6 +300,8 @@ function computePeriodStats(items: CatalogActivityItem[], startYmd?: string, end
   let ascentM = 0;
   let descentM = 0;
   let durationSec = 0;
+  let distanceDurationSec = 0;
+  let climbingDurationSec = 0;
   let caloriesKcal = 0;
   let hrSum = 0;
   let hrCount = 0;
@@ -319,6 +322,8 @@ function computePeriodStats(items: CatalogActivityItem[], startYmd?: string, end
     ascentM += asc;
     descentM += desc;
     durationSec += dur;
+    if (dist > 0.05 && dur > 0) distanceDurationSec += dur;
+    if (asc > 0 && dur > 0) climbingDurationSec += dur;
     if (it.calories && it.calories > 0) caloriesKcal += Math.round(it.calories);
     if (it.avgHr && it.avgHr > 20 && it.avgHr < 230) {
       hrSum += it.avgHr;
@@ -401,10 +406,11 @@ function computePeriodStats(items: CatalogActivityItem[], startYmd?: string, end
     caloriesKcal,
     avgHr: hrCount > 0 ? Math.round(hrSum / hrCount) : null,
     hrCount,
-    avgSpeedKmh: durationSec > 0 ? Number((totalKm / (durationSec / 3600)).toFixed(1)) : 0,
+    avgSpeedKmh: distanceDurationSec > 0 ? Number((totalKm / (distanceDurationSec / 3600)).toFixed(1)) : 0,
     cyclingAvgSpeedKmh:
       cyclingDurationSec > 0 ? Number((cyclingKm / (cyclingDurationSec / 3600)).toFixed(1)) : 0,
     runningPaceLabel: formatPacePerKm(runningKm, runningDurationSec),
+    vam: climbingDurationSec > 0 ? Math.round(ascentM / (climbingDurationSec / 3600)) : 0,
     activeDays,
     longestStreakDays,
     longestActivity,
@@ -455,7 +461,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
 
   // Dashboard counts ONLY Garmin activities (GPX tracks belong strictly to Karte & Geplante Touren)
   const allActivities = useMemo(() => {
-    return catalogItems.filter((item) => item.source === 'garmin');
+    return catalogItems.filter((item) => item.source === 'garmin' && !isStopWatchType(item.rawType));
   }, [catalogItems]);
 
   // Enrich each activity with parsed date keys (YMD, ISO week, month, year)
@@ -1385,7 +1391,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
               {(() => {
                 const ascDiff = periodStats.ascentM - prevStats.ascentM;
                 const hmPerKm = periodStats.totalKm > 0 ? (periodStats.ascentM / periodStats.totalKm).toFixed(1) : '0.0';
-                const vam = periodStats.durationSec > 0 ? Math.round(periodStats.ascentM / (periodStats.durationSec / 3600)) : 0;
+                const vam = periodStats.vam;
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-emerald-200/80 dark:border-emerald-900/50 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">

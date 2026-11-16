@@ -1,6 +1,33 @@
 import { GPXPoint, GPXTrack } from '../types';
 import { calculateElevationStats, computeActiveTrackStats, calculatePowerStats, getLocationName, detectActivityType, findClimbs, sanitizeGPXPoints, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
 
+const STATIONARY_NON_DISTANCE_KEYWORDS = [
+  'stop_watch',
+  'stopwatch',
+  'strength',
+  'krafttraining',
+  'hiit',
+  'indoor_cardio',
+  'cardio',
+  'yoga',
+  'pilates',
+  'breathwork',
+  'meditation',
+];
+
+/**
+ * Returns true when a FIT/Garmin sport or workout title denotes a stationary
+ * activity that does not measure outdoor or rolling distance by default.
+ */
+export function isStationaryNonDistanceSport(
+  sport?: string,
+  name?: string,
+  fileName?: string
+): boolean {
+  const combined = `${sport || ''} ${name || ''} ${fileName || ''}`.toLowerCase();
+  return STATIONARY_NON_DISTANCE_KEYWORDS.some((kw) => combined.includes(kw));
+}
+
 const HIGH_CONTRAST_COLORS = [
   '#2563eb', // Velo Royal Blue
   '#0284c7', // Ocean Sky Blue
@@ -2425,7 +2452,7 @@ export const parseFIT = async (
             if (metaTotalTime !== undefined && Number.isFinite(metaTotalTime) && metaTotalTime > 0) {
               sessionDuration = (sessionDuration ?? 0) + metaTotalTime;
             }
-            if (metaTotalDist !== undefined && Number.isFinite(metaTotalDist) && metaTotalDist > 0) {
+            if (metaTotalDist !== undefined && Number.isFinite(metaTotalDist) && metaTotalDist >= 0) {
               sessionDistance = (sessionDistance ?? 0) + metaTotalDist;
             }
             if (metaComment) fitNotes = metaComment;
@@ -2487,13 +2514,22 @@ export const parseFIT = async (
       addRepairIssue('Rückwärts springende Zeitstempel korrigiert');
     }
 
+    const isStationary = isStationaryNonDistanceSport(sportName, fitName, fileName);
+    const hasExplicitZeroDistance = sessionDistance !== undefined && sessionDistance <= 0;
     let isVirtual = false;
 
     if (sanitizedPoints.length === 0) {
       if (nonGpsRecords.length > 0) {
         isVirtual = true;
         const n = nonGpsRecords.length;
-        const distanceKm = sessionDistance ? (sessionDistance / 1000) : (sessionDuration ? (sessionDuration / 3600) * 28 : Math.max(1, (n / 3600) * 28));
+        const distanceKm =
+          isStationary || hasExplicitZeroDistance
+            ? (sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : 0)
+            : sessionDistance
+              ? sessionDistance / 1000
+              : sessionDuration
+                ? (sessionDuration / 3600) * 28
+                : Math.max(1, (n / 3600) * 28);
         const startLat = 48.137154;
         const startLng = 11.576124;
         const circumference = distanceKm || 1;
@@ -2520,10 +2556,14 @@ export const parseFIT = async (
         }
       } else if (sessionDuration !== undefined || sessionDistance !== undefined) {
         isVirtual = true;
+        const virtualDistanceKm =
+          isStationary || hasExplicitZeroDistance || sessionDistance === undefined || sessionDistance <= 0
+            ? 0
+            : sessionDistance / 1000;
         sanitizedPoints = generateVirtualRoute(
           48.137154,
           11.576124,
-          sessionDistance ? sessionDistance / 1000 : 10,
+          virtualDistanceKm,
           sessionDuration || 1800,
           50,
           50,
@@ -2591,6 +2631,11 @@ export const parseFIT = async (
     const activeStats = computeActiveTrackStats(sanitizedPoints);
     // Prefer FIT session distance (watch/sensor distance excluding paused walks) or pause-free GPS distance
     const sessionDistKm = sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : undefined;
+    const isZeroDistanceVirtual =
+      isVirtual &&
+      (isStationary ||
+        hasExplicitZeroDistance ||
+        (sessionDistance === undefined && nonGpsRecords.length === 0));
     const gpsDistKm =
       activeStats.hasTimestamps &&
       activeStats.pauseDurationSeconds > 0 &&
@@ -2598,7 +2643,11 @@ export const parseFIT = async (
       activeStats.rawDistanceKm - activeStats.activeDistanceKm > 0.02
         ? activeStats.activeDistanceKm
         : rawTotalDist;
-    const totalDist = sessionDistKm && sessionDistKm > 0 ? sessionDistKm : gpsDistKm;
+    const totalDist = isZeroDistanceVirtual
+      ? (sessionDistKm ?? 0)
+      : sessionDistKm && sessionDistKm > 0
+        ? sessionDistKm
+        : gpsDistKm;
 
     const activityType = detectActivityType(sanitizedPoints, name, fileName, sportName);
     const powerStats = options?.lightweightGpsOnly

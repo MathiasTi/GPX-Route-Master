@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { calculateDistance, calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from './gpxUtils';
-import { getCuratedSeedTours } from './seedTours';
 import { resolveActivityCountry, normalizeCountryLabel } from './countryLookup';
 
 // Store the SQLite database file in a data directory for clean docker volume persistence
@@ -85,11 +84,6 @@ export function recoverCorruptDatabase(): Database.Database {
   db = new Database(dbPath);
   configureDbPragmas(db);
   runInitDbStatements();
-  try {
-    seedCuratedTours(true);
-  } catch (e: any) {
-    console.error('[Self-Healing] Error re-seeding curated tours after recovery:', e.message);
-  }
   console.log('[Self-Healing] Database recovery complete and verified healthy.');
   return db;
 }
@@ -593,19 +587,14 @@ function runInitDbStatements() {
     console.error('Error auto-sanitizing road track surface stats:', e);
   }
 
-  // Clean up legacy synthetic curated tours and old timestamp-based gpx IDs
+  // Purge legacy predefined/curated alpine sample tours without touching user GPX uploads or Garmin activities
   try {
-    const deletedLegacy = db.prepare("DELETE FROM tracks WHERE id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-2026-%'").run();
-    if (deletedLegacy.changes > 0) {
-      console.log(`[DB Migration] Removed ${deletedLegacy.changes} legacy tour record(s) from database.`);
+    const purgedCount = purgeCuratedSampleTours();
+    if (purgedCount > 0) {
+      console.log(`[DB Migration] Purged ${purgedCount} predefined sample tour record(s) from database.`);
     }
-  } catch (e) {}
-
-  // Auto-seed real GPX files from /gpx folder on database initialization with verified start points
-  try {
-    seedCuratedTours(true, 'default');
   } catch (e) {
-    console.error('Error auto-seeding GPX folder tours:', e);
+    console.error('Error purging predefined sample tours:', e);
   }
 
   // One-time backfill migration (2.9.2): Remove 2-point Garmin seed stubs so straight-line stubs are not treated as GPS tracks
@@ -1162,78 +1151,51 @@ export function deleteAuthSession(token?: string | null): boolean {
   });
 }
 
-export function ensureUserCuratedTours(userId: string): void {
-  const uid = normalizeUserId(userId);
-  if (uid === 'default') return;
-  try {
-    const alreadyInit = getSetting('curated_tours_initialized', '', uid);
-    if (alreadyInit === 'true') return;
+export function purgeCuratedSampleTours(): number {
+  const sampleFilter = `
+    id LIKE 'tour-%'
+    OR id LIKE 'curated-%'
+    OR id LIKE 'gpx-alpentour-tag-%'
+    OR id LIKE 'gpx-2026-%'
+    OR id LIKE '%::tour-%'
+    OR id LIKE '%::curated-%'
+    OR id LIKE '%::gpx-alpentour-tag-%'
+    OR id LIKE '%::gpx-2026-%'
+    OR description LIKE 'Original GPX-Tour aus /gpx:%'
+  `;
 
-    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM tracks WHERE user_id = ?').get(uid) as { cnt: number } | undefined;
-    if (!countRow || countRow.cnt === 0) {
-      seedCuratedTours(false, uid);
+  const rows = db
+    .prepare(`SELECT id FROM tracks WHERE ${sampleFilter}`)
+    .all() as Array<{ id: string }>;
+
+  if (rows.length === 0) return 0;
+
+  const delTrack = db.prepare('DELETE FROM tracks WHERE id = ?');
+  const delCatalog = db.prepare('DELETE FROM activities_catalog WHERE key = ?');
+  const delFts = db.prepare('DELETE FROM activities_catalog_fts WHERE key = ?');
+
+  const trx = db.transaction(() => {
+    for (const r of rows) {
+      const catKey = `library:${r.id}`;
+      delTrack.run(r.id);
+      try {
+        delCatalog.run(catKey);
+      } catch {}
+      try {
+        delFts.run(catKey);
+      } catch {}
     }
-    saveSetting('curated_tours_initialized', 'true', uid);
-  } catch (e) {
-    console.warn(`[DB] Could not initialize curated tours for user ${uid}:`, e);
-  }
+  });
+  trx();
+  return rows.length;
 }
 
-export function seedCuratedTours(force: boolean = false, userId: string = 'default'): { seeded: number; total: number } {
-  const uid = normalizeUserId(userId);
-  try {
-    if (force) {
-      if (uid === 'default') {
-        db.prepare("DELETE FROM tracks WHERE (user_id = 'default' OR user_id IS NULL) AND (id LIKE 'tour-%' OR id LIKE 'curated-%' OR id LIKE 'gpx-%')").run();
-      } else {
-        db.prepare("DELETE FROM tracks WHERE user_id = ? AND (id LIKE ? OR id LIKE ? OR id LIKE ?)").run(
-          uid,
-          `${uid}::tour-%`,
-          `${uid}::curated-%`,
-          `${uid}::gpx-%`
-        );
-      }
-    }
-  } catch (e) {}
+export function ensureUserCuratedTours(_userId: string): void {
+  // Predefined alpine reference tour seeding has been disabled.
+}
 
-  const tours = getCuratedSeedTours();
-  let seeded = 0;
-
-  for (const tour of tours) {
-    const scopedId = toScopedKey(tour.id, uid);
-    if (!force) {
-      const existing = db.prepare('SELECT id FROM tracks WHERE id = ? AND user_id = ?').get(scopedId, uid);
-      if (existing) {
-        seeded++;
-        continue;
-      }
-    }
-
-    saveTrack({
-      id: tour.id,
-      name: tour.name,
-      distance: tour.distance,
-      ascent: tour.ascent,
-      descent: tour.descent,
-      duration: tour.duration,
-      activityType: tour.activityType,
-      description: tour.description,
-      tags: Array.isArray(tour.tags) ? tour.tags.join(', ') : tour.tags,
-      dateCreated: tour.dateCreated,
-      originalFilename: tour.originalFilename,
-      points: tour.points,
-      powerStats: tour.powerStats,
-      surfaceStats: tour.surfaceStats,
-      climbs: tour.climbs,
-      maxSlope: tour.maxSlope,
-      color: tour.color,
-      hasTimestamps: tour.hasTimestamps
-    }, uid);
-    seeded++;
-  }
-
-  console.log(`GPX folder tours loaded for user ${uid}: ${seeded} of ${tours.length}`);
-  return { seeded, total: tours.length };
+export function seedCuratedTours(_force: boolean = false, _userId: string = 'default'): { seeded: number; total: number } {
+  return { seeded: 0, total: 0 };
 }
 
 export function downsamplePoints(points: any[], maxPoints: number = 1000): any[] {

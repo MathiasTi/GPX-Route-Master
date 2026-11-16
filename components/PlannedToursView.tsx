@@ -367,7 +367,6 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
 
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
-  const [isSeeding, setIsSeeding] = useState(false);
   const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
   const [loadingTrackId, setLoadingTrackId] = useState<string | null>(null);
 
@@ -811,29 +810,6 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
     }
   };
 
-  const handleSeedReferenceTours = async () => {
-    setIsSeeding(true);
-    try {
-      const res = await apiFetch(getApiUrl('/api/library/seed-tours'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force: false })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(`${data.seeded ?? 0} Referenztour(en) aus /gpx synchronisiert.`, 'success');
-        await fetchPlannedTours();
-      } else {
-        showToast(data.error || 'Synchronisierung fehlgeschlagen.', 'error');
-      }
-    } catch (err) {
-      console.error('Failed to seed reference tours:', err);
-      showToast('Fehler bei /gpx Synchronisierung.', 'error');
-    } finally {
-      setIsSeeding(false);
-    }
-  };
-
   const handleDeleteTour = async (id: string) => {
     try {
       const res = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(id)}`), {
@@ -1074,17 +1050,6 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                 <span>Workspace sichern ({workspaceTracks.length})</span>
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={handleSeedReferenceTours}
-              disabled={isSeeding}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
-              title="Alpentour-Referenzdateien aus /gpx einlesen"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSeeding ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">/gpx Touren laden</span>
-            </button>
           </div>
         </div>
 
@@ -1464,7 +1429,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {tours.length === 0
-                    ? 'Importiere GPX-Dateien direkt hierher, speichere Touren aus deinem Karten-Workspace oder lade die Alpen-Referenztouren.'
+                    ? 'Importiere GPX-Dateien direkt hierher oder speichere Touren aus deinem Karten-Workspace.'
                     : 'Passe Suche, Sportart oder Schwierigkeitsfilter an.'}
                 </p>
               </div>
@@ -1477,16 +1442,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                   <Upload className="w-3.5 h-3.5" />
                   GPX-Tour importieren
                 </button>
-                {tours.length === 0 ? (
-                  <button
-                    type="button"
-                    onClick={handleSeedReferenceTours}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    7 Alpentouren aus /gpx laden
-                  </button>
-                ) : (
+                {tours.length > 0 && (
                   <button
                     type="button"
                     onClick={() => {

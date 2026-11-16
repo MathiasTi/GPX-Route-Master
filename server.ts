@@ -31,7 +31,6 @@ import {
   getSetting,
   saveSetting,
   getAllSettings,
-  seedCuratedTours,
   verifyAppPassword,
   createAuthSession,
   verifyAuthSessionToken,
@@ -1903,16 +1902,9 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
-  // Library API: Seed or re-seed curated GPX reference tours
-  app.post("/api/library/seed-tours", (req, res) => {
-    try {
-      const force = req.body?.force === true;
-      const result = seedCuratedTours(force);
-      res.json({ success: true, seeded: result.seeded, total: result.total });
-    } catch (err: any) {
-      console.error("Error seeding curated tours:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to seed curated tours" });
-    }
+  // Library API: Curated reference tour seeding disabled
+  app.post("/api/library/seed-tours", (_req, res) => {
+    res.json({ success: true, seeded: 0, total: 0, disabled: true });
   });
 
   // Library API: List available GPX tour files in the /gpx subfolder

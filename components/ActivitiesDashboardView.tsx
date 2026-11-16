@@ -17,23 +17,28 @@ import {
   Award,
   Loader2,
   MapPin,
-  SlidersHorizontal
+  Activity,
+  Target,
+  Layers,
+  Sparkles,
+  X,
+  Filter
 } from 'lucide-react';
 import {
   ResponsiveContainer,
   ComposedChart,
-  BarChart,
   Bar,
+  LineChart,
   Line,
-  AreaChart,
-  Area,
+  ScatterChart,
+  Scatter,
+  ZAxis,
+  ReferenceLine,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   Legend,
-  PieChart,
-  Pie,
   Cell
 } from 'recharts';
 import { GPXTrack } from '../types';
@@ -53,8 +58,13 @@ import type {
 
 export type DashboardGranularity = 'week' | 'month' | 'year' | 'all';
 export type DashboardSportFilter = 'all' | 'cycling' | 'running' | 'hiking_other';
-export type HistoricalMetricMode = 'cyclingKm' | 'totalKm' | 'ascentM' | 'hours' | 'count';
 export type DashboardTableSort = 'date-desc' | 'distance-desc' | 'ascent-desc' | 'duration-desc' | 'speed-desc';
+
+export type DashboardChartFilter =
+  | { type: 'weekday'; dayIndex: number; label: string }
+  | { type: 'week'; weekKey: string; label: string }
+  | { type: 'date'; ymd: string; label: string }
+  | { type: 'activity'; key: string; label: string };
 
 export interface ActivitiesDashboardViewProps {
   workspaceTracks: GPXTrack[];
@@ -435,8 +445,9 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
   const [granularity, setGranularity] = useState<DashboardGranularity>('month');
   const [selectedPeriodKey, setSelectedPeriodKey] = useState<string>('');
   const [sportFilter, setSportFilter] = useState<DashboardSportFilter>('all');
-  const [historicalMetric, setHistoricalMetric] = useState<HistoricalMetricMode>('cyclingKm');
   const [tableSort, setTableSort] = useState<DashboardTableSort>('date-desc');
+  const [chartFilter, setChartFilter] = useState<DashboardChartFilter | null>(null);
+  const [efficiencyScope, setEfficiencyScope] = useState<'period' | 'all'>('all');
 
   const fetchCatalog = useCallback(async () => {
     setIsLoading(true);
@@ -660,325 +671,405 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
     [prevPeriodActivities]
   );
 
-  // Main timeline breakdown buckets inside the selected period + cumulative progression
-  const timelineBuckets = useMemo(() => {
-    if (!activePeriodOption) return [];
+  // 1. Rolling Training Load (7d Acute ATL, 28d Chronic CTL, TSB Form Balance) across trailing 16 ISO weeks
+  const trainingLoadModel = useMemo(() => {
+    const datedRows = sportFilteredRows.filter((r) => Boolean(r.ymd)) as Array<
+      (typeof sportFilteredRows)[number] & { ymd: string; weekKey: string }
+    >;
+    if (datedRows.length === 0) {
+      return {
+        weeks: [] as Array<{
+          weekKey: string;
+          label: string;
+          ctl: number;
+          atl: number;
+          tsb: number;
+          weeklyLoad: number;
+          weeklyKm: number;
+          count: number;
+        }>,
+        latestCtl: 0,
+        latestAtl: 0,
+        latestTsb: 0,
+        acwr: null as number | null
+      };
+    }
 
-    type Bucket = {
+    const dailyLoadMap = new Map<string, number>();
+    const weeklyAggMap = new Map<string, { km: number; count: number; load: number }>();
+    let minYmd = datedRows[0].ymd;
+    let maxYmd = datedRows[0].ymd;
+
+    for (const r of datedRows) {
+      if (r.ymd < minYmd) minYmd = r.ymd;
+      if (r.ymd > maxYmd) maxYmd = r.ymd;
+
+      const durH = Math.max(0, Number(r.item.durationSec || 0) / 3600);
+      const ascM = Math.max(0, Number(r.item.ascentM || 0));
+      const hr = r.item.avgHr && r.item.avgHr > 35 && r.item.avgHr < 230 ? r.item.avgHr : null;
+      const sessionLoad = hr ? durH * (hr / 145) * 65 : durH * 52 + ascM * 0.035;
+
+      dailyLoadMap.set(r.ymd, (dailyLoadMap.get(r.ymd) || 0) + sessionLoad);
+
+      if (r.weekKey) {
+        const curW = weeklyAggMap.get(r.weekKey) || { km: 0, count: 0, load: 0 };
+        curW.km += Number(r.item.distanceKm || 0);
+        curW.count += 1;
+        curW.load += sessionLoad;
+        weeklyAggMap.set(r.weekKey, curW);
+      }
+    }
+
+    const todayYmd = formatUtcYmd(new Date());
+    const anchorEndYmd =
+      activePeriodOption && activePeriodOption.endYmd <= todayYmd
+        ? activePeriodOption.endYmd
+        : maxYmd > todayYmd
+        ? maxYmd
+        : todayYmd;
+
+    // Limit simulation window to max 730 days before anchorEndYmd so EMA warms up accurately and runs instantaneously
+    const endDate = parseUtcNoon(anchorEndYmd);
+    const earliestSimMs = endDate.getTime() - 730 * 86400000;
+    const minMs = Math.max(parseUtcNoon(minYmd).getTime(), earliestSimMs);
+
+    let atl = 0;
+    let ctl = 0;
+    const sundaySnapshots = new Map<string, { ctl: number; atl: number; tsb: number }>();
+
+    for (let ms = minMs; ms <= endDate.getTime(); ms += 86400000) {
+      const ymd = formatUtcYmd(new Date(ms));
+      const load = dailyLoadMap.get(ymd) || 0;
+      const tsbBefore = ctl - atl;
+      atl = atl + (load - atl) / 7;
+      ctl = ctl + (load - ctl) / 28;
+      const dayOfWeek = new Date(ms).getUTCDay(); // 0 = Sunday
+      if (dayOfWeek === 0 || ms + 86400000 > endDate.getTime()) {
+        const wk = getIsoWeekInfo(ymd).weekKey;
+        sundaySnapshots.set(wk, {
+          ctl: Number(ctl.toFixed(1)),
+          atl: Number(atl.toFixed(1)),
+          tsb: Number(tsbBefore.toFixed(1))
+        });
+      }
+    }
+
+    // Collect trailing 16 ISO weeks ending at anchorEndYmd
+    const endWeekKey = getIsoWeekInfo(anchorEndYmd).weekKey;
+    const weekKeys: string[] = [];
+    let cursorWk = endWeekKey;
+    for (let i = 0; i < 16; i++) {
+      weekKeys.unshift(cursorWk);
+      cursorWk = getPreviousWeekKey(cursorWk);
+    }
+
+    const weeks = weekKeys.map((wk) => {
+      const snap = sundaySnapshots.get(wk) || { ctl: 0, atl: 0, tsb: 0 };
+      const agg = weeklyAggMap.get(wk) || { km: 0, count: 0, load: 0 };
+      const m = wk.match(/^(\d{4})-W(\d{2})$/);
+      const label = m ? `KW${m[2]}` : wk;
+      return {
+        weekKey: wk,
+        label,
+        ctl: snap.ctl,
+        atl: snap.atl,
+        tsb: snap.tsb,
+        weeklyLoad: Math.round(agg.load),
+        weeklyKm: Number(agg.km.toFixed(1)),
+        count: agg.count
+      };
+    });
+
+    const latestCtl = Number(ctl.toFixed(1));
+    const latestAtl = Number(atl.toFixed(1));
+    const latestTsb = Number((ctl - atl).toFixed(1));
+    const acwr = latestCtl >= 4 ? Number((latestAtl / latestCtl).toFixed(2)) : null;
+
+    return { weeks, latestCtl, latestAtl, latestTsb, acwr };
+  }, [sportFilteredRows, activePeriodOption]);
+
+  // 2. Aerobic Efficiency Scatter Matrix (HR vs Speed + EF trend)
+  const efficiencyModel = useMemo(() => {
+    const sourceList =
+      efficiencyScope === 'period'
+        ? periodActivities
+        : sportFilteredRows.map((r) => r.item);
+
+    type ScatterPoint = {
       key: string;
-      label: string;
-      cyclingKm: number;
-      runningKm: number;
-      otherKm: number;
-      totalKm: number;
-      ascentM: number;
-      durationMin: number;
-      count: number;
-      cumCyclingKm: number;
-      cumTotalKm: number;
+      name: string;
+      ymd: string;
+      category: CatalogActivityCategory;
+      avgHr: number;
+      speedKmh: number;
+      distanceKm: number;
+      durationSec: number;
+      ef: number;
     };
 
-    const buckets: Bucket[] = [];
-    const bucketMap = new Map<string, Bucket>();
-
-    if (granularity === 'week') {
-      const monday = parseUtcNoon(activePeriodOption.startYmd);
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(monday.getTime() + i * 86400000);
-        const ymd = formatUtcYmd(d);
-        const b: Bucket = {
-          key: ymd,
-          label: `${WEEKDAY_NAMES_SHORT[i]} ${formatDeShortDate(ymd).slice(0, 5)}`,
-          cyclingKm: 0,
-          runningKm: 0,
-          otherKm: 0,
-          totalKm: 0,
-          ascentM: 0,
-          durationMin: 0,
-          count: 0,
-          cumCyclingKm: 0,
-          cumTotalKm: 0
-        };
-        buckets.push(b);
-        bucketMap.set(ymd, b);
-      }
-      for (const it of periodActivities) {
-        const ymd = extractYmd(it.timestampIso);
-        const target = ymd ? bucketMap.get(ymd) : undefined;
-        if (!target) continue;
-        const dist = Number(it.distanceKm || 0);
-        if (it.activityCategory === 'cycling') target.cyclingKm += dist;
-        else if (it.activityCategory === 'running') target.runningKm += dist;
-        else target.otherKm += dist;
-        target.totalKm += dist;
-        target.ascentM += Math.round(Number(it.ascentM || 0));
-        target.durationMin += Math.round(Number(it.durationSec || 0) / 60);
-        target.count += 1;
-      }
-    } else if (granularity === 'month') {
-      const daysCount = activePeriodOption.totalDays;
-      const prefix = activePeriodOption.key;
-      for (let d = 1; d <= daysCount; d++) {
-        const dayStr = String(d).padStart(2, '0');
-        const ymd = `${prefix}-${dayStr}`;
-        const b: Bucket = {
-          key: ymd,
-          label: `${dayStr}.`,
-          cyclingKm: 0,
-          runningKm: 0,
-          otherKm: 0,
-          totalKm: 0,
-          ascentM: 0,
-          durationMin: 0,
-          count: 0,
-          cumCyclingKm: 0,
-          cumTotalKm: 0
-        };
-        buckets.push(b);
-        bucketMap.set(ymd, b);
-      }
-      for (const it of periodActivities) {
-        const ymd = extractYmd(it.timestampIso);
-        const target = ymd ? bucketMap.get(ymd) : undefined;
-        if (!target) continue;
-        const dist = Number(it.distanceKm || 0);
-        if (it.activityCategory === 'cycling') target.cyclingKm += dist;
-        else if (it.activityCategory === 'running') target.runningKm += dist;
-        else target.otherKm += dist;
-        target.totalKm += dist;
-        target.ascentM += Math.round(Number(it.ascentM || 0));
-        target.durationMin += Math.round(Number(it.durationSec || 0) / 60);
-        target.count += 1;
-      }
-    } else if (granularity === 'year') {
-      const y = activePeriodOption.key;
-      for (let m = 1; m <= 12; m++) {
-        const mk = `${y}-${String(m).padStart(2, '0')}`;
-        const b: Bucket = {
-          key: mk,
-          label: GERMAN_MONTHS_SHORT[m - 1],
-          cyclingKm: 0,
-          runningKm: 0,
-          otherKm: 0,
-          totalKm: 0,
-          ascentM: 0,
-          durationMin: 0,
-          count: 0,
-          cumCyclingKm: 0,
-          cumTotalKm: 0
-        };
-        buckets.push(b);
-        bucketMap.set(mk, b);
-      }
-      for (const it of periodActivities) {
-        const ymd = extractYmd(it.timestampIso);
-        const mk = ymd ? ymd.slice(0, 7) : null;
-        const target = mk ? bucketMap.get(mk) : undefined;
-        if (!target) continue;
-        const dist = Number(it.distanceKm || 0);
-        if (it.activityCategory === 'cycling') target.cyclingKm += dist;
-        else if (it.activityCategory === 'running') target.runningKm += dist;
-        else target.otherKm += dist;
-        target.totalKm += dist;
-        target.ascentM += Math.round(Number(it.ascentM || 0));
-        target.durationMin += Math.round(Number(it.durationSec || 0) / 60);
-        target.count += 1;
-      }
-    } else {
-      // 'all' -> group ascending by year
-      const yearMap = new Map<string, Bucket>();
-      for (const it of periodActivities) {
-        const ymd = extractYmd(it.timestampIso);
-        const yk = ymd ? ymd.slice(0, 4) : 'Ohne';
-        let target = yearMap.get(yk);
-        if (!target) {
-          target = {
-            key: yk,
-            label: yk,
-            cyclingKm: 0,
-            runningKm: 0,
-            otherKm: 0,
-            totalKm: 0,
-            ascentM: 0,
-            durationMin: 0,
-            count: 0,
-            cumCyclingKm: 0,
-            cumTotalKm: 0
-          };
-          yearMap.set(yk, target);
-        }
-        const dist = Number(it.distanceKm || 0);
-        if (it.activityCategory === 'cycling') target.cyclingKm += dist;
-        else if (it.activityCategory === 'running') target.runningKm += dist;
-        else target.otherKm += dist;
-        target.totalKm += dist;
-        target.ascentM += Math.round(Number(it.ascentM || 0));
-        target.durationMin += Math.round(Number(it.durationSec || 0) / 60);
-        target.count += 1;
-      }
-      const sortedYears = Array.from(yearMap.values()).sort((a, b) => a.key.localeCompare(b.key));
-      buckets.push(...sortedYears);
+    const points: ScatterPoint[] = [];
+    for (const it of sourceList) {
+      const hr = Number(it.avgHr || 0);
+      const dur = Number(it.durationSec || 0);
+      const dist = Number(it.distanceKm || 0);
+      if (hr <= 45 || hr >= 225 || dur < 300 || dist < 0.8) continue;
+      const speedKmh = dist / (dur / 3600);
+      if (speedKmh <= 2 || speedKmh > 65) continue;
+      const ef = (speedKmh * 1000) / 60 / hr; // meters/min per bpm
+      points.push({
+        key: it.key,
+        name: it.name,
+        ymd: extractYmd(it.timestampIso) || '',
+        category: it.activityCategory,
+        avgHr: Math.round(hr),
+        speedKmh: Number(speedKmh.toFixed(1)),
+        distanceKm: Number(dist.toFixed(1)),
+        durationSec: dur,
+        ef: Number(ef.toFixed(2))
+      });
     }
 
-    let runningCumCyc = 0;
-    let runningCumTotal = 0;
-    return buckets.map((b) => {
-      const cyc = Number(b.cyclingKm.toFixed(1));
-      const run = Number(b.runningKm.toFixed(1));
-      const oth = Number(b.otherKm.toFixed(1));
-      const tot = Number(b.totalKm.toFixed(1));
-      runningCumCyc += cyc;
-      runningCumTotal += tot;
-      return {
-        ...b,
-        cyclingKm: cyc,
-        runningKm: run,
-        otherKm: oth,
-        totalKm: tot,
-        cumCyclingKm: Number(runningCumCyc.toFixed(1)),
-        cumTotalKm: Number(runningCumTotal.toFixed(1))
-      };
-    });
-  }, [activePeriodOption, granularity, periodActivities]);
+    const sortedChrono = [...points].sort((a, b) => a.ymd.localeCompare(b.ymd));
+    const avgEf =
+      sortedChrono.length > 0
+        ? Number((sortedChrono.reduce((s, p) => s + p.ef, 0) / sortedChrono.length).toFixed(2))
+        : null;
 
-  // Historical comparison across up to 12 surrounding/preceding periods
-  const historicalSeries = useMemo(() => {
-    const effectiveGranularity: Exclude<DashboardGranularity, 'all'> =
-      granularity === 'all' ? 'year' : granularity;
-
-    // Group sportFilteredRows by period key
-    const aggMap = new Map<
-      string,
-      { cyclingKm: number; totalKm: number; ascentM: number; durationSec: number; count: number }
-    >();
-
-    for (const r of sportFilteredRows) {
-      const pKey =
-        effectiveGranularity === 'week'
-          ? r.weekKey
-          : effectiveGranularity === 'month'
-          ? r.monthKey
-          : r.yearKey;
-      if (!pKey) continue;
-      const cur = aggMap.get(pKey) || {
-        cyclingKm: 0,
-        totalKm: 0,
-        ascentM: 0,
-        durationSec: 0,
-        count: 0
-      };
-      const dist = Number(r.item.distanceKm || 0);
-      if (r.item.activityCategory === 'cycling') cur.cyclingKm += dist;
-      cur.totalKm += dist;
-      cur.ascentM += Math.round(Number(r.item.ascentM || 0));
-      cur.durationSec += Math.round(Number(r.item.durationSec || 0));
-      cur.count += 1;
-      aggMap.set(pKey, cur);
-    }
-
-    let targetKeys: string[] = [];
-    if (granularity === 'all') {
-      targetKeys = Array.from(aggMap.keys()).sort();
-    } else if (activePeriodOption) {
-      // Build 12 contiguous periods ending at the selected period (for week/month) or all years
-      if (effectiveGranularity === 'week') {
-        let k = activePeriodOption.key;
-        const seq: string[] = [];
-        for (let i = 0; i < 12; i++) {
-          seq.unshift(k);
-          k = getPreviousWeekKey(k);
-        }
-        targetKeys = seq;
-      } else if (effectiveGranularity === 'month') {
-        let k = activePeriodOption.key;
-        const seq: string[] = [];
-        for (let i = 0; i < 12; i++) {
-          seq.unshift(k);
-          k = getPreviousMonthKey(k);
-        }
-        targetKeys = seq;
-      } else {
-        targetKeys = periodOptions.map((o) => o.key).sort();
+    let efDeltaPct: number | null = null;
+    if (sortedChrono.length >= 6) {
+      const mid = Math.floor(sortedChrono.length / 2);
+      const firstHalf = sortedChrono.slice(0, mid);
+      const secondHalf = sortedChrono.slice(mid);
+      const avg1 = firstHalf.reduce((s, p) => s + p.ef, 0) / firstHalf.length;
+      const avg2 = secondHalf.reduce((s, p) => s + p.ef, 0) / secondHalf.length;
+      if (avg1 > 0) {
+        efDeltaPct = Number((((avg2 - avg1) / avg1) * 100).toFixed(1));
       }
-    }
-
-    return targetKeys.map((pKey) => {
-      const entry = aggMap.get(pKey) || {
-        cyclingKm: 0,
-        totalKm: 0,
-        ascentM: 0,
-        durationSec: 0,
-        count: 0
-      };
-      let shortLabel = pKey;
-      if (effectiveGranularity === 'week') {
-        const m = pKey.match(/^(\d{4})-W(\d{2})$/);
-        if (m) shortLabel = `KW${m[2]}`;
-      } else if (effectiveGranularity === 'month') {
-        const [y, mStr] = pKey.split('-');
-        const mIdx = parseInt(mStr, 10) - 1;
-        shortLabel = `${GERMAN_MONTHS_SHORT[mIdx] || mStr} ${y.slice(2)}`;
-      }
-      const hours = Number((entry.durationSec / 3600).toFixed(1));
-      const cyclingKm = Number(entry.cyclingKm.toFixed(1));
-      const totalKm = Number(entry.totalKm.toFixed(1));
-      const value =
-        historicalMetric === 'cyclingKm'
-          ? cyclingKm
-          : historicalMetric === 'totalKm'
-          ? totalKm
-          : historicalMetric === 'ascentM'
-          ? entry.ascentM
-          : historicalMetric === 'hours'
-          ? hours
-          : entry.count;
-
-      return {
-        key: pKey,
-        label: shortLabel,
-        isSelected: activePeriodOption ? pKey === activePeriodOption.key : false,
-        cyclingKm,
-        totalKm,
-        ascentM: entry.ascentM,
-        hours,
-        count: entry.count,
-        value
-      };
-    });
-  }, [sportFilteredRows, granularity, activePeriodOption, periodOptions, historicalMetric]);
-
-  // Sport breakdown Donut + Distance classes
-  const { sportDonutData, distanceBucketsData } = useMemo(() => {
-    const donut = [
-      { name: 'Radfahren', value: periodStats.cyclingKm, count: periodStats.cyclingCount, color: '#2563eb' },
-      { name: 'Laufen', value: periodStats.runningKm, count: periodStats.runningCount, color: '#f97316' },
-      { name: 'Wandern & Sonst.', value: periodStats.otherKm, count: periodStats.otherCount, color: '#10b981' }
-    ].filter((s) => s.value > 0 || s.count > 0);
-
-    const b1 = { label: '< 20 km', count: 0, km: 0, color: '#94a3b8' };
-    const b2 = { label: '20 – 50 km', count: 0, km: 0, color: '#38bdf8' };
-    const b3 = { label: '50 – 100 km', count: 0, km: 0, color: '#2563eb' };
-    const b4 = { label: '100+ km', count: 0, km: 0, color: '#f97316' };
-
-    for (const it of periodActivities) {
-      const d = Number(it.distanceKm || 0);
-      const bucket = d < 20 ? b1 : d < 50 ? b2 : d < 100 ? b3 : b4;
-      bucket.count++;
-      bucket.km += d;
     }
 
     return {
-      sportDonutData: donut,
-      distanceBucketsData: [b1, b2, b3, b4].map((b) => ({
-        ...b,
-        km: Number(b.km.toFixed(1))
-      }))
+      points: sortedChrono.slice(-160),
+      cyclingPoints: sortedChrono.slice(-160).filter((p) => p.category === 'cycling'),
+      runningPoints: sortedChrono.slice(-160).filter((p) => p.category === 'running'),
+      otherPoints: sortedChrono
+        .slice(-160)
+        .filter((p) => p.category !== 'cycling' && p.category !== 'running'),
+      avgEf,
+      efDeltaPct,
+      totalMatchedCount: sortedChrono.length
     };
-  }, [periodStats, periodActivities]);
+  }, [efficiencyScope, periodActivities, sportFilteredRows]);
 
-  // Sorted activities table for the period
+  // 3. Year-over-Year Cumulative Distance Overlay (Jan - Dec) + YTD Delta
+  const yoyModel = useMemo(() => {
+    const yearMonthKm = new Map<string, number[]>();
+    for (const r of sportFilteredRows) {
+      if (!r.ymd || !r.yearKey) continue;
+      const m = parseInt(r.ymd.slice(5, 7), 10);
+      if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+      if (!yearMonthKm.has(r.yearKey)) {
+        yearMonthKm.set(r.yearKey, Array(12).fill(0));
+      }
+      yearMonthKm.get(r.yearKey)![m - 1] += Number(r.item.distanceKm || 0);
+    }
+
+    const yearsDesc = Array.from(yearMonthKm.keys())
+      .filter((y) => /^\d{4}$/.test(y))
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, 4);
+
+    const now = new Date();
+    const currentYearStr = String(now.getUTCFullYear());
+    const currentMonthIdx = now.getUTCMonth(); // 0..11
+    const todayMmDd = formatUtcYmd(now).slice(5); // MM-DD
+
+    const monthlySeries = GERMAN_MONTHS_SHORT.map((mLabel, mIdx) => {
+      const row: Record<string, any> = { month: mLabel, monthIndex: mIdx + 1 };
+      for (const yr of yearsDesc) {
+        if (yr === currentYearStr && mIdx > currentMonthIdx) {
+          row[yr] = null;
+          continue;
+        }
+        const arr = yearMonthKm.get(yr)!;
+        let cum = 0;
+        for (let k = 0; k <= mIdx; k++) cum += arr[k];
+        row[yr] = Number(cum.toFixed(1));
+      }
+      return row;
+    });
+
+    // Exact YTD comparison between newest year with data and its prior year up to same MM-DD
+    const focusYear = yearsDesc.includes(currentYearStr) ? currentYearStr : yearsDesc[0] || currentYearStr;
+    const prevYear = String(parseInt(focusYear, 10) - 1);
+    const cutoffMmDd = focusYear === currentYearStr ? todayMmDd : '12-31';
+
+    let focusYtdKm = 0;
+    let prevYtdKm = 0;
+    let hasPrevYearData = false;
+    for (const r of sportFilteredRows) {
+      if (!r.ymd || !r.yearKey) continue;
+      const mmdd = r.ymd.slice(5);
+      if (r.yearKey === focusYear && mmdd <= cutoffMmDd) {
+        focusYtdKm += Number(r.item.distanceKm || 0);
+      } else if (r.yearKey === prevYear && mmdd <= cutoffMmDd) {
+        prevYtdKm += Number(r.item.distanceKm || 0);
+        hasPrevYearData = true;
+      }
+    }
+
+    const ytdDiffKm = Number((focusYtdKm - prevYtdKm).toFixed(1));
+    const ytdDiffPct = prevYtdKm > 0 ? Math.round(((focusYtdKm - prevYtdKm) / prevYtdKm) * 100) : null;
+
+    return {
+      years: yearsDesc,
+      series: monthlySeries,
+      focusYear,
+      prevYear,
+      focusYtdKm: Number(focusYtdKm.toFixed(1)),
+      prevYtdKm: Number(prevYtdKm.toFixed(1)),
+      hasPrevYearData,
+      ytdDiffKm,
+      ytdDiffPct
+    };
+  }, [sportFilteredRows]);
+
+  // 4. Weekday & Intensity Consistency Heatmap (12 ISO weeks x 7 weekdays) + Compact Sport Split
+  const consistencyModel = useMemo(() => {
+    const todayYmd = formatUtcYmd(new Date());
+    const anchorYmd =
+      activePeriodOption && activePeriodOption.endYmd <= todayYmd
+        ? activePeriodOption.endYmd
+        : todayYmd;
+
+    const endWeekKey = getIsoWeekInfo(anchorYmd).weekKey;
+    const weekKeys: string[] = [];
+    let wk = endWeekKey;
+    for (let i = 0; i < 12; i++) {
+      weekKeys.unshift(wk);
+      wk = getPreviousWeekKey(wk);
+    }
+
+    const dayMap = new Map<string, { km: number; durationSec: number; count: number }>();
+    const weekdayTotals = Array.from({ length: 7 }, (_, i) => ({
+      dayIndex: i,
+      label: WEEKDAY_NAMES_SHORT[i],
+      km: 0,
+      count: 0,
+      durationSec: 0
+    }));
+
+    for (const r of sportFilteredRows) {
+      if (!r.ymd) continue;
+      const d = parseUtcNoon(r.ymd);
+      const dayIdx = (d.getUTCDay() + 6) % 7; // 0=Mo..6=So
+      const dist = Number(r.item.distanceKm || 0);
+      const dur = Number(r.item.durationSec || 0);
+
+      weekdayTotals[dayIdx].km += dist;
+      weekdayTotals[dayIdx].count += 1;
+      weekdayTotals[dayIdx].durationSec += dur;
+
+      const cur = dayMap.get(r.ymd) || { km: 0, durationSec: 0, count: 0 };
+      cur.km += dist;
+      cur.durationSec += dur;
+      cur.count += 1;
+      dayMap.set(r.ymd, cur);
+    }
+
+    let maxCellKm = 1;
+    const weekColumns = weekKeys.map((wKey) => {
+      const monday = isoWeekKeyToMonday(wKey);
+      const days = Array.from({ length: 7 }, (_, dIdx) => {
+        const ymd = formatUtcYmd(new Date(monday.getTime() + dIdx * 86400000));
+        const stats = dayMap.get(ymd) || { km: 0, durationSec: 0, count: 0 };
+        if (stats.km > maxCellKm) maxCellKm = stats.km;
+        return {
+          ymd,
+          dayIndex: dIdx,
+          km: Number(stats.km.toFixed(1)),
+          durationSec: stats.durationSec,
+          count: stats.count,
+          isFuture: ymd > todayYmd
+        };
+      });
+      const m = wKey.match(/^(\d{4})-W(\d{2})$/);
+      return {
+        weekKey: wKey,
+        shortLabel: m ? `${m[2]}` : wKey,
+        fullLabel: m ? `KW ${m[2]}/${m[1].slice(2)}` : wKey,
+        days
+      };
+    });
+
+    const totalAllKm = weekdayTotals.reduce((s, w) => s + w.km, 0);
+    const peakWeekday = [...weekdayTotals].sort((a, b) => b.km - a.km)[0];
+    const peakSharePct =
+      totalAllKm > 0 && peakWeekday ? Math.round((peakWeekday.km / totalAllKm) * 100) : 0;
+
+    const sportSplit = [
+      {
+        label: 'Radfahren',
+        km: periodStats.cyclingKm,
+        count: periodStats.cyclingCount,
+        color: '#2563eb'
+      },
+      {
+        label: 'Laufen',
+        km: periodStats.runningKm,
+        count: periodStats.runningCount,
+        color: '#f97316'
+      },
+      {
+        label: 'Wandern & Sonst.',
+        km: periodStats.otherKm,
+        count: periodStats.otherCount,
+        color: '#10b981'
+      }
+    ].filter((s) => s.km > 0 || s.count > 0);
+
+    return {
+      weekColumns,
+      maxCellKm,
+      weekdayTotals,
+      peakWeekday,
+      peakSharePct,
+      sportSplit
+    };
+  }, [sportFilteredRows, activePeriodOption, periodStats]);
+
+  // Apply interactive chart cross-filter to Activities Table
+  const tableActivities = useMemo(() => {
+    if (!chartFilter) return periodActivities;
+
+    if (chartFilter.type === 'weekday') {
+      return periodActivities.filter((it) => {
+        const ymd = extractYmd(it.timestampIso);
+        if (!ymd) return false;
+        const dIdx = (parseUtcNoon(ymd).getUTCDay() + 6) % 7;
+        return dIdx === chartFilter.dayIndex;
+      });
+    }
+
+    if (chartFilter.type === 'week') {
+      return sportFilteredRows
+        .filter((r) => r.weekKey === chartFilter.weekKey)
+        .map((r) => r.item);
+    }
+
+    if (chartFilter.type === 'date') {
+      return sportFilteredRows
+        .filter((r) => r.ymd === chartFilter.ymd)
+        .map((r) => r.item);
+    }
+
+    return sportFilteredRows
+      .filter((r) => r.item.key === chartFilter.key)
+      .map((r) => r.item);
+  }, [chartFilter, periodActivities, sportFilteredRows]);
+
+  // Sorted activities table for the period (with optional chart cross-filter)
   const sortedPeriodActivities = useMemo(() => {
-    const list = [...periodActivities];
+    const list = [...tableActivities];
     const speedOf = (a: CatalogActivityItem) =>
       a.durationSec > 0 ? a.distanceKm / (a.durationSec / 3600) : 0;
 
@@ -998,7 +1089,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
       }
     });
     return list;
-  }, [periodActivities, tableSort]);
+  }, [tableActivities, tableSort]);
 
   // Load 1 or multiple activities onto map
   const handleLoadItemsToMap = useCallback(
@@ -1079,22 +1170,6 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
       : granularity === 'year'
       ? 'Vorjahr'
       : '';
-
-  const historicalMetricMeta = useMemo(() => {
-    switch (historicalMetric) {
-      case 'totalKm':
-        return { label: 'Gesamt-km', unit: ' km', color: '#6366f1' };
-      case 'ascentM':
-        return { label: 'Höhenmeter (hm)', unit: ' hm', color: '#10b981' };
-      case 'hours':
-        return { label: 'Bewegungszeit (h)', unit: ' h', color: '#8b5cf6' };
-      case 'count':
-        return { label: 'Einheiten', unit: 'x', color: '#f59e0b' };
-      case 'cyclingKm':
-      default:
-        return { label: 'Gefahrene Rad-km', unit: ' km', color: '#2563eb' };
-    }
-  }, [historicalMetric]);
 
   const canGoPrevPeriod =
     granularity !== 'all' && currentPeriodIndex >= 0 && currentPeriodIndex < periodOptions.length - 1;
@@ -1581,36 +1656,187 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
               })()}
             </div>
 
-            {/* Row 2: Main Period Timeline + Cumulative Km Progression */}
+            {/* Smart Auto-Insights Strip */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+              {/* Insight 1: ACWR / Form Status */}
+              {(() => {
+                const acwr = trainingLoadModel.acwr;
+                const statusText =
+                  acwr === null
+                    ? 'Zu wenig Historie'
+                    : acwr > 1.35
+                    ? 'Hohe Aufbaulast'
+                    : acwr >= 0.8
+                    ? 'Optimaler Bereich'
+                    : 'Erholungs-Phase';
+                const statusColor =
+                  acwr === null
+                    ? 'text-slate-500'
+                    : acwr > 1.35
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : acwr >= 0.8
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-sky-600 dark:text-sky-400';
+                return (
+                  <div className="bg-white dark:bg-slate-900 px-4 py-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <Activity className="w-3 h-3 text-indigo-500 shrink-0" />
+                        <span>Load-Ratio (ACWR 7d/28d)</span>
+                      </div>
+                      <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
+                        {acwr !== null ? acwr.toFixed(2) : '—'}{' '}
+                        <span className={`text-[11px] font-sans font-bold ${statusColor}`}>· {statusText}</span>
+                      </div>
+                    </div>
+                    <div className="text-right font-mono text-[10px] text-slate-500 shrink-0">
+                      <div>CTL {trainingLoadModel.latestCtl}</div>
+                      <div>TSB {trainingLoadModel.latestTsb >= 0 ? `+${trainingLoadModel.latestTsb}` : trainingLoadModel.latestTsb}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Insight 2: Aerobic Efficiency Trend */}
+              <div className="bg-white dark:bg-slate-900 px-4 py-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Heart className="w-3 h-3 text-rose-500 shrink-0" />
+                    <span>Aerobe Effizienz (EF)</span>
+                  </div>
+                  <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
+                    {efficiencyModel.avgEf !== null ? `${efficiencyModel.avgEf.toFixed(2)}` : '—'}{' '}
+                    <span className="text-[11px] font-sans font-semibold text-slate-400">m/min/bpm</span>
+                  </div>
+                </div>
+                {efficiencyModel.efDeltaPct !== null ? (
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black font-mono shrink-0 ${
+                      efficiencyModel.efDeltaPct >= 0
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300'
+                    }`}
+                  >
+                    {efficiencyModel.efDeltaPct >= 0 ? `+${efficiencyModel.efDeltaPct}%` : `${efficiencyModel.efDeltaPct}%`}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-400 font-mono shrink-0">{efficiencyModel.totalMatchedCount} HF</span>
+                )}
+              </div>
+
+              {/* Insight 3: YoY YTD Delta */}
+              <div className="bg-white dark:bg-slate-900 px-4 py-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <TrendingUp className="w-3 h-3 text-blue-500 shrink-0" />
+                    <span>Jahres-Pace ({yoyModel.focusYear} YTD)</span>
+                  </div>
+                  <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
+                    {yoyModel.focusYtdKm.toLocaleString('de-DE')} km
+                  </div>
+                </div>
+                {yoyModel.hasPrevYearData ? (
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black font-mono shrink-0 ${
+                      yoyModel.ytdDiffKm >= 0
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
+                    }`}
+                  >
+                    {yoyModel.ytdDiffKm >= 0 ? `+${yoyModel.ytdDiffKm}` : yoyModel.ytdDiffKm} km
+                    {yoyModel.ytdDiffPct !== null ? ` (${yoyModel.ytdDiffPct >= 0 ? '+' : ''}${yoyModel.ytdDiffPct}%)` : ''}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-400 shrink-0">vs. {yoyModel.prevYear}</span>
+                )}
+              </div>
+
+              {/* Insight 4: Peak Training Weekday (clickable filter) */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (!consistencyModel.peakWeekday || consistencyModel.peakWeekday.count === 0) return;
+                  const p = consistencyModel.peakWeekday;
+                  setChartFilter((prev) =>
+                    prev?.type === 'weekday' && prev.dayIndex === p.dayIndex
+                      ? null
+                      : { type: 'weekday', dayIndex: p.dayIndex, label: `Wochentag ${p.label}` }
+                  );
+                }}
+                className={`text-left bg-white dark:bg-slate-900 px-4 py-3 rounded-2xl border transition-colors flex items-center justify-between gap-3 cursor-pointer ${
+                  chartFilter?.type === 'weekday' && chartFilter.dayIndex === consistencyModel.peakWeekday?.dayIndex
+                    ? 'border-blue-500 ring-1 ring-blue-500/30'
+                    : 'border-slate-200/80 dark:border-slate-800 hover:border-blue-300 dark:hover:border-blue-700'
+                }`}
+                title="Klicken um Aktivitäten nach diesem Wochentag zu filtern"
+              >
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span>Stärkster Trainingstag</span>
+                  </div>
+                  <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
+                    {consistencyModel.peakWeekday && consistencyModel.peakWeekday.count > 0
+                      ? `${consistencyModel.peakWeekday.label} · ${Math.round(consistencyModel.peakWeekday.km).toLocaleString('de-DE')} km`
+                      : '—'}
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-lg text-[10px] font-black font-mono bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 shrink-0">
+                  {consistencyModel.peakSharePct}% Vol.
+                </span>
+              </button>
+            </div>
+
+            {/* Row 2: Rolling Training Load Curve (7 cols) + Aerobic Efficiency Scatter (5 cols) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              {/* Left 8 cols: Stacked Distance & Ascent within selected period */}
-              <div className="lg:col-span-8 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-3 min-w-0">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Left 7 cols: Rolling Training Load & Recovery Curve */}
+              <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-3 min-w-0">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      Kilometer &amp; Höhenmeter – {activePeriodOption?.label || 'Zeitraum'}
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Belastung &amp; Erholung (7d Akut vs. 28d Fitness)</span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Verteilung nach Sportart (gestapelte km) und Höhenmeter (hm) innerhalb des gewählten Zeitraums.
+                      Exponentielle Last-Kurven der letzten 16 Wochen mit Form-Index (TSB). Klick auf Woche filtert die Tabelle.
                     </p>
                   </div>
-                  <div className="text-xs font-mono font-bold text-blue-600 dark:text-blue-400">
-                    🚴 {periodStats.cyclingKm.toLocaleString('de-DE')} km · Gesamt {periodStats.totalKm.toLocaleString('de-DE')} km
+                  <div className="flex items-center gap-2 text-[11px] font-mono font-bold shrink-0">
+                    <span className="text-blue-600 dark:text-blue-400">CTL {trainingLoadModel.latestCtl}</span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="text-amber-600 dark:text-amber-400">ATL {trainingLoadModel.latestAtl}</span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className={trainingLoadModel.latestTsb >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                      TSB {trainingLoadModel.latestTsb >= 0 ? `+${trainingLoadModel.latestTsb}` : trainingLoadModel.latestTsb}
+                    </span>
                   </div>
                 </div>
 
                 <div className="h-72 w-full min-w-0">
-                  {timelineBuckets.length === 0 ? (
+                  {trainingLoadModel.weeks.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-xs text-slate-400">
-                      Keine Aktivitäten im ausgewählten Zeitraum.
+                      Keine Garmin-Trainingsdaten für die Lastberechnung vorhanden.
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height={288} minWidth={0}>
-                      <ComposedChart data={timelineBuckets}>
+                      <ComposedChart
+                        data={trainingLoadModel.weeks}
+                        onClick={(state: any) => {
+                          const payload = state?.activePayload?.[0]?.payload;
+                          if (payload?.weekKey) {
+                            setChartFilter((prev) =>
+                              prev?.type === 'week' && prev.weekKey === payload.weekKey
+                                ? null
+                                : { type: 'week', weekKey: payload.weekKey, label: `Trainingswoche ${payload.label}` }
+                            );
+                          }
+                        }}
+                      >
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
-                        <XAxis dataKey="label" stroke="#94a3b8" fontSize={10} interval={granularity === 'month' ? 1 : 0} />
-                        <YAxis yAxisId="left" stroke="#2563eb" fontSize={10} unit=" km" width={48} />
-                        <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={10} unit=" m" width={46} />
+                        <XAxis dataKey="label" stroke="#94a3b8" fontSize={10} />
+                        <YAxis yAxisId="load" stroke="#6366f1" fontSize={10} width={38} />
+                        <YAxis yAxisId="tsb" orientation="right" stroke="#10b981" fontSize={10} width={38} />
+                        <ReferenceLine yAxisId="tsb" y={0} stroke="#64748b" strokeDasharray="3 3" strokeOpacity={0.6} />
                         <Tooltip
                           content={({ active, payload }) => {
                             if (!active || !payload?.length) return null;
@@ -1618,248 +1844,420 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             return (
                               <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1">
                                 <div className="font-bold border-b border-slate-700 pb-1">
-                                  {pt.label} ({pt.count} Einheiten)
+                                  {pt.label} · {pt.count} Einheiten ({pt.weeklyKm} km)
                                 </div>
                                 <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-[11px]">
-                                  <span className="text-blue-300">🚴 Radfahren:</span>
-                                  <span className="text-right font-bold">{pt.cyclingKm} km</span>
-                                  <span className="text-orange-300">🏃 Laufen:</span>
-                                  <span className="text-right font-bold">{pt.runningKm} km</span>
-                                  <span className="text-emerald-300">🥾 Sonstige:</span>
-                                  <span className="text-right font-bold">{pt.otherKm} km</span>
-                                  <span className="text-amber-300">⛰️ Höhenmeter:</span>
-                                  <span className="text-right font-bold">+{pt.ascentM} hm</span>
-                                  <span className="text-slate-300">∑ Kumuliert:</span>
-                                  <span className="text-right font-bold">{pt.cumTotalKm} km</span>
+                                  <span className="text-blue-300">28d Fitness (CTL):</span>
+                                  <span className="text-right font-bold">{pt.ctl}</span>
+                                  <span className="text-amber-300">7d Ermüdung (ATL):</span>
+                                  <span className="text-right font-bold">{pt.atl}</span>
+                                  <span className={pt.tsb >= 0 ? 'text-emerald-300' : 'text-rose-300'}>Form (TSB):</span>
+                                  <span className="text-right font-bold">{pt.tsb >= 0 ? `+${pt.tsb}` : pt.tsb}</span>
+                                  <span className="text-slate-300">Wochen-Last:</span>
+                                  <span className="text-right font-bold">{pt.weeklyLoad}</span>
                                 </div>
                               </div>
                             );
                           }}
                         />
                         <Legend wrapperStyle={{ fontSize: '11px' }} />
-                        <Bar yAxisId="left" dataKey="cyclingKm" stackId="km" name="🚴 Radfahren (km)" fill="#2563eb" isAnimationActive={false} />
-                        <Bar yAxisId="left" dataKey="runningKm" stackId="km" name="🏃 Laufen (km)" fill="#f97316" isAnimationActive={false} />
-                        <Bar yAxisId="left" dataKey="otherKm" stackId="km" name="🥾 Sonstige (km)" fill="#10b981" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                        <Line yAxisId="right" type="monotone" dataKey="ascentM" name="⛰️ Höhenmeter (hm)" stroke="#f59e0b" strokeWidth={2.2} dot={{ r: 2.5 }} isAnimationActive={false} />
+                        <Bar yAxisId="tsb" dataKey="tsb" name="Form-Balance (TSB)" radius={[3, 3, 0, 0]} cursor="pointer" isAnimationActive={false}>
+                          {trainingLoadModel.weeks.map((entry) => {
+                            const isFiltered = chartFilter?.type === 'week' && chartFilter.weekKey === entry.weekKey;
+                            return (
+                              <Cell
+                                key={entry.weekKey}
+                                fill={entry.tsb >= 0 ? '#10b981' : '#f43f5e'}
+                                fillOpacity={isFiltered ? 0.95 : 0.35}
+                              />
+                            );
+                          })}
+                        </Bar>
+                        <Line yAxisId="load" type="monotone" dataKey="ctl" name="28d Fitness (CTL)" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} />
+                        <Line yAxisId="load" type="monotone" dataKey="atl" name="7d Akut (ATL)" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
                       </ComposedChart>
                     </ResponsiveContainer>
                   )}
                 </div>
               </div>
 
-              {/* Right 4 cols: Cumulative Kilometers Progression */}
-              <div className="lg:col-span-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-3 min-w-0">
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Kumulierte Kilometer-Kurve
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    Aufsummierter Verlauf der gefahrenen und gesamten Kilometer.
-                  </p>
+              {/* Right 5 cols: Aerobic Efficiency HR vs Speed Scatter */}
+              <div className="lg:col-span-5 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-3 min-w-0">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <Target className="w-3.5 h-3.5 text-rose-500" />
+                      <span>Aerobe Effizienz (HF vs. Tempo)</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Punktgröße = Distanz. Klick auf Punkt isoliert die Einheit.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg text-[10px] font-bold shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setEfficiencyScope('period')}
+                      className={`px-2 py-1 rounded-md cursor-pointer transition-colors whitespace-nowrap ${
+                        efficiencyScope === 'period'
+                          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      Zeitraum
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEfficiencyScope('all')}
+                      className={`px-2 py-1 rounded-md cursor-pointer transition-colors whitespace-nowrap ${
+                        efficiencyScope === 'all'
+                          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      Alle HF-Daten
+                    </button>
+                  </div>
                 </div>
 
                 <div className="h-72 w-full min-w-0">
-                  {timelineBuckets.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-xs text-slate-400">
-                      Keine Verlaufsdaten vorhanden.
+                  {efficiencyModel.points.length < 2 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-4 gap-2 text-xs text-slate-400">
+                      <Heart className="w-6 h-6 text-slate-300 dark:text-slate-600" />
+                      <span>
+                        Mindestens 2 Garmin-Aktivitäten mit Herzfrequenz im gewählten Umfang nötig.
+                      </span>
+                      {efficiencyScope === 'period' && (
+                        <button
+                          type="button"
+                          onClick={() => setEfficiencyScope('all')}
+                          className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold text-[11px] cursor-pointer"
+                        >
+                          Gesamte Historie anzeigen
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height={288} minWidth={0}>
-                      <AreaChart data={timelineBuckets}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
-                        <XAxis dataKey="label" stroke="#94a3b8" fontSize={9} minTickGap={16} />
-                        <YAxis stroke="#94a3b8" fontSize={10} unit=" km" width={48} />
-                        <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '11px' }} />
+                      <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: -12 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} />
+                        <XAxis type="number" dataKey="avgHr" name="Ø HF" unit=" bpm" domain={['dataMin - 5', 'dataMax + 5']} stroke="#94a3b8" fontSize={10} />
+                        <YAxis type="number" dataKey="speedKmh" name="Ø Tempo" unit=" km/h" domain={['dataMin - 2', 'dataMax + 2']} stroke="#94a3b8" fontSize={10} />
+                        <ZAxis type="number" dataKey="distanceKm" range={[45, 260]} name="Distanz" />
+                        <Tooltip
+                          cursor={{ strokeDasharray: '3 3' }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const pt = payload[0].payload;
+                            return (
+                              <div className="bg-slate-900/95 text-white p-3 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1 max-w-[230px]">
+                                <div className="font-bold truncate border-b border-slate-700 pb-1">{pt.name}</div>
+                                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px]">
+                                  <span className="text-slate-400">Datum:</span>
+                                  <span className="text-right">{formatDeFullDate(pt.ymd)}</span>
+                                  <span className="text-rose-300">Ø Puls:</span>
+                                  <span className="text-right font-bold">{pt.avgHr} bpm</span>
+                                  <span className="text-blue-300">Ø Tempo:</span>
+                                  <span className="text-right font-bold">{pt.speedKmh} km/h</span>
+                                  <span className="text-emerald-300">Distanz:</span>
+                                  <span className="text-right font-bold">{pt.distanceKm} km</span>
+                                  <span className="text-amber-300">EF-Index:</span>
+                                  <span className="text-right font-bold">{pt.ef}</span>
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
                         <Legend wrapperStyle={{ fontSize: '11px' }} />
-                        <Area
-                          type="monotone"
-                          dataKey="cumTotalKm"
-                          name="Gesamt kum. (km)"
-                          stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.14}
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="cumCyclingKm"
-                          name="Rad kum. (km)"
-                          stroke="#2563eb"
-                          fill="#2563eb"
-                          fillOpacity={0.2}
-                          strokeWidth={2.5}
-                          isAnimationActive={false}
-                        />
-                      </AreaChart>
+                        {efficiencyModel.cyclingPoints.length > 0 && (
+                          <Scatter
+                            name="Radfahren"
+                            data={efficiencyModel.cyclingPoints}
+                            fill="#2563eb"
+                            fillOpacity={0.78}
+                            cursor="pointer"
+                            isAnimationActive={false}
+                            onClick={(node: any) => {
+                              const p = node?.payload ?? node;
+                              if (p?.key) {
+                                setChartFilter((prev) =>
+                                  prev?.type === 'activity' && prev.key === p.key
+                                    ? null
+                                    : { type: 'activity', key: p.key, label: p.name }
+                                );
+                              }
+                            }}
+                          />
+                        )}
+                        {efficiencyModel.runningPoints.length > 0 && (
+                          <Scatter
+                            name="Laufen"
+                            data={efficiencyModel.runningPoints}
+                            fill="#f97316"
+                            fillOpacity={0.82}
+                            cursor="pointer"
+                            isAnimationActive={false}
+                            onClick={(node: any) => {
+                              const p = node?.payload ?? node;
+                              if (p?.key) {
+                                setChartFilter((prev) =>
+                                  prev?.type === 'activity' && prev.key === p.key
+                                    ? null
+                                    : { type: 'activity', key: p.key, label: p.name }
+                                );
+                              }
+                            }}
+                          />
+                        )}
+                        {efficiencyModel.otherPoints.length > 0 && (
+                          <Scatter
+                            name="Sonstige"
+                            data={efficiencyModel.otherPoints}
+                            fill="#10b981"
+                            fillOpacity={0.78}
+                            cursor="pointer"
+                            isAnimationActive={false}
+                            onClick={(node: any) => {
+                              const p = node?.payload ?? node;
+                              if (p?.key) {
+                                setChartFilter((prev) =>
+                                  prev?.type === 'activity' && prev.key === p.key
+                                    ? null
+                                    : { type: 'activity', key: p.key, label: p.name }
+                                );
+                              }
+                            }}
+                          />
+                        )}
+                      </ScatterChart>
                     </ResponsiveContainer>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Row 3: Historical Comparison + Sport Donut & Distance Distribution */}
+            {/* Row 3: Year-over-Year Cumulative Distance (6 cols) + 12-Week Consistency Heatmap & Sport Split (6 cols) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              {/* Left 8 cols: Historical Period Comparison */}
-              <div className="lg:col-span-8 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-3 min-w-0">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Left 6 cols: Year-over-Year Cumulative Distance Overlay */}
+              <div className="lg:col-span-6 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-3 min-w-0">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      Perioden-Vergleich ({granularity === 'week' ? 'Letzte 12 Wochen' : granularity === 'month' ? 'Letzte 12 Monate' : 'Jahres-Trend'})
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-blue-500" />
+                      <span>Jahres-Overlay (Kumulierte km Jan–Dez)</span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Vergleicht den ausgewählten Zeitraum (orange markiert) direkt mit vorherigen Perioden. Klick auf Balken wechselt Zeitraum.
+                      Saisonaler Volumen-Vergleich zwischen deinen letzten Kalenderjahren.
                     </p>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-                    {(
-                      [
-                        { id: 'cyclingKm', label: 'Rad-km' },
-                        { id: 'totalKm', label: 'Gesamt-km' },
-                        { id: 'ascentM', label: 'Höhenmeter' },
-                        { id: 'hours', label: 'Stunden' },
-                        { id: 'count', label: 'Einheiten' }
-                      ] as const
-                    ).map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setHistoricalMetric(m.id)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
-                          historicalMetric === m.id
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
+                  {yoyModel.hasPrevYearData && (
+                    <div className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200 shrink-0">
+                      {yoyModel.focusYear}: {yoyModel.focusYtdKm.toLocaleString('de-DE')} vs. {yoyModel.prevYear}: {yoyModel.prevYtdKm.toLocaleString('de-DE')} km
+                    </div>
+                  )}
                 </div>
 
                 <div className="h-64 w-full min-w-0">
-                  {historicalSeries.length === 0 ? (
+                  {yoyModel.years.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-xs text-slate-400">
-                      Keine historischen Vergleichsdaten vorhanden.
+                      Keine Jahresdaten vorhanden.
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height={256} minWidth={0}>
-                      <BarChart
-                        data={historicalSeries}
-                        onClick={(state: any) => {
-                          const clickedKey = state?.activePayload?.[0]?.payload?.key;
-                          if (clickedKey && granularity !== 'all') {
-                            setSelectedPeriodKey(clickedKey);
-                          }
-                        }}
-                      >
+                      <LineChart data={yoyModel.series}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
-                        <XAxis dataKey="label" stroke="#94a3b8" fontSize={10} />
-                        <YAxis stroke="#94a3b8" fontSize={10} width={48} unit={historicalMetricMeta.unit} />
+                        <XAxis dataKey="month" stroke="#94a3b8" fontSize={10} />
+                        <YAxis stroke="#94a3b8" fontSize={10} unit=" km" width={52} />
                         <Tooltip
-                          contentStyle={{ borderRadius: '12px', fontSize: '11px' }}
-                          formatter={(val: any) => [`${val}${historicalMetricMeta.unit}`, historicalMetricMeta.label]}
+                          contentStyle={{ borderRadius: '12px', fontSize: '11px', backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }}
+                          formatter={(val: any, name: any) => [`${Number(val).toLocaleString('de-DE')} km`, String(name)]}
                         />
-                        <Bar
-                          dataKey="value"
-                          name={historicalMetricMeta.label}
-                          radius={[6, 6, 0, 0]}
-                          cursor={granularity !== 'all' ? 'pointer' : undefined}
-                          isAnimationActive={false}
-                        >
-                          {historicalSeries.map((entry) => (
-                            <Cell
-                              key={entry.key}
-                              fill={entry.isSelected ? '#ea580c' : historicalMetricMeta.color}
-                              fillOpacity={entry.isSelected ? 1 : 0.72}
+                        <Legend wrapperStyle={{ fontSize: '11px' }} />
+                        {yoyModel.years.map((yr, idx) => {
+                          const palette = ['#2563eb', '#f59e0b', '#10b981', '#8b5cf6'];
+                          return (
+                            <Line
+                              key={yr}
+                              type="monotone"
+                              dataKey={yr}
+                              name={yr}
+                              stroke={palette[idx % palette.length]}
+                              strokeWidth={idx === 0 ? 3 : 2}
+                              strokeDasharray={idx >= 2 ? '4 3' : undefined}
+                              dot={idx === 0 ? { r: 2.5 } : false}
+                              connectNulls={false}
+                              isAnimationActive={false}
                             />
-                          ))}
-                        </Bar>
-                      </BarChart>
+                          );
+                        })}
+                      </LineChart>
                     </ResponsiveContainer>
                   )}
                 </div>
               </div>
 
-              {/* Right 4 cols: Sport Split Donut & Distance Buckets */}
-              <div className="lg:col-span-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-4 min-w-0 flex flex-col justify-between">
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Sportarten-Split &amp; Distanz-Klassen
-                  </h3>
-                  {sportDonutData.length === 0 ? (
-                    <div className="h-36 flex items-center justify-center text-xs text-slate-400">
-                      Keine Sportdaten im Zeitraum.
+              {/* Right 6 cols: Weekday & Intensity Consistency Heatmap + Compact Sport Split */}
+              <div className="lg:col-span-6 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-4 min-w-0 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>12-Wochen Konsistenz-Matrix</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        Klick auf Wochentag (Mo–So), KW oder Tag filtert die Aktivitäten-Tabelle.
+                      </p>
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-3 mt-2">
-                      <div className="w-28 h-28 shrink-0">
-                        <ResponsiveContainer width="100%" height={112} minWidth={0}>
-                          <PieChart>
-                            <Pie
-                              data={sportDonutData}
-                              dataKey="value"
-                              nameKey="name"
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={28}
-                              outerRadius={46}
-                              paddingAngle={3}
-                              isAnimationActive={false}
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400 shrink-0">
+                      <span>Weniger</span>
+                      <span className="w-2.5 h-2.5 rounded-xs bg-slate-100 dark:bg-slate-800" />
+                      <span className="w-2.5 h-2.5 rounded-xs bg-emerald-200 dark:bg-emerald-900/70" />
+                      <span className="w-2.5 h-2.5 rounded-xs bg-emerald-400 dark:bg-emerald-700" />
+                      <span className="w-2.5 h-2.5 rounded-xs bg-emerald-600 dark:bg-emerald-500" />
+                      <span>Mehr</span>
+                    </div>
+                  </div>
+
+                  {/* Heatmap Matrix: 12 columns (weeks) + left weekday labels */}
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[380px] space-y-1">
+                      {/* Header Row: Week Numbers */}
+                      <div className="grid grid-cols-[28px_repeat(12,minmax(0,1fr))] gap-1 items-center">
+                        <div />
+                        {consistencyModel.weekColumns.map((col) => {
+                          const isSelectedWeek = chartFilter?.type === 'week' && chartFilter.weekKey === col.weekKey;
+                          return (
+                            <button
+                              key={col.weekKey}
+                              type="button"
+                              onClick={() =>
+                                setChartFilter((prev) =>
+                                  prev?.type === 'week' && prev.weekKey === col.weekKey
+                                    ? null
+                                    : { type: 'week', weekKey: col.weekKey, label: col.fullLabel }
+                                )
+                              }
+                              className={`text-[9px] font-mono font-bold text-center py-0.5 rounded-xs cursor-pointer transition-colors ${
+                                isSelectedWeek
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                              }`}
+                              title={`${col.fullLabel} filtern`}
                             >
-                              {sportDonutData.map((entry) => (
-                                <Cell key={entry.name} fill={entry.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip formatter={(val: any) => `${Number(val).toFixed(1)} km`} />
-                          </PieChart>
-                        </ResponsiveContainer>
+                              {col.shortLabel}
+                            </button>
+                          );
+                        })}
                       </div>
-                      <div className="flex-1 space-y-1.5 text-xs">
-                        {sportDonutData.map((s) => (
-                          <div key={s.name} className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 font-semibold text-slate-700 dark:text-slate-300 truncate">
-                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
-                              {s.name}
-                            </span>
-                            <span className="font-mono font-bold text-slate-800 dark:text-slate-100 shrink-0">
-                              {s.value.toFixed(1)} km <span className="text-[10px] text-slate-400">({s.count}x)</span>
-                            </span>
+
+                      {/* 7 Weekday Rows */}
+                      {WEEKDAY_NAMES_SHORT.map((dayName, dayIdx) => {
+                        const isSelectedDayName = chartFilter?.type === 'weekday' && chartFilter.dayIndex === dayIdx;
+                        return (
+                          <div key={dayName} className="grid grid-cols-[28px_repeat(12,minmax(0,1fr))] gap-1 items-center">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setChartFilter((prev) =>
+                                  prev?.type === 'weekday' && prev.dayIndex === dayIdx
+                                    ? null
+                                    : { type: 'weekday', dayIndex: dayIdx, label: `Wochentag ${dayName}` }
+                                )
+                              }
+                              className={`text-[10px] font-bold text-left px-1 py-0.5 rounded-xs cursor-pointer transition-colors ${
+                                isSelectedDayName
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                              }`}
+                              title={`Alle ${dayName}-Aktivitäten im Zeitraum filtern`}
+                            >
+                              {dayName}
+                            </button>
+
+                            {consistencyModel.weekColumns.map((col) => {
+                              const cell = col.days[dayIdx];
+                              const ratio = cell.km > 0 ? cell.km / consistencyModel.maxCellKm : 0;
+                              const isSelectedDate = chartFilter?.type === 'date' && chartFilter.ymd === cell.ymd;
+                              const colorClass = cell.isFuture
+                                ? 'bg-transparent border border-dashed border-slate-200 dark:border-slate-800 opacity-40'
+                                : cell.count === 0
+                                ? 'bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700'
+                                : ratio > 0.66
+                                ? 'bg-emerald-600 dark:bg-emerald-500 text-white'
+                                : ratio > 0.33
+                                ? 'bg-emerald-400 dark:bg-emerald-600 text-white'
+                                : 'bg-emerald-200 dark:bg-emerald-900/70 text-emerald-900 dark:text-emerald-100';
+
+                              return (
+                                <button
+                                  key={cell.ymd}
+                                  type="button"
+                                  disabled={cell.isFuture || cell.count === 0}
+                                  onClick={() => {
+                                    if (cell.count === 0) return;
+                                    setChartFilter((prev) =>
+                                      prev?.type === 'date' && prev.ymd === cell.ymd
+                                        ? null
+                                        : { type: 'date', ymd: cell.ymd, label: formatDeFullDate(cell.ymd) }
+                                    );
+                                  }}
+                                  title={
+                                    cell.count > 0
+                                      ? `${formatDeFullDate(cell.ymd)}: ${cell.count} Einh. · ${cell.km} km`
+                                      : `${formatDeFullDate(cell.ymd)}: Ruhetag`
+                                  }
+                                  className={`h-5 rounded-sm transition-all ${colorClass} ${
+                                    cell.count > 0 ? 'cursor-pointer' : 'cursor-default'
+                                  } ${isSelectedDate ? 'ring-2 ring-blue-500 ring-offset-1 dark:ring-offset-slate-900' : ''}`}
+                                />
+                              );
+                            })}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
-                  )}
+                  </div>
                 </div>
 
-                {/* Distance Class Distribution */}
+                {/* Compact Sport Split Bar inside right card */}
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                    <SlidersHorizontal className="w-3.5 h-3.5 text-blue-500" />
-                    Distanz-Klassen ({periodStats.count} Einheiten)
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold uppercase tracking-wider text-slate-400">
+                      Sportarten-Verteilung ({activePeriodOption?.shortLabel})
+                    </span>
+                    <span className="font-mono font-bold text-slate-700 dark:text-slate-200">
+                      {periodStats.totalKm.toLocaleString('de-DE')} km gesamt
+                    </span>
                   </div>
-                  <div className="space-y-1.5">
-                    {distanceBucketsData.map((b) => {
-                      const pct = periodStats.count > 0 ? Math.round((b.count / periodStats.count) * 100) : 0;
-                      return (
-                        <div key={b.label} className="space-y-0.5 text-[11px]">
-                          <div className="flex justify-between font-mono">
-                            <span className="font-sans font-semibold text-slate-600 dark:text-slate-300">{b.label}</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-200">
-                              {b.count}x · {b.km.toFixed(0)} km ({pct}%)
-                            </span>
-                          </div>
-                          <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                  {consistencyModel.sportSplit.length === 0 ? (
+                    <div className="text-xs text-slate-400">Keine Sportdaten im gewählten Zeitraum.</div>
+                  ) : (
+                    <>
+                      <div className="h-2.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden flex">
+                        {consistencyModel.sportSplit.map((s) => {
+                          const wPct = periodStats.totalKm > 0 ? (s.km / periodStats.totalKm) * 100 : 0;
+                          return (
                             <div
-                              className="h-full rounded-full transition-all"
-                              style={{ width: `${b.count > 0 ? Math.max(4, pct) : 0}%`, backgroundColor: b.color }}
+                              key={s.label}
+                              style={{ width: `${Math.max(2, wPct)}%`, backgroundColor: s.color }}
+                              title={`${s.label}: ${s.km.toFixed(1)} km (${s.count}x)`}
                             />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+                        {consistencyModel.sportSplit.map((s) => (
+                          <span key={s.label} className="inline-flex items-center gap-1.5 font-mono text-slate-600 dark:text-slate-300">
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                            <span className="font-sans font-semibold">{s.label}:</span>
+                            <span className="font-bold text-slate-900 dark:text-white">{s.km.toFixed(1)} km</span>
+                            <span className="text-slate-400">({s.count}x)</span>
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1937,13 +2335,28 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
             {/* Row 5: Period Activities Table */}
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs overflow-hidden">
               <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-5 py-3 border-b border-slate-100 dark:border-slate-800">
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Aktivitäten im Zeitraum ({sortedPeriodActivities.length})
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    {activePeriodOption?.label}
-                  </p>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      Aktivitäten im Zeitraum ({sortedPeriodActivities.length})
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      {activePeriodOption?.label}
+                    </p>
+                  </div>
+
+                  {chartFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setChartFilter(null)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap"
+                      title="Diagramm-Filter aufheben"
+                    >
+                      <Filter className="w-3 h-3" />
+                      <span>Filter: {chartFilter.label}</span>
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
 
                 <select
@@ -1961,8 +2374,21 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
               </div>
 
               {sortedPeriodActivities.length === 0 ? (
-                <div className="p-10 text-center text-xs text-slate-400">
-                  In diesem Zeitraum liegen für den gewählten Filter keine Aktivitäten vor. Wähle über das Dropdown eine andere Woche, einen anderen Monat oder ein anderes Jahr.
+                <div className="p-10 text-center text-xs text-slate-400 space-y-2">
+                  <div>
+                    {chartFilter
+                      ? 'Keine Aktivitäten für den aktiven Diagramm-Filter im Zeitraum gefunden.'
+                      : 'In diesem Zeitraum liegen für den gewählten Filter keine Aktivitäten vor. Wähle über das Dropdown eine andere Woche, einen anderen Monat oder ein anderes Jahr.'}
+                  </div>
+                  {chartFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setChartFilter(null)}
+                      className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold text-[11px] cursor-pointer"
+                    >
+                      Diagramm-Filter aufheben
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="overflow-x-auto max-h-[420px]">

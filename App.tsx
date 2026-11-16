@@ -8,7 +8,7 @@ import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
 import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
 import { PlannedToursView } from './components/PlannedToursView';
-import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass, Settings as SettingsIcon, Languages } from 'lucide-react';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
 import {
   AppPreferences,
   DEFAULT_APP_PREFERENCES,
@@ -200,6 +200,8 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
+  const [mobileToolsMenuOpen, setMobileToolsMenuOpen] = useState(false);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(() => {
     const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
     if (rawHash) {
@@ -220,6 +222,8 @@ const App: React.FC = () => {
 
   const navigateWorkspace = useCallback((view: WorkspaceView, tab?: GarminDashboardTab) => {
     setIsMobileMenuOpen(false);
+    setMobileNavMenuOpen(false);
+    setMobileToolsMenuOpen(false);
     if (view === 'fitness') {
       const resolvedTab = tab ?? 'overview';
       setFitnessPageInitialTab(resolvedTab);
@@ -1660,21 +1664,6 @@ const App: React.FC = () => {
     }
   }, [tracks, refreshCatalogTotalCount]);
 
-  const handleLoadReferenceTours = useCallback(async () => {
-    try {
-      const res = await apiFetch(getApiUrl('/api/tracks'));
-      if (!res.ok) throw new Error('Netzwerkfehler');
-      const data = await res.json();
-      if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
-        replaceWorkspaceWithTracks(data.tracks, true);
-      } else {
-        setErrorMessage('Keine Referenztouren in der Datenbank gefunden.');
-      }
-    } catch (e: any) {
-      setErrorMessage('Fehler beim Laden der Referenztouren: ' + (e.message || 'Unbekannt'));
-    }
-  }, [replaceWorkspaceWithTracks]);
-
   const handleStartMapComparison = useCallback((track1Id?: string, track2Id?: string) => {
     const currentTracks = tracksRef.current;
     if (currentTracks.length < 2) {
@@ -2093,39 +2082,188 @@ const App: React.FC = () => {
         }}
       />
 
-      {/* Clean All-Page Top Navigation Bar (Zero Horizontal Slider) */}
-      <header className="min-h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 shrink-0 z-[75]">
+      {/* Clean Responsive Top Navigation Bar (Single compact mobile row + full desktop bar) */}
+      <header className="h-[52px] lg:h-auto lg:min-h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-1 lg:py-1.5 flex items-center justify-between gap-2 shrink-0 z-[75] relative">
         {/* Brand + Mobile Sidebar Toggle */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {activeWorkspaceView === 'map' && (
             <button
               type="button"
               aria-label="Menü und Streckenliste öffnen"
               onClick={() => {
                 triggerHaptic('medium');
+                setMobileNavMenuOpen(false);
+                setMobileToolsMenuOpen(false);
                 setIsMobileMenuOpen(true);
               }}
-              className="md:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0"
+              className="md:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0 active:scale-95 transition-transform"
               title="Seitenleiste öffnen"
             >
-              <Menu size={17} />
+              <Menu size={18} />
             </button>
           )}
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/80 flex items-center justify-center">
               <Activity className="text-indigo-600 dark:text-indigo-400" size={15} />
             </div>
-            <span className="font-black tracking-tight text-sm text-slate-950 dark:text-slate-100 whitespace-nowrap">
+            <span className="font-black tracking-tight text-xs sm:text-sm text-slate-950 dark:text-slate-100 whitespace-nowrap">
               GPX Master
             </span>
           </div>
         </div>
 
-        {/* All 5 Pages Always Visible (Wrap cleanly without horizontal slider) */}
+        {/* Mobile/Tablet Active View Switcher Dropdown (< lg) */}
+        <div className="lg:hidden relative min-w-0 flex-1 flex justify-center">
+          <button
+            type="button"
+            id="btn-mobile-nav-switcher"
+            onClick={() => {
+              triggerHaptic('light');
+              setMobileToolsMenuOpen(false);
+              setMobileNavMenuOpen((prev) => !prev);
+            }}
+            aria-expanded={mobileNavMenuOpen}
+            aria-label={tr(appPrefs.language, 'Ansicht wechseln', 'Switch View')}
+            className={`min-h-[40px] max-w-full px-2.5 py-1 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+              mobileNavMenuOpen
+                ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            {activeWorkspaceView === 'map' && <MapIcon size={14} className="text-indigo-500 shrink-0" />}
+            {activeWorkspaceView === 'planned' && <Compass size={14} className="text-emerald-500 shrink-0" />}
+            {activeWorkspaceView === 'activities' && <ListFilter size={14} className="text-indigo-500 shrink-0" />}
+            {activeWorkspaceView === 'dashboard' && <BarChart3 size={14} className="text-indigo-500 shrink-0" />}
+            {activeWorkspaceView === 'fitness' && <Activity size={14} className="text-orange-500 shrink-0" />}
+            <span className="truncate">
+              {activeWorkspaceView === 'map' && tr(appPrefs.language, 'Karte', 'Map')}
+              {activeWorkspaceView === 'planned' && tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}
+              {activeWorkspaceView === 'activities' && tr(appPrefs.language, 'Aktivitäten', 'Activities')}
+              {activeWorkspaceView === 'dashboard' && tr(appPrefs.language, 'Dashboard', 'Dashboard')}
+              {activeWorkspaceView === 'fitness' && tr(appPrefs.language, 'Fitness', 'Fitness')}
+            </span>
+            {activeWorkspaceView === 'map' && tracks.length > 0 && (
+              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
+                {tracks.length}
+              </span>
+            )}
+            {activeWorkspaceView === 'planned' && plannedToursCount !== null && (
+              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
+                {plannedToursCount}
+              </span>
+            )}
+            {activeWorkspaceView === 'activities' && catalogTotalCount !== null && (
+              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
+                {catalogTotalCount}
+              </span>
+            )}
+            <ChevronDown size={14} className={`text-slate-400 shrink-0 transition-transform ${mobileNavMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {mobileNavMenuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-[1190]"
+                onClick={() => setMobileNavMenuOpen(false)}
+              />
+              <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5">
+                <button
+                  type="button"
+                  onClick={() => navigateWorkspace('map')}
+                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
+                    activeWorkspaceView === 'map'
+                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <MapIcon size={15} className="text-indigo-500" />
+                    <span>{tr(appPrefs.language, 'Karte', 'Map')}</span>
+                  </span>
+                  {tracks.length > 0 && (
+                    <span className="font-mono tabular-nums text-[11px] text-slate-400">{tracks.length}</span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateWorkspace('planned')}
+                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
+                    activeWorkspaceView === 'planned'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Compass size={15} className="text-emerald-500" />
+                    <span>{tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}</span>
+                  </span>
+                  {plannedToursCount !== null && (
+                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
+                      {plannedToursCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateWorkspace('activities')}
+                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
+                    activeWorkspaceView === 'activities'
+                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <ListFilter size={15} className="text-indigo-500" />
+                    <span>{tr(appPrefs.language, 'Aktivitäten', 'Activities')}</span>
+                  </span>
+                  {catalogTotalCount !== null && (
+                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
+                      {catalogTotalCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateWorkspace('dashboard')}
+                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
+                    activeWorkspaceView === 'dashboard'
+                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <BarChart3 size={15} className="text-indigo-500" />
+                    <span>{tr(appPrefs.language, 'Aktivitäten-Dashboard', 'Activities Dashboard')}</span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openFitnessPage('overview')}
+                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
+                    activeWorkspaceView === 'fitness'
+                      ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Activity size={15} className="text-orange-500" />
+                    <span>{tr(appPrefs.language, 'Fitness & Gesundheit', 'Fitness & Health')}</span>
+                  </span>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Desktop All 5 Pages Inline Navigation (lg+) */}
         <nav
           aria-label={tr(appPrefs.language, 'Hauptnavigation', 'Main Navigation')}
-          className="order-3 lg:order-2 w-full lg:w-auto flex flex-wrap items-center gap-1 pt-1 lg:pt-0 border-t lg:border-t-0 border-slate-100 dark:border-slate-800/80"
+          className="hidden lg:flex items-center gap-1 min-w-0"
         >
           <button
             type="button"
@@ -2212,31 +2350,33 @@ const App: React.FC = () => {
           </button>
         </nav>
 
-        {/* Compact Right Quick Actions */}
-        <div className="order-2 lg:order-3 flex items-center gap-1.5 shrink-0">
+        {/* Right Quick Actions (Import + Desktop Controls / Mobile Overflow Menu) */}
+        <div className="relative flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() => topbarUploadInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="min-h-[40px] lg:min-h-0 min-w-[40px] sm:min-w-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-xl lg:rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             title={tr(appPrefs.language, 'GPX, FIT oder ZIP importieren', 'Import GPX, FIT or ZIP')}
+            aria-label={tr(appPrefs.language, 'GPX, FIT oder ZIP importieren', 'Import GPX, FIT or ZIP')}
           >
-            <Upload size={13} />
+            <Upload size={14} />
             <span className="hidden sm:inline">{tr(appPrefs.language, 'Import', 'Import')}</span>
           </button>
 
-          {activeWorkspaceView !== 'fitness' && (
-            <button
-              type="button"
-              onClick={() => openFitnessPage('personal-api')}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              title="Garmin Connect Sync (Personal API)"
-            >
-              <Database size={13} className="text-orange-500" />
-              <span className="hidden sm:inline">Garmin Sync</span>
-            </button>
-          )}
+          {/* Desktop-only Secondary Controls */}
+          <div className="hidden lg:flex items-center gap-1.5 shrink-0">
+            {activeWorkspaceView !== 'fitness' && (
+              <button
+                type="button"
+                onClick={() => openFitnessPage('personal-api')}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                title="Garmin Connect Sync (Personal API)"
+              >
+                <Database size={13} className="text-orange-500" />
+                <span>Garmin Sync</span>
+              </button>
+            )}
 
-          <div className="relative">
             <button
               type="button"
               onClick={() => setAthleteProfileOpen((prev) => !prev)}
@@ -2254,178 +2394,304 @@ const App: React.FC = () => {
               <span className="xl:hidden">{tr(appPrefs.language, 'Profil', 'Profile')}</span>
             </button>
 
-            {athleteProfileOpen && (
+            <button
+              type="button"
+              data-no-translate="true"
+              id="btn-language-toggle"
+              onClick={() => {
+                triggerHaptic('light');
+                updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
+              }}
+              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+              title={appPrefs.language === 'de' ? 'Switch interface to English (EN)' : 'Sprache auf Deutsch wechseln (DE)'}
+              aria-label={appPrefs.language === 'de' ? 'Switch interface to English' : 'Sprache auf Deutsch wechseln'}
+            >
+              <Languages size={14} className="text-indigo-500" />
+              <span className="font-mono">{appPrefs.language.toUpperCase()}</span>
+            </button>
+
+            <button
+              type="button"
+              id="btn-open-settings"
+              onClick={() => {
+                triggerHaptic('light');
+                openSettingsModal('style');
+              }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                settingsModalOpen
+                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+              }`}
+              title={tr(appPrefs.language, 'Einstellungen, Sprache & UI-Stile (,)', 'Settings, Language & UI Styles (,)')}
+              aria-label={tr(appPrefs.language, 'Einstellungen öffnen', 'Open Settings')}
+            >
+              <SettingsIcon size={14} className="text-indigo-500" />
+              <span>{tr(appPrefs.language, 'Einstellungen', 'Settings')}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleThemeQuick}
+              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+              title={theme === 'dark' ? tr(appPrefs.language, 'Hellen Modus aktivieren', 'Enable Light Mode') : tr(appPrefs.language, 'Dunklen Modus aktivieren', 'Enable Dark Mode')}
+              aria-label={tr(appPrefs.language, 'Theme umschalten', 'Toggle Theme')}
+            >
+              {theme === 'dark' ? <Sun size={15} className="text-amber-400" /> : <Moon size={15} />}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLockApp}
+              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
+              title={tr(appPrefs.language, 'App sperren', 'Lock App')}
+              aria-label={tr(appPrefs.language, 'App sperren', 'Lock App')}
+            >
+              <Lock size={15} />
+            </button>
+          </div>
+
+          {/* Mobile Overflow Tools Button (< lg) */}
+          <div className="lg:hidden relative">
+            <button
+              type="button"
+              id="btn-mobile-overflow-menu"
+              onClick={() => {
+                triggerHaptic('light');
+                setMobileNavMenuOpen(false);
+                setMobileToolsMenuOpen((prev) => !prev);
+              }}
+              aria-expanded={mobileToolsMenuOpen}
+              aria-label={tr(appPrefs.language, 'Weitere Aktionen', 'More Actions')}
+              className={`min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+                mobileToolsMenuOpen
+                  ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+              }`}
+              title={tr(appPrefs.language, 'Weitere Aktionen', 'More Actions')}
+            >
+              <MoreHorizontal size={18} />
+            </button>
+
+            {mobileToolsMenuOpen && (
               <>
                 <div
                   className="fixed inset-0 z-[1190]"
-                  onClick={() => setAthleteProfileOpen(false)}
+                  onClick={() => setMobileToolsMenuOpen(false)}
                 />
-                <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 z-[1200] space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
-                    <div>
-                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
-                        {tr(appPrefs.language, 'Athleten-Profil & Schwellenwerte', 'Athlete Profile & Thresholds')}
-                      </h4>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {tr(appPrefs.language, 'Relativleistung:', 'Power-to-weight:')}{' '}
-                        <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
-                      </p>
-                    </div>
+                <div className="absolute right-0 top-full mt-1.5 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5">
+                  {activeWorkspaceView !== 'fitness' && (
                     <button
                       type="button"
-                      onClick={() => setAthleteProfileOpen(false)}
-                      className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                      aria-label={tr(appPrefs.language, 'Schließen', 'Close')}
+                      onClick={() => {
+                        setMobileToolsMenuOpen(false);
+                        openFitnessPage('personal-api');
+                      }}
+                      className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                     >
-                      <X size={14} />
+                      <Database size={15} className="text-orange-500" />
+                      <span>Garmin Connect Sync</span>
                     </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 text-xs">
-                    <label className="space-y-1 block">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        {tr(appPrefs.language, 'FTP (Watt)', 'FTP (Watts)')}
-                      </span>
-                      <input
-                        type="number"
-                        min={50}
-                        max={600}
-                        value={ftp}
-                        onChange={(e) => setFtp(Math.max(50, Math.min(600, parseInt(e.target.value) || 250)))}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-amber-600 dark:text-amber-400"
-                      />
-                    </label>
-
-                    <label className="space-y-1 block">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        {tr(appPrefs.language, 'Gewicht (kg)', 'Weight (kg)')}
-                      </span>
-                      <input
-                        type="number"
-                        min={30}
-                        max={200}
-                        step={0.5}
-                        value={userWeight}
-                        onChange={(e) => setUserWeight(Math.max(30, Math.min(200, parseFloat(e.target.value) || 75)))}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
-                      />
-                    </label>
-
-                    <label className="space-y-1 block">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        {tr(appPrefs.language, 'Alter (Jahre)', 'Age (Years)')}
-                      </span>
-                      <input
-                        type="number"
-                        min={10}
-                        max={100}
-                        value={userAge}
-                        onChange={(e) => setUserAge(Math.max(10, Math.min(100, parseInt(e.target.value) || 35)))}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
-                      />
-                    </label>
-
-                    <label className="space-y-1 block">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        {tr(appPrefs.language, 'Max. Puls (bpm)', 'Max HR (bpm)')}
-                      </span>
-                      <input
-                        type="number"
-                        min={100}
-                        max={230}
-                        value={userMaxHr}
-                        onChange={(e) => handleMaxHrChange(Math.max(100, Math.min(230, parseInt(e.target.value) || 185)))}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-rose-600 dark:text-rose-400"
-                      />
-                    </label>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => handleMaxHrChange(Math.max(120, Math.min(220, 220 - userAge)))}
-                      className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
-                    >
-                      HFmax = 220 − {tr(appPrefs.language, 'Alter', 'Age')} ({220 - userAge})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAthleteProfileOpen(false)}
-                      className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold cursor-pointer"
-                    >
-                      {tr(appPrefs.language, 'Fertig', 'Done')}
-                    </button>
-                  </div>
+                  )}
 
                   <button
                     type="button"
                     onClick={() => {
-                      setAthleteProfileOpen(false);
-                      openSettingsModal('athlete');
+                      setMobileToolsMenuOpen(false);
+                      setAthleteProfileOpen(true);
                     }}
-                    className="w-full py-1.5 px-2.5 rounded-lg border border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/70 dark:bg-indigo-950/40 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors cursor-pointer text-center"
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                   >
-                    {tr(appPrefs.language, 'Alle Einstellungen & UI-Stile öffnen...', 'Open All Settings & UI Styles...')}
+                    <span className="flex items-center gap-2.5">
+                      <Sliders size={15} className="text-amber-500" />
+                      <span>{tr(appPrefs.language, 'Athleten-Profil', 'Athlete Profile')}</span>
+                    </span>
+                    <span className="font-mono tabular-nums text-[10.5px] text-slate-400">
+                      {ftp}W · {userWeight}kg
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-no-translate="true"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Languages size={15} className="text-indigo-500" />
+                      <span>{tr(appPrefs.language, 'Sprache', 'Language')}</span>
+                    </span>
+                    <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-indigo-600 dark:text-indigo-300">
+                      {appPrefs.language.toUpperCase()}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleToggleThemeQuick();
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      {theme === 'dark' ? <Sun size={15} className="text-amber-400" /> : <Moon size={15} className="text-slate-500" />}
+                      <span>{tr(appPrefs.language, 'Design', 'Appearance')}</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {theme === 'dark' ? tr(appPrefs.language, 'Dunkel', 'Dark') : tr(appPrefs.language, 'Hell', 'Light')}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setMobileToolsMenuOpen(false);
+                      openSettingsModal('style');
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <SettingsIcon size={15} className="text-indigo-500" />
+                    <span>{tr(appPrefs.language, 'Einstellungen & Speicher', 'Settings & Storage')}</span>
+                  </button>
+
+                  <div className="border-t border-slate-100 dark:border-slate-800 my-1" />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileToolsMenuOpen(false);
+                      handleLockApp();
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                  >
+                    <Lock size={15} />
+                    <span>{tr(appPrefs.language, 'App sperren', 'Lock App')}</span>
                   </button>
                 </div>
               </>
             )}
           </div>
 
-          <button
-            type="button"
-            data-no-translate="true"
-            id="btn-language-toggle"
-            onClick={() => {
-              triggerHaptic('light');
-              updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
-            }}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-            title={appPrefs.language === 'de' ? 'Switch interface to English (EN)' : 'Sprache auf Deutsch wechseln (DE)'}
-            aria-label={appPrefs.language === 'de' ? 'Switch interface to English' : 'Sprache auf Deutsch wechseln'}
-          >
-            <Languages size={14} className="text-indigo-500" />
-            <span className="font-mono">{appPrefs.language.toUpperCase()}</span>
-          </button>
+          {/* Athlete Profile & Thresholds Popover (shared by Desktop & Mobile Overflow Menu) */}
+          {athleteProfileOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-[1190]"
+                onClick={() => setAthleteProfileOpen(false)}
+              />
+              <div className="absolute right-0 top-full mt-2 w-[min(20rem,calc(100vw-1.25rem))] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 z-[1200] space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
+                      {tr(appPrefs.language, 'Athleten-Profil & Schwellenwerte', 'Athlete Profile & Thresholds')}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {tr(appPrefs.language, 'Relativleistung:', 'Power-to-weight:')}{' '}
+                      <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAthleteProfileOpen(false)}
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                    aria-label={tr(appPrefs.language, 'Schließen', 'Close')}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
 
-          <button
-            type="button"
-            id="btn-open-settings"
-            onClick={() => {
-              triggerHaptic('light');
-              openSettingsModal('style');
-            }}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              settingsModalOpen
-                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
-            }`}
-            title={tr(appPrefs.language, 'Einstellungen, Sprache & UI-Stile (,)', 'Settings, Language & UI Styles (,)')}
-            aria-label={tr(appPrefs.language, 'Einstellungen öffnen', 'Open Settings')}
-          >
-            <SettingsIcon size={14} className="text-indigo-500" />
-            <span className="hidden md:inline">{tr(appPrefs.language, 'Einstellungen', 'Settings')}</span>
-          </button>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <label className="space-y-1 block">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      {tr(appPrefs.language, 'FTP (Watt)', 'FTP (Watts)')}
+                    </span>
+                    <input
+                      type="number"
+                      min={50}
+                      max={600}
+                      value={ftp}
+                      onChange={(e) => setFtp(Math.max(50, Math.min(600, parseInt(e.target.value) || 250)))}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-amber-600 dark:text-amber-400"
+                    />
+                  </label>
 
-          <button
-            type="button"
-            onClick={handleToggleThemeQuick}
-            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-            title={theme === 'dark' ? tr(appPrefs.language, 'Hellen Modus aktivieren', 'Enable Light Mode') : tr(appPrefs.language, 'Dunklen Modus aktivieren', 'Enable Dark Mode')}
-            aria-label={tr(appPrefs.language, 'Theme umschalten', 'Toggle Theme')}
-          >
-            {theme === 'dark' ? <Sun size={15} className="text-amber-400" /> : <Moon size={15} />}
-          </button>
+                  <label className="space-y-1 block">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      {tr(appPrefs.language, 'Gewicht (kg)', 'Weight (kg)')}
+                    </span>
+                    <input
+                      type="number"
+                      min={30}
+                      max={200}
+                      step={0.5}
+                      value={userWeight}
+                      onChange={(e) => setUserWeight(Math.max(30, Math.min(200, parseFloat(e.target.value) || 75)))}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
+                    />
+                  </label>
 
-          <button
-            type="button"
-            onClick={handleLockApp}
-            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-            title={tr(appPrefs.language, 'App sperren', 'Lock App')}
-            aria-label={tr(appPrefs.language, 'App sperren', 'Lock App')}
-          >
-            <Lock size={15} />
-          </button>
+                  <label className="space-y-1 block">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      {tr(appPrefs.language, 'Alter (Jahre)', 'Age (Years)')}
+                    </span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={100}
+                      value={userAge}
+                      onChange={(e) => setUserAge(Math.max(10, Math.min(100, parseInt(e.target.value) || 35)))}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
+                    />
+                  </label>
+
+                  <label className="space-y-1 block">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      {tr(appPrefs.language, 'Max. Puls (bpm)', 'Max HR (bpm)')}
+                    </span>
+                    <input
+                      type="number"
+                      min={100}
+                      max={230}
+                      value={userMaxHr}
+                      onChange={(e) => handleMaxHrChange(Math.max(100, Math.min(230, parseInt(e.target.value) || 185)))}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-rose-600 dark:text-rose-400"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => handleMaxHrChange(Math.max(120, Math.min(220, 220 - userAge)))}
+                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
+                  >
+                    HFmax = 220 − {tr(appPrefs.language, 'Alter', 'Age')} ({220 - userAge})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAthleteProfileOpen(false)}
+                    className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold cursor-pointer"
+                  >
+                    {tr(appPrefs.language, 'Fertig', 'Done')}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAthleteProfileOpen(false);
+                    openSettingsModal('athlete');
+                  }}
+                  className="w-full py-1.5 px-2.5 rounded-lg border border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/70 dark:bg-indigo-950/40 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors cursor-pointer text-center"
+                >
+                  {tr(appPrefs.language, 'Alle Einstellungen & UI-Stile öffnen...', 'Open All Settings & UI Styles...')}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </header>
 
@@ -2712,7 +2978,6 @@ const App: React.FC = () => {
             onToggleTheme={handleToggleThemeQuick}
             onToggleAllVisibility={handleToggleAllVisibility}
             onFitVisibleTracks={handleFitVisibleTracks}
-            onLoadReferenceTours={handleLoadReferenceTours}
             onLockApp={handleLockApp}
             onOpenFullActivitiesView={() => navigateWorkspace('activities')}
             onOpenPlannedToursView={() => navigateWorkspace('planned')}
@@ -2723,7 +2988,7 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <WifiOff size={16} className="shrink-0" />
                   <span>
-                    <strong>Offline-Modus:</strong> Kartenkacheln und zuvor geladene GPX-Routen werden aus dem Service-Worker-Cache bereitgestellt.
+                    <strong>Offline-Modus:</strong> Kartenkacheln und zuvor geladene GPX-Routen werden aus dem lokalen Browser-Cache (IndexedDB) bereitgestellt.
                   </span>
                 </div>
               </div>
@@ -3013,11 +3278,11 @@ const App: React.FC = () => {
             isProfileCollapsed
               ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none'
               : mobileProfileSnap === 'mini'
-              ? 'h-32 sm:h-48 md:h-56 pb-14 sm:pb-2'
+              ? 'h-40 sm:h-52 md:h-60 pb-[4.25rem] sm:pb-2'
               : mobileProfileSnap === 'expanded'
-              ? 'h-[54vh] sm:h-64 md:h-72 pb-16 sm:pb-2'
-              : 'h-52 sm:h-48 md:h-56 pb-16 sm:pb-2'
-          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1.5 sm:py-2 md:py-3 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+              ? 'h-[58vh] min-h-[340px] sm:h-72 md:h-80 pb-[4.25rem] sm:pb-2'
+              : 'h-[38vh] min-h-[250px] max-h-[340px] sm:h-60 md:h-68 md:max-h-none pb-[4.25rem] sm:pb-2'
+          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1 sm:py-2 md:py-2.5 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
             <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
               <ElevationProfile 
                 track={markedTrack} 
@@ -3122,6 +3387,8 @@ const App: React.FC = () => {
             onUpdateEstimatedSpeed={setEstimatedSpeed}
             activeLayer={activeLayer}
             onSelectMapLayer={setActiveLayer}
+            tracks={tracks}
+            isOnline={isOnline}
           />
         )}
       </AnimatePresence>

@@ -51,7 +51,6 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
   const [sortBy, setSortBy] = useState<'stage' | 'date-desc' | 'date-asc' | 'dist-desc' | 'ascent-desc'>('stage');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingAll, setIsLoadingAll] = useState(false);
-  const [isSeeding, setIsSeeding] = useState(false);
   const [isSavingBatch, setIsSavingBatch] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -177,30 +176,6 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
       setIsLoading(false);
     }
   }, [searchQuery, activityFilter]);
-
-  // Seed GPX reference tours from /gpx folder
-  const handleSeedCuratedTours = async (force = false) => {
-    setIsSeeding(true);
-    try {
-      const res = await apiFetch(getApiUrl('/api/library/seed-tours'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(`${data.seeded ?? 7} GPX-Touren aus /gpx erfolgreich in der Bibliothek bereitgestellt!`, 'success');
-        await fetchUnifiedLibrary();
-      } else {
-        showToast(data.error || 'Fehler beim Laden der GPX-Dateien.', 'error');
-      }
-    } catch (err) {
-      console.error('Failed to seed GPX tours:', err);
-      showToast('GPX-Dateien aus /gpx konnten nicht geladen werden.', 'error');
-    } finally {
-      setIsSeeding(false);
-    }
-  };
 
   // Save current workspace tracks to library
   const handleSaveWorkspaceTracks = async () => {
@@ -715,17 +690,6 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
 
         {/* Quick Tour & Workspace Actions */}
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
-          <button
-            type="button"
-            disabled={isSeeding}
-            onClick={() => handleSeedCuratedTours(false)}
-            className="flex items-center gap-1 text-[9.5px] font-black bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 border border-indigo-200/60 dark:border-indigo-800/60 px-2 py-1 rounded-lg transition-all cursor-pointer shadow-xs disabled:opacity-50"
-            title="GPX-Dateien aus dem Ordner /gpx zur Bibliothek hinzufügen"
-          >
-            <RefreshCw size={11} className={isSeeding ? "animate-spin text-indigo-600" : "text-indigo-600 dark:text-indigo-400"} />
-            <span>{isSeeding ? "Lade /gpx..." : "📁 GPX aus /gpx laden"}</span>
-          </button>
-
           {filteredTracks.some(t => !t.isGarminActivity) && (
             <button
               type="button"
@@ -784,20 +748,10 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
             <div className="space-y-1">
               <p className="text-xs font-bold text-slate-700 dark:text-slate-200">Keine Routen oder Aktivitäten gefunden</p>
               <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed">
-                Lade GPX-Dateien aus dem Ordner /gpx oder speichere Deine geladenen Workspace-Aktivitäten dauerhaft in der Bibliothek.
+                Importiere eigene GPX-Dateien über die Seitenleiste oder speichere geöffnete Workspace-Aktivitäten dauerhaft in der Bibliothek.
               </p>
             </div>
             <div className="flex flex-col gap-2 pt-1 max-w-xs mx-auto">
-              <button
-                type="button"
-                disabled={isSeeding}
-                onClick={() => handleSeedCuratedTours(true)}
-                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw size={13} className={isSeeding ? "animate-spin" : ""} />
-                <span>GPX-Dateien aus /gpx laden</span>
-              </button>
-
               {workspaceTracks && workspaceTracks.length > 0 && (
                 <button
                   type="button"

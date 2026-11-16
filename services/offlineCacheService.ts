@@ -5,12 +5,20 @@ import {
   evaluateSyncState 
 } from '../domain/offline/offlineCacheEngine';
 import { Result, ok, err } from '../domain/core/result';
-import { getSWCacheStats, clearSWTileCache } from '../utils/serviceWorker';
+import { clearSWTileCache } from '../utils/serviceWorker';
+import {
+  DEFAULT_MAX_TILE_CACHE_BYTES,
+  getTileCacheStats,
+  clearTileCache
+} from '../utils/tileCacheDb';
 import { GPXTrack } from '../types';
 
 export interface OfflineStatusSnapshot {
   readonly quota: StorageQuotaEstimate;
   readonly tileCount: number;
+  readonly tileCacheBytes: number;
+  readonly maxTileCacheBytes: number;
+  readonly tileLayers: Record<string, { count: number; bytes: number }>;
   readonly shellCount: number;
   readonly trackCount: number;
   readonly totalPoints: number;
@@ -21,34 +29,7 @@ export interface OfflineStatusSnapshot {
   readonly lastChecked: number;
 }
 
-const TILE_CACHE_NAME = 'velo-tiles-velo-v2';
-
-/**
- * Reads the direct tile count from CacheStorage API or falls back to SW message channel.
- */
-async function queryTileCountDirect(): Promise<number> {
-  if (typeof window === 'undefined') return 0;
-  
-  try {
-    if ('caches' in window) {
-      const hasTileCache = await caches.has(TILE_CACHE_NAME);
-      if (hasTileCache) {
-        const cache = await caches.open(TILE_CACHE_NAME);
-        const keys = await cache.keys();
-        return keys.length;
-      }
-    }
-  } catch {
-    // Silently fall back to service worker messaging if caches is restricted
-  }
-
-  try {
-    const swStats = await getSWCacheStats();
-    return swStats.tileCount;
-  } catch {
-    return 0;
-  }
-}
+const LEGACY_TILE_CACHE_NAME = 'velo-tiles-velo-v2';
 
 /**
  * Queries storage quota estimates from the StorageManager API.
@@ -113,7 +94,7 @@ function analyzeTrackFootprint(tracks: readonly GPXTrack[]): {
 }
 
 /**
- * Service to retrieve a snapshot of offline storage and cache states.
+ * Service to retrieve a snapshot of offline storage and IndexedDB tile cache states.
  */
 export async function getOfflineStatusSnapshot(
   tracks: readonly GPXTrack[],
@@ -121,23 +102,26 @@ export async function getOfflineStatusSnapshot(
   isSyncing: boolean = false
 ): Promise<Result<OfflineStatusSnapshot, Error>> {
   try {
-    const [quota, tileCount] = await Promise.all([
+    const [quota, idbStats] = await Promise.all([
       queryStorageQuota(),
-      queryTileCountDirect()
+      getTileCacheStats(DEFAULT_MAX_TILE_CACHE_BYTES)
     ]);
 
     const trackFootprint = analyzeTrackFootprint(tracks);
     const syncState = evaluateSyncState({
       isOnline,
       isSyncing,
-      tileCount,
+      tileCount: idbStats.tileCount,
       trackCount: trackFootprint.count
     });
 
     const snapshot: OfflineStatusSnapshot = {
       quota,
-      tileCount,
-      shellCount: 1, // App shell is precached by sw.js
+      tileCount: idbStats.tileCount,
+      tileCacheBytes: idbStats.tileCacheBytes,
+      maxTileCacheBytes: idbStats.maxTileCacheBytes,
+      tileLayers: idbStats.layers,
+      shellCount: 1,
       trackCount: trackFootprint.count,
       totalPoints: trackFootprint.points,
       tracksPayloadBytes: trackFootprint.payloadBytes,
@@ -155,17 +139,27 @@ export async function getOfflineStatusSnapshot(
 }
 
 /**
- * Clears the offline tile cache and returns operation result.
+ * Clears the IndexedDB offline map tile cache (and any legacy SW caches) and returns operation result.
  */
 export async function purgeTileCache(): Promise<Result<boolean, Error>> {
   try {
+    const idbCleared = await clearTileCache();
+
     if (typeof window !== 'undefined' && 'caches' in window) {
-      const deleted = await caches.delete(TILE_CACHE_NAME);
-      return ok(deleted);
+      try {
+        await caches.delete(LEGACY_TILE_CACHE_NAME);
+      } catch {
+        // Ignore legacy CacheStorage cleanup errors
+      }
     }
 
-    const swCleared = await clearSWTileCache();
-    return ok(swCleared);
+    try {
+      await clearSWTileCache();
+    } catch {
+      // Ignore if SW inactive
+    }
+
+    return ok(idbCleared);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to clear offline tile cache';
     return err(new Error(message));

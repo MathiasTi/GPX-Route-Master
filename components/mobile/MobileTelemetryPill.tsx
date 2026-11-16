@@ -70,7 +70,7 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
     <div
       id="mobile-telemetry-pill"
       aria-label="Punkt-Telemetrie"
-      className="sm:hidden fixed top-[calc(env(safe-area-inset-top,0px)+3.75rem)] left-3 right-3 z-[1050] bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl px-3 py-2 text-white animate-in fade-in slide-in-from-top-2 duration-200"
+      className="sm:hidden fixed top-[calc(env(safe-area-inset-top,0px)+3.5rem)] left-3 right-3 z-[1050] bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl px-3 py-2 text-white animate-in fade-in slide-in-from-top-2 duration-200"
     >
       <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5 mb-1.5">
         <div className="flex items-center gap-1.5 min-w-0">

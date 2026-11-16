@@ -16,9 +16,22 @@ import {
   Zap,
   Sparkles,
   Map as MapIcon,
-  Ruler
+  Ruler,
+  HardDrive,
+  Database,
+  Trash2,
+  RefreshCw,
+  Wifi,
+  WifiOff,
+  CheckCircle2
 } from 'lucide-react';
-import { MapLayer } from '../types';
+import { GPXTrack, MapLayer } from '../types';
+import { formatStorageSize as formatByteSize } from '../domain/offline/offlineCacheEngine';
+import {
+  getOfflineStatusSnapshot,
+  purgeTileCache,
+  OfflineStatusSnapshot
+} from '../services/offlineCacheService';
 import {
   AppPreferences,
   AppLanguage,
@@ -33,7 +46,7 @@ import {
   tr
 } from '../utils/appSettings';
 
-export type AppSettingsTab = 'style' | 'language' | 'athlete' | 'workspace';
+export type AppSettingsTab = 'style' | 'language' | 'athlete' | 'workspace' | 'storage';
 
 export interface AppSettingsModalProps {
   isOpen: boolean;
@@ -54,6 +67,8 @@ export interface AppSettingsModalProps {
   onUpdateEstimatedSpeed: (val: number) => void;
   activeLayer: MapLayer;
   onSelectMapLayer: (layer: MapLayer) => void;
+  tracks?: GPXTrack[];
+  isOnline?: boolean;
 }
 
 export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
@@ -74,17 +89,39 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   estimatedSpeed,
   onUpdateEstimatedSpeed,
   activeLayer,
-  onSelectMapLayer
+  onSelectMapLayer,
+  tracks = [],
+  isOnline = true
 }) => {
   const [activeTab, setActiveTab] = useState<AppSettingsTab>(initialTab);
+  const [storageSnapshot, setStorageSnapshot] = useState<OfflineStatusSnapshot | null>(null);
+  const [isStorageLoading, setIsStorageLoading] = useState(false);
+  const [isPurgingTiles, setIsPurgingTiles] = useState(false);
+  const [tilePurgeMessage, setTilePurgeMessage] = useState<string | null>(null);
   const lang: AppLanguage = preferences.language;
   const t = (de: string, en: string) => tr(lang, de, en);
+
+  const loadStorageSnapshot = async () => {
+    setIsStorageLoading(true);
+    const res = await getOfflineStatusSnapshot(tracks, isOnline);
+    if (res.success) {
+      setStorageSnapshot(res.data);
+    }
+    setIsStorageLoading(false);
+  };
 
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      setTilePurgeMessage(null);
     }
   }, [isOpen, initialTab]);
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'storage') {
+      void loadStorageSnapshot();
+    }
+  }, [isOpen, activeTab, tracks.length, isOnline]);
 
   if (!isOpen) return null;
 
@@ -92,6 +129,29 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   const classicMaxHr = Math.max(120, Math.min(220, 220 - userAge));
   const wattsPerKg = (ftp / Math.max(1, userWeight)).toFixed(2);
   const systemWeight = (userWeight + preferences.bikeWeight).toFixed(1);
+
+  const handlePurgeMapTiles = async () => {
+    setIsPurgingTiles(true);
+    setTilePurgeMessage(null);
+    const res = await purgeTileCache();
+    await loadStorageSnapshot();
+    setIsPurgingTiles(false);
+    if (res.success) {
+      setTilePurgeMessage(
+        t(
+          'Karten-Cache erfolgreich geleert.',
+          'Map tile cache cleared successfully.'
+        )
+      );
+    } else {
+      setTilePurgeMessage(
+        t(
+          'Fehler beim Leeren des Karten-Caches.',
+          'Failed to clear map tile cache.'
+        )
+      );
+    }
+  };
 
   const handleExportJson = () => {
     const payload = {
@@ -136,6 +196,11 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
       id: 'workspace',
       label: t('Karte & Bereich', 'Map & Workspace'),
       icon: <SlidersHorizontal size={15} />
+    },
+    {
+      id: 'storage',
+      label: t('Speicher & Cache', 'Storage & Cache'),
+      icon: <HardDrive size={15} />
     }
   ];
 
@@ -792,6 +857,227 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'storage' && (
+            <div className="space-y-4">
+              {/* Connection & Quick Refresh Header */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80">
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      isOnline ? 'bg-emerald-500' : 'bg-amber-500'
+                    }`}
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                      {isOnline ? (
+                        <>
+                          <Wifi size={14} className="text-emerald-600 dark:text-emerald-400" />
+                          <span>{t('Netzwerk verbunden (Online)', 'Network Connected (Online)')}</span>
+                        </>
+                      ) : (
+                        <>
+                          <WifiOff size={14} className="text-amber-600 dark:text-amber-400" />
+                          <span>{t('Offline-Modus aktiv', 'Offline Mode Active')}</span>
+                        </>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {t(
+                        'Kartenkacheln werden lokal in Browser-IndexedDB mit automatischer LRU-Begrenzung gespeichert.',
+                        'Visited map tiles are cached locally in browser IndexedDB with automatic LRU quota enforcement.'
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void loadStorageSnapshot()}
+                  disabled={isStorageLoading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
+                >
+                  <RefreshCw size={13} className={isStorageLoading ? 'animate-spin text-indigo-500' : ''} />
+                  <span>{t('Aktualisieren', 'Refresh')}</span>
+                </button>
+              </div>
+
+              {/* IndexedDB Map Tile Cache Card */}
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                      <MapIcon size={14} className="text-indigo-500" />
+                      <span>{t('Karten-Kachel-Cache (IndexedDB)', 'Map Tile Cache (IndexedDB)')}</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      {t(
+                        'Ermöglicht sofortiges Karten-Panning und Offline-Nutzung bereits besuchter Kartenausschnitte.',
+                        'Enables instant panning and offline viewing for previously visited map regions.'
+                      )}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    id="btn-settings-clear-tile-cache"
+                    onClick={() => void handlePurgeMapTiles()}
+                    disabled={isPurgingTiles || (storageSnapshot?.tileCount ?? 0) === 0}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70 text-xs font-bold transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+                  >
+                    <Trash2 size={13} />
+                    <span>
+                      {isPurgingTiles
+                        ? t('Leere Cache...', 'Clearing...')
+                        : t('Karten-Cache leeren', 'Clear Map Cache')}
+                    </span>
+                  </button>
+                </div>
+
+                {tilePurgeMessage && (
+                  <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                    <CheckCircle2 size={14} className="shrink-0" />
+                    <span>{tilePurgeMessage}</span>
+                  </div>
+                )}
+
+                {(() => {
+                  const count = storageSnapshot?.tileCount ?? 0;
+                  const bytes = storageSnapshot?.tileCacheBytes ?? 0;
+                  const maxBytes = storageSnapshot?.maxTileCacheBytes ?? 150 * 1024 * 1024;
+                  const pct = Math.min(100, Math.round((bytes / Math.max(1, maxBytes)) * 100));
+                  const layersList = Object.entries(storageSnapshot?.tileLayers || {});
+
+                  return (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                            {t('Gespeicherte Kacheln', 'Cached Tiles')}
+                          </span>
+                          <span className="text-lg font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                            {count.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                          </span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                            {t('Cache-Größe', 'Cache Size')}
+                          </span>
+                          <span className="text-lg font-black font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
+                            {formatByteSize(bytes)}
+                          </span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                            {t('Quota-Limit (LRU)', 'Quota Cap (LRU)')}
+                          </span>
+                          <span className="text-lg font-black font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                            {formatByteSize(maxBytes)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                          <span>{t('Auslastung Kachel-Limit', 'Tile Quota Usage')}</span>
+                          <span className="font-bold">{pct}%</span>
+                        </div>
+                        <div className="h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              pct >= 90 ? 'bg-amber-500' : 'bg-indigo-600'
+                            }`}
+                            style={{ width: `${bytes > 0 ? Math.max(2, pct) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {layersList.length > 0 && (
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            {t('Nach Kartenebene', 'By Map Layer')}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            {layersList.map(([layerName, stats]) => (
+                              <div
+                                key={layerName}
+                                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-700/60 text-[11px]"
+                              >
+                                <span className="font-semibold text-slate-700 dark:text-slate-200 truncate pr-2">
+                                  {layerName}
+                                </span>
+                                <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0">
+                                  {stats.count} · {formatByteSize(stats.bytes)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Workspace & Browser Storage Quota */}
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  <Database size={14} className="text-emerald-500" />
+                  <span>{t('Browser- & Workspace-Speicher', 'Browser & Workspace Storage')}</span>
+                </h3>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('Geöffnete Strecken', 'Open Tracks')}
+                    </span>
+                    <span className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                      {storageSnapshot?.trackCount ?? tracks.length}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('Trackpunkte gesamt', 'Total Trackpoints')}
+                    </span>
+                    <span className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                      {(storageSnapshot?.totalPoints ?? 0).toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('Workspace Payload', 'Workspace Payload')}
+                    </span>
+                    <span className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                      {formatByteSize(storageSnapshot?.tracksPayloadBytes ?? 0)}
+                    </span>
+                  </div>
+                </div>
+
+                {storageSnapshot && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      <span>{t('Browser Origin Speicherbelegung', 'Browser Origin Storage Usage')}</span>
+                      <span className="font-bold">
+                        {formatByteSize(storageSnapshot.quota.usageBytes)} / {formatByteSize(storageSnapshot.quota.quotaBytes)} ({storageSnapshot.quota.usagePercentage.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        style={{
+                          width: `${
+                            storageSnapshot.quota.usageBytes > 0
+                              ? Math.max(2, Math.min(100, storageSnapshot.quota.usagePercentage))
+                              : 0
+                          }%`
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

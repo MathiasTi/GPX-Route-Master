@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
+import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
 import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
@@ -9,6 +9,7 @@ import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
+import { buildTileCacheKey, getCachedTileBlob, putCachedTileBlob } from '../utils/tileCacheDb';
 import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
@@ -942,10 +943,124 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
 };
 
 const LeafletMapContainer = MapContainer as any;
-const LeafletTileLayer = TileLayer as any;
 const LeafletPolyline = Polyline as any;
 const LeafletMarker = Marker as any;
 const LeafletCircle = Circle as any;
+
+const CachedLeafletTileLayer: React.FC<{
+  layerId: string;
+  url: string;
+  attribution: string;
+  maxZoom?: number;
+  maxNativeZoom?: number;
+}> = ({ layerId, url, attribution, maxZoom = 20, maxNativeZoom = 19 }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+
+    const CachedTileLayerClass = L.TileLayer.extend({
+      createTile(this: L.TileLayer, coords: L.Coords, done: L.DoneCallback) {
+        const tile = document.createElement('img') as HTMLImageElement & {
+          __cachedObjectUrl?: string;
+          __aborted?: boolean;
+        };
+        tile.alt = '';
+        tile.setAttribute('role', 'presentation');
+
+        const tileUrl = this.getTileUrl(coords);
+        const cacheKey = buildTileCacheKey(layerId, tileUrl);
+
+        const loadViaDirectImg = () => {
+          if (tile.__aborted) return;
+          tile.onload = () => done(undefined, tile);
+          tile.onerror = () => done(new Error(`Tile load failed: ${tileUrl}`), tile);
+          tile.src = tileUrl;
+        };
+
+        const loadFromBlob = (blob: Blob) => {
+          if (tile.__aborted) return;
+          try {
+            const objUrl = URL.createObjectURL(blob);
+            tile.__cachedObjectUrl = objUrl;
+            tile.onload = () => done(undefined, tile);
+            tile.onerror = () => {
+              URL.revokeObjectURL(objUrl);
+              tile.__cachedObjectUrl = undefined;
+              loadViaDirectImg();
+            };
+            tile.src = objUrl;
+          } catch {
+            loadViaDirectImg();
+          }
+        };
+
+        getCachedTileBlob(cacheKey)
+          .then(async (cachedBlob) => {
+            if (tile.__aborted) return;
+            if (cachedBlob) {
+              loadFromBlob(cachedBlob);
+              return;
+            }
+
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+              done(new Error('Offline & tile not in cache'), tile);
+              return;
+            }
+
+            try {
+              const res = await fetch(tileUrl, { mode: 'cors', credentials: 'omit' });
+              if (res.ok) {
+                const fetchedBlob = await res.blob();
+                if (fetchedBlob && fetchedBlob.size > 0 && fetchedBlob.type.startsWith('image/')) {
+                  void putCachedTileBlob(cacheKey, layerId, tileUrl, fetchedBlob);
+                  loadFromBlob(fetchedBlob);
+                  return;
+                }
+              }
+            } catch {
+              // CORS blocked or transient fetch issue -> fall back to standard <img> loading
+            }
+
+            loadViaDirectImg();
+          })
+          .catch(() => {
+            loadViaDirectImg();
+          });
+
+        return tile;
+      }
+    });
+
+    const tileLayerInstance: L.TileLayer = new (CachedTileLayerClass as any)(url, {
+      attribution,
+      maxZoom,
+      maxNativeZoom
+    });
+
+    const handleTileUnload = (ev: L.TileEvent) => {
+      const tileEl = ev.tile as (HTMLElement & { __cachedObjectUrl?: string; __aborted?: boolean }) | undefined;
+      if (!tileEl) return;
+      tileEl.__aborted = true;
+      if (tileEl.__cachedObjectUrl) {
+        URL.revokeObjectURL(tileEl.__cachedObjectUrl);
+        tileEl.__cachedObjectUrl = undefined;
+      }
+    };
+
+    tileLayerInstance.on('tileunload', handleTileUnload);
+    tileLayerInstance.addTo(map);
+
+    return () => {
+      tileLayerInstance.off('tileunload', handleTileUnload);
+      if (map.hasLayer(tileLayerInstance)) {
+        map.removeLayer(tileLayerInstance);
+      }
+    };
+  }, [map, layerId, url, attribution, maxZoom, maxNativeZoom]);
+
+  return null;
+};
 
 interface POI {
   id: string;
@@ -1678,7 +1793,8 @@ const Map: React.FC<MapProps> = ({
         preferCanvas={true}
         className={`z-0 ${isDarkTile ? 'dark-tiles' : ''}`}
       >
-        <LeafletTileLayer
+      <CachedLeafletTileLayer
+          layerId={activeLayer}
           attribution={layer.attribution}
           url={layer.url}
           maxZoom={20}

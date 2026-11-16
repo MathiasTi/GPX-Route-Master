@@ -4,17 +4,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, HardDrive, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
-import { safeGetItem, safeSetItem } from '../utils/storage';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
 import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
 import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
 import { BatchGpxUploader, UploadProgressInfo } from './BatchGpxUploader';
-import { OfflineCacheStatusWidget } from './sidebar/OfflineCacheStatusWidget';
 import { 
   DndContext, 
   closestCenter, 
@@ -248,6 +246,22 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
               >
                 {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
               </button>
+
+              {/* Quick 1-click Reverse Direction button */}
+              {onReverseTrack && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('medium');
+                    onReverseTrack(track.id);
+                  }}
+                  className="p-1.5 rounded-md border bg-violet-50/70 hover:bg-violet-100 text-violet-600 border-violet-200/70 dark:bg-violet-950/40 dark:hover:bg-violet-900/60 dark:text-violet-400 dark:border-violet-900/50 transition-colors cursor-pointer flex items-center justify-center"
+                  title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
+                  aria-label={`Richtung von "${track.name}" umkehren`}
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                </button>
+              )}
 
               {/* Quick Compare on Map button */}
               {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
@@ -952,7 +966,6 @@ interface SidebarProps {
   onOpenShortcuts?: () => void;
   onToggleAllVisibility?: (makeAllVisible: boolean) => void;
   onFitVisibleTracks?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
-  onLoadReferenceTours?: () => void;
   onLockApp?: () => void;
   onOpenFullActivitiesView?: () => void;
   onOpenPlannedToursView?: () => void;
@@ -1037,7 +1050,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleTheme,
   onToggleAllVisibility,
   onFitVisibleTracks,
-  onLoadReferenceTours,
   onLockApp,
   onOpenFullActivitiesView,
   onOpenPlannedToursView
@@ -1071,13 +1083,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
   const [isWeatherExpanded, setIsWeatherExpanded] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
-  const [latestVersion, setLatestVersion] = useState('2.7.7');
   const [latestBuildDate, setLatestBuildDate] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  // Offline-Speicher is collapsed/hidden by default for a clean layout
-  const [showOfflineStorage, setShowOfflineStorage] = useState<boolean>(() => {
-    return safeGetItem('gpx_show_offline_storage') === 'true';
-  });
 
   useEffect(() => {
     const updateOnline = () => setIsOnline(navigator.onLine);
@@ -1100,7 +1107,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         if (!text || !text.trim().startsWith('{')) return;
         const data = JSON.parse(text);
         if (data.success && Array.isArray(data.versions) && data.versions.length > 0) {
-          setLatestVersion(data.versions[0].version);
           try {
             const dateObj = new Date(data.versions[0].updated_at);
             setLatestBuildDate(dateObj.toLocaleString('de-DE', {
@@ -1230,13 +1236,277 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
-          <div className="relative z-10 flex-1 overflow-y-auto p-4 space-y-6">
+          <div className="relative z-10 flex-1 overflow-y-auto p-3.5 space-y-5">
             <section id="section-batch-upload">
               <BatchGpxUploader
                 onUpload={onUpload}
                 uploadProgress={uploadProgress}
                 isDark={isDark}
               />
+            </section>
+
+            {/* Opened Tracks & Library right below compact upload bar */}
+            <section id="section-opened-tracks" className="space-y-3">
+              <div className="flex border-b border-slate-200 dark:border-slate-800 pb-0.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('active')}
+                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
+                    activeTab === 'active'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
+                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Workspace ({tracks.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('library')}
+                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
+                    activeTab === 'library'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
+                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Bibliothek
+                </button>
+              </div>
+
+              {activeTab === 'active' && (
+                <div className="space-y-3">
+                  {tracks.length > 0 && (
+                    <WorkspaceSummaryDashboard
+                      tracks={tracks}
+                      userWeight={userWeight}
+                      estimatedSpeed={estimatedSpeed}
+                      variant="sidebar"
+                      isDark={isDark}
+                      markedTrackId={markedTrackId}
+                      compareTrackId={compareTrackId}
+                      onMarkTrack={onMarkTrack}
+                      onStartMapComparison={onStartMapComparison}
+                      onExitMapComparison={onExitMapComparison}
+                      onToggleTrackVisibility={onToggleVisibility}
+                      onToggleAllVisibility={onToggleAllVisibility}
+                      onFitVisibleTracks={onFitVisibleTracks}
+                      onClearAllTracks={onClearAllTracks}
+                      onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
+                    />
+                  )}
+
+                  {tracks.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 px-2 py-1.5 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                        <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
+                          Strecken ({tracks.length})
+                        </span>
+                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                          {tracks.some(t => !t.visible) && onRemoveHiddenTracks && (
+                            <button
+                              type="button"
+                              onClick={onRemoveHiddenTracks}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-700 dark:text-amber-300 rounded border border-amber-200/80 dark:border-amber-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
+                              title="Alle ausgeblendeten Strecken aus dem Workspace entfernen"
+                            >
+                              <EyeOff size={10} />
+                              <span>Ausgeblendete</span>
+                            </button>
+                          )}
+                          {tracks.length > 1 && markedTrackId && onKeepOnlyTrack && (
+                            <button
+                              type="button"
+                              onClick={() => onKeepOnlyTrack(markedTrackId)}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 rounded border border-indigo-200/80 dark:border-indigo-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
+                              title="Nur aktive Strecke behalten (alle anderen entfernen)"
+                            >
+                              <Target size={10} />
+                              <span>Nur Aktive</span>
+                            </button>
+                          )}
+                          {onClearAllTracks && (
+                            <button
+                              type="button"
+                              onClick={onClearAllTracks}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded border border-rose-200/80 dark:border-rose-900/60 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
+                              title="Alle Strecken sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
+                              id="btn-sidebar-clear-all-tracks"
+                            >
+                              <Trash2 size={10} />
+                              <span>Alle entfernen</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handleToggleExpandAll}
+                            className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
+                            title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
+                          >
+                            {allTracksExpanded ? (
+                              <>
+                                <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
+                                <span>Einklappen</span>
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
+                                <span>Ausklappen</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Touch-Ergonomic Mobile Activity Filter Chips */}
+                      {(cyclingCount > 0 && runningCount > 0) && (
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar select-none">
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('all')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 ${
+                              activityFilter === 'all'
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            Alle ({tracks.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('cycling')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
+                              activityFilter === 'cycling'
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            <span>🚴 Rad</span>
+                            <span className="text-[9.5px] opacity-80">({cyclingCount})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActivityFilter('running')}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
+                              activityFilter === 'running'
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            <span>🏃 Lauf</span>
+                            <span className="text-[9.5px] opacity-80">({runningCount})</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {tracks.length === 0 && (
+                    <div className="text-center py-5 px-4 bg-slate-50/80 dark:bg-slate-900/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Noch keine Routen im Workspace geöffnet.</p>
+                      {onOpenPlannedToursView && (
+                        <button
+                          type="button"
+                          onClick={onOpenPlannedToursView}
+                          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
+                        >
+                          <Compass className="w-4 h-4 text-emerald-100" />
+                          Geplante Touren öffnen
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('library')}
+                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200/80 dark:border-indigo-800 active:scale-95 rounded-xl shadow-2xs transition-all cursor-pointer"
+                      >
+                        <Sparkles className="w-4 h-4 text-indigo-500" />
+                        Bibliothek öffnen
+                      </button>
+                    </div>
+                  )}
+                  {tracks.length > 0 && filteredTracks.length === 0 && (
+                    <p className="text-xs text-slate-400 italic text-center py-6 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Keine Aktivitäten für diese Kategorie vorhanden.</p>
+                  )}
+                  <DndContext 
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleDragEnd}
+                  >
+                    <SortableContext 
+                      items={filteredTracks.map(t => t.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <div className="space-y-2">
+                        {filteredTracks.map((track) => (
+                          <SortableTrackItem 
+                            key={track.id} 
+                            track={track} 
+                            isMarked={markedTrackId === track.id}
+                            isCompared={compareTrackId === track.id}
+                            isMapComparing={Boolean(compareTrackId)}
+                            isExpanded={expandedTrackMap[track.id] || false}
+                            onToggleExpand={(id) => setExpandedTrackMap(prev => ({ ...prev, [id]: !prev[id] }))}
+                            onMark={onMarkTrack}
+                            onCompareTrackOnMap={onStartMapComparison ? (id) => {
+                              if (compareTrackId === id && onExitMapComparison) {
+                                onExitMapComparison();
+                              } else {
+                                onStartMapComparison(markedTrackId || undefined, id);
+                              }
+                            } : undefined}
+                            onToggleVisibility={onToggleVisibility} 
+                            onRemoveTrack={onRemoveTrack} 
+                            onKeepOnlyTrack={onKeepOnlyTrack}
+                            totalTracks={tracks.length}
+                            onChangeActivityType={onChangeActivityType}
+                            estimatedSpeed={estimatedSpeed}
+                            onOpenAnalytics={onOpenAnalytics}
+                            onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
+                            onOpenVideoExport={onOpenVideoExport}
+                            onOpenTrainingZones={onOpenTrainingZones}
+                            onOpenClimbs={onOpenClimbs}
+                            onAnalyzeSurface={onAnalyzeSurface}
+                            onSetTrackSurface={onSetTrackSurface}
+                            isAnalyzing={analyzingSurfaces?.[track.id] || false}
+                            surfaceStatus={surfaceAnalysisStatuses?.[track.id]}
+                            onSaveTrackToLibrary={onSaveTrackToLibrary}
+                            onOpenRawData={onOpenRawData}
+                            onOpenTimeGapAnalysis={onOpenTimeGapAnalysis}
+                            onReverseTrack={onReverseTrack}
+                            onSanitizeTrack={onSanitizeTrack}
+                            onOpenValidation={onOpenValidation}
+                            onSelection={onSelection}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                </div>
+              )}
+
+              {activeTab === 'library' && (
+                <div className="pb-3 space-y-2.5">
+                  {onOpenFullActivitiesView && (
+                    <button
+                      type="button"
+                      onClick={onOpenFullActivitiesView}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors cursor-pointer"
+                    >
+                      <span>Vollbild-Aktivitäten öffnen</span>
+                      <ChevronRight size={14} />
+                    </button>
+                  )}
+                  <TrackLibrary 
+                    onLoadTrack={(track) => {
+                      onLoadLibraryTrack?.(track);
+                      setActiveTab('active');
+                    }}
+                    onActiveTrackId={markedTrackId}
+                    selectionBounds={selectionBounds}
+                    onClearSelection={onClearSelection}
+                    workspaceTracks={tracks}
+                    onOpenFullView={onOpenFullActivitiesView}
+                  />
+                </div>
+              )}
             </section>
 
             {/* 3D Terrain Hover Preview & Instantaneous Slope/Altitude HUD */}
@@ -1252,7 +1522,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               />
             )}
 
-            <section className="space-y-3">
+            <section className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-4">
               <div className="flex justify-between items-center">
                 <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Werkzeuge & Analyse</h2>
                 {canUndo && (
@@ -1553,8 +1823,6 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </section>
 
-
-
             {tracks.some(t => !t.hasTimestamps) && (
               <section className="space-y-3">
                 <div className="flex justify-between items-center">
@@ -1573,8 +1841,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <p className="text-[10px] text-slate-500">Für die Schätzung der Dauer bei GPX-Dateien ohne Zeitstempel.</p>
               </section>
             )}
-
-
 
             {/* Custom Text Markers / Notes Section */}
             {textMarkers && textMarkers.length > 0 && (
@@ -1632,7 +1898,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               </section>
             )}
 
-            <section className="space-y-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-4">
+            <section className="space-y-2 border-t border-slate-100/60 dark:border-slate-800/40 pt-4 pb-6">
               <button 
                 onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
                 className="w-full flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-100/80 dark:hover:bg-slate-900/40 transition-all group text-left cursor-pointer"
@@ -1717,319 +1983,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               )}
             </section>
-
-            <section className="space-y-3">
-              <div className="flex border-b border-slate-200 dark:border-slate-800 pb-0.5">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('active')}
-                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
-                    activeTab === 'active'
-                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
-                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Workspace ({tracks.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('library')}
-                  className={`flex-1 pb-2 text-[10px] font-black uppercase tracking-wider text-center border-b-2 transition-all cursor-pointer ${
-                    activeTab === 'library'
-                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 font-extrabold'
-                      : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Bibliothek
-                </button>
-              </div>
-
-              {activeTab === 'active' && (
-                <div className="space-y-3 pb-6">
-                  {tracks.length > 0 && (
-                    <WorkspaceSummaryDashboard
-                      tracks={tracks}
-                      userWeight={userWeight}
-                      estimatedSpeed={estimatedSpeed}
-                      variant="sidebar"
-                      isDark={isDark}
-                      markedTrackId={markedTrackId}
-                      compareTrackId={compareTrackId}
-                      onMarkTrack={onMarkTrack}
-                      onStartMapComparison={onStartMapComparison}
-                      onExitMapComparison={onExitMapComparison}
-                      onToggleTrackVisibility={onToggleVisibility}
-                      onToggleAllVisibility={onToggleAllVisibility}
-                      onFitVisibleTracks={onFitVisibleTracks}
-                      onClearAllTracks={onClearAllTracks}
-                      onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
-                    />
-                  )}
-
-                  {tracks.length > 0 && (
-                    <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center justify-between gap-1.5 px-2 py-1.5 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
-                        <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
-                          Strecken ({tracks.length})
-                        </span>
-                        <div className="flex items-center gap-1 flex-wrap justify-end">
-                          {tracks.some(t => !t.visible) && onRemoveHiddenTracks && (
-                            <button
-                              type="button"
-                              onClick={onRemoveHiddenTracks}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-700 dark:text-amber-300 rounded border border-amber-200/80 dark:border-amber-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
-                              title="Alle ausgeblendeten Strecken aus dem Workspace entfernen"
-                            >
-                              <EyeOff size={10} />
-                              <span>Ausgeblendete</span>
-                            </button>
-                          )}
-                          {tracks.length > 1 && markedTrackId && onKeepOnlyTrack && (
-                            <button
-                              type="button"
-                              onClick={() => onKeepOnlyTrack(markedTrackId)}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 rounded border border-indigo-200/80 dark:border-indigo-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
-                              title="Nur aktive Strecke behalten (alle anderen entfernen)"
-                            >
-                              <Target size={10} />
-                              <span>Nur Aktive</span>
-                            </button>
-                          )}
-                          {onClearAllTracks && (
-                            <button
-                              type="button"
-                              onClick={onClearAllTracks}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded border border-rose-200/80 dark:border-rose-900/60 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
-                              title="Alle Strecken sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
-                              id="btn-sidebar-clear-all-tracks"
-                            >
-                              <Trash2 size={10} />
-                              <span>Alle entfernen</span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={handleToggleExpandAll}
-                            className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
-                            title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
-                          >
-                            {allTracksExpanded ? (
-                              <>
-                                <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
-                                <span>Einklappen</span>
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
-                                <span>Ausklappen</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Touch-Ergonomic Mobile Activity Filter Chips */}
-                      {(cyclingCount > 0 && runningCount > 0) && (
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar select-none">
-                          <button
-                            type="button"
-                            onClick={() => setActivityFilter('all')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 ${
-                              activityFilter === 'all'
-                                ? 'bg-indigo-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                            }`}
-                          >
-                            Alle ({tracks.length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActivityFilter('cycling')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
-                              activityFilter === 'cycling'
-                                ? 'bg-blue-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                            }`}
-                          >
-                            <span>🚴 Rad</span>
-                            <span className="text-[9.5px] opacity-80">({cyclingCount})</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActivityFilter('running')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
-                              activityFilter === 'running'
-                                ? 'bg-emerald-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                            }`}
-                          >
-                            <span>🏃 Lauf</span>
-                            <span className="text-[9.5px] opacity-80">({runningCount})</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {tracks.length === 0 && (
-                    <div className="text-center py-6 px-4 bg-slate-50/80 dark:bg-slate-900/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-2.5">
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Noch keine Routen im Workspace vorhanden.</p>
-                      {onOpenPlannedToursView && (
-                        <button
-                          type="button"
-                          onClick={onOpenPlannedToursView}
-                          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
-                        >
-                          <Compass className="w-4 h-4 text-emerald-100" />
-                          Geplante Touren öffnen
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('library')}
-                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200/80 dark:border-indigo-800 active:scale-95 rounded-xl shadow-2xs transition-all cursor-pointer"
-                      >
-                        <Sparkles className="w-4 h-4 text-indigo-500" />
-                        Bibliothek öffnen (7 Alpen-Touren)
-                      </button>
-                      {onLoadReferenceTours && (
-                        <button
-                          type="button"
-                          onClick={onLoadReferenceTours}
-                          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
-                        >
-                          Referenztouren in Workspace laden
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {tracks.length > 0 && filteredTracks.length === 0 && (
-                    <p className="text-xs text-slate-400 italic text-center py-6 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Keine Aktivitäten für diese Kategorie vorhanden.</p>
-                  )}
-                  <DndContext 
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext 
-                      items={filteredTracks.map(t => t.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="space-y-2">
-                        {filteredTracks.map((track) => (
-                          <SortableTrackItem 
-                            key={track.id} 
-                            track={track} 
-                            isMarked={markedTrackId === track.id}
-                            isCompared={compareTrackId === track.id}
-                            isMapComparing={Boolean(compareTrackId)}
-                            isExpanded={expandedTrackMap[track.id] || false}
-                            onToggleExpand={(id) => setExpandedTrackMap(prev => ({ ...prev, [id]: !prev[id] }))}
-                            onMark={onMarkTrack}
-                            onCompareTrackOnMap={onStartMapComparison ? (id) => {
-                              if (compareTrackId === id && onExitMapComparison) {
-                                onExitMapComparison();
-                              } else {
-                                onStartMapComparison(markedTrackId || undefined, id);
-                              }
-                            } : undefined}
-                            onToggleVisibility={onToggleVisibility} 
-                            onRemoveTrack={onRemoveTrack} 
-                            onKeepOnlyTrack={onKeepOnlyTrack}
-                            totalTracks={tracks.length}
-                            onChangeActivityType={onChangeActivityType}
-                            estimatedSpeed={estimatedSpeed}
-                            onOpenAnalytics={onOpenAnalytics}
-                            onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
-                            onOpenVideoExport={onOpenVideoExport}
-                            onOpenTrainingZones={onOpenTrainingZones}
-                            onOpenClimbs={onOpenClimbs}
-                            onAnalyzeSurface={onAnalyzeSurface}
-                            onSetTrackSurface={onSetTrackSurface}
-                            isAnalyzing={analyzingSurfaces?.[track.id] || false}
-                            surfaceStatus={surfaceAnalysisStatuses?.[track.id]}
-                            onSaveTrackToLibrary={onSaveTrackToLibrary}
-                            onOpenRawData={onOpenRawData}
-                            onOpenTimeGapAnalysis={onOpenTimeGapAnalysis}
-                            onReverseTrack={onReverseTrack}
-                            onSanitizeTrack={onSanitizeTrack}
-                            onOpenValidation={onOpenValidation}
-                            onSelection={onSelection}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                </div>
-              )}
-
-              {activeTab === 'library' && (
-                <div className="pb-6 space-y-2.5">
-                  {onOpenFullActivitiesView && (
-                    <button
-                      type="button"
-                      onClick={onOpenFullActivitiesView}
-                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors cursor-pointer"
-                    >
-                      <span>Vollbild-Aktivitäten öffnen</span>
-                      <ChevronRight size={14} />
-                    </button>
-                  )}
-                  <TrackLibrary 
-                    onLoadTrack={(track) => {
-                      onLoadLibraryTrack?.(track);
-                      setActiveTab('active');
-                    }}
-                    onActiveTrackId={markedTrackId}
-                    selectionBounds={selectionBounds}
-                    onClearSelection={onClearSelection}
-                    workspaceTracks={tracks}
-                    onOpenFullView={onOpenFullActivitiesView}
-                  />
-                </div>
-              )}
-            </section>
           </div>
 
-          {showOfflineStorage && (
-            <OfflineCacheStatusWidget 
-              tracks={tracks} 
-              isOnline={isOnline} 
-              onClose={() => {
-                setShowOfflineStorage(false);
-                safeSetItem('gpx_show_offline_storage', 'false');
-              }}
-            />
-          )}
-
-          <div className="relative z-10 p-4 border-t border-slate-200/50 dark:border-slate-800/80 bg-slate-50/80 dark:bg-slate-900/80 backdrop-blur-sm text-[10px] text-slate-500 flex flex-col gap-2 rounded-b-xl">
-            <div className="flex justify-between items-center font-medium">
+          <div className="relative z-10 px-4 py-3 border-t border-slate-200/60 dark:border-slate-800/80 bg-slate-50/90 dark:bg-slate-900/90 backdrop-blur-sm text-[10px] text-slate-500 rounded-b-xl">
+            <div className="flex justify-between items-center font-medium gap-2">
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                 <span className="font-semibold text-slate-600 dark:text-slate-400">
                   {isOnline ? 'Online' : 'Offline'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHaptic('light');
-                    setShowOfflineStorage(prev => {
-                      const next = !prev;
-                      safeSetItem('gpx_show_offline_storage', String(next));
-                      return next;
-                    });
-                  }}
-                  className={`ml-1 px-1.5 py-0.5 rounded border text-[9px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
-                    showOfflineStorage 
-                      ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800' 
-                      : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-slate-700'
-                  }`}
-                  title={showOfflineStorage ? "Offline-Speicher ausblenden" : "Offline-Speicher & Cache-Status anzeigen"}
-                  id="btn-footer-toggle-offline-cache"
-                >
-                  <HardDrive size={10} />
-                  <span>Speicher</span>
-                </button>
                 {onOpenShortcuts && (
                   <button
                     onClick={() => {
@@ -2045,20 +2007,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                   </button>
                 )}
               </div>
+
               <button
+                type="button"
+                id="btn-footer-build-changelog"
                 onClick={() => setIsAboutOpen(true)}
-                className="font-mono text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 transition-colors cursor-pointer font-bold flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200/70 dark:border-slate-700 hover:border-blue-300"
-                title="Über dieses System / Versionsverlauf & Changelog öffnen"
+                className="text-[9.5px] font-mono font-semibold text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 bg-slate-100 hover:bg-blue-50 dark:bg-slate-800 dark:hover:bg-blue-950/40 px-2 py-0.5 rounded border border-slate-200/80 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-800 transition-colors cursor-pointer truncate max-w-[175px]"
+                title="Versionsverlauf & Changelog öffnen"
               >
-                <span>v{latestVersion}</span>
-                <span className="text-[9px] text-blue-600 dark:text-blue-400 font-semibold underline underline-offset-2">Changelog</span>
+                Build: {latestBuildDate || 'Changelog'}
               </button>
             </div>
-            {latestBuildDate && (
-              <div className="text-[9px] text-slate-400 dark:text-slate-500 font-mono text-right mt-0.5 leading-none">
-                Build: {latestBuildDate}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -2067,7 +2026,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         {isAboutOpen && (
           <AboutModal 
             onClose={() => setIsAboutOpen(false)} 
-            onVersionUpdated={(newVer) => setLatestVersion(newVer)}
           />
         )}
       </AnimatePresence>

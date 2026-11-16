@@ -17,7 +17,7 @@ import {
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/telemetry/pointMetricsEngine';
 import { computeTrackWbal } from '../utils/wbalEngine';
-import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video } from 'lucide-react';
+import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
 const isFitTrack = (t?: GPXTrack | null): boolean => {
@@ -593,9 +593,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return detectImpossibleGradientAnomalies(track.points);
   }, [track.points]);
 
-  const padding = { top: 25, bottom: 25, left: 52, right: 16 };
   const width = dimensions.width;
   const height = dimensions.height;
+  const padding = {
+    top: height < 145 ? 14 : 20,
+    bottom: height < 145 ? 18 : 22,
+    left: width < 520 ? 38 : 48,
+    right: width < 520 ? 10 : 14,
+  };
 
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!svgRef.current) return;
@@ -1205,20 +1210,21 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
   return (
     <div className="h-full w-full flex flex-col select-none relative">
-      {/* Desktop Topbar */}
-      <div className="hidden lg:flex justify-between items-center mb-2 px-2">
-        <div className="flex items-center gap-3">
-          <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: displayTrackColor }}></div>
-          <h3 className="text-xs font-bold text-slate-700 dark:text-slate-200 md:max-w-md lg:max-w-xl break-words whitespace-normal leading-tight" title={track.name}>
+      {/* Desktop Single-Row Compact Topbar */}
+      <div className="hidden lg:flex items-center justify-between gap-2 mb-1.5 px-1.5 min-h-[34px] shrink-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0" style={{ backgroundColor: displayTrackColor }}></div>
+          <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate min-w-0" title={track.name}>
             {track.name}
           </h3>
         </div>
-        <div className="flex items-center gap-4">
+
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={handleDownloadGPX}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer shadow-xs ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 shadow-2xs ${
               downloadSuccess
-                ? 'bg-emerald-600 text-white shadow-emerald-200'
+                ? 'bg-emerald-600 text-white'
                 : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 hover:bg-sky-100 hover:text-sky-800'
             }`}
             title="Markierten Track mit allen Metadaten, Oberflächen-Tags & Bereinigungen als .gpx herunterladen"
@@ -1239,7 +1245,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           {onOpenVideoExport && (
             <button
               onClick={onOpenVideoExport}
-              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-200 dark:shadow-none hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer whitespace-nowrap shrink-0"
               title="3D-Überflug Video Studio öffnen (Komoot / Relive Stil)"
             >
               <Video className="w-3.5 h-3.5 text-emerald-100" />
@@ -1250,7 +1256,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           {onOpenIntensiveAnalysis && (
             <button
               onClick={onOpenIntensiveAnalysis}
-              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-200 dark:shadow-none hover:from-purple-700 hover:to-indigo-700 transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm hover:from-purple-700 hover:to-indigo-700 transition-all cursor-pointer whitespace-nowrap shrink-0"
               title="Intensive Track Analysis & Physical Pacing Engine"
             >
               <Sparkles className="w-3.5 h-3.5 text-purple-200" />
@@ -1258,30 +1264,47 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </button>
           )}
 
+          {onReverseTrack && (
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('medium');
+                onReverseTrack(track.id);
+              }}
+              id="btn-elevation-reverse-track"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-violet-50 hover:bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:hover:bg-violet-900/60 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/70 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+              <span>Umkehren</span>
+            </button>
+          )}
+
           {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
             <button
               onClick={onOpenAnalytics}
-              className="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-amber-500 text-white shadow-lg shadow-amber-200 hover:bg-amber-600 transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500 text-white shadow-sm hover:bg-amber-600 transition-all cursor-pointer whitespace-nowrap shrink-0"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              Analyse
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              <span>Analyse</span>
             </button>
           )}
-          <div className="flex items-center gap-3 mr-2">
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={showElevation} 
+
+          <div className="hidden xl:flex items-center gap-2.5 pl-2 ml-0.5 border-l border-slate-200 dark:border-slate-700/80">
+            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={showElevation}
                 onChange={(e) => setShowElevation(e.target.checked)}
                 className="w-3.5 h-3.5 text-slate-600 rounded bg-slate-100 border-slate-300 focus:ring-slate-500 cursor-pointer"
               />
               Höhe
             </label>
             {profileData.hasPower && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={showPower} 
+              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={showPower}
                   onChange={(e) => setShowPower(e.target.checked)}
                   className="w-3.5 h-3.5 text-amber-500 rounded bg-slate-100 border-slate-300 focus:ring-amber-500 cursor-pointer"
                 />
@@ -1289,189 +1312,171 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </label>
             )}
             {profileData.hasHr && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-red-500 transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={showHr} 
+              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-red-500 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={showHr}
                   onChange={(e) => setShowHr(e.target.checked)}
                   className="w-3.5 h-3.5 text-red-500 rounded bg-slate-100 border-slate-300 focus:ring-red-500 cursor-pointer"
                 />
                 HF
               </label>
             )}
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={showSlope} 
+            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={showSlope}
                 onChange={(e) => setShowSlope(e.target.checked)}
                 className="w-3.5 h-3.5 text-violet-500 rounded bg-slate-100 border-slate-300 focus:ring-violet-500 cursor-pointer"
               />
               Steigung
             </label>
-            {profileData.hasSpeed && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-teal-600 transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={showSpeed} 
-                  onChange={(e) => setShowSpeed(e.target.checked)}
-                  className="w-3.5 h-3.5 text-teal-500 rounded bg-slate-100 border-slate-300 focus:ring-teal-500 cursor-pointer"
-                />
-                Tempo
-              </label>
-            )}
-            {profileData.hasCadence && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-purple-600 transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={showCadence} 
-                  onChange={(e) => setShowCadence(e.target.checked)}
-                  className="w-3.5 h-3.5 text-purple-600 rounded bg-slate-100 border-slate-300 focus:ring-purple-500 cursor-pointer"
-                />
-                {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
-              </label>
-            )}
-            <label
-              className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-cyan-600 dark:text-cyan-400 hover:text-cyan-700 transition-colors"
-              title="Skiba W'bal Anaerobe Batterie-Reserve (%) einblenden"
-            >
+            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 whitespace-nowrap">
               <input
                 type="checkbox"
-                checked={showWbal}
-                onChange={(e) => setShowWbal(e.target.checked)}
-                className="w-3.5 h-3.5 text-cyan-600 rounded bg-slate-100 border-slate-300 focus:ring-cyan-500 cursor-pointer"
-              />
-              W&apos;bal
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={showPoiMarkers} 
-                onChange={(e) => setShowPoiMarkers(e.target.checked)}
-                className="w-3.5 h-3.5 text-indigo-600 rounded bg-slate-100 border-slate-300 focus:ring-indigo-500 cursor-pointer"
-              />
-              POIs
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={showSegmentMarkers} 
+                checked={showSegmentMarkers}
                 onChange={(e) => setShowSegmentMarkers(e.target.checked)}
                 className="w-3.5 h-3.5 text-amber-600 rounded bg-slate-100 border-slate-300 focus:ring-amber-500 cursor-pointer"
               />
               Anstiege
             </label>
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-rose-600 dark:text-rose-400 hover:text-rose-700 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={showGradientWarnings} 
-                onChange={(e) => setShowGradientWarnings(e.target.checked)}
-                className="w-3.5 h-3.5 text-rose-600 rounded bg-slate-100 border-slate-300 focus:ring-rose-500 cursor-pointer"
-              />
-              <span className="flex items-center gap-1">
-                Warnungen
-                {gradientAnomalies.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500 text-white">
-                    {gradientAnomalies.length}
-                  </span>
-                )}
-              </span>
-            </label>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors">
-            <input 
-              type="checkbox" 
-              className="sr-only" 
-              checked={isSmoothed} 
-              onChange={(e) => setIsSmoothed(e.target.checked)} 
-            />
-            <div className={`relative w-8 h-4 rounded-full transition-colors ${isSmoothed ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-              <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${isSmoothed ? 'translate-x-4' : 'translate-x-0'}`} />
-            </div>
-            Glätten
-          </label>
+          <button
+            type="button"
+            onClick={() => setShowSettingsPopover((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              showSettingsPopover
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+            }`}
+            title="Kurven, Höhenfilter & Werkzeuge"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span>Kurven</span>
+            {gradientAnomalies.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-rose-500 text-white">
+                {gradientAnomalies.length}
+              </span>
+            )}
+          </button>
+
           {profileData.hasPower && (
-            <div className="flex items-center gap-2 ml-2">
-              <label className="text-[10px] font-bold text-slate-500 tracking-wider">FTP:</label>
-              <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-0.5 shadow-sm">
-                <span className="text-xs font-bold text-slate-700 w-10 text-center">{ftp}W</span>
-              </div>
-            </div>
+            <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-[10.5px] font-mono font-bold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+              FTP {ftp}W
+            </span>
           )}
+
           {onCollapse && (
             <button
               onClick={onCollapse}
-              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-400 hover:text-slate-600 transition-colors ml-1 cursor-pointer"
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer shrink-0"
               title="Höhenprofil einklappen"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              <ChevronDown className="w-4 h-4" />
             </button>
           )}
         </div>
       </div>
 
-      {/* Mobile Drawer Grab-Handle & Snap Controller */}
-      <div className="flex lg:hidden items-center justify-between px-2 pt-0 pb-1 select-none shrink-0 border-b border-slate-100 dark:border-slate-800/80 mb-1">
-        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200/70 dark:border-slate-700/70 text-[9.5px] font-bold">
-          <button
-            type="button"
-            onClick={() => {
-              triggerHaptic('light');
-              onMobileProfileSnapChange?.('mini');
-            }}
-            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
-              mobileProfileSnap === 'mini'
-                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
-            }`}
-          >
-            Mini
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              triggerHaptic('light');
-              onMobileProfileSnapChange?.('standard');
-            }}
-            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
-              mobileProfileSnap === 'standard'
-                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
-            }`}
-          >
-            Standard
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              triggerHaptic('light');
-              onMobileProfileSnapChange?.('expanded');
-            }}
-            className={`px-2 py-0.5 rounded-md transition-all cursor-pointer touch-manipulation ${
-              mobileProfileSnap === 'expanded'
-                ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
-            }`}
-          >
-            Max (55%)
-          </button>
-        </div>
-
-        {/* Center Pill Grab Handle */}
+      {/* Unified Slim Mobile Top Bar (Single compact row across all snap heights) */}
+      <div className="flex lg:hidden items-center justify-between gap-1.5 px-1.5 py-0.5 mb-1 min-h-[42px] border-b border-slate-100 dark:border-slate-800/80 shrink-0 select-none">
         <button
           type="button"
           onClick={() => {
-            triggerHaptic('medium');
+            triggerHaptic('light');
             if (mobileProfileSnap === 'mini') onMobileProfileSnapChange?.('standard');
             else if (mobileProfileSnap === 'standard') onMobileProfileSnapChange?.('expanded');
             else onMobileProfileSnapChange?.('mini');
           }}
-          className="w-10 h-1.5 bg-slate-300 dark:bg-slate-600 rounded-full hover:bg-slate-400 active:bg-slate-500 transition-colors mx-auto cursor-grab touch-manipulation my-auto"
-          title="Höhenprofil-Stufe umschalten"
-          aria-label="Höhenprofil-Stufe umschalten"
-        />
+          className="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer touch-manipulation py-1"
+          title={`${track.name} — Tippen zum Ändern der Profilhöhe`}
+        >
+          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: displayTrackColor }}></div>
+          <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100 truncate min-w-0">
+            {track.name}
+          </span>
+        </button>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Compact Snap Stage Switcher (S / M / L) */}
+          <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200/70 dark:border-slate-700/70 text-[10px] font-bold">
+            <button
+              type="button"
+              aria-label="Profilhöhe Mini"
+              onClick={() => {
+                triggerHaptic('light');
+                onMobileProfileSnapChange?.('mini');
+              }}
+              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+                mobileProfileSnap === 'mini'
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                  : 'text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              S
+            </button>
+            <button
+              type="button"
+              aria-label="Profilhöhe Standard"
+              onClick={() => {
+                triggerHaptic('light');
+                onMobileProfileSnapChange?.('standard');
+              }}
+              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+                mobileProfileSnap === 'standard'
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                  : 'text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              M
+            </button>
+            <button
+              type="button"
+              aria-label="Profilhöhe Max"
+              onClick={() => {
+                triggerHaptic('light');
+                onMobileProfileSnapChange?.('expanded');
+              }}
+              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+                mobileProfileSnap === 'expanded'
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
+                  : 'text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              L
+            </button>
+          </div>
+
+          {onReverseTrack && (
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('medium');
+                onReverseTrack(track.id);
+              }}
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/60 transition-all cursor-pointer touch-manipulation active:scale-95"
+              title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
+              aria-label="Richtung umkehren"
+            >
+              <ArrowLeftRight className="w-4 h-4" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setShowSettingsPopover((prev) => !prev)}
+            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg transition-all cursor-pointer touch-manipulation active:scale-95 ${
+              showSettingsPopover
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
+            }`}
+            title="Kurven, Höhenfilter & Aktionen"
+            aria-label="Kurven und Werkzeuge"
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+          </button>
+
           {onCollapse && (
             <button
               type="button"
@@ -1479,339 +1484,337 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('light');
                 onCollapse();
               }}
-              className="min-h-[30px] px-2 py-0.5 rounded-md text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer touch-manipulation"
-              title="Profil schließen"
+              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer touch-manipulation active:scale-95"
+              title="Höhenprofil ausblenden"
+              aria-label="Höhenprofil ausblenden"
             >
-              ✕ Schließen
+              <ChevronDown className="w-4 h-4" />
             </button>
           )}
         </div>
       </div>
 
-      {/* Mobile/Tablet Compact Topbar */}
-      {mobileProfileSnap !== 'mini' && (
-        <div className="flex lg:hidden justify-between items-center mb-1.5 px-2 bg-slate-50/80 dark:bg-slate-850/80 py-1 rounded-xl border border-slate-200/60 dark:border-slate-800 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: track.color }}></div>
-            <span className="text-xs font-black text-slate-800 dark:text-slate-200 truncate max-w-[140px] sm:max-w-[200px]" title={track.name}>
-              {track.name}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {/* 3D Flyover Video Studio */}
-            {onOpenVideoExport && (
-              <button
-                onClick={onOpenVideoExport}
-                className="min-h-[44px] px-2.5 flex items-center justify-center gap-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition-all cursor-pointer touch-manipulation active:scale-95 shadow-xs"
-                title="3D-Überflug Video Studio öffnen"
-              >
-                <Video className="w-4 h-4" />
-                <span className="hidden sm:inline">3D-Flug</span>
-              </button>
-            )}
-
-            {/* GPX Download */}
-            <button
-              onClick={handleDownloadGPX}
-              className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl transition-all cursor-pointer touch-manipulation active:scale-95 ${
-                downloadSuccess
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60'
-              }`}
-              title="Markierten Track als GPX herunterladen"
-            >
-              {downloadSuccess ? (
-                <CheckCircle2 className="w-4 h-4 text-white" />
-              ) : (
-                <Download className="w-4 h-4" />
-              )}
-            </button>
-
-            {/* Settings trigger */}
-            <button
-              onClick={() => setShowSettingsPopover(!showSettingsPopover)}
-              className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl transition-all touch-manipulation active:scale-95 ${
-                showSettingsPopover 
-                  ? 'bg-indigo-600 text-white' 
-                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
-              }`}
-              title="Anzeige-Einstellungen"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
-
-            {/* Analyse */}
-            {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
-              <button 
-                onClick={onOpenAnalytics}
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition-colors touch-manipulation active:scale-95"
-                title="Datenanalyse öffnen"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              </button>
-            )}
-
-            {/* Close/Minimize */}
-            {onCollapse && (
-              <button
-                onClick={onCollapse}
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors touch-manipulation active:scale-95"
-                title="Ausblenden"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Floating Settings Popover for Mobile/Tablet */}
+      {/* Floating Series & Tools Popover (Desktop & Mobile) */}
       {showSettingsPopover && (
-        <div className="absolute top-12 right-2 z-[2000] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-3 w-68 text-left select-none font-sans text-slate-800 dark:text-slate-100">
-          <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-1.5">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">Anzeige & Werkzeuge</span>
-            <button 
-              onClick={() => setShowSettingsPopover(false)}
-              className="text-[11px] font-black text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-0.5"
-            >
-              ✕
-            </button>
-          </div>
-          
-          {/* Pro Route Tools: Umkehren & Bereinigen */}
-          <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
-            <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Routen-Werkzeuge:</span>
-            <div className="grid grid-cols-2 gap-1.5">
-              {onReverseTrack && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHaptic('medium');
-                    onReverseTrack(track.id);
-                  }}
-                  className="px-2 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-[10px] border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
-                  title="Streckenverlauf in Gegenrichtung umkehren"
-                >
-                  <RotateCcw className="w-3 h-3 text-indigo-500" />
-                  <span>Umkehren</span>
-                </button>
-              )}
-              {onSanitizeTrack && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHaptic('medium');
-                    onSanitizeTrack(track.id);
-                  }}
-                  className="px-2 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 font-bold text-[10px] border border-emerald-200 dark:border-emerald-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
-                  title="One-Click GPS-Ausreißer & Höhenglättung"
-                >
-                  <Sparkles className="w-3 h-3 text-emerald-500" />
-                  <span>Bereinigen</span>
-                </button>
-              )}
-            </div>
-            {onShiftLoopStart && hoverInfo && (
+        <>
+          <div
+            className="fixed inset-0 z-[1990]"
+            onClick={() => setShowSettingsPopover(false)}
+          />
+          <div className="absolute top-11 right-2 lg:right-3 z-[2000] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 w-72 max-w-[calc(100vw-1rem)] max-h-[min(70vh,460px)] overflow-y-auto text-left select-none font-sans text-slate-800 dark:text-slate-100">
+            <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-1.5">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">Anzeige &amp; Werkzeuge</span>
               <button
                 type="button"
-                onClick={() => {
-                  triggerHaptic('success');
-                  const targetIdx = profileData.data.findIndex(p => Math.abs(p.dist - hoverInfo.dist) < 0.05);
-                  if (targetIdx !== -1) {
-                    onShiftLoopStart(track.id, targetIdx);
-                  }
-                }}
-                className="w-full mt-0.5 py-1 px-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold text-[9.5px] border border-indigo-200 dark:border-indigo-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95"
+                onClick={() => setShowSettingsPopover(false)}
+                className="text-[11px] font-black text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-0.5"
+                aria-label="Schließen"
               >
-                <Crosshair className="w-3 h-3 text-indigo-500" />
-                <span>Start auf km {hoverInfo.dist.toFixed(1)} setzen</span>
+                ✕
               </button>
-            )}
-          </div>
-
-          {/* Toggle series checkboxes */}
-          <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-700 dark:text-slate-300">
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-700">
-              <input 
-                type="checkbox" 
-                checked={showElevation} 
-                onChange={(e) => setShowElevation(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-slate-650"
-              />
-              Höhe
-            </label>
-            {profileData.hasPower && (
-              <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
-                <input 
-                  type="checkbox" 
-                  checked={showPower} 
-                  onChange={(e) => setShowPower(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-550"
-                />
-                Watt
-              </label>
-            )}
-            {profileData.hasHr && (
-              <label className="flex items-center gap-1.5 cursor-pointer hover:text-red-500">
-                <input 
-                  type="checkbox" 
-                  checked={showHr} 
-                  onChange={(e) => setShowHr(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-red-550"
-                />
-                HF
-              </label>
-            )}
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-violet-600">
-              <input 
-                type="checkbox" 
-                checked={showSlope} 
-                onChange={(e) => setShowSlope(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-violet-500"
-              />
-              Steigung
-            </label>
-            {profileData.hasSpeed && (
-              <label className="flex items-center gap-1.5 cursor-pointer hover:text-teal-600">
-                <input 
-                  type="checkbox" 
-                  checked={showSpeed} 
-                  onChange={(e) => setShowSpeed(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-teal-500"
-                />
-                Tempo
-              </label>
-            )}
-            {profileData.hasCadence && (
-              <label className="flex items-center gap-1.5 cursor-pointer hover:text-purple-600">
-                <input 
-                  type="checkbox" 
-                  checked={showCadence} 
-                  onChange={(e) => setShowCadence(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-purple-500"
-                />
-                {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
-              </label>
-            )}
-            <label className="flex items-center gap-1.5 cursor-pointer text-cyan-600 dark:text-cyan-400 hover:text-cyan-700">
-              <input
-                type="checkbox"
-                checked={showWbal}
-                onChange={(e) => setShowWbal(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-cyan-600"
-              />
-              W&apos;bal (%)
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
-              <input 
-                type="checkbox" 
-                checked={showPoiMarkers} 
-                onChange={(e) => setShowPoiMarkers(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-indigo-600"
-              />
-              POIs
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
-              <input 
-                type="checkbox" 
-                checked={showSegmentMarkers} 
-                onChange={(e) => setShowSegmentMarkers(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-600"
-              />
-              Anstiege
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer hover:text-rose-600">
-              <input 
-                type="checkbox" 
-                checked={showGradientWarnings} 
-                onChange={(e) => setShowGradientWarnings(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-rose-600"
-              />
-              <span className="flex items-center gap-1">
-                Warnungen
-                {gradientAnomalies.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500 text-white">
-                    {gradientAnomalies.length}
-                  </span>
-                )}
-              </span>
-            </label>
-          </div>
-
-          <div className="border-t border-dashed my-0.5" />
-
-          {/* Elevation Filter Level Selection */}
-          <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-100 dark:border-slate-700">
-            <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 dark:text-slate-300">
-              <span className="flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-indigo-500" />
-                <span>Höhenfilter (Savitzky-Golay):</span>
-              </span>
-              <span className="font-mono text-indigo-600 dark:text-indigo-400 font-bold uppercase text-[9px]">
-                {elevationFilter === 'off' ? 'Aus' : elevationFilter === 'light' ? 'Leicht' : elevationFilter === 'medium' ? 'Mittel' : 'Alpin'}
-              </span>
             </div>
-            <div className="grid grid-cols-4 gap-1 text-[9px] font-bold">
-              {(['off', 'light', 'medium', 'alpine_aggressive'] as const).map((lvl) => (
-                <button
-                  key={lvl}
-                  onClick={() => setElevationFilter(lvl)}
-                  className={`py-1 rounded text-center transition-all cursor-pointer ${
-                    elevationFilter === lvl 
-                      ? 'bg-indigo-600 text-white shadow-sm font-black' 
-                      : 'bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600'
-                  }`}
-                >
-                  {lvl === 'off' ? 'Aus' : lvl === 'light' ? 'Leicht' : lvl === 'medium' ? 'Mittel' : 'Alpin'}
-                </button>
-              ))}
-            </div>
-            {onApplyElevationFilter && elevationFilter !== 'off' && (
+
+            {/* Mobile Quick Actions moved out of slim bar */}
+            <div className="grid grid-cols-2 gap-1.5 lg:hidden">
               <button
-                onClick={() => {
-                  onApplyElevationFilter(track.id, elevationFilter);
-                  setShowSettingsPopover(false);
-                }}
-                className="mt-0.5 w-full py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 font-bold text-[9.5px] transition-colors border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-center gap-1 cursor-pointer"
+                type="button"
+                onClick={handleDownloadGPX}
+                className={`px-2 py-2 rounded-lg font-bold text-[10.5px] border flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95 ${
+                  downloadSuccess
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60'
+                }`}
               >
-                <Check className="w-3 h-3" />
-                Filter dauerhaft in Track sichern
+                {downloadSuccess ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                <span>{downloadSuccess ? 'Exportiert!' : 'GPX Export'}</span>
+              </button>
+
+              {onOpenVideoExport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsPopover(false);
+                    onOpenVideoExport();
+                  }}
+                  className="px-2 py-2 rounded-lg bg-emerald-600 text-white font-bold text-[10.5px] flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  <span>3D-Überflug</span>
+                </button>
+              )}
+
+              {onOpenIntensiveAnalysis && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsPopover(false);
+                    onOpenIntensiveAnalysis();
+                  }}
+                  className="px-2 py-2 rounded-lg bg-indigo-600 text-white font-bold text-[10.5px] flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Intensiv-Analyse</span>
+                </button>
+              )}
+
+              {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && onOpenAnalytics && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsPopover(false);
+                    onOpenAnalytics();
+                  }}
+                  className="px-2 py-2 rounded-lg bg-amber-500 text-white font-bold text-[10.5px] flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Analyse</span>
+                </button>
+              )}
+            </div>
+
+            {/* Pro Route Tools: Umkehren & Bereinigen */}
+            <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+              <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Routen-Werkzeuge:</span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {onReverseTrack && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('medium');
+                      onReverseTrack(track.id);
+                    }}
+                    className="px-2 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-[10px] border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
+                    title="Streckenverlauf in Gegenrichtung umkehren"
+                  >
+                    <RotateCcw className="w-3 h-3 text-indigo-500" />
+                    <span>Umkehren</span>
+                  </button>
+                )}
+                {onSanitizeTrack && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('medium');
+                      onSanitizeTrack(track.id);
+                    }}
+                    className="px-2 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 font-bold text-[10px] border border-emerald-200 dark:border-emerald-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95 shadow-2xs"
+                    title="One-Click GPS-Ausreißer & Höhenglättung"
+                  >
+                    <Sparkles className="w-3 h-3 text-emerald-500" />
+                    <span>Bereinigen</span>
+                  </button>
+                )}
+              </div>
+              {onShiftLoopStart && hoverInfo && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('success');
+                    const targetIdx = profileData.data.findIndex(p => Math.abs(p.dist - hoverInfo.dist) < 0.05);
+                    if (targetIdx !== -1) {
+                      onShiftLoopStart(track.id, targetIdx);
+                    }
+                  }}
+                  className="w-full mt-0.5 py-1 px-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold text-[9.5px] border border-indigo-200 dark:border-indigo-800 flex items-center justify-center gap-1 cursor-pointer transition-all active:scale-95"
+                >
+                  <Crosshair className="w-3 h-3 text-indigo-500" />
+                  <span>Start auf km {hoverInfo.dist.toFixed(1)} setzen</span>
+                </button>
+              )}
+            </div>
+
+            {/* Toggle series checkboxes */}
+            <div className="grid grid-cols-2 gap-2 text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-900 dark:hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={showElevation}
+                  onChange={(e) => setShowElevation(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-slate-600"
+                />
+                Höhe
+              </label>
+              {profileData.hasPower && (
+                <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
+                  <input
+                    type="checkbox"
+                    checked={showPower}
+                    onChange={(e) => setShowPower(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-500"
+                  />
+                  Watt
+                </label>
+              )}
+              {profileData.hasHr && (
+                <label className="flex items-center gap-1.5 cursor-pointer hover:text-red-500">
+                  <input
+                    type="checkbox"
+                    checked={showHr}
+                    onChange={(e) => setShowHr(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-red-500"
+                  />
+                  HF
+                </label>
+              )}
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-violet-600">
+                <input
+                  type="checkbox"
+                  checked={showSlope}
+                  onChange={(e) => setShowSlope(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-violet-500"
+                />
+                Steigung
+              </label>
+              {profileData.hasSpeed && (
+                <label className="flex items-center gap-1.5 cursor-pointer hover:text-teal-600">
+                  <input
+                    type="checkbox"
+                    checked={showSpeed}
+                    onChange={(e) => setShowSpeed(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-teal-500"
+                  />
+                  Tempo
+                </label>
+              )}
+              {profileData.hasCadence && (
+                <label className="flex items-center gap-1.5 cursor-pointer hover:text-purple-600">
+                  <input
+                    type="checkbox"
+                    checked={showCadence}
+                    onChange={(e) => setShowCadence(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-purple-500"
+                  />
+                  {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
+                </label>
+              )}
+              <label className="flex items-center gap-1.5 cursor-pointer text-cyan-600 dark:text-cyan-400 hover:text-cyan-700">
+                <input
+                  type="checkbox"
+                  checked={showWbal}
+                  onChange={(e) => setShowWbal(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-cyan-600"
+                />
+                W&apos;bal (%)
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
+                <input
+                  type="checkbox"
+                  checked={showPoiMarkers}
+                  onChange={(e) => setShowPoiMarkers(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-indigo-600"
+                />
+                POIs
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-amber-600">
+                <input
+                  type="checkbox"
+                  checked={showSegmentMarkers}
+                  onChange={(e) => setShowSegmentMarkers(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-amber-600"
+                />
+                Anstiege
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer hover:text-rose-600">
+                <input
+                  type="checkbox"
+                  checked={showGradientWarnings}
+                  onChange={(e) => setShowGradientWarnings(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-rose-600"
+                />
+                <span className="flex items-center gap-1">
+                  Warnungen
+                  {gradientAnomalies.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500 text-white">
+                      {gradientAnomalies.length}
+                    </span>
+                  )}
+                </span>
+              </label>
+            </div>
+
+            <div className="border-t border-dashed border-slate-200 dark:border-slate-700 my-0.5" />
+
+            {/* Elevation Filter Level Selection */}
+            <div className="flex flex-col gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-100 dark:border-slate-700">
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                <span className="flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-indigo-500" />
+                  <span>Höhenfilter (Savitzky-Golay):</span>
+                </span>
+                <span className="font-mono text-indigo-600 dark:text-indigo-400 font-bold uppercase text-[9px]">
+                  {elevationFilter === 'off' ? 'Aus' : elevationFilter === 'light' ? 'Leicht' : elevationFilter === 'medium' ? 'Mittel' : 'Alpin'}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-[9px] font-bold">
+                {(['off', 'light', 'medium', 'alpine_aggressive'] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => setElevationFilter(lvl)}
+                    className={`py-1 rounded text-center transition-all cursor-pointer ${
+                      elevationFilter === lvl
+                        ? 'bg-indigo-600 text-white shadow-sm font-black'
+                        : 'bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600'
+                    }`}
+                  >
+                    {lvl === 'off' ? 'Aus' : lvl === 'light' ? 'Leicht' : lvl === 'medium' ? 'Mittel' : 'Alpin'}
+                  </button>
+                ))}
+              </div>
+              {onApplyElevationFilter && elevationFilter !== 'off' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onApplyElevationFilter(track.id, elevationFilter);
+                    setShowSettingsPopover(false);
+                  }}
+                  className="mt-0.5 w-full py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 font-bold text-[9.5px] transition-colors border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Check className="w-3 h-3" />
+                  Filter dauerhaft in Track sichern
+                </button>
+              )}
+            </div>
+
+            {/* OSM Surface Analysis Action */}
+            {onAnalyzeSurface && (
+              <button
+                type="button"
+                onClick={() => onAnalyzeSurface(track.id)}
+                disabled={isAnalyzingSurface}
+                className="w-full py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[10px] transition-colors border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+              >
+                {isAnalyzingSurface ? (
+                  <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />
+                ) : (
+                  <Layers className="w-3 h-3 text-indigo-500" />
+                )}
+                <span>{isAnalyzingSurface ? 'OSM-Analyse läuft...' : 'OSM-Oberflächen analysieren'}</span>
               </button>
             )}
-          </div>
 
-          {/* OSM Surface Analysis Action */}
-          {onAnalyzeSurface && (
-            <button
-              onClick={() => onAnalyzeSurface(track.id)}
-              disabled={isAnalyzingSurface}
-              className="w-full py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[10px] transition-colors border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
-            >
-              {isAnalyzingSurface ? (
-                <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />
-              ) : (
-                <Layers className="w-3 h-3 text-indigo-500" />
+            {/* Smooth Toggle + FTP Badge */}
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <label className="flex items-center gap-2 cursor-pointer text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                <span>Kurve glätten</span>
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={isSmoothed}
+                  onChange={(e) => setIsSmoothed(e.target.checked)}
+                />
+                <div className={`relative w-7 h-3.5 rounded-full transition-colors ${isSmoothed ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
+                  <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full transition-transform ${isSmoothed ? 'translate-x-3' : 'translate-x-0'}`} />
+                </div>
+              </label>
+              {profileData.hasPower && (
+                <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400">
+                  FTP {ftp}W
+                </span>
               )}
-              <span>{isAnalyzingSurface ? 'OSM-Analyse läuft...' : 'OSM-Oberflächen analysieren'}</span>
-            </button>
-          )}
-
-          {/* Smooth Toggle */}
-          <label className="flex items-center justify-between cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-700">
-            <span>Zusätzliche Datenkurvenglättung:</span>
-            <div className="flex items-center gap-2">
-              <input 
-                type="checkbox" 
-                className="sr-only" 
-                checked={isSmoothed} 
-                onChange={(e) => setIsSmoothed(e.target.checked)} 
-              />
-              <div className={`relative w-7 h-3.5 rounded-full transition-colors ${isSmoothed ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full transition-transform ${isSmoothed ? 'translate-x-3' : 'translate-x-0'}`} />
-              </div>
             </div>
-          </label>
-        </div>
+          </div>
+        </>
       )}
           <div className="flex items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full">
             {selectionBounds && selectedRegions.length > 0 ? (
@@ -1947,53 +1950,53 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 )}
               </>
             ) : (
-              <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold font-mono">
-                <span className="flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60 font-medium">
-                  <span className="text-[10px] text-emerald-600 font-bold">▲</span>
-                  <span>{Math.round(track.ascent)}m</span>
-                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold font-sans ml-0.5">Anstieg</span>
+              <div className="flex items-center gap-2 text-[11px] font-bold font-mono tabular-nums whitespace-nowrap">
+                <span className="text-emerald-700 dark:text-emerald-400" title="Gesamtanstieg">
+                  ▲ {Math.round(track.ascent)} m
                 </span>
-                <span className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60 font-medium">
-                  <span className="text-[10px] text-rose-600 font-bold">▼</span>
-                  <span>{Math.round(track.descent)}m</span>
-                  <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold font-sans ml-0.5">Abstieg</span>
+                <span className="text-slate-300 dark:text-slate-600">·</span>
+                <span className="text-rose-700 dark:text-rose-400" title="Gesamtabstieg">
+                  ▼ {Math.round(track.descent)} m
                 </span>
-                <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2 py-0.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60 font-medium">
-                  <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold font-sans">Höhe:</span>
-                  <span>{Math.round(minEle)}m – {Math.round(maxEle)}m</span>
+                <span className="text-slate-300 dark:text-slate-600">·</span>
+                <span className="text-indigo-700 dark:text-indigo-300" title="Minimale bis maximale Höhe">
+                  {Math.round(minEle)}–{Math.round(maxEle)} m
                 </span>
-                <span className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg border border-amber-200/80 dark:border-amber-800/60 font-medium">
-                  <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold font-sans">Max. Steigung:</span>
-                  <span>{(track.maxSlope ?? 0).toFixed(1)}%</span>
+                <span className="text-slate-300 dark:text-slate-600">·</span>
+                <span className="text-amber-700 dark:text-amber-400" title="Maximale Steigung">
+                  max {(track.maxSlope ?? 0).toFixed(1)}%
                 </span>
                 {gradientAnomalies.length > 0 && (
-                  <div className="flex items-center gap-1">
+                  <>
+                    <span className="text-slate-300 dark:text-slate-600">·</span>
                     <button
+                      type="button"
                       onClick={() => {
                         setShowGradientWarnings(true);
                         setActiveAnomalyId(gradientAnomalies[0].id);
                       }}
-                      className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 px-2 py-0.5 rounded-lg border border-rose-300/80 dark:border-rose-800/60 font-medium hover:bg-rose-100 transition-colors cursor-pointer"
+                      className="flex items-center gap-1 text-rose-700 dark:text-rose-300 hover:underline cursor-pointer shrink-0"
                       title="Klicken, um die erste Steigungsanomalie hervorzuheben"
                     >
                       <AlertTriangle className="w-3 h-3 text-rose-500 shrink-0" />
-                      <span>{gradientAnomalies.length} Daten-Anomalie{gradientAnomalies.length > 1 ? 'n' : ''}</span>
+                      <span>{gradientAnomalies.length} Anomalie{gradientAnomalies.length > 1 ? 'n' : ''}</span>
                     </button>
                     {onRepairAnomalies && (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setActiveAnomalyId(null);
                           onRepairAnomalies(track.id);
                         }}
-                        className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded-lg font-bold text-[10px] shadow-sm transition-colors cursor-pointer"
+                        className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded-md font-sans font-bold text-[10px] transition-colors cursor-pointer shrink-0"
                         title="Alle Steigungsanomalien und GPS-Höhensprünge automatisch korrigieren"
                       >
                         <Wrench className="w-2.5 h-2.5" />
-                        <span>Auto-Reparieren</span>
+                        <span>Reparieren</span>
                       </button>
                     )}
-                  </div>
+                  </>
                 )}
               </div>
             )}

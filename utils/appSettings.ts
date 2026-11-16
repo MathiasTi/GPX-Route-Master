@@ -501,7 +501,16 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Erholt': 'Recovered',
   'Leicht belastet': 'Mild Load',
   'Hohe Belastung': 'High Load',
-  'Überbelastung': 'Overreaching'
+  'Überbelastung': 'Overreaching',
+
+  // Valhalla & OSM Surface Analysis
+  'Valhalla & OSM abgeschlossen': 'Valhalla & OSM Completed',
+  'Teilweise erfasst': 'Partially Mapped',
+  'Per Valhalla & OSM analysieren': 'Analyze via Valhalla & OSM',
+  'Unbekannt / Keine Daten': 'Unknown / No Data',
+  'Unbekannt zurücksetzen': 'Reset to Unknown',
+  'Oberflächen analysieren (Valhalla & OSM)': 'Analyze Surfaces (Valhalla & OSM)',
+  'Valhalla & OSM läuft...': 'Analyzing Valhalla & OSM...'
 };
 
 const SORTED_PHRASE_ENTRIES = Object.entries(DE_TO_EN_EXACT).sort(

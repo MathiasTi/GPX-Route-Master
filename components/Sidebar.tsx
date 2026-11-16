@@ -4,10 +4,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Share2, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
-import { triggerHaptic, shareTrackNative } from '../utils/haptics';
+import { triggerHaptic } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
 import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
@@ -53,7 +53,14 @@ interface TrackItemProps {
   onAnalyzeSurface?: (id: string, force?: boolean) => void;
   onSetTrackSurface?: (id: string, surfaceType: string) => void;
   isAnalyzing?: boolean;
-  surfaceStatus?: { status: 'idle' | 'loading' | 'success' | 'error' | 'simulated'; message?: string; source?: 'osm' | 'terrain' | 'manual'; timestamp?: number };
+  surfaceStatus?: {
+    status: 'idle' | 'loading' | 'success' | 'partial' | 'error';
+    message?: string;
+    source?: 'valhalla+osm' | 'valhalla' | 'overpass' | 'embedded' | 'osm' | 'manual' | 'unavailable';
+    coveragePct?: number;
+    cached?: boolean;
+    timestamp?: number;
+  };
   onSaveTrackToLibrary?: (id: string) => void;
   onOpenRawData?: (id: string) => void;
   onOpenTimeGapAnalysis?: (id: string) => void;
@@ -509,7 +516,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
                     Export &amp; Bibliothek
                   </div>
-                  <div className="grid grid-cols-4 gap-1">
+                  <div className="grid grid-cols-3 gap-1">
                     <button
                       type="button"
                       onClick={handleExportGPX}
@@ -518,21 +525,6 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                     >
                       <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                       <span>Export</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        shareTrackNative({
-                          title: track.name,
-                          text: `GPX Route: ${track.name} · ${track.distance.toFixed(1)} km · +${Math.round(track.ascent)}m`
-                        });
-                      }}
-                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                      title="Route teilen"
-                    >
-                      <Share2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>Teilen</span>
                     </button>
 
                     <button
@@ -743,9 +735,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                             case "Schotter": return "#d97706"; // Amber
                             case "Waldweg": return "#16a34a"; // Forest Green
                             case "Fahrradweg": return "#0284c7"; // Sky Blue
-                            case "Kopfsteinpflaster": return "#78350f"; // Brown
+                            case "Kopfsteinpflaster": return "#805ad5"; // Purple
+                            case "Unbefestigt": return "#ca8a04"; // Gold-Brown
                             case "Straße": return "#4f46e5"; // Indigo
-                            default: return "#64748b"; // Slate
+                            case "Unbekannt": return "#94a3b8"; // Neutral Slate
+                            default: return "#94a3b8";
                           }
                         };
                         return (
@@ -765,9 +759,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                             case "Schotter": return "#d97706";
                             case "Waldweg": return "#16a34a";
                             case "Fahrradweg": return "#0284c7";
-                            case "Kopfsteinpflaster": return "#78350f";
+                            case "Kopfsteinpflaster": return "#805ad5";
+                            case "Unbefestigt": return "#ca8a04";
                             case "Straße": return "#4f46e5";
-                            default: return "#64748b";
+                            case "Unbekannt": return "#94a3b8";
+                            default: return "#94a3b8";
                           }
                         };
                         return (
@@ -798,14 +794,15 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         }
                       }}
                       className="text-[9px] font-medium bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-1 py-0.5 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                      title="Untergrundtyp manuell festlegen oder per OSM analysieren"
+                      title="Untergrundtyp manuell festlegen oder per Valhalla & OSM analysieren"
                     >
                       <option value="">Status / Typ wählen...</option>
-                      <option value="osm">🌐 Per OpenStreetMap (OSM) analysieren</option>
+                      <option value="osm">🌐 Per Valhalla &amp; OSM analysieren</option>
                       <option value="Asphalt">Asphalt (100%)</option>
                       <option value="Schotter">Schotter / Gravel (100%)</option>
                       <option value="Fahrradweg">Fahrradweg (100%)</option>
                       <option value="Waldweg">Waldweg (100%)</option>
+                      <option value="Unbekannt">Unbekannt zurücksetzen</option>
                     </select>
                   </div>
 
@@ -816,21 +813,21 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/80 text-blue-800 dark:text-blue-200'
                         : surfaceStatus.status === 'success'
                         ? 'bg-emerald-50/90 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/80 text-emerald-800 dark:text-emerald-200'
-                        : surfaceStatus.status === 'simulated'
+                        : surfaceStatus.status === 'partial'
                         ? 'bg-amber-50/90 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/80 text-amber-800 dark:text-amber-200'
                         : 'bg-rose-50/90 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/80 text-rose-800 dark:text-rose-200'
                     }`}>
                       {surfaceStatus.status === 'loading' && <Loader2 size={13} className="animate-spin shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />}
                       {surfaceStatus.status === 'success' && <CheckCircle2 size={13} className="shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />}
-                      {surfaceStatus.status === 'simulated' && <Info size={13} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />}
+                      {surfaceStatus.status === 'partial' && <Info size={13} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />}
                       {surfaceStatus.status === 'error' && <AlertTriangle size={13} className="shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />}
 
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-[10px] flex items-center justify-between">
                           <span>
                             {surfaceStatus.status === 'loading' && "Analyse läuft..."}
-                            {surfaceStatus.status === 'success' && "OSM-Analyse abgeschlossen"}
-                            {surfaceStatus.status === 'simulated' && "Geländeprofil ermittelt"}
+                            {surfaceStatus.status === 'success' && "Valhalla & OSM abgeschlossen"}
+                            {surfaceStatus.status === 'partial' && "Teilweise erfasst"}
                             {surfaceStatus.status === 'error' && "Analyse-Fehler"}
                           </span>
                           {surfaceStatus.timestamp && (
@@ -844,14 +841,16 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         )}
                       </div>
 
-                      {surfaceStatus.status === 'error' && (
+                      {(surfaceStatus.status === 'error' || (surfaceStatus.status === 'partial' && surfaceStatus.coveragePct === 0)) && (
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             onAnalyzeSurface?.(track.id, true);
                           }}
-                          className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-[9px] font-bold shrink-0 transition-colors cursor-pointer"
+                          className={`px-2 py-0.5 text-white rounded text-[9px] font-bold shrink-0 transition-colors cursor-pointer ${
+                            surfaceStatus.status === 'error' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-amber-600 hover:bg-amber-700'
+                          }`}
                         >
                           Retry
                         </button>
@@ -872,10 +871,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         ? "bg-blue-100/60 text-blue-700 border-blue-300 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-700 cursor-wait"
                         : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 border-blue-200 dark:border-blue-800/50"
                     }`}
-                    title="Straßen- und Geländebeschaffenheit mittels OpenStreetMap (OSM) analysieren"
+                    title="Straßen- und Geländebeschaffenheit per Valhalla Map-Matching & OpenStreetMap analysieren"
                   >
                     <RefreshCw size={11} className={isAnalyzing ? "animate-spin text-blue-600 dark:text-blue-400" : ""} />
-                    {isAnalyzing ? "Oberflächen-Analyse läuft..." : "Oberflächen-Analyse starten (OSM)"}
+                    {isAnalyzing ? "Valhalla & OSM läuft..." : "Oberflächen analysieren (Valhalla & OSM)"}
                   </button>
                 </div>
               </div>

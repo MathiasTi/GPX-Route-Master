@@ -960,7 +960,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
           if (currentInBounds && previousInBounds) {
             const stepDist = pCurrent.dist - pPrevious.dist;
-            const sType = pCurrent.surface || "Asphalt";
+            const sType = pCurrent.surface || "Unbekannt";
             statsMap[sType] = (statsMap[sType] || 0) + stepDist;
           }
         }
@@ -970,7 +970,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .sort((a, b) => b.distance - a.distance);
 
         if (selectedSurfaceStats.length === 0) {
-          selectedSurfaceStats = [{ type: "Asphalt", distance: selectedDistance }];
+          selectedSurfaceStats = [{ type: "Unbekannt", distance: selectedDistance }];
         }
       }
     }
@@ -1924,9 +1924,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                               case "Schotter": return "#d97706";
                               case "Waldweg": return "#16a34a";
                               case "Fahrradweg": return "#0284c7";
-                              case "Kopfsteinpflaster": return "#78350f";
+                              case "Kopfsteinpflaster": return "#805ad5";
+                              case "Unbefestigt": return "#ca8a04";
                               case "Straße": return "#4f46e5";
-                              default: return "#64748b";
+                              case "Unbekannt": return "#94a3b8";
+                              default: return "#94a3b8";
                             }
                           };
                           return (

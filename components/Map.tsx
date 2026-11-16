@@ -1,16 +1,16 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
+import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
 import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { triggerHaptic, shareTrackNative } from '../utils/haptics';
+import { triggerHaptic } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
 import { buildTileCacheKey, getCachedTileBlob, putCachedTileBlob } from '../utils/tileCacheDb';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -52,6 +52,9 @@ const getSurfaceColor = (surf: string, defaultColor: string = "#2563eb") => {
   }
   if (s.includes("unbefestigt") || s.includes("unpaved") || s.includes("sand") || s.includes("matsch")) {
     return "#ca8a04"; // Gold-Brown - Unbefestigt
+  }
+  if (s.includes("unbekannt") || s.includes("unknown")) {
+    return "#94a3b8"; // Neutral Slate - Unbekannt
   }
   return safeDefault;
 };
@@ -569,79 +572,7 @@ const MapResizer = ({ markedTrackId, compareTrackId, tracksLength, tracks }: { m
   return null;
 };
 
-
-const UserLocationMarker = ({ isTracking, autoCenter }: { isTracking: boolean; autoCenter: boolean }) => {
-  const map = useMap();
-  const [position, setPosition] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
-
-  useEffect(() => {
-    if (!isTracking || typeof window === 'undefined' || !('geolocation' in navigator)) {
-      setPosition(null);
-      return;
-    }
-
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-        setPosition({ lat, lng, accuracy });
-        if (autoCenter) {
-          map.panTo([lat, lng], { animate: true });
-        }
-      },
-      (err) => {
-        console.warn('Geolocation error:', err.message);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 }
-    );
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-    };
-  }, [isTracking, autoCenter, map]);
-
-  if (!isTracking || !position) return null;
-
-  const userIcon = L.divIcon({
-    className: 'user-location-pulse',
-    html: `
-      <div style="width: 18px; height: 18px; background-color: #2563eb; border: 3px solid #ffffff; border-radius: 50%; box-shadow: 0 0 10px rgba(37,99,235,0.8);"></div>
-    `,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
-  });
-
-  return (
-    <>
-      <LeafletMarker position={[position.lat, position.lng]} icon={userIcon}>
-        <Popup>
-          <div className="text-xs font-bold text-slate-800 p-1">
-            📍 Ihr aktueller Standort<br/>
-            <span className="text-[10px] text-slate-500 font-normal">Genauigkeit: ~{Math.round(position.accuracy)}m</span>
-          </div>
-        </Popup>
-      </LeafletMarker>
-      {position.accuracy > 0 && position.accuracy < 500 && (
-        <LeafletCircle
-          center={[position.lat, position.lng]}
-          radius={position.accuracy}
-          pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.15, color: '#60a5fa', weight: 1.5, dashArray: '3 4' }}
-        />
-      )}
-    </>
-  );
-};
-
-const MobileZoomControls = ({ 
-  tracks, 
-  markedTrackId, 
-  activeTrack, 
-  onRecenterActiveTrack 
-}: { 
-  tracks: GPXTrack[]; 
-  markedTrackId: string | null; 
-  activeTrack?: GPXTrack | null; 
-  onRecenterActiveTrack?: () => void; 
-}) => {
+const MobileZoomControls = () => {
   const map = useMap();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -670,39 +601,10 @@ const MobileZoomControls = ({
     map.zoomOut();
   };
 
-  const handleCenterActiveTrack = (e: React.SyntheticEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    triggerHaptic('medium');
-
-    if (onRecenterActiveTrack) {
-      onRecenterActiveTrack();
-    } else {
-      const candidate = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible && hasRealGpsData(t))) || tracks.find(t => hasRealGpsData(t));
-      const trackToFit = candidate && hasRealGpsData(candidate) ? candidate : tracks.find(t => t.visible && hasRealGpsData(t));
-      if (trackToFit && hasRealGpsData(trackToFit)) {
-        const bounds = buildTracksBounds([trackToFit]);
-        fitMapBoundsTight(map, bounds, true);
-      }
-    }
-  };
-
-  const handleFitToTracks = (e: React.SyntheticEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    triggerHaptic('medium');
-
-    const targetTracks = tracks.filter(t => (t.visible || t.id === markedTrackId) && hasRealGpsData(t));
-    const bounds = buildTracksBounds(targetTracks);
-    fitMapBoundsTight(map, bounds, true);
-  };
-
-  const currentActive = activeTrack || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible));
-
   return (
     <div 
       ref={containerRef}
-      className="leaflet-control absolute bottom-36 right-2.5 sm:bottom-28 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto select-none"
+      className="absolute bottom-36 right-2.5 sm:bottom-28 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto select-none"
       onClick={stopEvent}
       onDoubleClick={stopEvent}
       onMouseDown={stopEvent}
@@ -727,39 +629,12 @@ const MobileZoomControls = ({
           onClick={handleZoomOut}
           onMouseDown={stopEvent}
           onTouchStart={stopEvent}
-          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
+          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer active:scale-95 touch-manipulation"
           title="Karte verkleinern (-)"
           aria-label="Karte verkleinern"
           id="btn-zoom-out"
         >
           <Minus className="w-6.5 h-6.5 stroke-[3]" />
-        </button>
-
-        <button
-          type="button"
-          onClick={handleCenterActiveTrack}
-          onMouseDown={stopEvent}
-          onTouchStart={stopEvent}
-          disabled={!currentActive}
-          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-amber-500 active:text-white dark:active:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
-          title={currentActive ? `Karte auf gesamte aktive Route ("${currentActive.name}") zentrieren` : "Keine aktive Route zum Zentrieren"}
-          aria-label="Aktive Route zentrieren"
-          id="btn-center-active-route"
-        >
-          <Target className="w-5.5 h-5.5 stroke-[2.5] text-amber-500 dark:text-amber-400" />
-        </button>
-
-        <button
-          type="button"
-          onClick={handleFitToTracks}
-          onMouseDown={stopEvent}
-          onTouchStart={stopEvent}
-          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-indigo-500 active:text-white dark:active:bg-indigo-600 transition-all cursor-pointer active:scale-95 touch-manipulation"
-          title="Karte auf alle ausgewählten und sichtbaren Strecken ausrichten"
-          aria-label="Auf ausgewählte und sichtbare Strecken zoomen"
-          id="btn-fit-tracks-zoom"
-        >
-          <Maximize2 className="w-5.5 h-5.5 stroke-[2.5] text-indigo-600 dark:text-indigo-400" />
         </button>
       </div>
     </div>
@@ -836,36 +711,24 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
   const map = useMap();
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
   const [currentPoint, setCurrentPoint] = useState<L.LatLng | null>(null);
-  const [selectionMode, setSelectionMode] = useState(false);
 
   useEffect(() => {
     if (!active) {
       setStartPoint(null);
       setCurrentPoint(null);
-      setSelectionMode(false);
       map.dragging.enable();
     }
   }, [active, map]);
 
   useEffect(() => {
-    if (selectionMode) {
-      map.dragging.disable();
-    } else {
-      map.dragging.enable();
-    }
-  }, [selectionMode, map]);
-
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (active && e.key === 'Alt') {
+      if (active && (e.key === 'Alt' || e.key === 'Shift')) {
         map.dragging.disable();
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (active && e.key === 'Alt') {
-        if (!selectionMode) {
-          map.dragging.enable();
-        }
+      if (active && (e.key === 'Alt' || e.key === 'Shift')) {
+        map.dragging.enable();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -874,13 +737,13 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [active, map, selectionMode]);
+  }, [active, map]);
 
   useMapEvents({
     mousedown(e) {
       if (!active) return;
-      const isAlt = e.originalEvent.altKey;
-      if (!isAlt && !selectionMode) return;
+      const isModifier = e.originalEvent.altKey || e.originalEvent.shiftKey;
+      if (!isModifier) return;
       
       map.dragging.disable();
       setStartPoint(e.latlng);
@@ -903,7 +766,7 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
       setStartPoint(null);
       setCurrentPoint(null);
       
-      if (!e.originalEvent.altKey && !selectionMode) {
+      if (!e.originalEvent.altKey && !e.originalEvent.shiftKey) {
         map.dragging.enable();
       }
     }
@@ -920,24 +783,6 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
       {renderBounds && (
         <Rectangle bounds={renderBounds} pathOptions={{ color: '#4f46e5', weight: 2, fillOpacity: 0.2, dashArray: '5, 5' }} />
       )}
-      <div className="leaflet-top leaflet-left mt-20 ml-3 pointer-events-auto">
-        <div className="leaflet-bar leaflet-control">
-          <button
-            className={`w-8 h-8 flex items-center justify-center bg-white hover:bg-slate-50 transition-colors ${selectionMode ? 'text-indigo-600 bg-indigo-50' : 'text-slate-600'}`}
-            onClick={(e) => {
-              L.DomEvent.stopPropagation(e);
-              setSelectionMode(!selectionMode);
-            }}
-            title={selectionMode ? "Auswahlmodus beenden" : "Auswahlmodus aktivieren (für Mobile/iPad)"}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect width="18" height="18" x="3" y="3" rx="2" />
-              <path d="M3 9h18" />
-              <path d="M9 21V9" />
-            </svg>
-          </button>
-        </div>
-      </div>
     </>
   );
 };
@@ -945,7 +790,6 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
 const LeafletMapContainer = MapContainer as any;
 const LeafletPolyline = Polyline as any;
 const LeafletMarker = Marker as any;
-const LeafletCircle = Circle as any;
 
 const CachedLeafletTileLayer: React.FC<{
   layerId: string;
@@ -1116,8 +960,6 @@ const Map: React.FC<MapProps> = ({
   const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
-  const [isTrackingLocation, setIsTrackingLocation] = useState(false);
-  const [autoCenterLocation, setAutoCenterLocation] = useState(true);
 
   // Personal Lifetime Heatmap state (Veloviewer / Strava style)
   const [showLifetimeHeatmap, setShowLifetimeHeatmap] = useState(false);
@@ -2528,13 +2370,7 @@ const Map: React.FC<MapProps> = ({
           </LeafletMarker>
         )}
 
-        <UserLocationMarker isTracking={isTrackingLocation} autoCenter={autoCenterLocation} />
-        <MobileZoomControls 
-          tracks={tracks} 
-          markedTrackId={markedTrackId} 
-          activeTrack={activeTrack}
-          onRecenterActiveTrack={() => setRecenterTrigger(prev => prev + 1)}
-        />
+        <MobileZoomControls />
       </LeafletMapContainer>
 
       {/* Mobile & Touch Floating Action Toolbar */}
@@ -2551,39 +2387,6 @@ const Map: React.FC<MapProps> = ({
           >
             <Target className="w-4 h-4 text-amber-500" />
             <span className="hidden xs:inline">Route zentrieren</span>
-          </button>
-        )}
-
-        <button
-          onClick={() => {
-            triggerHaptic('medium');
-            setIsTrackingLocation(prev => !prev);
-          }}
-          className={`p-2.5 sm:p-3 rounded-2xl shadow-lg border backdrop-blur-md transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 ${
-            isTrackingLocation 
-              ? 'bg-blue-600 text-white border-blue-400 ring-2 ring-blue-500/30' 
-              : 'bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-          }`}
-          title={isTrackingLocation ? "GPS Standort deaktivieren" : "Meinen GPS-Standort auf der Karte anzeigen"}
-        >
-          <Locate className={`w-4 h-4 ${isTrackingLocation ? 'text-white' : 'text-blue-500'}`} />
-          <span className="hidden xs:inline">{isTrackingLocation ? 'GPS Aktiv' : 'Standort'}</span>
-        </button>
-
-        {activeTrack && (
-          <button
-            onClick={() => {
-              triggerHaptic('medium');
-              shareTrackNative({
-                title: activeTrack.name,
-                text: `🚴 GPX Route: ${activeTrack.name}\n📏 Länge: ${activeTrack.distance.toFixed(1)} km\n⛰️ Anstieg: +${Math.round(activeTrack.ascent)}m`
-              });
-            }}
-            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
-            title="Aktivität auf Smartphone teilen (WhatsApp, Mail, Messages)"
-          >
-            <Share2 className="w-4 h-4 text-emerald-500" />
-            <span className="hidden xs:inline">Teilen</span>
           </button>
         )}
 
@@ -2914,6 +2717,10 @@ const Map: React.FC<MapProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#ca8a04" }}></span>
                   <span className="font-bold text-slate-700 dark:text-slate-200">Unbefestigt / Natur</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-4.5 h-2 rounded-sm shrink-0 border border-black/10" style={{ backgroundColor: "#94a3b8" }}></span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">Unbekannt / Keine Daten</span>
                 </div>
 
                 {/* Live Surface Distribution breakdown for marked track */}

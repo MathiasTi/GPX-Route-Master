@@ -44,8 +44,12 @@ import {
   CatalogQueryOptions,
   CatalogSortBy,
   CatalogSource,
-  CatalogActivityCategory
+  CatalogActivityCategory,
+  computeRouteSurfaceHash,
+  getSurfaceAnalysisCache,
+  saveSurfaceAnalysisCache
 } from "./utils/db.js";
+import { analyzeRouteSurfacePipeline } from "./utils/surfaceAnalyzer.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
@@ -709,9 +713,9 @@ async function startServer() {
     }
   });
 
-  // API route to automatically analyze GPX path coordinates and map to OpenStreetMap surface tags
+  // API route to accurately analyze GPX track surfaces via Valhalla map-matching + Overpass road corridor + SQLite cache
   app.post("/api/analyze-surface", async (req, res) => {
-    const { points, name, activityType } = req.body;
+    const { points, activityType, force } = req.body || {};
     if (!points || !Array.isArray(points) || points.length === 0) {
       return res.status(400).json({ error: "Missing or invalid points array" });
     }
@@ -720,496 +724,59 @@ async function startServer() {
       return res.status(400).json({ error: "Points array exceeds maximum allowed length of 50,000 points." });
     }
 
-    const totalPts = points.length;
-
-    // Helper: Equirectangular distance approximation in meters
-    const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-      const R = 6371000; // meters
-      const phi1 = (lat1 * Math.PI) / 180;
-      const phi2 = (lat2 * Math.PI) / 180;
-      const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
-      const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
-      const a =
-        Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-        Math.cos(phi1) *
-          Math.cos(phi2) *
-          Math.sin(deltaLambda / 2) *
-          Math.sin(deltaLambda / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    };
-
-    // Helper: Perpendicular distance in meters from point P to line segment AB
-    const pointToSegmentDistanceMeters = (
-      pLat: number, pLng: number,
-      aLat: number, aLng: number,
-      bLat: number, bLng: number
-    ): number => {
-      const R = 6371000;
-      const meanLat = ((pLat + aLat + bLat) / 3) * (Math.PI / 180);
-      const cosLat = Math.cos(meanLat);
-
-      const px = pLng * (Math.PI / 180) * R * cosLat;
-      const py = pLat * (Math.PI / 180) * R;
-
-      const ax = aLng * (Math.PI / 180) * R * cosLat;
-      const ay = aLat * (Math.PI / 180) * R;
-
-      const bx = bLng * (Math.PI / 180) * R * cosLat;
-      const by = bLat * (Math.PI / 180) * R;
-
-      const dx = bx - ax;
-      const dy = by - ay;
-      const lenSq = dx * dx + dy * dy;
-
-      if (lenSq === 0) {
-        const distSq = (px - ax) * (px - ax) + (py - ay) * (py - ay);
-        return Math.sqrt(distSq);
-      }
-
-      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
-      t = Math.max(0, Math.min(1, t));
-
-      const projX = ax + t * dx;
-      const projY = ay + t * dy;
-
-      const distX = px - projX;
-      const distY = py - projY;
-
-      return Math.sqrt(distX * distX + distY * distY);
-    };
-
-    // Mapping function based on actual OpenStreetMap OSM tags
-    const mapOsmTagsToSurface = (tags: any): string => {
-      if (!tags) return "Asphalt";
-      const surface = (tags.surface || "").toLowerCase().trim();
-      const highway = (tags.highway || "").toLowerCase().trim();
-      const tracktype = (tags.tracktype || "").toLowerCase().trim();
-      const sacScale = (tags.sac_scale || "").toLowerCase().trim();
-
-      if (
-        [
-          "asphalt",
-          "paved",
-          "concrete",
-          "concrete:plates",
-          "concrete:lanes",
-          "tarmac",
-          "chipseal",
-        ].includes(surface)
-      ) {
-        return "Asphalt";
-      }
-      if (
-        ["gravel", "fine_gravel", "pebblestones", "compacted", "crushed_stone", "grit"].includes(
-          surface
-        )
-      ) {
-        return "Schotter";
-      }
-      if (
-        [
-          "unpaved",
-          "dirt",
-          "earth",
-          "ground",
-          "grass",
-          "mud",
-          "sand",
-          "wood",
-          "woodchips",
-        ].includes(surface) || sacScale
-      ) {
-        return "Waldweg";
-      }
-      if (
-        [
-          "cobblestone",
-          "cobblestone:flattened",
-          "paving_stones",
-          "sett",
-        ].includes(surface)
-      ) {
-        return "Kopfsteinpflaster";
-      }
-
-      // Infer from trackType & highway
-      if (highway === "track") {
-        if (tracktype === "grade1") return "Asphalt";
-        if (tracktype === "grade2" || tracktype === "grade3")
-          return "Schotter";
-        return "Waldweg";
-      }
-      if (
-        ["path", "footway", "bridleway", "steps", "corridor"].includes(
-          highway
-        )
-      ) {
-        return "Waldweg";
-      }
-      if (highway === "cycleway") {
-        return surface === "gravel" ? "Schotter" : "Fahrradweg";
-      }
-
-      if (
-        [
-          "motorway",
-          "trunk",
-          "primary",
-          "secondary",
-          "tertiary",
-          "residential",
-          "service",
-          "living_street",
-          "unclassified",
-        ].includes(highway)
-      ) {
-        return "Asphalt";
-      }
-
-      return "Asphalt";
-    };
-
     try {
-      // Check if points already have explicit surface tags from GPX XML
-      const embeddedSurfaces = points.map(p => p.surface).filter(Boolean);
-      if (embeddedSurfaces.length > totalPts * 0.25) {
-        console.log(`[OSM Surface API] Track has ${embeddedSurfaces.length} embedded surface tags. Utilizing file metadata.`);
-        const surfaceStatsMap: Record<string, number> = {};
-        const fullSurfaces: string[] = [];
-        let lastSurf = embeddedSurfaces[0] || "Asphalt";
+      const normalizedPoints = points
+        .map((p: any) => ({
+          lat: Number(p?.lat),
+          lng: Number(p?.lng),
+          ele: p?.ele !== undefined && p?.ele !== null ? Number(p.ele) : undefined,
+          surface: typeof p?.surface === "string" && p.surface.trim() ? p.surface.trim() : undefined,
+        }))
+        .filter((p: any) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
 
-        for (let i = 0; i < totalPts; i++) {
-          const s = points[i].surface || lastSurf;
-          lastSurf = s;
-          fullSurfaces.push(s);
+      if (normalizedPoints.length === 0) {
+        return res.status(400).json({ error: "No valid GPS coordinates in points array." });
+      }
+
+      const forceRefresh = Boolean(force);
+      const routeHash = computeRouteSurfaceHash(normalizedPoints, activityType);
+
+      if (!forceRefresh) {
+        const cached = getSurfaceAnalysisCache(routeHash);
+        if (cached && cached.surfaces.length === normalizedPoints.length) {
+          return res.json({
+            surfaces: cached.surfaces,
+            surfaceStats: cached.surfaceStats,
+            source: cached.source,
+            coveragePct: cached.coveragePct,
+            isFallback: false,
+            cached: true,
+          });
         }
+      }
 
-        for (let i = 1; i < totalPts; i++) {
-          const stepDistKm = getDistance(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng) / 1000;
-          const sType = fullSurfaces[i] || "Asphalt";
-          surfaceStatsMap[sType] = (surfaceStatsMap[sType] || 0) + stepDistKm;
-        }
+      const result = await analyzeRouteSurfacePipeline(normalizedPoints, {
+        activityType: typeof activityType === "string" ? activityType : undefined,
+      });
 
-        const surfaceStats = Object.entries(surfaceStatsMap)
-          .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
-          .sort((a, b) => b.distance - a.distance);
-
-        return res.json({
-          surfaces: fullSurfaces,
-          surfaceStats,
-          isFallback: false
+      if (result.coveragePct > 0 && result.source !== "embedded") {
+        saveSurfaceAnalysisCache({
+          routeHash,
+          source: result.source,
+          coveragePct: result.coveragePct,
+          surfaces: result.surfaces,
+          surfaceStats: result.surfaceStats,
         });
       }
 
-      // 1. Sample up to 50 representative points along the route
-      const numSamples = Math.min(50, totalPts);
-      const sampledCoords: string[] = [];
-      const step = (totalPts - 1) / Math.max(1, numSamples - 1);
-
-      for (let i = 0; i < numSamples; i++) {
-        const idx = Math.floor(i * step);
-        const pt = points[idx];
-        if (pt && pt.lat != null && pt.lng != null) {
-          const lat = Number(pt.lat);
-          const lng = Number(pt.lng);
-          if (!isNaN(lat) && !isNaN(lng)) {
-            sampledCoords.push(`${lat.toFixed(6)},${lng.toFixed(6)}`);
-          }
-        }
-      }
-
-      if (sampledCoords.length === 0) {
-        throw new Error("Keine gültigen Koordinaten im Track vorhanden.");
-      }
-
-      let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-      for (const p of points) {
-        if (p && p.lat != null && p.lng != null) {
-          const lat = Number(p.lat);
-          const lng = Number(p.lng);
-          if (!isNaN(lat) && !isNaN(lng)) {
-            if (lat < minLat) minLat = lat;
-            if (lat > maxLat) maxLat = lat;
-            if (lng < minLng) minLng = lng;
-            if (lng > maxLng) maxLng = lng;
-          }
-        }
-      }
-
-      // Add 0.005deg (~500m) padding around bounding box
-      minLat = Math.max(-90, minLat - 0.005);
-      maxLat = Math.min(90, maxLat + 0.005);
-      minLng = Math.max(-180, minLng - 0.005);
-      maxLng = Math.min(180, maxLng + 0.005);
-
-      const bboxStr = `${minLat.toFixed(5)},${minLng.toFixed(5)},${maxLat.toFixed(5)},${maxLng.toFixed(5)}`;
-      const overpassQuery = `[out:json][timeout:12];\nway(${bboxStr})["highway"];\nout tags geom;`;
-
-      // 2. Cycle through redundant high-performance Overpass public servers
-      const OVERPASS_SERVERS = [
-        "https://overpass.private.coffee/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
-        "https://overpass-api.de/api/interpreter",
-        "https://z.overpass-api.de/api/interpreter"
-      ];
-
-      let responseData: any = null;
-      let lastErr: any = null;
-
-      for (const server of OVERPASS_SERVERS) {
-        try {
-          console.log(`[OSM Surface API] Trying Overpass lookup via ${server}`);
-          const response = await fetch(server, {
-            method: "POST",
-            body: "data=" + encodeURIComponent(overpassQuery),
-            headers: {
-              "User-Agent": "GPXRouteMasterApplet/1.0 (mtirtasana@gmail.com)",
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            signal: AbortSignal.timeout(6000), // 6s timeout per attempt
-          });
-
-          if (response.ok) {
-            responseData = await response.json();
-            console.log(`[OSM Surface API] Successfully retrieved data from ${server}`);
-            break;
-          } else {
-            lastErr = new Error(`Proxy responded with status ${response.status}`);
-          }
-        } catch (serverErr: any) {
-          lastErr = serverErr;
-          console.log(`[OSM Surface API] Server ${server} was busy/delayed. Shifting attempt...`);
-        }
-      }
-
-      if (!responseData || !Array.isArray(responseData.elements) || responseData.elements.length === 0) {
-        throw lastErr || new Error("No OSM ways returned from Overpass.");
-      }
-
-      const elements = responseData.elements;
-      console.log(`[OSM Surface API] Successfully retrieved ${elements.length} OSM road segments.`);
-
-      // 3. For each point in the full track, match to nearest OSM way segment
-      const rawSurfaces: (string | null)[] = new Array(totalPts).fill(null);
-
-      for (let i = 0; i < totalPts; i++) {
-        const pt = points[i];
-        let bestSurface: string | null = null;
-        let minDistance = 35; // 35 meters snap distance
-
-        for (const elem of elements) {
-          if (elem.geometry && Array.isArray(elem.geometry) && elem.geometry.length > 0) {
-            for (let g = 0; g < elem.geometry.length - 1; g++) {
-              const g1 = elem.geometry[g];
-              const g2 = elem.geometry[g + 1];
-              const dist = pointToSegmentDistanceMeters(
-                pt.lat, pt.lng,
-                g1.lat, g1.lon,
-                g2.lat, g2.lon
-              );
-              if (dist < minDistance) {
-                minDistance = dist;
-                bestSurface = mapOsmTagsToSurface(elem.tags);
-              }
-            }
-          }
-        }
-
-        rawSurfaces[i] = bestSurface;
-      }
-
-      // Check how many points were matched
-      const matchedCount = rawSurfaces.filter(Boolean).length;
-      if (matchedCount === 0) {
-        throw new Error("No points matched OSM ways within range.");
-      }
-
-      // Fill missing (null) values by interpolating along the route
-      const fullSurfaces: string[] = [];
-      let lastMatch = rawSurfaces.find(s => s !== null) || "Asphalt";
-
-      for (let i = 0; i < totalPts; i++) {
-        if (rawSurfaces[i] !== null) {
-          lastMatch = rawSurfaces[i]!;
-          fullSurfaces.push(lastMatch);
-        } else {
-          fullSurfaces.push(lastMatch);
-        }
-      }
-
-      // Smooth single outlying points (noise filter)
-      const smoothedSurfaces: string[] = [];
-      for (let i = 0; i < totalPts; i++) {
-        if (i > 0 && i < totalPts - 1) {
-          const prev = fullSurfaces[i - 1];
-          const curr = fullSurfaces[i];
-          const next = fullSurfaces[i + 1];
-          if (prev === next && curr !== prev) {
-            smoothedSurfaces.push(prev);
-            continue;
-          }
-        }
-        smoothedSurfaces.push(fullSurfaces[i]);
-      }
-
-      // Calculate stats based on actual matched surfaces
-      const surfaceStatsMap: Record<string, number> = {};
-      for (let i = 1; i < totalPts; i++) {
-        const p1 = points[i - 1];
-        const p2 = points[i];
-        const stepDistKm = getDistance(p1.lat, p1.lng, p2.lat, p2.lng) / 1000;
-        const sType = smoothedSurfaces[i] || "Asphalt";
-        surfaceStatsMap[sType] = (surfaceStatsMap[sType] || 0) + stepDistKm;
-      }
-
-      const surfaceStats = Object.entries(surfaceStatsMap)
-        .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
-        .sort((a, b) => b.distance - a.distance);
-
       return res.json({
-        surfaces: smoothedSurfaces,
-        surfaceStats,
-        isFallback: false,
+        ...result,
+        cached: false,
       });
-
-    } catch (apiErr: any) {
-      console.log("[OSM Surface API] Overpass lookup unavailable or unmatched. Running gradient-aware terrain analyzer.");
-
-      // INTELLIGENT GRADIENT & ALTITUDE AWARE TERRAIN ANALYZER
-      // Analyzes slopes, elevation profile, curvature, and track metadata to build a realistic surface profile
-      const nameLower = (name || "").toLowerCase();
-      const activityLower = (activityType || "").toLowerCase();
-
-      const isOffroadType =
-        activityLower.includes("gravel") ||
-        activityLower.includes("mtb") ||
-        activityLower.includes("mountain") ||
-        activityLower.includes("trail") ||
-        activityLower.includes("hiking") ||
-        activityLower.includes("wandern") ||
-        nameLower.includes("gravel") ||
-        nameLower.includes("mtb") ||
-        nameLower.includes("trail") ||
-        nameLower.includes("schotter") ||
-        nameLower.includes("wald") ||
-        nameLower.includes("offroad") ||
-        nameLower.includes("dirt") ||
-        nameLower.includes("unpaved") ||
-        nameLower.includes("alm") ||
-        nameLower.includes("forst");
-
-      const isRoadType =
-        activityLower.includes("road") ||
-        activityLower.includes("rennrad") ||
-        nameLower.includes("rennrad") ||
-        nameLower.includes("asphalt") ||
-        nameLower.includes("strasse") ||
-        nameLower.includes("straße");
-
-      // Compute local slope for each point
-      const slopes: number[] = [0];
-      const elevations: number[] = [points[0]?.ele || 0];
-
-      for (let i = 1; i < totalPts; i++) {
-        const p1 = points[i - 1];
-        const p2 = points[i];
-        const distM = getDistance(p1.lat, p1.lng, p2.lat, p2.lng);
-        const ele1 = p1.ele || 0;
-        const ele2 = p2.ele || 0;
-        elevations.push(ele2);
-        const slopePct = distM > 0 ? ((ele2 - ele1) / distM) * 100 : 0;
-        slopes.push(Math.abs(slopePct));
-      }
-
-      // Smooth slopes over window of 5 points
-      const smoothedSlopes: number[] = [];
-      for (let i = 0; i < totalPts; i++) {
-        let sum = 0, count = 0;
-        for (let k = Math.max(0, i - 2); k <= Math.min(totalPts - 1, i + 2); k++) {
-          sum += slopes[k];
-          count++;
-        }
-        smoothedSlopes.push(sum / count);
-      }
-
-      // Classify points based on terrain profile
-      const surfaces: string[] = [];
-      const firstPt = points[0] || { lat: 50.0, lng: 10.0 };
-      const seed = Math.abs(Math.sin(firstPt.lat * 12.9898 + firstPt.lng * 78.233) * 43758.5453);
-
-      for (let i = 0; i < totalPts; i++) {
-        const slope = smoothedSlopes[i];
-        const ele = elevations[i];
-        const posRatio = i / totalPts;
-        const pseudoRand = (Math.sin(i * 0.15 + seed) + 1) / 2; // 0 to 1 smooth noise
-
-        let surf = "Asphalt";
-
-        if (isOffroadType) {
-          // Offroad ride: Gravel, Forest, Trail
-          if (slope > 8 || ele > 700) {
-            surf = pseudoRand < 0.65 ? "Schotter" : "Waldweg";
-          } else if (slope > 4) {
-            surf = pseudoRand < 0.60 ? "Schotter" : (pseudoRand < 0.85 ? "Waldweg" : "Asphalt");
-          } else {
-            // Flat sections
-            surf = pseudoRand < 0.50 ? "Schotter" : (pseudoRand < 0.80 ? "Asphalt" : "Fahrradweg");
-          }
-        } else if (isRoadType) {
-          // Road ride: Mostly asphalt, occasional bike path
-          if (slope < 3 && pseudoRand > 0.82) {
-            surf = "Fahrradweg";
-          } else {
-            surf = "Asphalt";
-          }
-        } else {
-          // General ride: Mixed realistic profile based on slope & elevation
-          if (slope > 7 || ele > 800) {
-            surf = pseudoRand < 0.55 ? "Schotter" : (pseudoRand < 0.85 ? "Waldweg" : "Asphalt");
-          } else if (slope > 3) {
-            surf = pseudoRand < 0.35 ? "Schotter" : (pseudoRand < 0.85 ? "Asphalt" : "Fahrradweg");
-          } else {
-            surf = pseudoRand < 0.70 ? "Asphalt" : (pseudoRand < 0.90 ? "Fahrradweg" : "Schotter");
-          }
-        }
-
-        surfaces.push(surf);
-      }
-
-      // Smooth segment transitions (block contiguous surfaces into realistic min 200m chunks)
-      const chunkSize = Math.max(5, Math.floor(totalPts / 30));
-      const chunkedSurfaces: string[] = [];
-      for (let i = 0; i < totalPts; i += chunkSize) {
-        const slice = surfaces.slice(i, i + chunkSize);
-        // Find majority surface in chunk
-        const counts: Record<string, number> = {};
-        slice.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
-        const majority = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
-        for (let k = 0; k < slice.length; k++) {
-          chunkedSurfaces.push(majority);
-        }
-      }
-
-      // Calculate stats based on realistic terrain distribution
-      const surfaceStatsMap: Record<string, number> = {};
-      for (let i = 1; i < totalPts; i++) {
-        const p1 = points[i - 1];
-        const p2 = points[i];
-        const stepDistKm = getDistance(p1.lat, p1.lng, p2.lat, p2.lng) / 1000;
-        const sType = chunkedSurfaces[i] || "Asphalt";
-        surfaceStatsMap[sType] = (surfaceStatsMap[sType] || 0) + stepDistKm;
-      }
-
-      const surfaceStats = Object.entries(surfaceStatsMap)
-        .map(([type, distance]) => ({ type, distance: Math.round(distance * 10) / 10 }))
-        .sort((a, b) => b.distance - a.distance);
-
-      return res.json({
-        surfaces: chunkedSurfaces,
-        surfaceStats,
-        isFallback: true,
-        fallbackNotice: "OSM-Daten wurden simuliert basierend auf Geländemerkmale des Tracks.",
+    } catch (err: any) {
+      console.error("[Surface API] Unexpected error:", err?.message || err);
+      return res.status(500).json({
+        error: err?.message || "Fehler bei der Oberflächen-Analyse via Valhalla / OpenStreetMap.",
       });
     }
   });

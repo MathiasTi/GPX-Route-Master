@@ -8,7 +8,7 @@ import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
 import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
 import { PlannedToursView } from './components/PlannedToursView';
-import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Upload, Database, Sun, Moon, Lock, Sliders, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
 import {
   AppPreferences,
   DEFAULT_APP_PREFERENCES,
@@ -263,7 +263,6 @@ const App: React.FC = () => {
   }, []);
   const [catalogTotalCount, setCatalogTotalCount] = useState<number | null>(null);
   const [plannedToursCount, setPlannedToursCount] = useState<number | null>(null);
-  const [athleteProfileOpen, setAthleteProfileOpen] = useState(false);
   const [isProfileCollapsed, setIsProfileCollapsed] = useState(() => !loadAppPreferences().showElevationProfile);
   const [mobileProfileSnap, setMobileProfileSnap] = useState<'mini' | 'standard' | 'expanded'>('standard');
   const [showHint, setShowHint] = useState(false);
@@ -291,7 +290,19 @@ const App: React.FC = () => {
   });
 
   const [analyzingSurfaces, setAnalyzingSurfaces] = useState<Record<string, boolean>>({});
-  const [surfaceAnalysisStatuses, setSurfaceAnalysisStatuses] = useState<Record<string, { status: 'idle' | 'loading' | 'success' | 'error' | 'simulated'; message?: string; source?: 'osm' | 'terrain' | 'manual'; timestamp?: number }>>({});
+  const [surfaceAnalysisStatuses, setSurfaceAnalysisStatuses] = useState<
+    Record<
+      string,
+      {
+        status: 'idle' | 'loading' | 'success' | 'partial' | 'error';
+        message?: string;
+        source?: 'valhalla+osm' | 'valhalla' | 'overpass' | 'embedded' | 'osm' | 'manual' | 'unavailable';
+        coveragePct?: number;
+        cached?: boolean;
+        timestamp?: number;
+      }
+    >
+  >({});
 
   // --- Refs ---
   const analysisAttempted = useRef<Set<string>>(new Set());
@@ -746,7 +757,7 @@ const App: React.FC = () => {
     setAnalyzingSurfaces(prev => ({ ...prev, [trackId]: true }));
     setSurfaceAnalysisStatuses(prev => ({
       ...prev,
-      [trackId]: { status: 'loading', message: 'Strecke wird mit OpenStreetMap abgeglichen...' }
+      [trackId]: { status: 'loading', message: 'Valhalla Map-Matching & OSM-Korridor wird abgefragt...' }
     }));
 
     try {
@@ -756,7 +767,8 @@ const App: React.FC = () => {
       const requestPayload = safeStringifyOrFallback({
         points: pointsToAnalyze,
         name: trackName,
-        activityType: activityType
+        activityType: activityType,
+        force
       }, '{}');
 
       const requestHeaders = {
@@ -790,7 +802,7 @@ const App: React.FC = () => {
           if (t.id === trackId) {
             const updatedPoints = t.points.map((p, idx) => ({
               ...p,
-              surface: data.surfaces[idx] || "Asphalt"
+              surface: data.surfaces[idx] || "Unbekannt"
             }));
             return {
               ...t,
@@ -801,20 +813,60 @@ const App: React.FC = () => {
           return t;
         }));
 
-        const isSimulated = data.isFallback === true;
-        setSurfaceAnalysisStatuses(prev => ({
-          ...prev,
-          [trackId]: {
-            status: isSimulated ? 'simulated' : 'success',
-            source: isSimulated ? 'terrain' : 'osm',
-            message: isSimulated
-              ? (data.fallbackNotice || 'Geländebeschaffenheit anhand von Steigung & Höhe berechnet.')
-              : `Erfolgreich von OpenStreetMap ermittelt (${data.surfaceStats.length} Belagsarten)`,
-            timestamp: Date.now()
-          }
-        }));
+        const coveragePct = typeof data.coveragePct === 'number' ? data.coveragePct : 100;
+        const source = (data.source || 'valhalla+osm') as 'valhalla+osm' | 'valhalla' | 'overpass' | 'embedded' | 'unavailable';
+        const sourceLabel =
+          source === 'valhalla+osm'
+            ? 'Valhalla + OSM'
+            : source === 'valhalla'
+            ? 'Valhalla Map-Matching'
+            : source === 'overpass'
+            ? 'OSM-Korridor'
+            : source === 'embedded'
+            ? 'GPX-Metadaten'
+            : 'Keine OSM-/Valhalla-Daten';
+
+        const cacheSuffix = data.cached ? ' · Cache' : '';
+
+        if (coveragePct === 0 || source === 'unavailable') {
+          setSurfaceAnalysisStatuses(prev => ({
+            ...prev,
+            [trackId]: {
+              status: 'partial',
+              source: 'unavailable',
+              coveragePct: 0,
+              cached: Boolean(data.cached),
+              message: data.notice || 'Keine OSM-/Valhalla-Daten gefunden — Strecke als Unbekannt markiert.',
+              timestamp: Date.now()
+            }
+          }));
+        } else if (coveragePct < 100) {
+          setSurfaceAnalysisStatuses(prev => ({
+            ...prev,
+            [trackId]: {
+              status: 'partial',
+              source,
+              coveragePct,
+              cached: Boolean(data.cached),
+              message: `${sourceLabel}: ${coveragePct}% erfasst · übrige Abschnitte Unbekannt${cacheSuffix}`,
+              timestamp: Date.now()
+            }
+          }));
+        } else {
+          setSurfaceAnalysisStatuses(prev => ({
+            ...prev,
+            [trackId]: {
+              status: 'success',
+              source,
+              coveragePct: 100,
+              cached: Boolean(data.cached),
+              message: `${sourceLabel}: 100% verifiziert (${data.surfaceStats.length} Belagsarten)${cacheSuffix}`,
+              timestamp: Date.now()
+            }
+          }));
+        }
       } else {
-        throw new Error("Daten von OpenStreetMap sind unvollständig.");
+        throw new Error("Daten von Valhalla / OpenStreetMap sind unvollständig.");
       }
     } catch (err: any) {
       console.error("[Surface Analyzer] Error for track", trackId, err);
@@ -822,7 +874,7 @@ const App: React.FC = () => {
         ...prev,
         [trackId]: {
           status: 'error',
-          message: err.message || 'Verbindung zu OpenStreetMap fehlgeschlagen.',
+          message: err.message || 'Verbindung zu Valhalla / OpenStreetMap fehlgeschlagen.',
           timestamp: Date.now()
         }
       }));
@@ -2350,50 +2402,10 @@ const App: React.FC = () => {
           </button>
         </nav>
 
-        {/* Right Quick Actions (Import + Desktop Controls / Mobile Overflow Menu) */}
+        {/* Right Quick Actions (Desktop Controls / Mobile Overflow Menu) */}
         <div className="relative flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => topbarUploadInputRef.current?.click()}
-            className="min-h-[40px] lg:min-h-0 min-w-[40px] sm:min-w-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-xl lg:rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            title={tr(appPrefs.language, 'GPX, FIT oder ZIP importieren', 'Import GPX, FIT or ZIP')}
-            aria-label={tr(appPrefs.language, 'GPX, FIT oder ZIP importieren', 'Import GPX, FIT or ZIP')}
-          >
-            <Upload size={14} />
-            <span className="hidden sm:inline">{tr(appPrefs.language, 'Import', 'Import')}</span>
-          </button>
-
           {/* Desktop-only Secondary Controls */}
           <div className="hidden lg:flex items-center gap-1.5 shrink-0">
-            {activeWorkspaceView !== 'fitness' && (
-              <button
-                type="button"
-                onClick={() => openFitnessPage('personal-api')}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                title="Garmin Connect Sync (Personal API)"
-              >
-                <Database size={13} className="text-orange-500" />
-                <span>Garmin Sync</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setAthleteProfileOpen((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                athleteProfileOpen
-                  ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
-                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
-              }`}
-              title={tr(appPrefs.language, 'Athleten-Profil: Alter, Gewicht, FTP & Max. Puls', 'Athlete Profile: Age, Weight, FTP & Max HR')}
-            >
-              <Sliders size={13} className="text-amber-500" />
-              <span className="hidden xl:inline font-mono tabular-nums">
-                {ftp}W · {userWeight}kg · {userAge}{tr(appPrefs.language, 'J', 'y')}
-              </span>
-              <span className="xl:hidden">{tr(appPrefs.language, 'Profil', 'Profile')}</span>
-            </button>
-
             <button
               type="button"
               data-no-translate="true"
@@ -2479,37 +2491,6 @@ const App: React.FC = () => {
                   onClick={() => setMobileToolsMenuOpen(false)}
                 />
                 <div className="absolute right-0 top-full mt-1.5 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5">
-                  {activeWorkspaceView !== 'fitness' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMobileToolsMenuOpen(false);
-                        openFitnessPage('personal-api');
-                      }}
-                      className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                    >
-                      <Database size={15} className="text-orange-500" />
-                      <span>Garmin Connect Sync</span>
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileToolsMenuOpen(false);
-                      setAthleteProfileOpen(true);
-                    }}
-                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <Sliders size={15} className="text-amber-500" />
-                      <span>{tr(appPrefs.language, 'Athleten-Profil', 'Athlete Profile')}</span>
-                    </span>
-                    <span className="font-mono tabular-nums text-[10.5px] text-slate-400">
-                      {ftp}W · {userWeight}kg
-                    </span>
-                  </button>
-
                   <button
                     type="button"
                     data-no-translate="true"
@@ -2574,124 +2555,6 @@ const App: React.FC = () => {
               </>
             )}
           </div>
-
-          {/* Athlete Profile & Thresholds Popover (shared by Desktop & Mobile Overflow Menu) */}
-          {athleteProfileOpen && (
-            <>
-              <div
-                className="fixed inset-0 z-[1190]"
-                onClick={() => setAthleteProfileOpen(false)}
-              />
-              <div className="absolute right-0 top-full mt-2 w-[min(20rem,calc(100vw-1.25rem))] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 z-[1200] space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
-                  <div>
-                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-100">
-                      {tr(appPrefs.language, 'Athleten-Profil & Schwellenwerte', 'Athlete Profile & Thresholds')}
-                    </h4>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {tr(appPrefs.language, 'Relativleistung:', 'Power-to-weight:')}{' '}
-                      <strong className="font-mono text-amber-600 dark:text-amber-400">{(ftp / Math.max(1, userWeight)).toFixed(2)} W/kg</strong>
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setAthleteProfileOpen(false)}
-                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                    aria-label={tr(appPrefs.language, 'Schließen', 'Close')}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <label className="space-y-1 block">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      {tr(appPrefs.language, 'FTP (Watt)', 'FTP (Watts)')}
-                    </span>
-                    <input
-                      type="number"
-                      min={50}
-                      max={600}
-                      value={ftp}
-                      onChange={(e) => setFtp(Math.max(50, Math.min(600, parseInt(e.target.value) || 250)))}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-amber-600 dark:text-amber-400"
-                    />
-                  </label>
-
-                  <label className="space-y-1 block">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      {tr(appPrefs.language, 'Gewicht (kg)', 'Weight (kg)')}
-                    </span>
-                    <input
-                      type="number"
-                      min={30}
-                      max={200}
-                      step={0.5}
-                      value={userWeight}
-                      onChange={(e) => setUserWeight(Math.max(30, Math.min(200, parseFloat(e.target.value) || 75)))}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
-                    />
-                  </label>
-
-                  <label className="space-y-1 block">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      {tr(appPrefs.language, 'Alter (Jahre)', 'Age (Years)')}
-                    </span>
-                    <input
-                      type="number"
-                      min={10}
-                      max={100}
-                      value={userAge}
-                      onChange={(e) => setUserAge(Math.max(10, Math.min(100, parseInt(e.target.value) || 35)))}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100"
-                    />
-                  </label>
-
-                  <label className="space-y-1 block">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      {tr(appPrefs.language, 'Max. Puls (bpm)', 'Max HR (bpm)')}
-                    </span>
-                    <input
-                      type="number"
-                      min={100}
-                      max={230}
-                      value={userMaxHr}
-                      onChange={(e) => handleMaxHrChange(Math.max(100, Math.min(230, parseInt(e.target.value) || 185)))}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-rose-600 dark:text-rose-400"
-                    />
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => handleMaxHrChange(Math.max(120, Math.min(220, 220 - userAge)))}
-                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
-                  >
-                    HFmax = 220 − {tr(appPrefs.language, 'Alter', 'Age')} ({220 - userAge})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAthleteProfileOpen(false)}
-                    className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold cursor-pointer"
-                  >
-                    {tr(appPrefs.language, 'Fertig', 'Done')}
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAthleteProfileOpen(false);
-                    openSettingsModal('athlete');
-                  }}
-                  className="w-full py-1.5 px-2.5 rounded-lg border border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/70 dark:bg-indigo-950/40 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors cursor-pointer text-center"
-                >
-                  {tr(appPrefs.language, 'Alle Einstellungen & UI-Stile öffnen...', 'Open All Settings & UI Styles...')}
-                </button>
-              </div>
-            </>
-          )}
         </div>
       </header>
 
@@ -2789,7 +2652,7 @@ const App: React.FC = () => {
             onDatabaseCountChange={setCatalogTotalCount}
             onOpenDashboard={() => navigateWorkspace('dashboard')}
             onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-            onOpenGarminSync={() => openFitnessPage('personal-api')}
+            onOpenGarminSync={() => openSettingsModal('garmin')}
             onBackToMap={() => navigateWorkspace('map')}
           />
         )}
@@ -2804,7 +2667,7 @@ const App: React.FC = () => {
             onLoadTracksToMap={handleLoadCatalogTracksToMap}
             onOpenActivitiesArchive={() => navigateWorkspace('activities')}
             onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-            onOpenGarminSync={() => openFitnessPage('personal-api')}
+            onOpenGarminSync={() => openSettingsModal('garmin')}
             onBackToMap={() => navigateWorkspace('map')}
           />
         )}
@@ -3389,6 +3252,16 @@ const App: React.FC = () => {
             onSelectMapLayer={setActiveLayer}
             tracks={tracks}
             isOnline={isOnline}
+            onGarminDataSynced={refreshCatalogTotalCount}
+            onLoadGarminTrack={(tr) => {
+              handleLoadLibraryTrack(tr);
+              if (hasRealGpsData(tr)) {
+                navigateWorkspace('map');
+              } else {
+                setIntensiveAnalysisTab('overview');
+                setIntensiveAnalysisOpen(true);
+              }
+            }}
           />
         )}
       </AnimatePresence>

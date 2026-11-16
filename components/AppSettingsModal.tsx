@@ -32,6 +32,7 @@ import {
   purgeTileCache,
   OfflineStatusSnapshot
 } from '../services/offlineCacheService';
+import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import {
   AppPreferences,
   AppLanguage,
@@ -46,7 +47,7 @@ import {
   tr
 } from '../utils/appSettings';
 
-export type AppSettingsTab = 'style' | 'language' | 'athlete' | 'workspace' | 'storage';
+export type AppSettingsTab = 'style' | 'language' | 'athlete' | 'garmin' | 'workspace' | 'storage';
 
 export interface AppSettingsModalProps {
   isOpen: boolean;
@@ -69,6 +70,8 @@ export interface AppSettingsModalProps {
   onSelectMapLayer: (layer: MapLayer) => void;
   tracks?: GPXTrack[];
   isOnline?: boolean;
+  onGarminDataSynced?: () => void;
+  onLoadGarminTrack?: (track: GPXTrack) => void;
 }
 
 export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
@@ -91,7 +94,9 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   activeLayer,
   onSelectMapLayer,
   tracks = [],
-  isOnline = true
+  isOnline = true,
+  onGarminDataSynced,
+  onLoadGarminTrack
 }) => {
   const [activeTab, setActiveTab] = useState<AppSettingsTab>(initialTab);
   const [storageSnapshot, setStorageSnapshot] = useState<OfflineStatusSnapshot | null>(null);
@@ -191,6 +196,11 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
       id: 'athlete',
       label: t('Athlet & Zonen', 'Athlete & Zones'),
       icon: <User size={15} />
+    },
+    {
+      id: 'garmin',
+      label: t('Garmin Sync', 'Garmin Sync'),
+      icon: <Database size={15} />
     },
     {
       id: 'workspace',
@@ -739,6 +749,19 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   Tanaka (208 − 0.7×{userAge}) = {tanakaMaxHr} bpm
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'garmin' && (
+            <div className="space-y-4">
+              <GarminPersonalApiPanel
+                onDataSynced={onGarminDataSynced}
+                onLoadTrack={(tr) => {
+                  onLoadGarminTrack?.(tr);
+                  onClose();
+                }}
+                onCloseModal={onClose}
+              />
             </div>
           )}
 

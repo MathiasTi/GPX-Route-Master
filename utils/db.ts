@@ -289,6 +289,14 @@ function ensureCoreSchema() {
       created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS surface_analysis_cache (
+      route_hash TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      coverage_pct INTEGER NOT NULL,
+      surfaces_json TEXT NOT NULL,
+      stats_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Run graceful schema migrations on existing database tables
@@ -3518,3 +3526,107 @@ export function bulkDeleteCatalogActivities(
     return deletedCount;
   });
 }
+
+export interface SurfaceAnalysisCacheEntry {
+  routeHash: string;
+  source: string;
+  coveragePct: number;
+  surfaces: string[];
+  surfaceStats: { type: string; distance: number }[];
+  createdAt: number;
+}
+
+export function computeRouteSurfaceHash(
+  points: { lat: number; lng: number }[],
+  activityType?: string
+): string {
+  const total = points.length;
+  const maxSamples = 64;
+  const coords: string[] = [];
+  if (total <= maxSamples) {
+    for (let i = 0; i < total; i++) {
+      coords.push(`${Number(points[i].lat).toFixed(4)},${Number(points[i].lng).toFixed(4)}`);
+    }
+  } else {
+    const step = (total - 1) / (maxSamples - 1);
+    for (let i = 0; i < maxSamples; i++) {
+      const p = points[Math.min(total - 1, Math.round(i * step))];
+      coords.push(`${Number(p.lat).toFixed(4)},${Number(p.lng).toFixed(4)}`);
+    }
+  }
+  const payload = `v2|${total}|${(activityType || '').toLowerCase()}|${coords.join(';')}`;
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+export function getSurfaceAnalysisCache(routeHash: string): SurfaceAnalysisCacheEntry | null {
+  return executeWithCorruptionRecovery(() => {
+    const ttlMs = 30 * 24 * 60 * 60 * 1000;
+    const minCreatedAt = Date.now() - ttlMs;
+    const row = db
+      .prepare(
+        `SELECT route_hash, source, coverage_pct, surfaces_json, stats_json, created_at
+         FROM surface_analysis_cache
+         WHERE route_hash = ? AND created_at >= ?`
+      )
+      .get(routeHash, minCreatedAt) as
+      | {
+          route_hash: string;
+          source: string;
+          coverage_pct: number;
+          surfaces_json: string;
+          stats_json: string;
+          created_at: number;
+        }
+      | undefined;
+    if (!row) return null;
+    try {
+      const surfaces = JSON.parse(row.surfaces_json);
+      const surfaceStats = JSON.parse(row.stats_json);
+      if (!Array.isArray(surfaces) || !Array.isArray(surfaceStats)) return null;
+      return {
+        routeHash: row.route_hash,
+        source: row.source,
+        coveragePct: Number(row.coverage_pct) || 0,
+        surfaces,
+        surfaceStats,
+        createdAt: Number(row.created_at) || Date.now(),
+      };
+    } catch {
+      return null;
+    }
+  });
+}
+
+export function saveSurfaceAnalysisCache(entry: {
+  routeHash: string;
+  source: string;
+  coveragePct: number;
+  surfaces: string[];
+  surfaceStats: { type: string; distance: number }[];
+}): void {
+  executeWithCorruptionRecovery(() => {
+    const now = Date.now();
+    db.prepare(
+      `INSERT OR REPLACE INTO surface_analysis_cache (route_hash, source, coverage_pct, surfaces_json, stats_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      entry.routeHash,
+      entry.source,
+      Math.max(0, Math.min(100, Math.round(entry.coveragePct))),
+      JSON.stringify(entry.surfaces),
+      JSON.stringify(entry.surfaceStats),
+      now
+    );
+
+    // Prune stale (>30d) or excess (>400 rows) entries to keep DB compact
+    const ttlCutoff = now - 30 * 24 * 60 * 60 * 1000;
+    db.prepare(`DELETE FROM surface_analysis_cache WHERE created_at < ?`).run(ttlCutoff);
+    db.prepare(
+      `DELETE FROM surface_analysis_cache
+       WHERE route_hash NOT IN (
+         SELECT route_hash FROM surface_analysis_cache ORDER BY created_at DESC LIMIT 400
+       )`
+    ).run();
+  });
+}
+

@@ -7,7 +7,7 @@ import {
 import { Result, ok, err } from '../domain/core/result';
 import { clearSWTileCache } from '../utils/serviceWorker';
 import {
-  DEFAULT_MAX_TILE_CACHE_BYTES,
+  getConfiguredTileCachePolicy,
   getTileCacheStats,
   clearTileCache
 } from '../utils/tileCacheDb';
@@ -18,6 +18,8 @@ export interface OfflineStatusSnapshot {
   readonly tileCount: number;
   readonly tileCacheBytes: number;
   readonly maxTileCacheBytes: number;
+  readonly maxTileCount: number;
+  readonly tileCacheEnabled: boolean;
   readonly tileLayers: Record<string, { count: number; bytes: number }>;
   readonly shellCount: number;
   readonly trackCount: number;
@@ -102,9 +104,10 @@ export async function getOfflineStatusSnapshot(
   isSyncing: boolean = false
 ): Promise<Result<OfflineStatusSnapshot, Error>> {
   try {
+    const policy = getConfiguredTileCachePolicy();
     const [quota, idbStats] = await Promise.all([
       queryStorageQuota(),
-      getTileCacheStats(DEFAULT_MAX_TILE_CACHE_BYTES)
+      getTileCacheStats(policy.maxBytes, policy.maxCount)
     ]);
 
     const trackFootprint = analyzeTrackFootprint(tracks);
@@ -120,6 +123,8 @@ export async function getOfflineStatusSnapshot(
       tileCount: idbStats.tileCount,
       tileCacheBytes: idbStats.tileCacheBytes,
       maxTileCacheBytes: idbStats.maxTileCacheBytes,
+      maxTileCount: idbStats.maxTileCount,
+      tileCacheEnabled: policy.enabled,
       tileLayers: idbStats.layers,
       shellCount: 1,
       trackCount: trackFootprint.count,

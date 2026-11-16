@@ -47,7 +47,13 @@ import {
   CatalogActivityCategory,
   computeRouteSurfaceHash,
   getSurfaceAnalysisCache,
-  saveSurfaceAnalysisCache
+  saveSurfaceAnalysisCache,
+  renameTourGroup,
+  batchAssignTourGroup,
+  getSurfaceCacheConfig,
+  saveSurfaceCacheConfig,
+  getSurfaceCacheStats,
+  clearSurfaceAnalysisCache
 } from "./utils/db.js";
 import { analyzeRouteSurfacePipeline } from "./utils/surfaceAnalyzer.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
@@ -781,6 +787,39 @@ async function startServer() {
     }
   });
 
+  // Configurable Surface Analysis Cache endpoints
+  app.get("/api/cache/surface", (_req, res) => {
+    try {
+      res.json({ success: true, stats: getSurfaceCacheStats() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to read surface cache stats" });
+    }
+  });
+
+  app.put("/api/cache/surface/config", (req, res) => {
+    try {
+      const { enabled, ttlDays, maxEntries } = req.body || {};
+      const stats = saveSurfaceCacheConfig({
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+        ...(ttlDays !== undefined ? { ttlDays: Number(ttlDays) } : {}),
+        ...(maxEntries !== undefined ? { maxEntries: Number(maxEntries) } : {}),
+      });
+      res.json({ success: true, stats });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to update surface cache config" });
+    }
+  });
+
+  app.delete("/api/cache/surface", (_req, res) => {
+    try {
+      const deletedCount = clearSurfaceAnalysisCache();
+      downsampledPointsCache.clear();
+      res.json({ success: true, deletedCount, stats: getSurfaceCacheStats() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to clear surface cache" });
+    }
+  });
+
   // POST /api/intensive-analysis: Deep intensive GPS track analysis with time, calories, route tips, events & food/water discovery
   app.post("/api/intensive-analysis", async (req, res) => {
     try {
@@ -1276,6 +1315,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           description: r.description || "",
           tags: r.tags ? r.tags.split(",").map(t => t.trim()).filter(Boolean) : [],
           dateCreated: r.date_created,
+          tourGroup: r.tour_group || "",
+          addedAt: r.added_at ?? undefined,
           originalFilename: r.original_filename,
           maxSlope: r.max_slope !== undefined && r.max_slope !== null ? r.max_slope : 0,
           color: r.color || '#3b82f6',
@@ -1343,6 +1384,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         description: r.description || "",
         tags: parsedTags,
         dateCreated: r.date_created,
+        tourGroup: r.tour_group || "",
+        addedAt: r.added_at ?? undefined,
         originalFilename: r.original_filename,
         points,
         powerStats: r.power_stats_json ? safeJsonParse(r.power_stats_json, undefined).data : undefined,
@@ -1377,6 +1420,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         description,
         tags,
         dateCreated,
+        tourGroup,
+        addedAt,
         originalFilename,
         points,
         powerStats,
@@ -1451,6 +1496,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         description: safeDesc,
         tags: tagsList.join(","),
         dateCreated: dateCreated ? String(dateCreated).slice(0, 40) : undefined,
+        tourGroup: typeof tourGroup === "string" ? tourGroup.trim().slice(0, 120) : undefined,
+        addedAt: typeof addedAt === "number" && Number.isFinite(addedAt) ? addedAt : undefined,
         originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : (rawFileDetails?.fileName ? String(rawFileDetails.fileName).slice(0, 255) : undefined),
         points,
         powerStats,
@@ -1543,6 +1590,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           description: safeDesc,
           tags: tagsStr,
           dateCreated: track.dateCreated ? String(track.dateCreated).slice(0, 40) : undefined,
+          tourGroup: typeof track.tourGroup === "string" ? track.tourGroup.trim().slice(0, 120) : undefined,
+          addedAt: typeof track.addedAt === "number" && Number.isFinite(track.addedAt) ? track.addedAt : undefined,
           originalFilename: track.originalFilename ? String(track.originalFilename).slice(0, 255) : (track.rawFileDetails?.fileName ? String(track.rawFileDetails.fileName).slice(0, 255) : undefined),
           points: track.points,
           powerStats: track.powerStats,
@@ -1563,6 +1612,38 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  // Library API: Rename a custom tour group atomically across all matching tracks
+  app.put("/api/library/groups/rename", (req, res) => {
+    try {
+      const oldName = typeof req.body?.oldName === "string" ? req.body.oldName.trim().slice(0, 120) : "";
+      const newName = typeof req.body?.newName === "string" ? req.body.newName.trim().slice(0, 120) : "";
+      if (!oldName || !newName) {
+        return res.status(400).json({ success: false, error: "Alter und neuer Gruppenname sind erforderlich." });
+      }
+      const updatedCount = renameTourGroup(oldName, newName);
+      res.json({ success: true, updatedCount, oldName, newName });
+    } catch (err: any) {
+      console.error("Error renaming tour group:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to rename tour group" });
+    }
+  });
+
+  // Library API: Batch assign or unassign multiple tracks to a custom tour group
+  app.post("/api/library/groups/assign", (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((v: any) => String(v)) : [];
+      const tourGroup = typeof req.body?.tourGroup === "string" ? req.body.tourGroup.trim().slice(0, 120) : "";
+      if (ids.length === 0) {
+        return res.status(400).json({ success: false, error: "Keine Touren für Gruppenzuweisung ausgewählt." });
+      }
+      const updatedCount = batchAssignTourGroup(ids, tourGroup);
+      res.json({ success: true, updatedCount, tourGroup });
+    } catch (err: any) {
+      console.error("Error assigning tour group:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to assign tour group" });
+    }
+  });
+
   // Library API: Update metadata of a specific track
   app.put("/api/library/:id", (req, res) => {
     try {
@@ -1571,7 +1652,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         return res.status(400).json({ success: false, error: "Invalid track ID." });
       }
 
-      const { name, description, tags, activityType, dateCreated } = req.body;
+      const { name, description, tags, activityType, dateCreated, tourGroup } = req.body;
 
       if (!name || typeof name !== "string" || name.trim().length === 0) {
         return res.status(400).json({ success: false, error: "Name is a required field." });
@@ -1587,7 +1668,8 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         description: safeDesc,
         tags: tagsStr,
         activityType: safeActivityType,
-        dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined
+        dateCreated: dateCreated ? String(dateCreated).slice(0, 30) : undefined,
+        ...(tourGroup !== undefined ? { tourGroup: String(tourGroup || "").trim().slice(0, 120) } : {})
       });
 
       res.json({ success: true });

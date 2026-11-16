@@ -1,5 +1,30 @@
+import { loadAppPreferences } from './appSettings';
+
 export const DEFAULT_MAX_TILE_CACHE_BYTES = 150 * 1024 * 1024; // 150 MB quota cap
 export const DEFAULT_MAX_TILE_COUNT = 3500;
+
+export interface TileCachePolicy {
+  enabled: boolean;
+  maxBytes: number;
+  maxCount: number;
+}
+
+export function getConfiguredTileCachePolicy(): TileCachePolicy {
+  try {
+    const prefs = loadAppPreferences();
+    return {
+      enabled: prefs.tileCacheEnabled,
+      maxBytes: Math.max(25, prefs.tileCacheMaxMb) * 1024 * 1024,
+      maxCount: Math.max(250, prefs.tileCacheMaxCount),
+    };
+  } catch {
+    return {
+      enabled: true,
+      maxBytes: DEFAULT_MAX_TILE_CACHE_BYTES,
+      maxCount: DEFAULT_MAX_TILE_COUNT,
+    };
+  }
+}
 
 const DB_NAME = 'gpx_master_tile_cache';
 const DB_VERSION = 1;
@@ -124,9 +149,12 @@ function touchTileLastAccessed(db: IDBDatabase, key: string, now: number): void 
 }
 
 export async function enforceTileCacheQuota(
-  maxBytes: number = DEFAULT_MAX_TILE_CACHE_BYTES,
-  maxCount: number = DEFAULT_MAX_TILE_COUNT
+  maxBytes?: number,
+  maxCount?: number
 ): Promise<number> {
+  const policy = getConfiguredTileCachePolicy();
+  const effectiveMaxBytes = maxBytes ?? policy.maxBytes;
+  const effectiveMaxCount = maxCount ?? policy.maxCount;
   const db = await openTileDb();
   if (!db) return 0;
 
@@ -155,7 +183,7 @@ export async function enforceTileCacheQuota(
         }
 
         // Cursor iteration finished (already ordered oldest lastAccessedAt -> newest)
-        if (totalBytes <= maxBytes && entries.length <= maxCount) {
+        if (totalBytes <= effectiveMaxBytes && entries.length <= effectiveMaxCount) {
           resolve(0);
           return;
         }
@@ -163,7 +191,7 @@ export async function enforceTileCacheQuota(
         let evicted = 0;
         let currentCount = entries.length;
         for (const entry of entries) {
-          if (totalBytes <= maxBytes && currentCount <= maxCount) break;
+          if (totalBytes <= effectiveMaxBytes && currentCount <= effectiveMaxCount) break;
           store.delete(entry.key);
           totalBytes -= entry.byteSize;
           currentCount--;
@@ -184,9 +212,13 @@ export async function putCachedTileBlob(
   layerId: string,
   url: string,
   blob: Blob,
-  maxBytes: number = DEFAULT_MAX_TILE_CACHE_BYTES,
-  maxCount: number = DEFAULT_MAX_TILE_COUNT
+  maxBytes?: number,
+  maxCount?: number
 ): Promise<void> {
+  const policy = getConfiguredTileCachePolicy();
+  if (!policy.enabled) return;
+  const effectiveMaxBytes = maxBytes ?? policy.maxBytes;
+  const effectiveMaxCount = maxCount ?? policy.maxCount;
   if (!(blob instanceof Blob) || blob.size === 0) return;
   const db = await openTileDb();
   if (!db) return;
@@ -218,19 +250,22 @@ export async function putCachedTileBlob(
   // Throttle LRU quota sweep so rapid map panning avoids extra cursor scans
   if (now - lastEvictionAt > 15_000) {
     lastEvictionAt = now;
-    void enforceTileCacheQuota(maxBytes, maxCount);
+    void enforceTileCacheQuota(effectiveMaxBytes, effectiveMaxCount);
   }
 }
 
 export async function getTileCacheStats(
-  maxBytes: number = DEFAULT_MAX_TILE_CACHE_BYTES,
-  maxCount: number = DEFAULT_MAX_TILE_COUNT
+  maxBytes?: number,
+  maxCount?: number
 ): Promise<TileCacheStats> {
+  const policy = getConfiguredTileCachePolicy();
+  const effectiveMaxBytes = maxBytes ?? policy.maxBytes;
+  const effectiveMaxCount = maxCount ?? policy.maxCount;
   const empty: TileCacheStats = {
     tileCount: 0,
     tileCacheBytes: 0,
-    maxTileCacheBytes: maxBytes,
-    maxTileCount: maxCount,
+    maxTileCacheBytes: effectiveMaxBytes,
+    maxTileCount: effectiveMaxCount,
     layers: {}
   };
 
@@ -265,8 +300,8 @@ export async function getTileCacheStats(
         resolve({
           tileCount,
           tileCacheBytes,
-          maxTileCacheBytes: maxBytes,
-          maxTileCount: maxCount,
+          maxTileCacheBytes: effectiveMaxBytes,
+          maxTileCount: effectiveMaxCount,
           layers
         });
       };

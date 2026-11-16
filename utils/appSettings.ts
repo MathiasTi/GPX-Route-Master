@@ -32,6 +32,12 @@ export interface AppPreferences {
   showElevationProfile: boolean;
   enableAnimations: boolean;
   enableHaptics: boolean;
+  tileCacheEnabled: boolean;
+  tileCacheMaxMb: number;
+  tileCacheMaxCount: number;
+  surfaceCacheEnabled: boolean;
+  surfaceCacheTtlDays: number;
+  surfaceCacheMaxEntries: number;
 }
 
 export const APP_PREFERENCES_STORAGE_KEY = 'velo_app_preferences_v1';
@@ -51,7 +57,13 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   autoSurfaceAnalysis: false,
   showElevationProfile: true,
   enableAnimations: true,
-  enableHaptics: true
+  enableHaptics: true,
+  tileCacheEnabled: true,
+  tileCacheMaxMb: 150,
+  tileCacheMaxCount: 3500,
+  surfaceCacheEnabled: true,
+  surfaceCacheTtlDays: 30,
+  surfaceCacheMaxEntries: 400
 };
 
 export interface UiStylePresetMeta {
@@ -154,6 +166,10 @@ export function sanitizeAppPreferences(raw: unknown): AppPreferences {
   const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const bikeWeightNum = Number(input.bikeWeight);
   const rhrNum = Number(input.rhrBaseline);
+  const tileMaxMbNum = Number(input.tileCacheMaxMb);
+  const tileMaxCountNum = Number(input.tileCacheMaxCount);
+  const surfaceTtlNum = Number(input.surfaceCacheTtlDays);
+  const surfaceMaxNum = Number(input.surfaceCacheMaxEntries);
 
   return {
     language: VALID_LANGUAGES.has(input.language as AppLanguage)
@@ -207,7 +223,31 @@ export function sanitizeAppPreferences(raw: unknown): AppPreferences {
     enableHaptics:
       typeof input.enableHaptics === 'boolean'
         ? input.enableHaptics
-        : DEFAULT_APP_PREFERENCES.enableHaptics
+        : DEFAULT_APP_PREFERENCES.enableHaptics,
+    tileCacheEnabled:
+      typeof input.tileCacheEnabled === 'boolean'
+        ? input.tileCacheEnabled
+        : DEFAULT_APP_PREFERENCES.tileCacheEnabled,
+    tileCacheMaxMb:
+      Number.isFinite(tileMaxMbNum) && tileMaxMbNum >= 25 && tileMaxMbNum <= 1000
+        ? Math.round(tileMaxMbNum)
+        : DEFAULT_APP_PREFERENCES.tileCacheMaxMb,
+    tileCacheMaxCount:
+      Number.isFinite(tileMaxCountNum) && tileMaxCountNum >= 250 && tileMaxCountNum <= 25000
+        ? Math.round(tileMaxCountNum)
+        : DEFAULT_APP_PREFERENCES.tileCacheMaxCount,
+    surfaceCacheEnabled:
+      typeof input.surfaceCacheEnabled === 'boolean'
+        ? input.surfaceCacheEnabled
+        : DEFAULT_APP_PREFERENCES.surfaceCacheEnabled,
+    surfaceCacheTtlDays:
+      Number.isFinite(surfaceTtlNum) && surfaceTtlNum >= 1 && surfaceTtlNum <= 365
+        ? Math.round(surfaceTtlNum)
+        : DEFAULT_APP_PREFERENCES.surfaceCacheTtlDays,
+    surfaceCacheMaxEntries:
+      Number.isFinite(surfaceMaxNum) && surfaceMaxNum >= 50 && surfaceMaxNum <= 5000
+        ? Math.round(surfaceMaxNum)
+        : DEFAULT_APP_PREFERENCES.surfaceCacheMaxEntries
   };
 }
 

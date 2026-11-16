@@ -21,11 +21,15 @@ import {
   Layers,
   ArrowRight,
   Tag,
-  Gauge,
   CheckSquare,
   Square,
   SlidersHorizontal,
-  GitCompare
+  GitCompare,
+  Folder,
+  FolderPlus,
+  ChevronDown,
+  ChevronRight,
+  Pencil
 } from 'lucide-react';
 import { GPXTrack, SurfaceSegment } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
@@ -53,6 +57,8 @@ export interface PlannedTourMeta {
   description: string;
   tags: string[];
   dateCreated: string;
+  tourGroup?: string;
+  addedAt?: number;
   originalFilename?: string;
   hasTimestamps?: boolean;
   surfaceStats?: SurfaceSegment[];
@@ -78,7 +84,38 @@ export interface PlannedToursViewProps {
 }
 
 type DifficultyLevel = 'leicht' | 'mittel' | 'schwer';
-type SortOption = 'stage-asc' | 'dist-desc' | 'ascent-desc' | 'difficulty-desc' | 'date-desc' | 'name-asc';
+type SortOption = 'added-desc' | 'stage-asc' | 'dist-desc' | 'ascent-desc' | 'difficulty-desc' | 'date-desc' | 'name-asc';
+type GroupByOption = 'none' | 'custom' | 'sport' | 'difficulty' | 'month';
+type DistanceFilterOption = 'all' | 'lt40' | '40-80' | '80-130' | 'gt130';
+type AscentFilterOption = 'all' | 'lt500' | '500-1200' | 'gt1200';
+
+const UNGROUPED_KEY = '__ungrouped__';
+const MONTH_LABELS_DE = [
+  'Januar',
+  'Februar',
+  'März',
+  'April',
+  'Mai',
+  'Juni',
+  'Juli',
+  'August',
+  'September',
+  'Oktober',
+  'November',
+  'Dezember'
+];
+
+function formatMonthGroup(dateStr?: string): { key: string; label: string } {
+  const clean = String(dateStr || '').trim();
+  const match = clean.match(/^(\d{4})-(\d{2})/);
+  if (!match) {
+    return { key: 'month-unknown', label: 'Ohne Datum' };
+  }
+  const year = match[1];
+  const monthIdx = parseInt(match[2], 10) - 1;
+  const monthName = MONTH_LABELS_DE[monthIdx] || match[2];
+  return { key: `${year}-${match[2]}`, label: `${monthName} ${year}` };
+}
 
 function isPlannedTourItem(item: PlannedTourMeta): boolean {
   const idLower = (item.id || '').toLowerCase();
@@ -373,12 +410,35 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [sportFilter, setSportFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [difficultyFilter, setDifficultyFilter] = useState<'all' | DifficultyLevel>('all');
+  const [distanceFilter, setDistanceFilter] = useState<DistanceFilterOption>('all');
+  const [ascentFilter, setAscentFilter] = useState<AscentFilterOption>('all');
   const [activeCollection, setActiveCollection] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<SortOption>('stage-asc');
+  const [sortBy, setSortBy] = useState<SortOption>('added-desc');
+  const [groupBy, setGroupBy] = useState<GroupByOption>(() => {
+    try {
+      const saved = window.localStorage.getItem('velo_planned_group_by');
+      if (saved === 'none' || saved === 'custom' || saved === 'sport' || saved === 'difficulty' || saved === 'month') {
+        return saved;
+      }
+    } catch {}
+    return 'none';
+  });
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [renamingGroupKey, setRenamingGroupKey] = useState<string | null>(null);
+  const [renameGroupValue, setRenameGroupValue] = useState('');
+  const [isRenamingGroup, setIsRenamingGroup] = useState(false);
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
-  const [planningSpeedKmh, setPlanningSpeedKmh] = useState<number>(() =>
-    Math.max(12, Math.min(35, Math.round(estimatedSpeed || 20)))
-  );
+  const [batchAssignTarget, setBatchAssignTarget] = useState<string>('');
+  const [batchNewGroupName, setBatchNewGroupName] = useState<string>('');
+  const [isAssigningBatchGroup, setIsAssigningBatchGroup] = useState(false);
+
+  const effectivePlanningSpeed = Math.max(8, estimatedSpeed || 20);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('velo_planned_group_by', groupBy);
+    } catch {}
+  }, [groupBy]);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -391,6 +451,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
     name: '',
     description: '',
     tags: '',
+    tourGroup: '',
     activityType: 'cycling' as 'cycling' | 'running',
     dateCreated: ''
   });
@@ -507,14 +568,19 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
     [workspaceTracks]
   );
 
-  // Build detected collection tags & smart filter buckets
+  // Build detected collection tags, custom groups & smart filter buckets
   const collections = useMemo(() => {
     const tagCounts = new Map<string, number>();
+    const groupCounts = new Map<string, number>();
     let alpineStageCount = 0;
 
     for (const tour of tours) {
       if (extractStageNumber(tour.name) !== null || tour.name.toLowerCase().includes('alpentour')) {
         alpineStageCount++;
+      }
+      const grp = String(tour.tourGroup || '').trim();
+      if (grp) {
+        groupCounts.set(grp, (groupCounts.get(grp) || 0) + 1);
       }
       for (const rawTag of tour.tags || []) {
         const clean = rawTag.trim();
@@ -523,12 +589,17 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
       }
     }
 
+    const sortedGroups = Array.from(groupCounts.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0], 'de', { numeric: true })
+    );
+
     const sortedTags = Array.from(tagCounts.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'de'))
       .slice(0, 8);
 
     return {
       alpineStageCount,
+      groups: sortedGroups,
       tags: sortedTags
     };
   }, [tours]);
@@ -540,12 +611,29 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
       if (sportFilter !== 'all' && tour.activityType !== sportFilter) return false;
       if (difficultyFilter !== 'all' && computeTourDifficulty(tour).level !== difficultyFilter) return false;
 
+      const dist = Number(tour.distance || 0);
+      if (distanceFilter === 'lt40' && !(dist < 40)) return false;
+      if (distanceFilter === '40-80' && !(dist >= 40 && dist <= 80)) return false;
+      if (distanceFilter === '80-130' && !(dist > 80 && dist <= 130)) return false;
+      if (distanceFilter === 'gt130' && !(dist > 130)) return false;
+
+      const asc = Number(tour.ascent || 0);
+      if (ascentFilter === 'lt500' && !(asc < 500)) return false;
+      if (ascentFilter === '500-1200' && !(asc >= 500 && asc <= 1200)) return false;
+      if (ascentFilter === 'gt1200' && !(asc > 1200)) return false;
+
+      const tourGroupClean = String(tour.tourGroup || '').trim();
       if (activeCollection === '__workspace__') {
         if (!workspaceTrackIdSet.has(tour.id)) return false;
       } else if (activeCollection === '__stages__') {
         if (extractStageNumber(tour.name) === null && !tour.name.toLowerCase().includes('alpentour')) {
           return false;
         }
+      } else if (activeCollection === '__ungrouped__') {
+        if (tourGroupClean.length > 0) return false;
+      } else if (activeCollection.startsWith('group:')) {
+        const targetGroup = activeCollection.slice('group:'.length);
+        if (tourGroupClean !== targetGroup) return false;
       } else if (activeCollection !== 'all') {
         if (!(tour.tags || []).some((t) => t.trim().toLowerCase() === activeCollection.toLowerCase())) {
           return false;
@@ -556,6 +644,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
         const haystack = [
           tour.name,
           tour.description,
+          tour.tourGroup,
           tour.originalFilename,
           ...(tour.tags || [])
         ]
@@ -569,6 +658,13 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
     });
 
     const sorted = [...filtered].sort((a, b) => {
+      if (sortBy === 'added-desc') {
+        const addedDiff = (b.addedAt || 0) - (a.addedAt || 0);
+        if (addedDiff !== 0) return addedDiff;
+        const dateDiff = new Date(b.dateCreated || 0).getTime() - new Date(a.dateCreated || 0).getTime();
+        if (dateDiff !== 0) return dateDiff;
+        return a.name.localeCompare(b.name, 'de', { numeric: true });
+      }
       if (sortBy === 'stage-asc') {
         const stageA = extractStageNumber(a.name);
         const stageB = extractStageNumber(b.name);
@@ -591,7 +687,100 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
     });
 
     return sorted;
-  }, [tours, searchQuery, sportFilter, difficultyFilter, activeCollection, sortBy, workspaceTrackIdSet]);
+  }, [
+    tours,
+    searchQuery,
+    sportFilter,
+    difficultyFilter,
+    distanceFilter,
+    ascentFilter,
+    activeCollection,
+    sortBy,
+    workspaceTrackIdSet
+  ]);
+
+  const groupedSections = useMemo(() => {
+    if (groupBy === 'none') {
+      return [
+        {
+          key: '__all__',
+          label: 'Alle Touren',
+          editable: false,
+          tours: filteredAndSortedTours,
+          totalDist: filteredAndSortedTours.reduce((acc, t) => acc + (t.distance || 0), 0),
+          totalAscent: filteredAndSortedTours.reduce((acc, t) => acc + (t.ascent || 0), 0)
+        }
+      ];
+    }
+
+    const bucketMap = new Map<
+      string,
+      { key: string; label: string; editable: boolean; orderHint: string; tours: PlannedTourMeta[] }
+    >();
+
+    for (const tour of filteredAndSortedTours) {
+      let key = '';
+      let label = '';
+      let editable = false;
+      let orderHint = '';
+
+      if (groupBy === 'custom') {
+        const grp = String(tour.tourGroup || '').trim();
+        if (grp) {
+          key = `custom:${grp}`;
+          label = grp;
+          editable = true;
+          orderHint = `0_${grp.toLowerCase()}`;
+        } else {
+          key = UNGROUPED_KEY;
+          label = 'Ohne Gruppe';
+          editable = false;
+          orderHint = '9_ungrouped';
+        }
+      } else if (groupBy === 'sport') {
+        if (tour.activityType === 'running') {
+          key = 'sport:running';
+          label = 'Lauftouren';
+          orderHint = '1_running';
+        } else {
+          key = 'sport:cycling';
+          label = 'Radtouren';
+          orderHint = '0_cycling';
+        }
+      } else if (groupBy === 'difficulty') {
+        const diff = computeTourDifficulty(tour);
+        key = `diff:${diff.level}`;
+        label = `Schwierigkeit: ${diff.label}`;
+        orderHint = diff.level === 'leicht' ? '0' : diff.level === 'mittel' ? '1' : '2';
+      } else {
+        const m = formatMonthGroup(tour.dateCreated);
+        key = `month:${m.key}`;
+        label = m.label;
+        orderHint = m.key === 'month-unknown' ? '0000-00' : m.key;
+      }
+
+      if (!bucketMap.has(key)) {
+        bucketMap.set(key, { key, label, editable, orderHint, tours: [] });
+      }
+      bucketMap.get(key)!.tours.push(tour);
+    }
+
+    const sections = Array.from(bucketMap.values()).sort((a, b) => {
+      if (groupBy === 'month') {
+        return b.orderHint.localeCompare(a.orderHint);
+      }
+      return a.orderHint.localeCompare(b.orderHint, 'de', { numeric: true });
+    });
+
+    return sections.map((sec) => ({
+      key: sec.key,
+      label: sec.label,
+      editable: sec.editable,
+      tours: sec.tours,
+      totalDist: sec.tours.reduce((acc, t) => acc + (t.distance || 0), 0),
+      totalAscent: sec.tours.reduce((acc, t) => acc + (t.ascent || 0), 0)
+    }));
+  }, [filteredAndSortedTours, groupBy]);
 
   const summaryStats = useMemo(() => {
     let totalDist = 0;
@@ -714,7 +903,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
             }
             const tr = await parseGPX(text, file.name);
             if (tr) {
-              tr.powerStats = calculatePowerStats(tr.points, ftp, userWeight, planningSpeedKmh);
+              tr.powerStats = calculatePowerStats(tr.points, ftp, userWeight, effectivePlanningSpeed);
               const surfStats = calculateSurfaceStatsFromPoints(tr.points);
               if (surfStats.length > 0) {
                 tr.surfaceStats = surfStats;
@@ -728,7 +917,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
           } else {
             const tr = await parseGPXStream(file, file.name);
             if (tr) {
-              tr.powerStats = calculatePowerStats(tr.points, ftp, userWeight, planningSpeedKmh);
+              tr.powerStats = calculatePowerStats(tr.points, ftp, userWeight, effectivePlanningSpeed);
               const surfStats = calculateSurfaceStatsFromPoints(tr.points);
               if (surfStats.length > 0) {
                 tr.surfaceStats = surfStats;
@@ -840,6 +1029,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
       name: tour.name || '',
       description: tour.description || '',
       tags: (tour.tags || []).join(', '),
+      tourGroup: tour.tourGroup || '',
       activityType: tour.activityType || 'cycling',
       dateCreated: tour.dateCreated ? String(tour.dateCreated).split('T')[0] : ''
     });
@@ -854,6 +1044,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean);
+      const cleanGroup = editForm.tourGroup.trim();
       const res = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(editingTour.id)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -861,6 +1052,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
           name: editForm.name.trim(),
           description: editForm.description,
           tags: tagsArray,
+          tourGroup: cleanGroup,
           activityType: editForm.activityType,
           dateCreated: editForm.dateCreated || undefined
         })
@@ -875,6 +1067,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                   name: editForm.name.trim(),
                   description: editForm.description,
                   tags: tagsArray,
+                  tourGroup: cleanGroup,
                   activityType: editForm.activityType,
                   dateCreated: editForm.dateCreated || t.dateCreated
                 }
@@ -891,6 +1084,92 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
       showToast('Speichern fehlgeschlagen.', 'error');
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  const toggleGroupCollapsed = (groupKey: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
+
+  const handleStartRenameGroup = (groupKey: string, currentName: string) => {
+    setRenamingGroupKey(groupKey);
+    setRenameGroupValue(currentName);
+  };
+
+  const handleCommitRenameGroup = async (oldName: string) => {
+    const newName = renameGroupValue.trim();
+    if (!newName || newName === oldName) {
+      setRenamingGroupKey(null);
+      return;
+    }
+    setIsRenamingGroup(true);
+    try {
+      const res = await apiFetch(getApiUrl('/api/library/groups/rename'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldName, newName })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setTours((prev) =>
+          prev.map((t) => (String(t.tourGroup || '').trim() === oldName ? { ...t, tourGroup: newName } : t))
+        );
+        if (activeCollection === `group:${oldName}`) {
+          setActiveCollection(`group:${newName}`);
+        }
+        setRenamingGroupKey(null);
+        showToast(`Gruppe "${oldName}" in "${newName}" umbenannt.`, 'success');
+      } else {
+        showToast(data?.error || 'Umbenennen der Gruppe fehlgeschlagen.', 'error');
+      }
+    } catch {
+      showToast('Verbindungsfehler beim Umbenennen der Gruppe.', 'error');
+    } finally {
+      setIsRenamingGroup(false);
+    }
+  };
+
+  const handleBatchAssignGroup = async (targetGroupName: string) => {
+    const ids = Array.from(selectedIds);
+    const cleanGroup = targetGroupName.trim();
+    if (ids.length === 0) return;
+
+    setIsAssigningBatchGroup(true);
+    try {
+      const res = await apiFetch(getApiUrl('/api/library/groups/assign'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, tourGroup: cleanGroup })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        const idSet = new Set(ids);
+        setTours((prev) =>
+          prev.map((t) => (idSet.has(t.id) ? { ...t, tourGroup: cleanGroup } : t))
+        );
+        if (cleanGroup && groupBy === 'none') {
+          setGroupBy('custom');
+        }
+        setBatchAssignTarget('');
+        setBatchNewGroupName('');
+        showToast(
+          cleanGroup
+            ? `${ids.length} Tour(en) Gruppe "${cleanGroup}" zugewiesen.`
+            : `${ids.length} Tour(en) aus Gruppe gelöst.`,
+          'success'
+        );
+      } else {
+        showToast(data?.error || 'Gruppenzuweisung fehlgeschlagen.', 'error');
+      }
+    } catch {
+      showToast('Verbindungsfehler bei der Gruppenzuweisung.', 'error');
+    } finally {
+      setIsAssigningBatchGroup(false);
     }
   };
 
@@ -1055,7 +1334,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
 
         {/* Summary KPI Strip & Filter Toolbar */}
         <div className="max-w-7xl mx-auto mt-4 flex flex-col gap-3">
-          {/* Quick Summary KPI Pills + Speed Planner */}
+          {/* Quick Summary KPI Pills (without Plan-Tempo slider; global Settings speed used) */}
           <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 rounded-2xl px-3.5 py-2.5">
             <div className="flex items-center gap-4 sm:gap-6 flex-wrap text-xs">
               <div className="flex items-center gap-1.5">
@@ -1079,40 +1358,20 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
               </div>
             </div>
 
-            {/* Komoot Speed Estimator */}
-            <div
-              className="flex items-center gap-2.5 text-xs bg-white dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800"
-              title="Passt die geschätzte Fahr- & Laufzeit auf allen Tourenkarten live an"
-            >
-              <Gauge className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                Plan-Tempo:
-              </span>
-              <input
-                type="range"
-                min={10}
-                max={35}
-                step={1}
-                value={planningSpeedKmh}
-                onChange={(e) => setPlanningSpeedKmh(Number(e.target.value))}
-                className="w-20 sm:w-28 accent-emerald-600 cursor-pointer"
-                aria-label="Geplante Durchschnittsgeschwindigkeit in km/h"
-              />
-              <span className="font-mono font-extrabold text-emerald-700 dark:text-emerald-400 w-14 text-right tabular-nums">
-                {planningSpeedKmh} km/h
-              </span>
+            <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              {filteredAndSortedTours.length} / {tours.length} Touren angezeigt
             </div>
           </div>
 
-          {/* Search, Filters & View Controls */}
-          <div className="flex flex-col md:flex-row md:items-center gap-2.5">
-            <div className="relative flex-1 min-w-[220px]">
+          {/* Search, Filters, Grouping & View Controls */}
+          <div className="flex flex-col lg:flex-row lg:items-center gap-2.5">
+            <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Geplante Touren durchsuchen (Name, Etappe, Tags, Notizen)..."
+                placeholder="Touren durchsuchen (Name, Gruppe, Tags, Notizen)..."
                 className="w-full pl-9 pr-8 py-2 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               />
               {searchQuery && (
@@ -1179,7 +1438,51 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                 <option value="schwer">🔴 Schwer</option>
               </select>
 
-              {/* Sort Dropdown */}
+              {/* Distance Filter */}
+              <select
+                value={distanceFilter}
+                onChange={(e) => setDistanceFilter(e.target.value as DistanceFilterOption)}
+                className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                aria-label="Distanz filtern"
+              >
+                <option value="all">Distanz: Alle</option>
+                <option value="lt40">&lt; 40 km</option>
+                <option value="40-80">40–80 km</option>
+                <option value="80-130">80–130 km</option>
+                <option value="gt130">&gt; 130 km</option>
+              </select>
+
+              {/* Ascent Filter */}
+              <select
+                value={ascentFilter}
+                onChange={(e) => setAscentFilter(e.target.value as AscentFilterOption)}
+                className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                aria-label="Anstieg filtern"
+              >
+                <option value="all">Anstieg: Alle</option>
+                <option value="lt500">&lt; 500 hm</option>
+                <option value="500-1200">500–1.200 hm</option>
+                <option value="gt1200">&gt; 1.200 hm</option>
+              </select>
+
+              {/* Grouping Dropdown */}
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <Folder className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <select
+                  value={groupBy}
+                  onChange={(e) => setGroupBy(e.target.value as GroupByOption)}
+                  className="bg-transparent text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none"
+                  aria-label="Touren gruppieren"
+                >
+                  <option value="none">Gruppierung: Keine</option>
+                  <option value="custom">Eigene Gruppen</option>
+                  <option value="sport">Nach Sportart</option>
+                  <option value="difficulty">Nach Schwierigkeit</option>
+                  <option value="month">Nach Monat</option>
+                </select>
+              </div>
+
+              {/* Sort Dropdown (Default: Zuletzt hinzugefügt) */}
               <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
                 <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 <select
@@ -1188,6 +1491,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                   className="bg-transparent text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none"
                   aria-label="Touren sortieren"
                 >
+                  <option value="added-desc">Zuletzt hinzugefügt</option>
                   <option value="stage-asc">Etappe / Name (1 → 7)</option>
                   <option value="dist-desc">Distanz (längste zuerst)</option>
                   <option value="ascent-desc">Höhenmeter (meiste zuerst)</option>
@@ -1229,7 +1533,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
             </div>
           </div>
 
-          {/* Collections & Tags Filter Bar */}
+          {/* Collections, Custom Groups & Tags Filter Bar */}
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
               <button
@@ -1243,6 +1547,22 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
               >
                 Alle Touren ({tours.length})
               </button>
+
+              {collections.groups.map(([groupName, count]) => (
+                <button
+                  key={`grp-${groupName}`}
+                  type="button"
+                  onClick={() => setActiveCollection(`group:${groupName}`)}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                    activeCollection === `group:${groupName}`
+                      ? 'bg-teal-600 text-white'
+                      : 'bg-teal-50 dark:bg-teal-950/50 text-teal-800 dark:text-teal-300 border border-teal-200/70 dark:border-teal-800/60 hover:bg-teal-100 dark:hover:bg-teal-900/50'
+                  }`}
+                >
+                  <Folder className="w-3 h-3" />
+                  {groupName} ({count})
+                </button>
+              ))}
 
               {collections.alpineStageCount > 0 && (
                 <button
@@ -1337,6 +1657,77 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
+              {/* Batch Group Assign */}
+              <div className="inline-flex items-center gap-1.5 bg-emerald-800/80 border border-emerald-600/60 rounded-lg px-2 py-1">
+                <FolderPlus className="w-3.5 h-3.5 text-emerald-200 shrink-0" />
+                <select
+                  value={batchAssignTarget}
+                  disabled={isAssigningBatchGroup}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '__new__') {
+                      setBatchAssignTarget('__new__');
+                      setBatchNewGroupName('');
+                    } else if (val === '__clear__') {
+                      void handleBatchAssignGroup('');
+                    } else if (val) {
+                      void handleBatchAssignGroup(val);
+                    }
+                  }}
+                  className="bg-transparent text-xs font-bold text-white cursor-pointer focus:outline-none"
+                  aria-label="Auswahl einer Gruppe zuweisen"
+                >
+                  <option value="" className="text-slate-900">
+                    Gruppe zuweisen...
+                  </option>
+                  {collections.groups.map(([grp]) => (
+                    <option key={grp} value={grp} className="text-slate-900">
+                      {grp}
+                    </option>
+                  ))}
+                  <option value="__new__" className="text-slate-900">
+                    + Neue Gruppe erstellen...
+                  </option>
+                  <option value="__clear__" className="text-slate-900">
+                    Aus Gruppe entfernen
+                  </option>
+                </select>
+                {batchAssignTarget === '__new__' && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (batchNewGroupName.trim()) {
+                        void handleBatchAssignGroup(batchNewGroupName);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 ml-1"
+                  >
+                    <input
+                      type="text"
+                      value={batchNewGroupName}
+                      onChange={(e) => setBatchNewGroupName(e.target.value)}
+                      placeholder="Gruppenname..."
+                      autoFocus
+                      className="px-2 py-0.5 rounded bg-white text-slate-900 text-xs font-semibold w-32 focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!batchNewGroupName.trim() || isAssigningBatchGroup}
+                      className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-extrabold text-[11px] cursor-pointer disabled:opacity-50"
+                    >
+                      OK
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchAssignTarget('')}
+                      className="text-emerald-200 hover:text-white cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </form>
+                )}
+              </div>
+
               {selectedIds.size === 2 && onCompareTwoToursOnMap && (
                 <button
                   type="button"
@@ -1449,6 +1840,8 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                       setSearchQuery('');
                       setSportFilter('all');
                       setDifficultyFilter('all');
+                      setDistanceFilter('all');
+                      setAscentFilter('all');
                       setActiveCollection('all');
                     }}
                     className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
@@ -1458,436 +1851,558 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                 )}
               </div>
             </div>
-          ) : viewMode === 'cards' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {filteredAndSortedTours.map((tour) => {
-                const hydrated = hydratedTracks[tour.id];
-                const diff = computeTourDifficulty(tour);
-                const estSeconds = estimateTourDurationSeconds(tour, planningSpeedKmh);
-                const stageNum = extractStageNumber(tour.name);
-                const inWorkspace = workspaceTrackIdSet.has(tour.id);
-                const isSelected = selectedIds.has(tour.id);
-                const isBusy = loadingTrackId === tour.id;
-
-                const diffBadgeClass =
-                  diff.level === 'leicht'
-                    ? 'bg-emerald-500/90 text-white'
-                    : diff.level === 'mittel'
-                    ? 'bg-amber-500/90 text-slate-950'
-                    : 'bg-rose-500/90 text-white';
-
-                const surfaceTotal = (tour.surfaceStats || []).reduce((acc, s) => acc + (s.distance || 0), 0);
-
-                return (
-                  <article
-                    key={tour.id}
-                    className={`group rounded-2xl bg-white dark:bg-slate-900 border transition-all overflow-hidden flex flex-col shadow-xs hover:shadow-md ${
-                      inWorkspace
-                        ? 'border-indigo-400 dark:border-indigo-600 ring-1 ring-indigo-400/30'
-                        : isSelected
-                        ? 'border-emerald-500 ring-1 ring-emerald-500/40'
-                        : 'border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    {/* Preview Header */}
-                    <div className="relative">
-                      <TourMiniPreviewSvg track={hydrated} accentColor={tour.color} />
-
-                      {/* Top Overlay Controls */}
-                      <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 pointer-events-none">
-                        <div className="flex items-center gap-1.5 pointer-events-auto">
-                          <button
-                            type="button"
-                            onClick={() => toggleSelectId(tour.id)}
-                            className={`w-6 h-6 rounded-lg flex items-center justify-center border backdrop-blur-md transition-colors cursor-pointer ${
-                              isSelected
-                                ? 'bg-emerald-500 border-emerald-400 text-white'
-                                : 'bg-slate-950/60 border-white/20 text-white/80 hover:bg-slate-900'
-                            }`}
-                            title={isSelected ? 'Auswahl aufheben' : 'Für Stapelaktion auswählen'}
-                          >
-                            {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                          </button>
-
-                          {stageNum !== null && (
-                            <span className="px-2 py-0.5 rounded-lg bg-slate-950/75 text-white text-[10px] font-black tracking-wide border border-white/15 backdrop-blur-md">
-                              Etappe {stageNum}
-                            </span>
-                          )}
-
-                          <span
-                            className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold tracking-wide backdrop-blur-md ${diffBadgeClass}`}
-                          >
-                            {diff.label}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-1 pointer-events-auto">
-                          {inWorkspace && (
-                            <span className="px-2 py-0.5 rounded-lg bg-indigo-600/95 text-white text-[10px] font-bold shadow-sm">
-                              Auf Karte
-                            </span>
-                          )}
-                          <span className="w-6 h-6 rounded-lg bg-slate-950/70 text-white flex items-center justify-center border border-white/15 backdrop-blur-md text-xs">
-                            {tour.activityType === 'running' ? '🏃' : '🚴'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Card Content */}
-                    <div className="p-4 flex-1 flex flex-col gap-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <h3
-                            className="font-black text-sm text-slate-900 dark:text-white leading-snug truncate"
-                            title={tour.name}
-                          >
-                            {tour.name}
-                          </h3>
-                          {tour.description ? (
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
-                              {tour.description}
-                            </p>
-                          ) : (
-                            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                              {tour.activityType === 'running' ? 'Geplante Lauftour' : 'Geplante Radtour'}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 4 Key Komoot KPI Boxes */}
-                      <div className="grid grid-cols-4 gap-1.5 text-center">
-                        <div className="rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800 px-1.5 py-2">
-                          <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Distanz</div>
-                          <div className="font-mono font-black text-xs text-slate-900 dark:text-white mt-0.5">
-                            {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
-                          </div>
-                        </div>
-                        <div className="rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100/70 dark:border-emerald-900/30 px-1.5 py-2">
-                          <div className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                            Anstieg
-                          </div>
-                          <div className="font-mono font-black text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                            +{Math.round(tour.ascent)} m
-                          </div>
-                        </div>
-                        <div className="rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100/70 dark:border-rose-900/30 px-1.5 py-2">
-                          <div className="text-[9px] font-bold uppercase tracking-wider text-rose-500">Abstieg</div>
-                          <div className="font-mono font-black text-xs text-rose-600 dark:text-rose-400 mt-0.5">
-                            -{Math.round(tour.descent)} m
-                          </div>
-                        </div>
-                        <div className="rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100/70 dark:border-indigo-900/30 px-1.5 py-2">
-                          <div className="text-[9px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
-                            Dauer (ca.)
-                          </div>
-                          <div className="font-mono font-black text-xs text-indigo-700 dark:text-indigo-300 mt-0.5">
-                            {formatDurationCompact(estSeconds)}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Waytypes / Surface Bar */}
-                      {surfaceTotal > 0 && tour.surfaceStats && tour.surfaceStats.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="h-1.5 w-full rounded-full overflow-hidden flex bg-slate-100 dark:bg-slate-800">
-                            {tour.surfaceStats.map((seg, i) => {
-                              const pct = (seg.distance / surfaceTotal) * 100;
-                              if (pct < 1) return null;
-                              return (
-                                <div
-                                  key={`${seg.type}-${i}`}
-                                  style={{
-                                    width: `${pct}%`,
-                                    backgroundColor: getSurfaceColorHex(seg.type)
-                                  }}
-                                  title={`${seg.type}: ${pct.toFixed(0)}%`}
-                                />
-                              );
-                            })}
-                          </div>
-                          <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                            <span className="truncate">
-                              {tour.surfaceStats
-                                .slice(0, 2)
-                                .map((s) => `${s.type} ${Math.round((s.distance / surfaceTotal) * 100)}%`)
-                                .join(' · ')}
-                            </span>
-                            {typeof tour.maxSlope === 'number' && tour.maxSlope > 0 && (
-                              <span className="font-mono font-semibold shrink-0 ml-2">
-                                max. {tour.maxSlope.toFixed(0)}%
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Tags */}
-                      {tour.tags && tour.tags.length > 0 && (
-                        <div className="flex items-center gap-1 flex-wrap">
-                          {tour.tags.slice(0, 4).map((tag) => (
-                            <span
-                              key={tag}
-                              className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[10px] font-semibold text-slate-600 dark:text-slate-300"
-                            >
-                              #{tag}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Action Footer */}
-                      <div className="pt-2 mt-auto border-t border-slate-100 dark:border-slate-800 flex flex-col gap-2">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => handleOpenSolo(tour)}
-                            className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50"
-                            title="Workspace ersetzen und diese Tour groß auf der Karte öffnen"
-                          >
-                            {isBusy ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            )}
-                            <span>Auf Karte öffnen</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => handleToggleWorkspaceMembership(tour)}
-                            className={`px-2.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
-                              inWorkspace
-                                ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100'
-                                : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-indigo-50 hover:text-indigo-700'
-                            }`}
-                            title={
-                              inWorkspace
-                                ? 'Aus dem aktuellen Karten-Workspace entfernen'
-                                : 'Zusätzlich in den Karten-Workspace laden'
-                            }
-                          >
-                            {inWorkspace ? 'Entfernen' : '+ Workspace'}
-                          </button>
-                        </div>
-
-                        <div className="flex items-center justify-between text-[11px] text-slate-400">
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadTourGpx(tour)}
-                              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-emerald-600 transition-colors cursor-pointer"
-                              title="Als GPX-Datei herunterladen"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEdit(tour)}
-                              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer"
-                              title="Tour-Details bearbeiten"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-
-                          {confirmDeleteId === tour.id ? (
-                            <div className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-lg px-2 py-0.5">
-                              <span className="text-[10px] font-bold text-rose-700 dark:text-rose-300">Löschen?</span>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteTour(tour.id)}
-                                className="text-[10px] font-black text-rose-700 dark:text-rose-300 hover:underline cursor-pointer px-1"
-                              >
-                                Ja
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(null)}
-                                className="text-[10px] font-semibold text-slate-500 hover:underline cursor-pointer px-1"
-                              >
-                                Nein
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(tour.id)}
-                              className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
-                              title="Aus Geplanten Touren löschen"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
           ) : (
-            /* Compact Stages Table View */
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-xs">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 text-[10px] uppercase tracking-wider font-extrabold text-slate-500 dark:text-slate-400">
-                    <th className="py-3 px-3 w-8">
-                      <button
-                        type="button"
-                        onClick={handleSelectAllVisible}
-                        className="cursor-pointer flex items-center justify-center"
-                        title="Alle auswählen"
-                      >
-                        {allVisibleSelected ? (
-                          <CheckSquare className="w-4 h-4 text-emerald-600" />
-                        ) : (
-                          <Square className="w-4 h-4" />
-                        )}
-                      </button>
-                    </th>
-                    <th className="py-3 px-3">Tour / Etappe</th>
-                    <th className="py-3 px-3">Level</th>
-                    <th className="py-3 px-3 text-right">Distanz</th>
-                    <th className="py-3 px-3 text-right">Anstieg</th>
-                    <th className="py-3 px-3 text-right">Abstieg</th>
-                    <th className="py-3 px-3 text-right">Plan-Zeit</th>
-                    <th className="py-3 px-3 text-right">Aktionen</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                  {filteredAndSortedTours.map((tour) => {
-                    const diff = computeTourDifficulty(tour);
-                    const estSeconds = estimateTourDurationSeconds(tour, planningSpeedKmh);
-                    const inWorkspace = workspaceTrackIdSet.has(tour.id);
-                    const isSelected = selectedIds.has(tour.id);
-                    const isBusy = loadingTrackId === tour.id;
+            <div className="space-y-6">
+              {groupedSections.map((section) => {
+                const isGroupedMode = groupBy !== 'none';
+                const isCollapsed = isGroupedMode && collapsedGroups.has(section.key);
+                const isRenamingThis = renamingGroupKey === section.key;
 
-                    return (
-                      <tr
-                        key={tour.id}
-                        className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
-                          inWorkspace ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
-                        }`}
-                      >
-                        <td className="py-2.5 px-3">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSelectId(tour.id)}
-                            className="rounded accent-emerald-600 cursor-pointer"
-                          />
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <div className="flex items-center gap-2">
-                            <span>{tour.activityType === 'running' ? '🏃' : '🚴'}</span>
-                            <div>
-                              <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                                <span>{tour.name}</span>
+                const renderCardsGrid = (sectionTours: PlannedTourMeta[]) => (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {sectionTours.map((tour) => {
+                      const hydrated = hydratedTracks[tour.id];
+                      const diff = computeTourDifficulty(tour);
+                      const estSeconds = estimateTourDurationSeconds(tour, effectivePlanningSpeed);
+                      const stageNum = extractStageNumber(tour.name);
+                      const inWorkspace = workspaceTrackIdSet.has(tour.id);
+                      const isSelected = selectedIds.has(tour.id);
+                      const isBusy = loadingTrackId === tour.id;
+
+                      const diffBadgeClass =
+                        diff.level === 'leicht'
+                          ? 'bg-emerald-500/90 text-white'
+                          : diff.level === 'mittel'
+                          ? 'bg-amber-500/90 text-slate-950'
+                          : 'bg-rose-500/90 text-white';
+
+                      const surfaceTotal = (tour.surfaceStats || []).reduce((acc, s) => acc + (s.distance || 0), 0);
+
+                      return (
+                        <article
+                          key={tour.id}
+                          className={`group rounded-2xl bg-white dark:bg-slate-900 border transition-all overflow-hidden flex flex-col shadow-xs hover:shadow-md ${
+                            inWorkspace
+                              ? 'border-indigo-400 dark:border-indigo-600 ring-1 ring-indigo-400/30'
+                              : isSelected
+                              ? 'border-emerald-500 ring-1 ring-emerald-500/40'
+                              : 'border-slate-200 dark:border-slate-800'
+                          }`}
+                        >
+                          {/* Preview Header */}
+                          <div className="relative">
+                            <TourMiniPreviewSvg track={hydrated} accentColor={tour.color} />
+
+                            {/* Top Overlay Controls */}
+                            <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 pointer-events-none">
+                              <div className="flex items-center gap-1.5 pointer-events-auto">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSelectId(tour.id)}
+                                  className={`w-6 h-6 rounded-lg flex items-center justify-center border backdrop-blur-md transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-emerald-500 border-emerald-400 text-white'
+                                      : 'bg-slate-950/60 border-white/20 text-white/80 hover:bg-slate-900'
+                                  }`}
+                                  title={isSelected ? 'Auswahl aufheben' : 'Für Stapelaktion auswählen'}
+                                >
+                                  {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                </button>
+
+                                {stageNum !== null && (
+                                  <span className="px-2 py-0.5 rounded-lg bg-slate-950/75 text-white text-[10px] font-black tracking-wide border border-white/15 backdrop-blur-md">
+                                    Etappe {stageNum}
+                                  </span>
+                                )}
+
+                                <span
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold tracking-wide backdrop-blur-md ${diffBadgeClass}`}
+                                >
+                                  {diff.label}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1 pointer-events-auto">
                                 {inWorkspace && (
-                                  <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 text-[9px] font-extrabold">
+                                  <span className="px-2 py-0.5 rounded-lg bg-indigo-600/95 text-white text-[10px] font-bold shadow-sm">
                                     Auf Karte
                                   </span>
                                 )}
+                                <span className="w-6 h-6 rounded-lg bg-slate-950/70 text-white flex items-center justify-center border border-white/15 backdrop-blur-md text-xs">
+                                  {tour.activityType === 'running' ? '🏃' : '🚴'}
+                                </span>
                               </div>
-                              {tour.description && (
-                                <div className="text-[11px] text-slate-400 line-clamp-1 max-w-md">
-                                  {tour.description}
-                                </div>
-                              )}
                             </div>
                           </div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
-                              diff.level === 'leicht'
-                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                : diff.level === 'mittel'
-                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
-                                : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
-                            }`}
-                          >
-                            {diff.label}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold">
-                          {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                          +{Math.round(tour.ascent)} m
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-500">
-                          -{Math.round(tour.descent)} m
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-semibold text-indigo-600 dark:text-indigo-400">
-                          {formatDurationCompact(estSeconds)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="inline-flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleOpenSolo(tour)}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer disabled:opacity-50"
-                            >
-                              Öffnen
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleToggleWorkspaceMembership(tour)}
-                              className={`px-2 py-1 rounded-lg border font-semibold text-[11px] cursor-pointer ${
-                                inWorkspace
-                                  ? 'border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400'
-                                  : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
-                              }`}
-                            >
-                              {inWorkspace ? 'Entfernen' : '+ Karte'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadTourGpx(tour)}
-                              className="p-1 text-slate-400 hover:text-emerald-600 cursor-pointer"
-                              title="GPX Export"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEdit(tour)}
-                              className="p-1 text-slate-400 hover:text-indigo-600 cursor-pointer"
-                              title="Bearbeiten"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                confirmDeleteId === tour.id
-                                  ? handleDeleteTour(tour.id)
-                                  : setConfirmDeleteId(tour.id)
-                              }
-                              className={`p-1 cursor-pointer ${
-                                confirmDeleteId === tour.id
-                                  ? 'text-rose-600 font-black'
-                                  : 'text-slate-400 hover:text-rose-600'
-                              }`}
-                              title={confirmDeleteId === tour.id ? 'Nochmal klicken zum Löschen' : 'Löschen'}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+
+                          {/* Card Content */}
+                          <div className="p-4 flex-1 flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <h3
+                                  className="font-black text-sm text-slate-900 dark:text-white leading-snug truncate"
+                                  title={tour.name}
+                                >
+                                  {tour.name}
+                                </h3>
+                                {tour.description ? (
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
+                                    {tour.description}
+                                  </p>
+                                ) : (
+                                  <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                    {tour.activityType === 'running' ? 'Geplante Lauftour' : 'Geplante Radtour'}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* 4 Key Komoot KPI Boxes */}
+                            <div className="grid grid-cols-4 gap-1.5 text-center">
+                              <div className="rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800 px-1.5 py-2">
+                                <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Distanz</div>
+                                <div className="font-mono font-black text-xs text-slate-900 dark:text-white mt-0.5">
+                                  {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                                </div>
+                              </div>
+                              <div className="rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100/70 dark:border-emerald-900/30 px-1.5 py-2">
+                                <div className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                                  Anstieg
+                                </div>
+                                <div className="font-mono font-black text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                                  +{Math.round(tour.ascent)} m
+                                </div>
+                              </div>
+                              <div className="rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100/70 dark:border-rose-900/30 px-1.5 py-2">
+                                <div className="text-[9px] font-bold uppercase tracking-wider text-rose-500">Abstieg</div>
+                                <div className="font-mono font-black text-xs text-rose-600 dark:text-rose-400 mt-0.5">
+                                  -{Math.round(tour.descent)} m
+                                </div>
+                              </div>
+                              <div className="rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100/70 dark:border-indigo-900/30 px-1.5 py-2">
+                                <div className="text-[9px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                                  Dauer (ca.)
+                                </div>
+                                <div className="font-mono font-black text-xs text-indigo-700 dark:text-indigo-300 mt-0.5">
+                                  {formatDurationCompact(estSeconds)}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Waytypes / Surface Bar */}
+                            {surfaceTotal > 0 && tour.surfaceStats && tour.surfaceStats.length > 0 && (
+                              <div className="space-y-1">
+                                <div className="h-1.5 w-full rounded-full overflow-hidden flex bg-slate-100 dark:bg-slate-800">
+                                  {tour.surfaceStats.map((seg, i) => {
+                                    const pct = (seg.distance / surfaceTotal) * 100;
+                                    if (pct < 1) return null;
+                                    return (
+                                      <div
+                                        key={`${seg.type}-${i}`}
+                                        style={{
+                                          width: `${pct}%`,
+                                          backgroundColor: getSurfaceColorHex(seg.type)
+                                        }}
+                                        title={`${seg.type}: ${pct.toFixed(0)}%`}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                                <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                                  <span className="truncate">
+                                    {tour.surfaceStats
+                                      .slice(0, 2)
+                                      .map((s) => `${s.type} ${Math.round((s.distance / surfaceTotal) * 100)}%`)
+                                      .join(' · ')}
+                                  </span>
+                                  {typeof tour.maxSlope === 'number' && tour.maxSlope > 0 && (
+                                    <span className="font-mono font-semibold shrink-0 ml-2">
+                                      max. {tour.maxSlope.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Group & Tags */}
+                            {(tour.tourGroup || (tour.tags && tour.tags.length > 0)) && (
+                              <div className="flex items-center gap-1 flex-wrap">
+                                {tour.tourGroup && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-50 dark:bg-teal-950/60 border border-teal-200/70 dark:border-teal-800/60 text-[10px] font-bold text-teal-700 dark:text-teal-300">
+                                    <Folder className="w-2.5 h-2.5" />
+                                    {tour.tourGroup}
+                                  </span>
+                                )}
+                                {(tour.tags || []).slice(0, 4).map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[10px] font-semibold text-slate-600 dark:text-slate-300"
+                                  >
+                                    #{tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Action Footer */}
+                            <div className="pt-2 mt-auto border-t border-slate-100 dark:border-slate-800 flex flex-col gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleOpenSolo(tour)}
+                                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                                  title="Workspace ersetzen und diese Tour groß auf der Karte öffnen"
+                                >
+                                  {isBusy ? (
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <ArrowRight className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Auf Karte öffnen</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleToggleWorkspaceMembership(tour)}
+                                  className={`px-2.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                                    inWorkspace
+                                      ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100'
+                                      : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-indigo-50 hover:text-indigo-700'
+                                  }`}
+                                  title={
+                                    inWorkspace
+                                      ? 'Aus dem aktuellen Karten-Workspace entfernen'
+                                      : 'Zusätzlich in den Karten-Workspace laden'
+                                  }
+                                >
+                                  {inWorkspace ? 'Entfernen' : '+ Workspace'}
+                                </button>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadTourGpx(tour)}
+                                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-emerald-600 transition-colors cursor-pointer"
+                                    title="Als GPX-Datei herunterladen"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEdit(tour)}
+                                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer"
+                                    title="Tour-Details bearbeiten"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                {confirmDeleteId === tour.id ? (
+                                  <div className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-lg px-2 py-0.5">
+                                    <span className="text-[10px] font-bold text-rose-700 dark:text-rose-300">Löschen?</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTour(tour.id)}
+                                      className="text-[10px] font-black text-rose-700 dark:text-rose-300 hover:underline cursor-pointer px-1"
+                                    >
+                                      Ja
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteId(null)}
+                                      className="text-[10px] font-semibold text-slate-500 hover:underline cursor-pointer px-1"
+                                    >
+                                      Nein
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteId(tour.id)}
+                                    className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                    title="Aus Geplanten Touren löschen"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        </article>
+                      );
+                    })}
+                  </div>
+                );
+
+                const renderStagesTable = (sectionTours: PlannedTourMeta[]) => (
+                  <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-xs">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 text-[10px] uppercase tracking-wider font-extrabold text-slate-500 dark:text-slate-400">
+                          <th className="py-3 px-3 w-8">
+                            <button
+                              type="button"
+                              onClick={handleSelectAllVisible}
+                              className="cursor-pointer flex items-center justify-center"
+                              title="Alle auswählen"
+                            >
+                              {allVisibleSelected ? (
+                                <CheckSquare className="w-4 h-4 text-emerald-600" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="py-3 px-3">Tour / Etappe</th>
+                          <th className="py-3 px-3">Level</th>
+                          <th className="py-3 px-3 text-right">Distanz</th>
+                          <th className="py-3 px-3 text-right">Anstieg</th>
+                          <th className="py-3 px-3 text-right">Abstieg</th>
+                          <th className="py-3 px-3 text-right">Plan-Zeit</th>
+                          <th className="py-3 px-3 text-right">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                        {sectionTours.map((tour) => {
+                          const diff = computeTourDifficulty(tour);
+                          const estSeconds = estimateTourDurationSeconds(tour, effectivePlanningSpeed);
+                          const inWorkspace = workspaceTrackIdSet.has(tour.id);
+                          const isSelected = selectedIds.has(tour.id);
+                          const isBusy = loadingTrackId === tour.id;
+
+                          return (
+                            <tr
+                              key={tour.id}
+                              className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
+                                inWorkspace ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
+                              }`}
+                            >
+                              <td className="py-2.5 px-3">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSelectId(tour.id)}
+                                  className="rounded accent-emerald-600 cursor-pointer"
+                                />
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <div className="flex items-center gap-2">
+                                  <span>{tour.activityType === 'running' ? '🏃' : '🚴'}</span>
+                                  <div>
+                                    <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                                      <span>{tour.name}</span>
+                                      {tour.tourGroup && (
+                                        <span className="px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 text-[9px] font-bold">
+                                          {tour.tourGroup}
+                                        </span>
+                                      )}
+                                      {inWorkspace && (
+                                        <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 text-[9px] font-extrabold">
+                                          Auf Karte
+                                        </span>
+                                      )}
+                                    </div>
+                                    {tour.description && (
+                                      <div className="text-[11px] text-slate-400 line-clamp-1 max-w-md">
+                                        {tour.description}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                    diff.level === 'leicht'
+                                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                      : diff.level === 'mittel'
+                                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                                      : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                                  }`}
+                                >
+                                  {diff.label}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-bold">
+                                {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                +{Math.round(tour.ascent)} m
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-500">
+                                -{Math.round(tour.descent)} m
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                                {formatDurationCompact(estSeconds)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <div className="inline-flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleOpenSolo(tour)}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                                  >
+                                    Öffnen
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleToggleWorkspaceMembership(tour)}
+                                    className={`px-2 py-1 rounded-lg border font-semibold text-[11px] cursor-pointer ${
+                                      inWorkspace
+                                        ? 'border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400'
+                                        : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                    }`}
+                                  >
+                                    {inWorkspace ? 'Entfernen' : '+ Karte'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadTourGpx(tour)}
+                                    className="p-1 text-slate-400 hover:text-emerald-600 cursor-pointer"
+                                    title="GPX Export"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEdit(tour)}
+                                    className="p-1 text-slate-400 hover:text-indigo-600 cursor-pointer"
+                                    title="Bearbeiten"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      confirmDeleteId === tour.id
+                                        ? handleDeleteTour(tour.id)
+                                        : setConfirmDeleteId(tour.id)
+                                    }
+                                    className={`p-1 cursor-pointer ${
+                                      confirmDeleteId === tour.id
+                                        ? 'text-rose-600 font-black'
+                                        : 'text-slate-400 hover:text-rose-600'
+                                    }`}
+                                    title={confirmDeleteId === tour.id ? 'Nochmal klicken zum Löschen' : 'Löschen'}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+
+                return (
+                  <section key={section.key} className="space-y-3">
+                    {isGroupedMode && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleGroupCollapsed(section.key)}
+                            className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                            aria-label={isCollapsed ? 'Gruppe aufklappen' : 'Gruppe einklappen'}
+                          >
+                            {isCollapsed ? (
+                              <ChevronRight className="w-4 h-4" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4" />
+                            )}
+                          </button>
+
+                          <Folder className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+
+                          {isRenamingThis ? (
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                void handleCommitRenameGroup(section.label);
+                              }}
+                              className="flex items-center gap-1.5"
+                            >
+                              <input
+                                type="text"
+                                value={renameGroupValue}
+                                onChange={(e) => setRenameGroupValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape') {
+                                    setRenamingGroupKey(null);
+                                  }
+                                }}
+                                autoFocus
+                                className="px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-950 border border-emerald-500 text-xs font-bold text-slate-900 dark:text-white focus:outline-none"
+                              />
+                              <button
+                                type="submit"
+                                disabled={isRenamingGroup || !renameGroupValue.trim()}
+                                className="p-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer disabled:opacity-50"
+                                title="Gruppennamen speichern"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRenamingGroupKey(null)}
+                                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 cursor-pointer"
+                                title="Abbrechen"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </form>
+                          ) : (
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <button
+                                type="button"
+                                onClick={() => toggleGroupCollapsed(section.key)}
+                                className="text-sm font-black text-slate-900 dark:text-white truncate cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400"
+                              >
+                                {section.label}
+                              </button>
+                              {section.editable && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartRenameGroup(section.key, section.label)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                  title="Gruppennamen bearbeiten"
+                                  aria-label="Gruppennamen bearbeiten"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                          <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-200">
+                            {section.tours.length} {section.tours.length === 1 ? 'Tour' : 'Touren'}
+                          </span>
+                          <span>
+                            {section.totalDist.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                          </span>
+                          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                            +{Math.round(section.totalAscent).toLocaleString('de-DE')} hm
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {!isCollapsed &&
+                      (viewMode === 'cards' ? renderCardsGrid(section.tours) : renderStagesTable(section.tours))}
+                  </section>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1947,6 +2462,23 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                   />
                 </label>
               </div>
+
+              <label className="block space-y-1">
+                <span className="font-bold text-slate-600 dark:text-slate-300">Gruppe (optional)</span>
+                <input
+                  type="text"
+                  list="planned-tour-group-options"
+                  value={editForm.tourGroup}
+                  onChange={(e) => setEditForm((f) => ({ ...f, tourGroup: e.target.value }))}
+                  placeholder="z.B. Alpentour 2026, Wochenendrunden..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800"
+                />
+                <datalist id="planned-tour-group-options">
+                  {collections.groups.map(([grp]) => (
+                    <option key={grp} value={grp} />
+                  ))}
+                </datalist>
+              </label>
 
               <label className="block space-y-1">
                 <span className="font-bold text-slate-600 dark:text-slate-300">Tags / Kollektion (kommagetrennt)</span>

@@ -9,7 +9,12 @@ import { triggerHaptic } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
-import { buildTileCacheKey, getCachedTileBlob, putCachedTileBlob } from '../utils/tileCacheDb';
+import {
+  buildTileCacheKey,
+  getCachedTileBlob,
+  putCachedTileBlob,
+  getConfiguredTileCachePolicy
+} from '../utils/tileCacheDb';
 import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
@@ -839,6 +844,16 @@ const CachedLeafletTileLayer: React.FC<{
           }
         };
 
+        const policy = getConfiguredTileCachePolicy();
+        if (!policy.enabled) {
+          if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+            done(new Error('Offline & tile cache disabled'), tile);
+            return tile;
+          }
+          loadViaDirectImg();
+          return tile;
+        }
+
         getCachedTileBlob(cacheKey)
           .then(async (cachedBlob) => {
             if (tile.__aborted) return;
@@ -857,7 +872,17 @@ const CachedLeafletTileLayer: React.FC<{
               if (res.ok) {
                 const fetchedBlob = await res.blob();
                 if (fetchedBlob && fetchedBlob.size > 0 && fetchedBlob.type.startsWith('image/')) {
-                  void putCachedTileBlob(cacheKey, layerId, tileUrl, fetchedBlob);
+                  const activePolicy = getConfiguredTileCachePolicy();
+                  if (activePolicy.enabled) {
+                    void putCachedTileBlob(
+                      cacheKey,
+                      layerId,
+                      tileUrl,
+                      fetchedBlob,
+                      activePolicy.maxBytes,
+                      activePolicy.maxCount
+                    );
+                  }
                   loadFromBlob(fetchedBlob);
                   return;
                 }

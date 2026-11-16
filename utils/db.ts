@@ -167,6 +167,8 @@ export interface DbTrackRecord {
   has_timestamps?: number;
   raw_file_json?: string;
   country?: string;
+  tour_group?: string;
+  added_at?: number;
 }
 
 export function initDb() {
@@ -317,6 +319,15 @@ function ensureCoreSchema() {
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE tracks ADD COLUMN country TEXT DEFAULT ''`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN tour_group TEXT DEFAULT ''`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE tracks ADD COLUMN added_at INTEGER`);
+  } catch (e) {}
+  try {
+    db.exec(`UPDATE tracks SET added_at = rowid * 1000 WHERE added_at IS NULL OR added_at <= 0`);
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE garmin_activities ADD COLUMN description TEXT`);
@@ -1247,20 +1258,38 @@ export function saveTrack(track: {
   hasTimestamps?: boolean;
   rawFileDetails?: any;
   country?: string;
+  tourGroup?: string;
+  addedAt?: number;
 }, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
     const cleanRawId = stripScopedKey(track.id, uid);
     const scopedId = toScopedKey(cleanRawId, uid);
 
+    const existingRow = db
+      .prepare('SELECT tour_group, added_at FROM tracks WHERE (id = ? OR id = ?) AND user_id = ?')
+      .get(scopedId, cleanRawId, uid) as { tour_group?: string; added_at?: number } | undefined;
+
+    const resolvedTourGroup =
+      track.tourGroup !== undefined
+        ? String(track.tourGroup || '').trim().slice(0, 120)
+        : String(existingRow?.tour_group || '').trim().slice(0, 120);
+    const resolvedAddedAt =
+      typeof track.addedAt === 'number' && Number.isFinite(track.addedAt) && track.addedAt > 0
+        ? Math.round(track.addedAt)
+        : typeof existingRow?.added_at === 'number' && existingRow.added_at > 0
+        ? existingRow.added_at
+        : Date.now();
+
     const statement = db.prepare(`
       INSERT OR REPLACE INTO tracks (
         id, name, distance, ascent, descent, duration, activity_type,
         description, tags, date_created, points_json, power_stats_json,
         surface_stats_json, climbs_json, original_filename, max_slope,
-        color, has_timestamps, raw_file_json, user_id, country
+        color, has_timestamps, raw_file_json, user_id, country,
+        tour_group, added_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `);
 
@@ -1308,7 +1337,9 @@ export function saveTrack(track: {
       track.hasTimestamps ? 1 : 0,
       track.rawFileDetails ? JSON.stringify(track.rawFileDetails) : null,
       uid,
-      resolvedCountry
+      resolvedCountry,
+      resolvedTourGroup,
+      resolvedAddedAt
     );
 
     syncCatalogEntryForLibraryTrack(scopedId, uid);
@@ -1324,7 +1355,7 @@ export function searchTracks(queryText: string = '', activityType?: string, user
       ensureUserCuratedTours(uid);
     }
 
-    let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json FROM tracks`;
+    let sql = `SELECT id, name, distance, ascent, descent, duration, activity_type, description, tags, date_created, original_filename, max_slope, color, has_timestamps, surface_stats_json, raw_file_json, tour_group, added_at FROM tracks`;
     const conditions: string[] = [`user_id = ?`];
     const params: any[] = [uid];
 
@@ -1337,15 +1368,15 @@ export function searchTracks(queryText: string = '', activityType?: string, user
     const cleanQuery = typeof queryText === 'string' ? queryText.trim().slice(0, 128) : '';
     if (cleanQuery) {
       const term = `%${cleanQuery}%`;
-      conditions.push(`(name LIKE ? OR description LIKE ? OR tags LIKE ? OR original_filename LIKE ?)`);
-      params.push(term, term, term, term);
+      conditions.push(`(name LIKE ? OR description LIKE ? OR tags LIKE ? OR original_filename LIKE ? OR tour_group LIKE ?)`);
+      params.push(term, term, term, term, term);
     }
 
     if (conditions.length > 0) {
       sql += ` WHERE ` + conditions.join(' AND ');
     }
 
-    sql += ` ORDER BY date_created DESC, name ASC`;
+    sql += ` ORDER BY COALESCE(added_at, 0) DESC, date_created DESC, name ASC`;
 
     const rows = db.prepare(sql).all(...params) as DbTrackRecord[];
     return rows.map(r => ({
@@ -1361,7 +1392,7 @@ export function getAllTracksFull(limit: number = 20, userId: string = 'default')
     if (uid !== 'default') {
       ensureUserCuratedTours(uid);
     }
-    const statement = db.prepare('SELECT * FROM tracks WHERE user_id = ? AND points_json IS NOT NULL ORDER BY date_created DESC, name ASC LIMIT ?');
+    const statement = db.prepare('SELECT * FROM tracks WHERE user_id = ? AND points_json IS NOT NULL ORDER BY COALESCE(added_at, 0) DESC, date_created DESC, name ASC LIMIT ?');
     const rows = statement.all(uid, limit) as DbTrackRecord[];
     return rows.map(r => ({
       ...r,
@@ -1392,50 +1423,77 @@ export function updateTrackMetadata(id: string, metadata: {
   activityType?: string;
   dateCreated?: string;
   country?: string;
+  tourGroup?: string;
 }, userId: string = 'default') {
   return executeWithCorruptionRecovery(() => {
     const uid = normalizeUserId(userId);
     const cleanId = stripScopedKey(id, uid);
     const scopedId = toScopedKey(cleanId, uid);
 
+    const fields = [
+      'name = ?',
+      'description = ?',
+      'tags = ?',
+      'activity_type = ?',
+      'date_created = ?'
+    ];
+    const params: any[] = [
+      metadata.name,
+      metadata.description || '',
+      metadata.tags || '',
+      metadata.activityType || 'cycling',
+      metadata.dateCreated || new Date().toISOString().split('T')[0]
+    ];
+
     if (metadata.country !== undefined) {
-      const cleanCountry = normalizeCountryLabel(metadata.country);
-      const statement = db.prepare(`
-        UPDATE tracks 
-        SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?, country = ?
-        WHERE (id = ? OR id = ?) AND user_id = ?
-      `);
-      statement.run(
-        metadata.name,
-        metadata.description || '',
-        metadata.tags || '',
-        metadata.activityType || 'cycling',
-        metadata.dateCreated || new Date().toISOString().split('T')[0],
-        cleanCountry,
-        scopedId,
-        cleanId,
-        uid
-      );
-    } else {
-      const statement = db.prepare(`
-        UPDATE tracks 
-        SET name = ?, description = ?, tags = ?, activity_type = ?, date_created = ?
-        WHERE (id = ? OR id = ?) AND user_id = ?
-      `);
-      statement.run(
-        metadata.name,
-        metadata.description || '',
-        metadata.tags || '',
-        metadata.activityType || 'cycling',
-        metadata.dateCreated || new Date().toISOString().split('T')[0],
-        scopedId,
-        cleanId,
-        uid
-      );
+      fields.push('country = ?');
+      params.push(normalizeCountryLabel(metadata.country));
     }
+    if (metadata.tourGroup !== undefined) {
+      fields.push('tour_group = ?');
+      params.push(String(metadata.tourGroup || '').trim().slice(0, 120));
+    }
+
+    params.push(scopedId, cleanId, uid);
+    db.prepare(`UPDATE tracks SET ${fields.join(', ')} WHERE (id = ? OR id = ?) AND user_id = ?`).run(...params);
 
     syncCatalogEntryForLibraryTrack(scopedId, uid);
     syncCatalogEntryForLibraryTrack(cleanId, uid);
+  });
+}
+
+export function renameTourGroup(oldName: string, newName: string, userId: string = 'default'): number {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const cleanOld = String(oldName || '').trim().slice(0, 120);
+    const cleanNew = String(newName || '').trim().slice(0, 120);
+    if (!cleanOld || !cleanNew) return 0;
+    const info = db
+      .prepare(`UPDATE tracks SET tour_group = ? WHERE user_id = ? AND trim(COALESCE(tour_group, '')) = ?`)
+      .run(cleanNew, uid, cleanOld);
+    return info.changes;
+  });
+}
+
+export function batchAssignTourGroup(trackIds: string[], groupName: string, userId: string = 'default'): number {
+  return executeWithCorruptionRecovery(() => {
+    const uid = normalizeUserId(userId);
+    const cleanGroup = String(groupName || '').trim().slice(0, 120);
+    const uniqueIds = Array.from(new Set((trackIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return 0;
+
+    let updated = 0;
+    const stmt = db.prepare(`UPDATE tracks SET tour_group = ? WHERE (id = ? OR id = ?) AND user_id = ?`);
+    const trx = db.transaction((ids: string[]) => {
+      for (const rawId of ids) {
+        const cleanId = stripScopedKey(rawId, uid);
+        const scopedId = toScopedKey(cleanId, uid);
+        const info = stmt.run(cleanGroup, scopedId, cleanId, uid);
+        updated += info.changes;
+      }
+    });
+    trx(uniqueIds);
+    return updated;
   });
 }
 
@@ -3558,9 +3616,125 @@ export function computeRouteSurfaceHash(
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+export interface SurfaceCacheConfig {
+  enabled: boolean;
+  ttlDays: number;
+  maxEntries: number;
+}
+
+export interface SurfaceCacheStats extends SurfaceCacheConfig {
+  entryCount: number;
+  payloadBytes: number;
+  oldestCreatedAt: number | null;
+  newestCreatedAt: number | null;
+}
+
+export const DEFAULT_SURFACE_CACHE_CONFIG: SurfaceCacheConfig = {
+  enabled: true,
+  ttlDays: 30,
+  maxEntries: 400,
+};
+
+function sanitizeSurfaceCacheConfig(raw: unknown): SurfaceCacheConfig {
+  const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const ttlNum = Number(input.ttlDays);
+  const maxNum = Number(input.maxEntries);
+  return {
+    enabled:
+      typeof input.enabled === 'boolean'
+        ? input.enabled
+        : DEFAULT_SURFACE_CACHE_CONFIG.enabled,
+    ttlDays:
+      Number.isFinite(ttlNum) && ttlNum >= 1 && ttlNum <= 365
+        ? Math.round(ttlNum)
+        : DEFAULT_SURFACE_CACHE_CONFIG.ttlDays,
+    maxEntries:
+      Number.isFinite(maxNum) && maxNum >= 50 && maxNum <= 5000
+        ? Math.round(maxNum)
+        : DEFAULT_SURFACE_CACHE_CONFIG.maxEntries,
+  };
+}
+
+export function getSurfaceCacheConfig(): SurfaceCacheConfig {
+  try {
+    const raw = getSetting('surface_cache_config', '');
+    if (!raw) return { ...DEFAULT_SURFACE_CACHE_CONFIG };
+    return sanitizeSurfaceCacheConfig(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_SURFACE_CACHE_CONFIG };
+  }
+}
+
+export function pruneSurfaceAnalysisCache(cfg?: SurfaceCacheConfig): number {
+  return executeWithCorruptionRecovery(() => {
+    const activeCfg = cfg || getSurfaceCacheConfig();
+    const now = Date.now();
+    const ttlCutoff = now - activeCfg.ttlDays * 24 * 60 * 60 * 1000;
+    const expired = db
+      .prepare(`DELETE FROM surface_analysis_cache WHERE created_at < ?`)
+      .run(ttlCutoff);
+    const overflow = db
+      .prepare(
+        `DELETE FROM surface_analysis_cache
+         WHERE route_hash NOT IN (
+           SELECT route_hash FROM surface_analysis_cache ORDER BY created_at DESC LIMIT ?
+         )`
+      )
+      .run(activeCfg.maxEntries);
+    return (expired.changes || 0) + (overflow.changes || 0);
+  });
+}
+
+export function getSurfaceCacheStats(): SurfaceCacheStats {
+  return executeWithCorruptionRecovery(() => {
+    const cfg = getSurfaceCacheConfig();
+    const row = db
+      .prepare(
+        `SELECT
+           COUNT(*) as entry_count,
+           COALESCE(SUM(LENGTH(surfaces_json) + LENGTH(stats_json) + LENGTH(route_hash)), 0) as payload_bytes,
+           MIN(created_at) as oldest_created_at,
+           MAX(created_at) as newest_created_at
+         FROM surface_analysis_cache`
+      )
+      .get() as {
+      entry_count: number;
+      payload_bytes: number;
+      oldest_created_at: number | null;
+      newest_created_at: number | null;
+    };
+
+    return {
+      ...cfg,
+      entryCount: Number(row?.entry_count || 0),
+      payloadBytes: Number(row?.payload_bytes || 0),
+      oldestCreatedAt: row?.oldest_created_at ?? null,
+      newestCreatedAt: row?.newest_created_at ?? null,
+    };
+  });
+}
+
+export function saveSurfaceCacheConfig(partial: Partial<SurfaceCacheConfig>): SurfaceCacheStats {
+  const current = getSurfaceCacheConfig();
+  const merged = sanitizeSurfaceCacheConfig({ ...current, ...partial });
+  saveSetting('surface_cache_config', JSON.stringify(merged));
+  pruneSurfaceAnalysisCache(merged);
+  return getSurfaceCacheStats();
+}
+
+export function clearSurfaceAnalysisCache(): number {
+  return executeWithCorruptionRecovery(() => {
+    const info = db.prepare(`DELETE FROM surface_analysis_cache`).run();
+    return info.changes || 0;
+  });
+}
+
 export function getSurfaceAnalysisCache(routeHash: string): SurfaceAnalysisCacheEntry | null {
   return executeWithCorruptionRecovery(() => {
-    const ttlMs = 30 * 24 * 60 * 60 * 1000;
+    const cfg = getSurfaceCacheConfig();
+    if (!cfg.enabled) return null;
+
+    const ttlMs = cfg.ttlDays * 24 * 60 * 60 * 1000;
     const minCreatedAt = Date.now() - ttlMs;
     const row = db
       .prepare(
@@ -3605,6 +3779,9 @@ export function saveSurfaceAnalysisCache(entry: {
   surfaceStats: { type: string; distance: number }[];
 }): void {
   executeWithCorruptionRecovery(() => {
+    const cfg = getSurfaceCacheConfig();
+    if (!cfg.enabled) return;
+
     const now = Date.now();
     db.prepare(
       `INSERT OR REPLACE INTO surface_analysis_cache (route_hash, source, coverage_pct, surfaces_json, stats_json, created_at)
@@ -3618,15 +3795,8 @@ export function saveSurfaceAnalysisCache(entry: {
       now
     );
 
-    // Prune stale (>30d) or excess (>400 rows) entries to keep DB compact
-    const ttlCutoff = now - 30 * 24 * 60 * 60 * 1000;
-    db.prepare(`DELETE FROM surface_analysis_cache WHERE created_at < ?`).run(ttlCutoff);
-    db.prepare(
-      `DELETE FROM surface_analysis_cache
-       WHERE route_hash NOT IN (
-         SELECT route_hash FROM surface_analysis_cache ORDER BY created_at DESC LIMIT 400
-       )`
-    ).run();
+    pruneSurfaceAnalysisCache(cfg);
   });
 }
+
 

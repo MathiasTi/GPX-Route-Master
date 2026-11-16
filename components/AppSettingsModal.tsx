@@ -23,7 +23,9 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
-  CheckCircle2
+  CheckCircle2,
+  Layers,
+  Clock
 } from 'lucide-react';
 import { GPXTrack, MapLayer } from '../types';
 import { formatStorageSize as formatByteSize } from '../domain/offline/offlineCacheEngine';
@@ -32,6 +34,8 @@ import {
   purgeTileCache,
   OfflineStatusSnapshot
 } from '../services/offlineCacheService';
+import { enforceTileCacheQuota } from '../utils/tileCacheDb';
+import { apiFetch, getApiUrl } from '../utils/api';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import {
   AppPreferences,
@@ -102,15 +106,47 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   const [storageSnapshot, setStorageSnapshot] = useState<OfflineStatusSnapshot | null>(null);
   const [isStorageLoading, setIsStorageLoading] = useState(false);
   const [isPurgingTiles, setIsPurgingTiles] = useState(false);
+  const [isPruningTiles, setIsPruningTiles] = useState(false);
   const [tilePurgeMessage, setTilePurgeMessage] = useState<string | null>(null);
+  const [surfaceStats, setSurfaceStats] = useState<{
+    enabled: boolean;
+    ttlDays: number;
+    maxEntries: number;
+    entryCount: number;
+    payloadBytes: number;
+    oldestCreatedAt: number | null;
+    newestCreatedAt: number | null;
+  } | null>(null);
+  const [isSavingSurfaceCache, setIsSavingSurfaceCache] = useState(false);
+  const [isPurgingSurfaceCache, setIsPurgingSurfaceCache] = useState(false);
+  const [surfaceCacheMessage, setSurfaceCacheMessage] = useState<string | null>(null);
   const lang: AppLanguage = preferences.language;
   const t = (de: string, en: string) => tr(lang, de, en);
 
   const loadStorageSnapshot = async () => {
     setIsStorageLoading(true);
-    const res = await getOfflineStatusSnapshot(tracks, isOnline);
+    const [res, surfaceRes] = await Promise.all([
+      getOfflineStatusSnapshot(tracks, isOnline),
+      apiFetch(getApiUrl('/api/cache/surface'))
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+    ]);
     if (res.success) {
       setStorageSnapshot(res.data);
+    }
+    if (surfaceRes?.success && surfaceRes.stats) {
+      setSurfaceStats(surfaceRes.stats);
+      if (
+        surfaceRes.stats.enabled !== preferences.surfaceCacheEnabled ||
+        surfaceRes.stats.ttlDays !== preferences.surfaceCacheTtlDays ||
+        surfaceRes.stats.maxEntries !== preferences.surfaceCacheMaxEntries
+      ) {
+        onUpdatePreferences({
+          surfaceCacheEnabled: Boolean(surfaceRes.stats.enabled),
+          surfaceCacheTtlDays: Number(surfaceRes.stats.ttlDays),
+          surfaceCacheMaxEntries: Number(surfaceRes.stats.maxEntries)
+        });
+      }
     }
     setIsStorageLoading(false);
   };
@@ -119,6 +155,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
     if (isOpen) {
       setActiveTab(initialTab);
       setTilePurgeMessage(null);
+      setSurfaceCacheMessage(null);
     }
   }, [isOpen, initialTab]);
 
@@ -134,6 +171,87 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   const classicMaxHr = Math.max(120, Math.min(220, 220 - userAge));
   const wattsPerKg = (ftp / Math.max(1, userWeight)).toFixed(2);
   const systemWeight = (userWeight + preferences.bikeWeight).toFixed(1);
+
+  const handleApplyTileCacheLimits = async (nextMb: number, nextCount: number) => {
+    setIsPruningTiles(true);
+    setTilePurgeMessage(null);
+    try {
+      const evicted = await enforceTileCacheQuota(
+        Math.max(25, nextMb) * 1024 * 1024,
+        Math.max(250, nextCount)
+      );
+      await loadStorageSnapshot();
+      if (evicted > 0) {
+        setTilePurgeMessage(
+          t(
+            `${evicted} ältere Kacheln gemäß neuem Limit bereinigt.`,
+            `Trimmed ${evicted} older tiles to match updated quota.`
+          )
+        );
+      }
+    } finally {
+      setIsPruningTiles(false);
+    }
+  };
+
+  const handleUpdateSurfaceCacheConfig = async (
+    partial: Partial<{ enabled: boolean; ttlDays: number; maxEntries: number }>
+  ) => {
+    setIsSavingSurfaceCache(true);
+    setSurfaceCacheMessage(null);
+    onUpdatePreferences({
+      ...(partial.enabled !== undefined ? { surfaceCacheEnabled: partial.enabled } : {}),
+      ...(partial.ttlDays !== undefined ? { surfaceCacheTtlDays: partial.ttlDays } : {}),
+      ...(partial.maxEntries !== undefined ? { surfaceCacheMaxEntries: partial.maxEntries } : {})
+    });
+    try {
+      const res = await apiFetch(getApiUrl('/api/cache/surface/config'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(partial)
+      });
+      const data = await res.json();
+      if (data?.success && data.stats) {
+        setSurfaceStats(data.stats);
+      }
+    } catch {
+      setSurfaceCacheMessage(
+        t('Cache-Regeln lokal gemerkt (Server nicht erreichbar).', 'Saved locally (server unreachable).')
+      );
+    } finally {
+      setIsSavingSurfaceCache(false);
+    }
+  };
+
+  const handlePurgeSurfaceCache = async () => {
+    setIsPurgingSurfaceCache(true);
+    setSurfaceCacheMessage(null);
+    try {
+      const res = await apiFetch(getApiUrl('/api/cache/surface'), {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (data?.success) {
+        if (data.stats) setSurfaceStats(data.stats);
+        setSurfaceCacheMessage(
+          t(
+            `Oberflächen-Cache geleert (${data.deletedCount ?? 0} Einträge entfernt).`,
+            `Surface cache cleared (${data.deletedCount ?? 0} entries removed).`
+          )
+        );
+      } else {
+        setSurfaceCacheMessage(
+          t('Fehler beim Leeren des Oberflächen-Caches.', 'Failed to clear surface cache.')
+        );
+      }
+    } catch {
+      setSurfaceCacheMessage(
+        t('Verbindungsfehler beim Leeren des Oberflächen-Caches.', 'Network error clearing surface cache.')
+      );
+    } finally {
+      setIsPurgingSurfaceCache(false);
+    }
+  };
 
   const handlePurgeMapTiles = async () => {
     setIsPurgingTiles(true);
@@ -929,7 +1047,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
               </div>
 
               {/* IndexedDB Map Tile Cache Card */}
-              <div className="p-4 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3">
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
@@ -944,20 +1062,142 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    id="btn-settings-clear-tile-cache"
-                    onClick={() => void handlePurgeMapTiles()}
-                    disabled={isPurgingTiles || (storageSnapshot?.tileCount ?? 0) === 0}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70 text-xs font-bold transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
-                  >
-                    <Trash2 size={13} />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdatePreferences({ tileCacheEnabled: !preferences.tileCacheEnabled })
+                      }
+                      className={`w-11 h-6 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
+                        preferences.tileCacheEnabled ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
+                      title={t('Kachel-Cache umschalten', 'Toggle Tile Cache')}
+                      aria-label={t('Karten-Kachel-Cache aktivieren', 'Enable Map Tile Cache')}
+                    >
+                      <span
+                        className={`block w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                          preferences.tileCacheEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+
+                    <button
+                      type="button"
+                      id="btn-settings-clear-tile-cache"
+                      onClick={() => void handlePurgeMapTiles()}
+                      disabled={isPurgingTiles || (storageSnapshot?.tileCount ?? 0) === 0}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70 text-xs font-bold transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+                    >
+                      <Trash2 size={13} />
+                      <span>
+                        {isPurgingTiles
+                          ? t('Leere Cache...', 'Clearing...')
+                          : t('Karten-Cache leeren', 'Clear Map Cache')}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Configurable Tile Cache Quota Controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-700/70">
+                  <label className="space-y-1.5 block">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-700 dark:text-slate-200">
+                        {t('Speicherlimit (MB)', 'Size Limit (MB)')}
+                      </span>
+                      <span className="font-mono font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
+                        {preferences.tileCacheMaxMb} MB
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={25}
+                      max={1000}
+                      step={25}
+                      value={preferences.tileCacheMaxMb}
+                      onChange={(e) => {
+                        const val = Math.max(25, Math.min(1000, Number(e.target.value) || 150));
+                        onUpdatePreferences({ tileCacheMaxMb: val });
+                      }}
+                      onMouseUp={() =>
+                        void handleApplyTileCacheLimits(
+                          preferences.tileCacheMaxMb,
+                          preferences.tileCacheMaxCount
+                        )
+                      }
+                      onTouchEnd={() =>
+                        void handleApplyTileCacheLimits(
+                          preferences.tileCacheMaxMb,
+                          preferences.tileCacheMaxCount
+                        )
+                      }
+                      className="w-full accent-indigo-600 cursor-pointer"
+                    />
+                  </label>
+
+                  <label className="space-y-1.5 block">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-700 dark:text-slate-200">
+                        {t('Max. Kachel-Anzahl', 'Max Tile Count')}
+                      </span>
+                      <span className="font-mono font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
+                        {preferences.tileCacheMaxCount.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={250}
+                      max={25000}
+                      step={250}
+                      value={preferences.tileCacheMaxCount}
+                      onChange={(e) => {
+                        const val = Math.max(250, Math.min(25000, Number(e.target.value) || 3500));
+                        onUpdatePreferences({ tileCacheMaxCount: val });
+                      }}
+                      onMouseUp={() =>
+                        void handleApplyTileCacheLimits(
+                          preferences.tileCacheMaxMb,
+                          preferences.tileCacheMaxCount
+                        )
+                      }
+                      onTouchEnd={() =>
+                        void handleApplyTileCacheLimits(
+                          preferences.tileCacheMaxMb,
+                          preferences.tileCacheMaxCount
+                        )
+                      }
+                      className="w-full accent-indigo-600 cursor-pointer"
+                    />
+                  </label>
+
+                  <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-slate-500 dark:text-slate-400">
                     <span>
-                      {isPurgingTiles
-                        ? t('Leere Cache...', 'Clearing...')
-                        : t('Karten-Cache leeren', 'Clear Map Cache')}
+                      {preferences.tileCacheEnabled
+                        ? t(
+                            'Älteste Kacheln (LRU) werden automatisch bereinigt, wenn das Limit sinkt.',
+                            'Oldest tiles (LRU) are automatically evicted when lowering quotas.'
+                          )
+                        : t(
+                            'Kachel-Cache pausiert – Kacheln werden direkt vom Server geladen.',
+                            'Tile caching paused — map tiles load directly from the network.'
+                          )}
                     </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleApplyTileCacheLimits(
+                          preferences.tileCacheMaxMb,
+                          preferences.tileCacheMaxCount
+                        )
+                      }
+                      disabled={isPruningTiles}
+                      className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-indigo-50 dark:hover:bg-indigo-950/40 cursor-pointer disabled:opacity-50"
+                    >
+                      {isPruningTiles
+                        ? t('Bereinige...', 'Applying...')
+                        : t('Limit jetzt prüfen', 'Enforce Quota Now')}
+                    </button>
+                  </div>
                 </div>
 
                 {tilePurgeMessage && (
@@ -970,7 +1210,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                 {(() => {
                   const count = storageSnapshot?.tileCount ?? 0;
                   const bytes = storageSnapshot?.tileCacheBytes ?? 0;
-                  const maxBytes = storageSnapshot?.maxTileCacheBytes ?? 150 * 1024 * 1024;
+                  const maxBytes = preferences.tileCacheMaxMb * 1024 * 1024;
                   const pct = Math.min(100, Math.round((bytes / Math.max(1, maxBytes)) * 100));
                   const layersList = Object.entries(storageSnapshot?.tileLayers || {});
 
@@ -983,6 +1223,10 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                           </span>
                           <span className="text-lg font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
                             {count.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                            <span className="text-xs font-semibold text-slate-400">
+                              {' '}
+                              / {preferences.tileCacheMaxCount.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                            </span>
                           </span>
                         </div>
                         <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
@@ -1043,6 +1287,178 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     </div>
                   );
                 })()}
+              </div>
+
+              {/* Surface Analysis SQLite Cache Card */}
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                      <Layers size={14} className="text-emerald-500" />
+                      <span>{t('Oberflächen-Analyse-Cache (SQLite)', 'Surface Analysis Cache (SQLite)')}</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      {t(
+                        'Speichert Valhalla- & Overpass-Belagsanalysen nach Routen-Signatur, um erneute API-Abfragen zu sparen.',
+                        'Caches Valhalla & Overpass surface results by route signature to avoid repeated lookups.'
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleUpdateSurfaceCacheConfig({
+                          enabled: !preferences.surfaceCacheEnabled
+                        })
+                      }
+                      disabled={isSavingSurfaceCache}
+                      className={`w-11 h-6 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
+                        preferences.surfaceCacheEnabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
+                      title={t('Oberflächen-Cache umschalten', 'Toggle Surface Cache')}
+                      aria-label={t('Oberflächen-Cache aktivieren', 'Enable Surface Cache')}
+                    >
+                      <span
+                        className={`block w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                          preferences.surfaceCacheEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+
+                    <button
+                      type="button"
+                      id="btn-settings-clear-surface-cache"
+                      onClick={() => void handlePurgeSurfaceCache()}
+                      disabled={isPurgingSurfaceCache || (surfaceStats?.entryCount ?? 0) === 0}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70 text-xs font-bold transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+                    >
+                      <Trash2 size={13} />
+                      <span>
+                        {isPurgingSurfaceCache
+                          ? t('Leere Cache...', 'Clearing...')
+                          : t('Analyse-Cache leeren', 'Clear Surface Cache')}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Configurable Surface Cache Rules */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-700/70">
+                  <label className="space-y-1.5 block">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1">
+                        <Clock size={12} className="text-emerald-500" />
+                        <span>{t('Aufbewahrungsdauer (TTL)', 'Retention TTL (Days)')}</span>
+                      </span>
+                      <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                        {preferences.surfaceCacheTtlDays} {t('Tage', 'days')}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={365}
+                      step={1}
+                      value={preferences.surfaceCacheTtlDays}
+                      onChange={(e) => {
+                        const val = Math.max(1, Math.min(365, Number(e.target.value) || 30));
+                        onUpdatePreferences({ surfaceCacheTtlDays: val });
+                      }}
+                      onMouseUp={() =>
+                        void handleUpdateSurfaceCacheConfig({
+                          ttlDays: preferences.surfaceCacheTtlDays
+                        })
+                      }
+                      onTouchEnd={() =>
+                        void handleUpdateSurfaceCacheConfig({
+                          ttlDays: preferences.surfaceCacheTtlDays
+                        })
+                      }
+                      className="w-full accent-emerald-600 cursor-pointer"
+                    />
+                  </label>
+
+                  <label className="space-y-1.5 block">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-700 dark:text-slate-200">
+                        {t('Max. gespeicherte Routen', 'Max Cached Routes')}
+                      </span>
+                      <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                        {preferences.surfaceCacheMaxEntries.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={50}
+                      max={2000}
+                      step={50}
+                      value={preferences.surfaceCacheMaxEntries}
+                      onChange={(e) => {
+                        const val = Math.max(50, Math.min(2000, Number(e.target.value) || 400));
+                        onUpdatePreferences({ surfaceCacheMaxEntries: val });
+                      }}
+                      onMouseUp={() =>
+                        void handleUpdateSurfaceCacheConfig({
+                          maxEntries: preferences.surfaceCacheMaxEntries
+                        })
+                      }
+                      onTouchEnd={() =>
+                        void handleUpdateSurfaceCacheConfig({
+                          maxEntries: preferences.surfaceCacheMaxEntries
+                        })
+                      }
+                      className="w-full accent-emerald-600 cursor-pointer"
+                    />
+                  </label>
+                </div>
+
+                {surfaceCacheMessage && (
+                  <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                    <CheckCircle2 size={14} className="shrink-0" />
+                    <span>{surfaceCacheMessage}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('Gespeicherte Routen', 'Cached Routes')}
+                    </span>
+                    <span className="text-lg font-black font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                      {(surfaceStats?.entryCount ?? 0).toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                      <span className="text-xs font-semibold text-slate-400">
+                        {' '}
+                        / {preferences.surfaceCacheMaxEntries.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('SQLite-Payload', 'SQLite Payload')}
+                    </span>
+                    <span className="text-lg font-black font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                      {formatByteSize(surfaceStats?.payloadBytes ?? 0)}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/70">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      {t('Cache-Status', 'Cache Mode')}
+                    </span>
+                    <span
+                      className={`text-sm font-black block mt-0.5 ${
+                        preferences.surfaceCacheEnabled
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      {preferences.surfaceCacheEnabled
+                        ? t(`Aktiv (${preferences.surfaceCacheTtlDays}d TTL)`, `Active (${preferences.surfaceCacheTtlDays}d TTL)`)
+                        : t('Deaktiviert (Live)', 'Disabled (Live Only)')}
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Workspace & Browser Storage Quota */}
@@ -1111,7 +1527,14 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={onResetDefaults}
+              onClick={() => {
+                onResetDefaults();
+                void handleUpdateSurfaceCacheConfig({
+                  enabled: DEFAULT_APP_PREFERENCES.surfaceCacheEnabled,
+                  ttlDays: DEFAULT_APP_PREFERENCES.surfaceCacheTtlDays,
+                  maxEntries: DEFAULT_APP_PREFERENCES.surfaceCacheMaxEntries
+                });
+              }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
               title={`${t('Zurücksetzen auf', 'Reset to')} ${DEFAULT_APP_PREFERENCES.uiStyle}`}
             >

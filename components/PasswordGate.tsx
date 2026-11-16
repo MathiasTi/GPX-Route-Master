@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Lock, Eye, EyeOff, Layers, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
+import { Lock, Eye, EyeOff, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { getApiUrl, apiFetch } from '../utils/api';
+import { BrandLogo } from './BrandLogo';
 
 interface PasswordGateProps {
   onUnlocked: (token?: string) => void;
@@ -45,12 +46,10 @@ export const PasswordGate: React.FC<PasswordGateProps> = ({ onUnlocked }) => {
     <div className="min-h-screen w-full bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
         <div className="flex items-center gap-3 pb-6 border-b border-slate-800">
-          <div className="w-11 h-11 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
-            <Layers className="w-6 h-6 text-blue-400" />
-          </div>
+          <BrandLogo size={44} variant="badge" />
           <div>
             <h1 className="text-lg font-bold tracking-tight text-white leading-tight">
-              VeloGPX Analyzer
+              GPX Route Master
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
               Geschützter Workspace · Passwort erforderlich

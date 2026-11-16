@@ -1882,6 +1882,7 @@ export interface DbGarminActivityRecord {
   location?: string;
   max_slope?: number;
   points_json?: string;
+  has_gps?: number | boolean;
   user_id?: string;
   country?: string;
 }
@@ -2217,8 +2218,8 @@ export function getHealthMetrics(userId: string = 'default', options?: { include
   const rhr = normalizeDateRows('garmin_rhr');
   const steps = normalizeDateRows('garmin_steps');
   const activityColumns = includePoints
-    ? '*'
-    : 'id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, user_id, country';
+    ? '*, CASE WHEN length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps'
+    : 'id, name, type, date, distance, duration, ascent, descent, calories, avg_hr, description, location, user_id, country, CASE WHEN length(points_json) > 10 THEN 1 ELSE 0 END AS has_gps';
   const activities = (
     db.prepare(`SELECT ${activityColumns} FROM garmin_activities WHERE user_id = ? ORDER BY date DESC`).all(uid) as DbGarminActivityRecord[]
   ).map(act => ({

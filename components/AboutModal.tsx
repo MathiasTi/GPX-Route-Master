@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, GitCommit, Check, Save, Sparkles, RefreshCw, Layers, Terminal, Wifi, WifiOff, HardDrive, Trash2, Command } from 'lucide-react';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { getSWCacheStats, clearSWTileCache, SWCacheStats } from '../utils/serviceWorker';
+import { BrandLogo } from './BrandLogo';
 
 interface AppVersion {
   id: number;
@@ -170,9 +171,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
         {/* Header */}
         <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-150 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/25 gap-2 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/50 border border-blue-100 dark:border-blue-900/40 text-blue-600 dark:text-blue-400 shrink-0">
-              <Layers className="w-5 h-5" />
-            </div>
+            <BrandLogo size={34} variant="badge" />
             <div className="min-w-0 flex-1">
               <h2 className="text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 uppercase tracking-wider truncate">
                 Über GPX Route Master

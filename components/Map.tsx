@@ -4,12 +4,12 @@ import { MapContainer, TileLayer, Polyline, useMapEvents, useMap, Marker, Popup,
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
 import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
-import { getApiUrl } from '../utils/api';
+import { getApiUrl, apiFetch } from '../utils/api';
 import { triggerHaptic, shareTrackNative } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { buildMapHoverCardHtml } from './map/MapHoverTooltipCard';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2 } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Locate, Share2, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -1004,6 +1004,58 @@ const Map: React.FC<MapProps> = ({
   const [isTrackingLocation, setIsTrackingLocation] = useState(false);
   const [autoCenterLocation, setAutoCenterLocation] = useState(true);
 
+  // Personal Lifetime Heatmap state (Veloviewer / Strava style)
+  const [showLifetimeHeatmap, setShowLifetimeHeatmap] = useState(false);
+  const [heatmapSportFilter, setHeatmapSportFilter] = useState<'all' | 'cycling' | 'running'>('all');
+  const [heatmapTracks, setHeatmapTracks] = useState<Array<{ id: string; sport: string; coords: [number, number][] }>>([]);
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
+
+  useEffect(() => {
+    if (!showLifetimeHeatmap || heatmapTracks.length > 0) return;
+    let cancelled = false;
+    setHeatmapLoading(true);
+    apiFetch('/api/activities/heatmap-tracks?limit=180')
+      .then(res => (res.ok ? res.json() : { tracks: [] }))
+      .then(data => {
+        if (!cancelled && Array.isArray(data?.tracks)) {
+          const normalized = data.tracks
+            .map((t: any, idx: number) => {
+              const rawCoords = Array.isArray(t?.coords) ? t.coords : Array.isArray(t?.points) ? t.points : [];
+              const validCoords = rawCoords.filter(
+                (pt: any): pt is [number, number] =>
+                  Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])
+              );
+              return {
+                id: String(t?.id ?? `ht-${idx}`),
+                sport: String(t?.sport ?? 'cycling'),
+                coords: validCoords
+              };
+            })
+            .filter((t: { coords: [number, number][] }) => t.coords.length >= 2);
+          setHeatmapTracks(normalized);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setHeatmapLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showLifetimeHeatmap, heatmapTracks.length]);
+
+  const filteredHeatmapTracks = useMemo(() => {
+    if (!showLifetimeHeatmap) return [];
+    return heatmapTracks.filter(t => {
+      if (!Array.isArray(t.coords) || t.coords.length < 2) return false;
+      if (heatmapSportFilter === 'all') return true;
+      const s = (t.sport || '').toLowerCase();
+      if (heatmapSportFilter === 'cycling') return s.includes('rad') || s.includes('cycl') || s.includes('bike') || s.includes('ride') || s.includes('mtb') || s.includes('gravel');
+      if (heatmapSportFilter === 'running') return s.includes('lauf') || s.includes('run') || s.includes('jog') || s.includes('trail');
+      return true;
+    });
+  }, [showLifetimeHeatmap, heatmapTracks, heatmapSportFilter]);
+
   // Local state for POI options (disabled by default for a clean, distraction-free map)
   const [showPOIs, setShowPOIs] = useState<boolean>(() => {
     try {
@@ -1634,6 +1686,18 @@ const Map: React.FC<MapProps> = ({
         />
 
         <FocusGapController selectedGap={timeGaps.find(g => g.id === selectedGapId) || null} />
+
+        {/* Personal Lifetime Heatmap Overlay (Background Polylines) */}
+        {showLifetimeHeatmap && filteredHeatmapTracks.map(ht => (
+          <LeafletPolyline
+            key={`heatmap-${ht.id}`}
+            positions={ht.coords}
+            color="#f97316"
+            weight={2.5}
+            opacity={isDarkTile ? 0.42 : 0.35}
+            interactive={false}
+          />
+        ))}
         
         {preparedTracks.map(({
           track,
@@ -2427,6 +2491,49 @@ const Map: React.FC<MapProps> = ({
       {/* Strecken-Farbmodus, POI-Filter & 3D-Überflug Cluster (oben rechts) */}
       {!isColorMenuOpen ? (
         <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] flex items-center gap-2 pointer-events-auto">
+          <div className="flex items-center bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md overflow-hidden">
+            <button
+              type="button"
+              id="btn-map-lifetime-heatmap"
+              onClick={() => setShowLifetimeHeatmap(prev => !prev)}
+              className={`flex items-center gap-1.5 px-2.5 py-2 min-h-[44px] text-xs font-bold cursor-pointer transition-all select-none ${
+                showLifetimeHeatmap
+                  ? 'bg-orange-500 text-white'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+              title="Persönliche Lebenszeit-Heatmap aller gespeicherten Touren ein-/ausblenden"
+            >
+              <Flame className={`w-4 h-4 ${showLifetimeHeatmap ? 'text-white animate-pulse' : 'text-orange-500'}`} />
+              <span className="hidden md:inline">Heatmap</span>
+              {showLifetimeHeatmap && (
+                <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-black/20 text-white">
+                  {heatmapLoading ? '…' : filteredHeatmapTracks.length}
+                </span>
+              )}
+            </button>
+            {showLifetimeHeatmap && (
+              <div className="flex items-center border-l border-slate-200 dark:border-slate-700 px-1 py-1 gap-0.5 bg-slate-50 dark:bg-slate-800/80">
+                {([
+                  { id: 'all', label: 'Alle' },
+                  { id: 'cycling', label: 'Rad' },
+                  { id: 'running', label: 'Lauf' }
+                ] as const).map(opt => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setHeatmapSportFilter(opt.id)}
+                    className={`px-1.5 py-1 rounded text-[10px] font-extrabold transition-colors cursor-pointer ${
+                      heatmapSportFilter === opt.id
+                        ? 'bg-orange-500 text-white'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {onOpenVideoExport && (
             <button
               type="button"

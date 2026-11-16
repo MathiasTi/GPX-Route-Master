@@ -16,6 +16,7 @@ import {
 } from '../utils/gpxUtils';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/telemetry/pointMetricsEngine';
+import { computeTrackWbal } from '../utils/wbalEngine';
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
@@ -85,6 +86,8 @@ interface HoverInfo {
   time?: Date;
   cadence?: number;
   speed?: number;
+  wbalPct?: number;
+  wbalKj?: number;
   x: number;
   y: number;
   lat: number;
@@ -133,6 +136,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [showSlope, setShowSlope] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
   const [showCadence, setShowCadence] = useState(false);
+  const [showWbal, setShowWbal] = useState(false);
   const [showPoiMarkers, setShowPoiMarkers] = useState(true);
   const [showSegmentMarkers, setShowSegmentMarkers] = useState(true);
   const [showGradientWarnings, setShowGradientWarnings] = useState(true);
@@ -618,6 +622,29 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return Math.abs(data[low].dist - targetDist) < Math.abs(data[high].dist - targetDist) ? low : high;
   };
 
+  // Compute Skiba W'bal series for the active track when W'bal overlay is enabled
+  const wbalResult = useMemo(() => {
+    if (!showWbal) return null;
+    return computeTrackWbal(track, {
+      cpWatts: Math.max(80, Math.round((ftp || 220) * 0.96)),
+      wPrimeKj: 20
+    });
+  }, [track, ftp, showWbal]);
+
+  const lookupWbalAtDist = useCallback((distKm: number): { wbalPct?: number; wbalKj?: number } => {
+    if (!wbalResult || wbalResult.series.length === 0) return {};
+    const s = wbalResult.series;
+    let lo = 0;
+    let hi = s.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (s[mid].distanceKm < distKm) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    const idx = lo >= s.length ? s.length - 1 : hi < 0 ? 0 : (Math.abs(s[lo].distanceKm - distKm) < Math.abs(s[hi].distanceKm - distKm) ? lo : hi);
+    return { wbalPct: s[idx].wbalPct, wbalKj: s[idx].wbalKj };
+  }, [wbalResult]);
+
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!profileData || !svgRef.current) return;
 
@@ -647,6 +674,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       cancelAnimationFrame(hoverRafRef.current);
     }
     hoverRafRef.current = requestAnimationFrame(() => {
+      const wbalAt = lookupWbalAtDist(point.dist);
       setHoverInfo({
         dist: point.dist,
         ele: point.ele,
@@ -656,6 +684,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         time: point.time,
         cadence: point.cadence,
         speed: point.speed,
+        wbalPct: wbalAt.wbalPct,
+        wbalKj: wbalAt.wbalKj,
         x,
         y,
         lat: point.lat,
@@ -720,6 +750,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       cancelAnimationFrame(hoverRafRef.current);
     }
     hoverRafRef.current = requestAnimationFrame(() => {
+      const wbalAt = lookupWbalAtDist(point.dist);
       setHoverInfo({
         dist: point.dist,
         ele: point.ele,
@@ -729,6 +760,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         time: point.time,
         cadence: point.cadence,
         speed: point.speed,
+        wbalPct: wbalAt.wbalPct,
+        wbalKj: wbalAt.wbalKj,
         x,
         y,
         lat: point.lat,
@@ -980,6 +1013,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         slopePoints: '',
         speedPoints: '',
         cadencePoints: '',
+        wbalPoints: '',
       };
     }
 
@@ -1070,6 +1104,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .join(' ')
       : '';
 
+    const wbalPoints = showWbal && wbalResult && wbalResult.series.length > 1
+      ? wbalResult.series
+          .map((pt) => {
+            const px = padding.left + (pt.distanceKm / distRange) * graphWidth;
+            const py = height - padding.bottom - (Math.max(0, Math.min(100, pt.wbalPct)) / 100) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
     return {
       points,
       areaPath,
@@ -1078,6 +1122,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       slopePoints,
       speedPoints,
       cadencePoints,
+      wbalPoints,
     };
   }, [
     profileData,
@@ -1094,6 +1139,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     showSlope,
     showSpeed,
     showCadence,
+    showWbal,
+    wbalResult,
   ]);
 
   if (!profileData) {
@@ -1283,6 +1330,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
               </label>
             )}
+            <label
+              className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-cyan-600 dark:text-cyan-400 hover:text-cyan-700 transition-colors"
+              title="Skiba W'bal Anaerobe Batterie-Reserve (%) einblenden"
+            >
+              <input
+                type="checkbox"
+                checked={showWbal}
+                onChange={(e) => setShowWbal(e.target.checked)}
+                className="w-3.5 h-3.5 text-cyan-600 rounded bg-slate-100 border-slate-300 focus:ring-cyan-500 cursor-pointer"
+              />
+              W&apos;bal
+            </label>
             <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 transition-colors">
               <input 
                 type="checkbox" 
@@ -1634,6 +1693,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
               </label>
             )}
+            <label className="flex items-center gap-1.5 cursor-pointer text-cyan-600 dark:text-cyan-400 hover:text-cyan-700">
+              <input
+                type="checkbox"
+                checked={showWbal}
+                onChange={(e) => setShowWbal(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-cyan-600"
+              />
+              W&apos;bal (%)
+            </label>
             <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
               <input 
                 type="checkbox" 
@@ -1948,6 +2016,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {hoverInfo.power !== undefined && (
                 <span className="text-amber-400 font-black">{Math.round(hoverInfo.power)} W</span>
               )}
+              {showWbal && hoverInfo.wbalPct !== undefined && (
+                <span className="text-cyan-400 font-black">W&apos; {Math.round(hoverInfo.wbalPct)}%</span>
+              )}
               {hoverInfo.hr !== undefined && (
                 <span className="text-rose-400 font-black">{Math.round(hoverInfo.hr)} bpm</span>
               )}
@@ -2195,6 +2266,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               strokeLinejoin="round"
               strokeLinecap="round"
               points={svgPaths.cadencePoints}
+            />
+          )}
+
+          {/* W'bal Differential Reserve Line */}
+          {showWbal && svgPaths.wbalPoints && (
+            <polyline
+              fill="none"
+              stroke="#06b6d4"
+              strokeWidth="2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.wbalPoints}
             />
           )}
 
@@ -2499,6 +2582,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                     label: isRun ? "Schrittfrequenz:" : "Trittfrequenz:",
                     val: `${displayCad.toLocaleString('de-DE', { maximumFractionDigits: 0 })} ${isRun ? 'spm' : 'rpm'}`,
                     color: "fill-purple-400"
+                  });
+                }
+
+                if (showWbal && hoverInfo.wbalPct !== undefined) {
+                  rows.push({
+                    label: "W'bal Reserve:",
+                    val: `${hoverInfo.wbalPct.toFixed(0)}% (${(hoverInfo.wbalKj ?? 0).toFixed(1)} kJ)`,
+                    color: "fill-cyan-400"
                   });
                 }
                 

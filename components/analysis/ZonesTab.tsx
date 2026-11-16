@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Heart, Zap, Sliders, Activity, Clock, ShieldCheck, Award, Info, Gauge } from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { GPXTrack, GPXPoint } from '../../types';
 import { triggerHaptic } from '../../utils/haptics';
 import { estimateTrackPower } from '../../utils/gpxUtils';
@@ -8,6 +9,7 @@ interface ZonesTabProps {
   track: GPXTrack;
   activityType?: 'cycling' | 'running';
   initialMaxHr?: number;
+  onMaxHrChange?: (newMaxHr: number) => void;
   initialFtp?: number;
   initialWeight?: number;
   onOpenGlossary?: (metricId?: string) => void;
@@ -17,6 +19,7 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
   track,
   activityType,
   initialMaxHr = 185,
+  onMaxHrChange,
   initialFtp = 220,
   initialWeight = 75,
   onOpenGlossary
@@ -26,6 +29,18 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
 
   const [maxHr, setMaxHr] = useState<number>(initialMaxHr);
   const [ftp, setFtp] = useState<number>(initialFtp);
+
+  useEffect(() => {
+    if (initialMaxHr && Number.isFinite(initialMaxHr)) {
+      setMaxHr(initialMaxHr);
+    }
+  }, [initialMaxHr]);
+
+  useEffect(() => {
+    if (initialFtp && Number.isFinite(initialFtp)) {
+      setFtp(initialFtp);
+    }
+  }, [initialFtp]);
 
   // Compute detected average running pace from track
   const detectedAvgPaceSec = useMemo(() => {
@@ -725,7 +740,11 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
               max={220}
               step={1}
               value={maxHr}
-              onChange={(e) => setMaxHr(parseInt(e.target.value))}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setMaxHr(v);
+                onMaxHrChange?.(v);
+              }}
               className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
             />
             <div className="flex justify-between text-[10px] text-slate-400">
@@ -856,13 +875,80 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              5-Zonen Herzfrequenz-Verteilung {isRunning ? '(Lauf-Physiologie)' : '(Radsport-Physiologie)'}
+              5-Zonen Herzfrequenz-Verteilung {isRunning ? '(Lauf-Physiologie)' : '(Radsport-Physiologie)'} • HFmax: {maxHr} bpm
             </h4>
             <span className="text-xs text-slate-400 font-medium">
               Aerobe Basis (GA1+GA2): <strong className="text-emerald-600 dark:text-emerald-400 font-mono">
                 {(hrDistribution[1].percent + hrDistribution[2].percent)}%
               </strong>
             </span>
+          </div>
+
+          {/* Visual Time-in-Zone Chart Card */}
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-700 dark:text-slate-200">
+                Zeit in Pulsbereichen (Minuten &amp; %-Anteil)
+              </span>
+              <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                Schwelle/VO2max (Z4+Z5): {hrDistribution[3].percent + hrDistribution[4].percent}%
+              </span>
+            </div>
+
+            <div className="h-3 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden flex p-0.5 gap-0.5">
+              {hrDistribution.map((z) =>
+                z.percent > 0 ? (
+                  <div
+                    key={`hr-stack-${z.id}`}
+                    style={{ width: `${Math.max(2, z.percent)}%`, backgroundColor: z.color }}
+                    className="h-full first:rounded-l-full last:rounded-r-full transition-all duration-300"
+                    title={`${z.name}: ${z.timeStr} (${z.percent}%)`}
+                  />
+                ) : null
+              )}
+            </div>
+
+            <div className="h-48 w-full pt-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={hrDistribution.map((z) => ({
+                    ...z,
+                    minutes: Number((z.seconds / 60).toFixed(1)),
+                    shortName: `${z.id.toUpperCase()} (${z.key})`
+                  }))}
+                  margin={{ top: 8, right: 8, left: -18, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" opacity={0.2} />
+                  <XAxis dataKey="shortName" tick={{ fontSize: 11, fontWeight: 700 }} />
+                  <YAxis unit="m" tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload || !payload.length) return null;
+                      const z = payload[0].payload;
+                      return (
+                        <div className="p-2.5 rounded-xl bg-slate-900/95 text-white shadow-xl border border-slate-700 text-xs space-y-1 font-mono tabular-nums">
+                          <div className="font-sans font-bold text-white flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: z.color }} />
+                            {z.name}
+                          </div>
+                          <div className="text-slate-300">
+                            Zeit: <strong className="text-white">{z.timeStr}</strong> ({z.percent}%)
+                          </div>
+                          <div className="text-rose-300 text-[11px]">
+                            Bereich: {z.min}–{z.max} bpm ({z.sub})
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Bar dataKey="minutes" radius={[6, 6, 0, 0]} maxBarSize={48} isAnimationActive={false}>
+                    {hrDistribution.map((entry) => (
+                      <Cell key={`hr-bar-${entry.id}`} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
           <div className="space-y-2.5">

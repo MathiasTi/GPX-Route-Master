@@ -19,13 +19,16 @@ import {
   IntensiveClimb,
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ComposedChart, Bar, Line, Legend } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ComposedChart, Bar, Line, Legend, Cell } from 'recharts';
 import { calculateDistance, detectActivityType, detectTrackPauses, formatPace, getPaceString } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
 import { RawDataTab } from './analysis/RawDataTab';
 import { PrintReportTab } from './analysis/PrintReportTab';
+import { NumericProfileInput } from './NumericProfileInput';
+import { Climb3DProfileCard } from './analysis/Climb3DProfileCard';
+import { runPacingSimulation, PacingStrategyMode } from '../utils/pacingSimulator';
 
 interface IntensiveElevationChartProps {
   data: Array<{
@@ -390,8 +393,15 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const [fitnessLevel, setFitnessLevel] = useState<'beginner' | 'moderate' | 'advanced' | 'elite'>('moderate');
   const [customFtp, setCustomFtp] = useState<number>(ftp || 220);
   const [customWeight, setCustomWeight] = useState<number>(userWeight || 75);
+  const [customMaxHr, setCustomMaxHr] = useState<number>(userMaxHr || 185);
   const [customTemp, setCustomTemp] = useState<number>(20);
   const [activeTab, setActiveTab] = useState<AnalysisTab>(initialTab || 'overview');
+
+  useEffect(() => {
+    if (userMaxHr && Number.isFinite(userMaxHr) && userMaxHr >= 120 && userMaxHr <= 230) {
+      setCustomMaxHr(userMaxHr);
+    }
+  }, [userMaxHr]);
 
   useEffect(() => {
     setActivityType(initialDetected);
@@ -520,6 +530,159 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
     });
   }, [track.points, activityType, analysis.estimatedAverageSpeedKmh, estimatedSpeed]);
 
+  // Heart Rate Zones Time-in-Zone Analysis based on customMaxHr
+  const hrZoneAnalysis = useMemo(() => {
+    const safeMaxHr = Math.max(120, Math.min(230, Math.round(customMaxHr || 185)));
+    const z1Max = Math.round(safeMaxHr * 0.60);
+    const z2Max = Math.round(safeMaxHr * 0.70);
+    const z3Max = Math.round(safeMaxHr * 0.80);
+    const z4Max = Math.round(safeMaxHr * 0.90);
+
+    const zoneDefs = [
+      {
+        id: 'z1',
+        shortLabel: 'Z1 KB',
+        name: 'Z1 – Kompensation & Erholung',
+        pctRange: '< 60% HFmax',
+        minBpm: 0,
+        maxBpm: z1Max,
+        bpmRange: `< ${z1Max} bpm`,
+        color: '#3b82f6',
+        effect: 'Aktive Regeneration & Laktatabbau'
+      },
+      {
+        id: 'z2',
+        shortLabel: 'Z2 GA1',
+        name: 'Z2 – Grundlagenausdauer 1 (GA1)',
+        pctRange: '60–70% HFmax',
+        minBpm: z1Max + 1,
+        maxBpm: z2Max,
+        bpmRange: `${z1Max + 1}–${z2Max} bpm`,
+        color: '#10b981',
+        effect: 'Fettstoffwechsel & aerobe Basis'
+      },
+      {
+        id: 'z3',
+        shortLabel: 'Z3 GA2',
+        name: 'Z3 – Grundlagenausdauer 2 / Tempo',
+        pctRange: '70–80% HFmax',
+        minBpm: z2Max + 1,
+        maxBpm: z3Max,
+        bpmRange: `${z2Max + 1}–${z3Max} bpm`,
+        color: '#eab308',
+        effect: 'Aerob-anaerober Übergang & Ökonomie'
+      },
+      {
+        id: 'z4',
+        shortLabel: 'Z4 EB',
+        name: 'Z4 – Entwicklungsbereich (Schwelle)',
+        pctRange: '80–90% HFmax',
+        minBpm: z3Max + 1,
+        maxBpm: z4Max,
+        bpmRange: `${z3Max + 1}–${z4Max} bpm`,
+        color: '#f97316',
+        effect: 'Anaerobe Schwelle & Laktattoleranz'
+      },
+      {
+        id: 'z5',
+        shortLabel: 'Z5 SB',
+        name: 'Z5 – Spitzenbereich (VO2max)',
+        pctRange: '90–100% HFmax',
+        minBpm: z4Max + 1,
+        maxBpm: safeMaxHr,
+        bpmRange: `> ${z4Max} bpm`,
+        color: '#ef4444',
+        effect: 'Maximale Sauerstoffaufnahme & Spitzenlast'
+      }
+    ];
+
+    const pts = track.points || [];
+    const totalTargetSec = Math.max(
+      60,
+      analysis.estimatedMovingTimeSeconds || track.duration || Math.round((Math.max(1, track.distance) / 20) * 3600)
+    );
+    const zoneSeconds = [0, 0, 0, 0, 0];
+    let weightedHrSum = 0;
+    let totalValidHrSec = 0;
+    let maxRecordedHr = 0;
+
+    for (let i = 0; i < pts.length; i++) {
+      const hr = Number(pts[i].hr);
+      if (Number.isFinite(hr) && hr > 35 && hr < 240) {
+        let dt = 1;
+        if (i > 0 && pts[i].time && pts[i - 1].time) {
+          const t0 = new Date(pts[i - 1].time as any).getTime();
+          const t1 = new Date(pts[i].time as any).getTime();
+          if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0 && t1 - t0 <= 60000) {
+            dt = (t1 - t0) / 1000;
+          }
+        }
+        totalValidHrSec += dt;
+        weightedHrSum += hr * dt;
+        if (hr > maxRecordedHr) maxRecordedHr = Math.round(hr);
+
+        if (hr <= z1Max) zoneSeconds[0] += dt;
+        else if (hr <= z2Max) zoneSeconds[1] += dt;
+        else if (hr <= z3Max) zoneSeconds[2] += dt;
+        else if (hr <= z4Max) zoneSeconds[3] += dt;
+        else zoneSeconds[4] += dt;
+      }
+    }
+
+    const hasRealHrData = totalValidHrSec > 0;
+
+    if (hasRealHrData) {
+      const scale = totalTargetSec / totalValidHrSec;
+      for (let j = 0; j < 5; j++) {
+        zoneSeconds[j] = Math.round(zoneSeconds[j] * scale);
+      }
+    } else {
+      // Physiological terrain-based modeling when no HR sensor was recorded
+      const climbRatio = analysis.totalDistanceKm > 0
+        ? (analysis.climbingDistanceKm + analysis.steepClimbDistanceKm * 1.6) / analysis.totalDistanceKm
+        : 0.2;
+      const intensityShift = Math.min(0.25, Math.max(0, climbRatio * 0.45));
+      zoneSeconds[0] = Math.round(totalTargetSec * Math.max(0.08, 0.18 - intensityShift * 0.4));
+      zoneSeconds[1] = Math.round(totalTargetSec * Math.max(0.28, 0.46 - intensityShift * 0.5));
+      zoneSeconds[2] = Math.round(totalTargetSec * (0.22 + intensityShift * 0.35));
+      zoneSeconds[3] = Math.round(totalTargetSec * (0.10 + intensityShift * 0.40));
+      zoneSeconds[4] = Math.max(0, totalTargetSec - (zoneSeconds[0] + zoneSeconds[1] + zoneSeconds[2] + zoneSeconds[3]));
+    }
+
+    const sumSec = Math.max(1, zoneSeconds.reduce((a, b) => a + b, 0));
+    const avgHr = hasRealHrData
+      ? Math.round(weightedHrSum / totalValidHrSec)
+      : Math.round(safeMaxHr * (0.68 + Math.min(0.12, (analysis.difficultyScore || 4) * 0.012)));
+
+    const zones = zoneDefs.map((z, idx) => {
+      const seconds = zoneSeconds[idx];
+      const minutes = Number((seconds / 60).toFixed(1));
+      const percent = Number(((seconds / sumSec) * 100).toFixed(1));
+      return {
+        ...z,
+        seconds,
+        minutes,
+        percent,
+        timeFormatted: formatSecondsToTime(seconds),
+        digitalFormatted: formatSecondsToDigital(seconds)
+      };
+    });
+
+    const aerobicPct = Math.round(zones[0].percent + zones[1].percent + zones[2].percent);
+    const thresholdPeakPct = Math.max(0, 100 - aerobicPct);
+
+    return {
+      safeMaxHr,
+      hasRealHrData,
+      avgHr,
+      maxRecordedHr: hasRealHrData ? maxRecordedHr : Math.round(safeMaxHr * 0.92),
+      totalSec: sumSec,
+      aerobicPct,
+      thresholdPeakPct,
+      zones
+    };
+  }, [track.points, track.duration, track.distance, customMaxHr, analysis.estimatedMovingTimeSeconds, analysis.totalDistanceKm, analysis.climbingDistanceKm, analysis.steepClimbDistanceKm, analysis.difficultyScore]);
+
   // Downsample profile data for elevation & grade chart with climb mapping
   const elevationData = useMemo(() => {
     if (!track.points || track.points.length === 0) return [];
@@ -556,6 +719,32 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
     }
     return sampled;
   }, [track.points, analysis.climbs]);
+
+  // 3D Climb Profile visibility per climb index (first climb open by default)
+  const [open3DClimbMap, setOpen3DClimbMap] = useState<Record<number, boolean>>({ 0: true });
+
+  // Interactive Pacing & Target Time Simulator state (BestBikeSplit style)
+  const [pacingStrategy, setPacingStrategy] = useState<PacingStrategyMode>('variable_climb');
+  const [pacingIfPct, setPacingIfPct] = useState<number>(82);
+  const [pacingWindKmh, setPacingWindKmh] = useState<number>(0);
+  const [pacingSplitKm, setPacingSplitKm] = useState<number>(2.5);
+
+  const pacingSim = useMemo(() => {
+    const bikeWeight = subType === 'road' ? 8.5 : subType === 'gravel' ? 10.5 : 12.5;
+    const crr = subType === 'road' ? 0.004 : subType === 'gravel' ? 0.0065 : 0.009;
+    const cda = activityType === 'running' ? 0.45 : subType === 'road' ? 0.31 : 0.36;
+    return runPacingSimulation(track, {
+      ftpWatts: customFtp,
+      riderWeightKg: customWeight,
+      bikeWeightKg: activityType === 'cycling' ? bikeWeight : 0.8,
+      cda,
+      crr,
+      windSpeedKmh: pacingWindKmh,
+      targetIfPct: pacingIfPct,
+      strategy: pacingStrategy,
+      segmentLengthKm: pacingSplitKm
+    });
+  }, [track, customFtp, customWeight, subType, activityType, pacingWindKmh, pacingIfPct, pacingStrategy, pacingSplitKm]);
 
   const handleCopySummary = () => {
     triggerHaptic();
@@ -779,7 +968,7 @@ GPX Route Master Pro`;
         </div>
 
         {/* Mobile Compact Parameter Ribbon (< 640px) */}
-        <div className="flex sm:hidden items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200/80 dark:border-slate-800 text-xs">
+        <div className="flex sm:hidden shrink-0 items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200/80 dark:border-slate-800 text-xs">
           <div className="flex items-center gap-1.5 truncate">
             <span className="font-bold flex items-center gap-1 text-slate-800 dark:text-slate-200 shrink-0">
               {activityType === 'cycling' ? <Bike className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> : <Activity className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
@@ -809,7 +998,7 @@ GPX Route Master Pro`;
         </div>
 
         {/* Dynamic Parameter Ribbon (Desktop full, Mobile collapsible) */}
-        <div className={`${isMobileParamsExpanded ? 'flex' : 'hidden sm:flex'} px-3 sm:px-5 py-2.5 sm:py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-800 flex-wrap items-center justify-between gap-3 sm:gap-4 text-xs transition-all`}>
+        <div className={`${isMobileParamsExpanded ? 'flex' : 'hidden sm:flex'} shrink-0 px-3 sm:px-5 py-2.5 sm:py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-800 flex-wrap items-center justify-between gap-3 sm:gap-4 text-xs transition-all`}>
           <div className="flex flex-wrap items-center gap-3">
             {/* Activity Switch */}
             <div className="flex items-center bg-white dark:bg-slate-900 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700 shadow-2xs">
@@ -873,16 +1062,19 @@ GPX Route Master Pro`;
             </div>
           </div>
 
-          <div className="flex items-center gap-4 text-slate-600 dark:text-slate-300 font-semibold">
+          <div className="flex flex-wrap items-center gap-4 text-slate-600 dark:text-slate-300 font-semibold">
             {activityType === 'cycling' && (
               <div className="flex items-center gap-1.5" title="Schwellenleistung in Watt">
                 <Zap className="w-3.5 h-3.5 text-amber-500" />
                 <span>FTP:</span>
-                <input
-                  type="number"
+                <NumericProfileInput
+                  min={100}
+                  max={500}
+                  step={5}
                   value={customFtp}
-                  onChange={(e) => setCustomFtp(Math.max(100, Math.min(500, Number(e.target.value))))}
-                  className="w-14 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-bold text-slate-800 dark:text-slate-200"
+                  onChange={setCustomFtp}
+                  ariaLabel="FTP in Watt"
+                  className="w-14 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-mono font-bold tabular-nums text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
                 />
                 <span className="text-[11px] text-slate-400">W</span>
               </div>
@@ -891,23 +1083,45 @@ GPX Route Master Pro`;
             <div className="flex items-center gap-1.5" title={activityType === 'running' ? "Läufergewicht" : "Fahrergewicht"}>
               <Gauge className="w-3.5 h-3.5 text-indigo-500" />
               <span>Gewicht:</span>
-              <input
-                type="number"
+              <NumericProfileInput
+                min={40}
+                max={150}
+                step={0.5}
+                allowDecimal
                 value={customWeight}
-                onChange={(e) => setCustomWeight(Math.max(40, Math.min(150, Number(e.target.value))))}
-                className="w-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-bold text-slate-800 dark:text-slate-200"
+                onChange={setCustomWeight}
+                ariaLabel="Gewicht in Kilogramm"
+                className="w-14 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-mono font-bold tabular-nums text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
               />
               <span className="text-[11px] text-slate-400">kg</span>
+            </div>
+
+            <div className="flex items-center gap-1.5" title="Maximale Herzfrequenz (HFmax) in bpm">
+              <Heart className="w-3.5 h-3.5 text-rose-500" />
+              <span>HFmax:</span>
+              <NumericProfileInput
+                min={120}
+                max={230}
+                step={1}
+                value={customMaxHr}
+                onChange={setCustomMaxHr}
+                ariaLabel="Maximale Herzfrequenz in bpm"
+                className="w-14 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-mono font-bold tabular-nums text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/30"
+              />
+              <span className="text-[11px] text-slate-400">bpm</span>
             </div>
 
             <div className="flex items-center gap-1.5" title="Erwartete Temperatur">
               <Droplets className="w-3.5 h-3.5 text-blue-500" />
               <span>Temp:</span>
-              <input
-                type="number"
+              <NumericProfileInput
+                min={-10}
+                max={45}
+                step={1}
                 value={customTemp}
-                onChange={(e) => setCustomTemp(Math.max(-10, Math.min(45, Number(e.target.value))))}
-                className="w-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-bold text-slate-800 dark:text-slate-200"
+                onChange={setCustomTemp}
+                ariaLabel="Erwartete Temperatur in Grad Celsius"
+                className="w-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-center font-mono font-bold tabular-nums text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
               />
               <span className="text-[11px] text-slate-400">°C</span>
             </div>
@@ -915,190 +1129,227 @@ GPX Route Master Pro`;
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center px-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1 overflow-x-auto">
+        <div
+          role="tablist"
+          aria-label="Analyse-Bereiche"
+          className="shrink-0 flex flex-nowrap overflow-x-auto sm:flex-wrap sm:overflow-visible items-center px-3 sm:px-5 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1.5 no-scrollbar"
+        >
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'overview'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('overview');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'overview'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Gauge className="w-4 h-4" />
+            <Gauge className="w-3.5 h-3.5 shrink-0" />
             <span>{activityType === 'running' ? 'Laufzeit & Physis' : 'Fahrzeit & Physis'}</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'power'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('power');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'power'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Zap className="w-4 h-4 text-amber-500" />
-            <span>Leistung & Physik</span>
+            <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span>Leistung &amp; Physik</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'climbs'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('climbs');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'climbs'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <TrendingUp className="w-4 h-4 text-emerald-500" />
-            <span>Anstiege & Berge</span>
+            <TrendingUp className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+            <span>Anstiege &amp; Berge</span>
             {analysis.climbs.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                {analysis.climbs.length}
+              <span className="font-mono tabular-nums text-[11px] opacity-75">
+                ({analysis.climbs.length})
               </span>
             )}
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'zones'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('zones');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'zones'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Heart className="w-4 h-4 text-rose-500" />
+            <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0" />
             <span>Trainingszonen</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'nutrition'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('nutrition');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'nutrition'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Flame className="w-4 h-4 text-orange-500" />
-            <span>Kalorien & Verpflegung</span>
+            <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+            <span>Kalorien &amp; Verpflegung</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'splits'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('splits');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'splits'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Layers className="w-4 h-4 text-blue-500" />
+            <Layers className="w-3.5 h-3.5 text-blue-500 shrink-0" />
             <span>Etappen-Splits</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'tactics'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('tactics');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'tactics'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <ShieldAlert className="w-4 h-4 text-emerald-500" />
-            <span>Taktik & Pacing</span>
+            <ShieldAlert className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+            <span>Taktik &amp; Pacing</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'pauses'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('pauses');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'pauses'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Clock className="w-4 h-4 text-amber-500" />
-            <span>Pausen & Stopps</span>
+            <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span>Pausen &amp; Stopps</span>
             {pauseAnalysis.pauses.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                {pauseAnalysis.pauses.length}
+              <span className="font-mono tabular-nums text-[11px] opacity-75">
+                ({pauseAnalysis.pauses.length})
               </span>
             )}
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'rawdata'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('rawdata');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'rawdata'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Table className="w-4 h-4 text-indigo-500" />
-            <span>Telemetrie & Rohdaten</span>
+            <Table className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+            <span>Telemetrie &amp; Rohdaten</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'report'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('report');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'report'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <FileText className="w-4 h-4 text-slate-500" />
+            <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             <span>Druck-Report</span>
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'pois'}
             onClick={() => {
               triggerHaptic('light');
               setActiveTab('pois');
             }}
-            className={`py-3 px-3 border-b-2 text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
               activeTab === 'pois'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <MapPin className="w-4 h-4 text-purple-500" />
-            <span>POIs & Wegpunkte</span>
+            <MapPin className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+            <span>POIs &amp; Wegpunkte</span>
             {analysis.poiRecommendations.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
-                {analysis.poiRecommendations.length}
+              <span className="font-mono tabular-nums text-[11px] opacity-75">
+                ({analysis.poiRecommendations.length})
               </span>
             )}
           </button>
         </div>
 
         {/* Modal Body Content */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-5">
           {activeTab === 'overview' && (
             <div className="space-y-5">
               {/* Primary KPI Card Grid */}
@@ -1294,6 +1545,219 @@ GPX Route Master Pro`;
                   </div>
                 </div>
               </div>
+
+              {/* Heart Rate Zones Visual Time-in-Zone Chart (based on Max HR) */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="p-1.5 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5">
+                      <Heart className="w-4 h-4 fill-rose-500/20" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                          Herzfrequenz-Zonen &amp; Zeitverteilung (HFmax: {hrZoneAnalysis.safeMaxHr} bpm)
+                        </h3>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            hrZoneAnalysis.hasRealHrData
+                              ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60'
+                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60'
+                          }`}
+                        >
+                          {hrZoneAnalysis.hasRealHrData ? 'Live-HF-Sensordaten' : 'Physiologisches Streckenmodell'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {hrZoneAnalysis.hasRealHrData
+                          ? `Aufgezeichnete Pulsverteilung • Ø ${hrZoneAnalysis.avgHr} bpm (${Math.round((hrZoneAnalysis.avgHr / hrZoneAnalysis.safeMaxHr) * 100)}% HFmax) • Spitze ${hrZoneAnalysis.maxRecordedHr} bpm`
+                          : `Modellierte Zeit in 5 Pulsbereichen auf Basis von Steigung, Tempo und HFmax (~Ø ${hrZoneAnalysis.avgHr} bpm)`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold">Max. Puls:</span>
+                      <NumericProfileInput
+                        min={120}
+                        max={230}
+                        step={1}
+                        value={customMaxHr}
+                        onChange={setCustomMaxHr}
+                        ariaLabel="Max. Puls für Zonenberechnung"
+                        className="w-12 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-mono font-bold tabular-nums text-rose-600 dark:text-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-500/30"
+                      />
+                      <span className="text-[10px] text-slate-400 font-mono">bpm</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('light');
+                        setActiveTab('zones');
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                    >
+                      <span>Alle Zonen-Details</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Stacked Proportional Time-in-Zone Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                    <span>
+                      Aerobe Basis (Z1–Z3):{' '}
+                      <strong className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {hrZoneAnalysis.aerobicPct}%
+                      </strong>
+                    </span>
+                    <span>
+                      Schwelle &amp; VO2max (Z4–Z5):{' '}
+                      <strong className="font-mono tabular-nums text-rose-600 dark:text-rose-400">
+                        {hrZoneAnalysis.thresholdPeakPct}%
+                      </strong>
+                    </span>
+                  </div>
+                  <div className="h-3.5 w-full rounded-full bg-slate-200/70 dark:bg-slate-800 overflow-hidden flex p-0.5 gap-0.5">
+                    {hrZoneAnalysis.zones.map((z) =>
+                      z.percent > 0 ? (
+                        <div
+                          key={`stack-${z.id}`}
+                          style={{ width: `${Math.max(2, z.percent)}%`, backgroundColor: z.color }}
+                          className="h-full first:rounded-l-full last:rounded-r-full transition-all duration-300"
+                          title={`${z.name}: ${z.timeFormatted} (${z.percent}%) • ${z.bpmRange}`}
+                        />
+                      ) : null
+                    )}
+                  </div>
+                </div>
+
+                {/* Visual Chart + 5-Zone Breakdown Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+                  {/* Recharts Visual Bar Chart */}
+                  <div className="lg:col-span-7 h-56 bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 p-3">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={hrZoneAnalysis.zones}
+                        margin={{ top: 10, right: 10, left: -15, bottom: 0 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" opacity={0.2} />
+                        <XAxis
+                          dataKey="shortLabel"
+                          tick={{ fontSize: 11, fontWeight: 700 }}
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          unit="m"
+                          tick={{ fontSize: 10 }}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          unit="%"
+                          domain={[0, 100]}
+                          tick={{ fontSize: 10 }}
+                        />
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload || !payload.length) return null;
+                            const z = payload[0].payload;
+                            return (
+                              <div className="p-3 rounded-xl bg-slate-900/95 text-white shadow-xl border border-slate-700/80 text-xs space-y-1.5 min-w-[210px]">
+                                <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1">
+                                  <span className="font-black flex items-center gap-1.5">
+                                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: z.color }} />
+                                    {z.name}
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 font-mono tabular-nums pt-0.5">
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 block">Zeit in Zone</span>
+                                    <span className="font-black text-white text-sm">{z.timeFormatted}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 block">Zeitanteil</span>
+                                    <span className="font-black text-amber-400 text-sm">{z.percent}%</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 block">Pulsbereich</span>
+                                    <span className="font-bold text-rose-300">{z.bpmRange}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 block">Intensität</span>
+                                    <span className="font-bold text-slate-200">{z.pctRange}</span>
+                                  </div>
+                                </div>
+                                <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800/80">
+                                  {z.effect}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Bar
+                          yAxisId="left"
+                          dataKey="minutes"
+                          name="Dauer (Minuten)"
+                          radius={[6, 6, 0, 0]}
+                          maxBarSize={44}
+                          isAnimationActive={false}
+                        >
+                          {hrZoneAnalysis.zones.map((entry) => (
+                            <Cell key={`cell-${entry.id}`} fill={entry.color} />
+                          ))}
+                        </Bar>
+                        <Line
+                          yAxisId="right"
+                          type="monotone"
+                          dataKey="percent"
+                          name="Zeitanteil (%)"
+                          stroke="#6366f1"
+                          strokeWidth={2}
+                          dot={{ r: 3, fill: '#6366f1' }}
+                          isAnimationActive={false}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Compact 5-Zone Tabular List */}
+                  <div className="lg:col-span-5 space-y-1.5">
+                    {hrZoneAnalysis.zones.map((z) => (
+                      <div
+                        key={z.id}
+                        className="px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: z.color }}
+                          />
+                          <div className="truncate">
+                            <span className="font-bold text-slate-800 dark:text-slate-100 block truncate">
+                              {z.name}
+                            </span>
+                            <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                              {z.pctRange} • {z.bpmRange}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums shrink-0">
+                          <span className="font-black text-slate-900 dark:text-white block">
+                            {z.timeFormatted}
+                          </span>
+                          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                            {z.percent}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1439,6 +1903,22 @@ GPX Route Master Pro`;
                           </button>
 
                           <button
+                            onClick={() => {
+                              triggerHaptic('light');
+                              setOpen3DClimbMap(prev => ({ ...prev, [climb.index]: !prev[climb.index] }));
+                            }}
+                            className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                              open3DClimbMap[climb.index]
+                                ? 'bg-violet-600 text-white shadow-xs'
+                                : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                            }`}
+                            title="Interaktives 3D-Bergprofil (Veloviewer-Stil) ein-/ausblenden"
+                          >
+                            <Layers className="w-3.5 h-3.5" />
+                            <span>3D-Bergprofil</span>
+                          </button>
+
+                          <button
                             onClick={() => handleFocusClimb(climb)}
                             className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
                             title="Auf Karte zentrieren & anzoomen"
@@ -1544,6 +2024,19 @@ GPX Route Master Pro`;
                           />
                         </div>
                       </div>
+
+                      {/* Isometric 3D Climb Profile Wall */}
+                      {open3DClimbMap[climb.index] && (
+                        <div className="pt-2">
+                          <Climb3DProfileCard
+                            climb={climb}
+                            trackPoints={track.points}
+                            ftp={customFtp}
+                            riderWeight={customWeight}
+                            onHoverSegment={(lat, lng) => onSelectTrackPoint?.(lat, lng)}
+                          />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -2012,7 +2505,282 @@ GPX Route Master Pro`;
           })()}
 
           {activeTab === 'tactics' && (
-            <div className="space-y-4">
+            <div className="space-y-6">
+              {/* Interactive Pacing & Target Time Simulator (BestBikeSplit Style) */}
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                      <Gauge className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">
+                          Interaktiver Pacing- & Zielzeit-Simulator (BestBikeSplit-Stil)
+                        </h4>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                          Physik & W&apos;bal geschützt
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Berechnet optimale Ziel-Wattwerte pro Streckenabschnitt, Zeitgewinn am Berg und Verpflegungs-Cues
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Segment Length Selector */}
+                  <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-[11px]">
+                    <span className="px-2 font-semibold text-slate-500">Splits:</span>
+                    {[1, 2.5, 5, 10].map((km) => (
+                      <button
+                        key={km}
+                        type="button"
+                        onClick={() => {
+                          triggerHaptic('light');
+                          setPacingSplitKm(km);
+                        }}
+                        className={`px-2 py-1 rounded-lg font-mono font-bold transition-colors cursor-pointer ${
+                          pacingSplitKm === km
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {km} km
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Simulator Controls Row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200/70 dark:border-slate-800">
+                  {/* Pacing Strategy */}
+                  <div className="space-y-1.5">
+                    <label className="block font-bold text-slate-700 dark:text-slate-300">
+                      Pacing-Strategie:
+                    </label>
+                    <div className="grid grid-cols-3 gap-1">
+                      {[
+                        { id: 'even' as PacingStrategyMode, label: 'Konstant (Even)', desc: 'Gleichmäßige Leistung' },
+                        { id: 'variable_climb' as PacingStrategyMode, label: 'Optimal Berg+', desc: '+10–14% am Anstieg, Aero-Sparen bergab' },
+                        { id: 'negative_split' as PacingStrategyMode, label: 'Negativ-Split', desc: 'Kontrollierter Start, starkes Finale' }
+                      ].map(st => (
+                        <button
+                          key={st.id}
+                          type="button"
+                          onClick={() => {
+                            triggerHaptic('light');
+                            setPacingStrategy(st.id);
+                          }}
+                          title={st.desc}
+                          className={`py-1.5 px-2 rounded-lg font-bold text-[11px] transition-colors cursor-pointer text-center ${
+                            pacingStrategy === st.id
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                          }`}
+                        >
+                          {st.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Target Intensity Factor (% FTP) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                      <span>Ziel-Intensität (% FTP):</span>
+                      <span className="font-mono text-indigo-600 dark:text-indigo-400 tabular-nums">
+                        {pacingIfPct}% (~{Math.round(customFtp * (pacingIfPct / 100))} W)
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={55}
+                      max={105}
+                      step={1}
+                      value={pacingIfPct}
+                      onChange={(e) => setPacingIfPct(parseInt(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                      <span>55% (GA1)</span>
+                      <span>75% (Marathon)</span>
+                      <span>90% (Rennen)</span>
+                      <span>105% (TT)</span>
+                    </div>
+                  </div>
+
+                  {/* Wind Condition */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                      <span>Streckenwind:</span>
+                      <span className="font-mono text-sky-600 dark:text-sky-400 tabular-nums">
+                        {pacingWindKmh > 0 ? `+${pacingWindKmh} km/h Gegenwind` : pacingWindKmh < 0 ? `${pacingWindKmh} km/h Rückenwind` : '0 km/h (Windstill)'}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-25}
+                      max={25}
+                      step={1}
+                      value={pacingWindKmh}
+                      onChange={(e) => setPacingWindKmh(parseInt(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                    />
+                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                      <span>-25 (Rücken)</span>
+                      <span>0</span>
+                      <span>+25 (Gegen)</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pacing Simulation KPI Summary */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Simulierte Zielzeit</span>
+                    <div className="text-xl font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                      {formatSecondsToTime(pacingSim.simulatedTotalTimeSec)}
+                    </div>
+                    {pacingSim.actualTotalTimeSec !== null && pacingSim.totalTimeSavedSec !== null ? (
+                      <span className={`text-[10px] font-mono font-bold tabular-nums ${
+                        pacingSim.totalTimeSavedSec >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {pacingSim.totalTimeSavedSec >= 0
+                          ? `-${formatSecondsToTime(pacingSim.totalTimeSavedSec)} schneller als Ghost`
+                          : `+${formatSecondsToTime(Math.abs(pacingSim.totalTimeSavedSec))} langsamer als Ghost`}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                        Ø {pacingSim.simulatedTotalTimeSec > 0 ? ((analysis.totalDistanceKm / (pacingSim.simulatedTotalTimeSec / 3600))).toFixed(1) : '0'} km/h
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Ziel-NP &Ø Leistung</span>
+                    <div className="text-xl font-black text-indigo-600 dark:text-indigo-400 font-mono tabular-nums mt-0.5">
+                      {pacingSim.normalizedTargetPowerW} W <span className="text-xs font-normal text-slate-500">(Ø {pacingSim.avgTargetPowerW} W)</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                      IF {pacingSim.targetIf} · {pacingSim.estimatedTss} TSS
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Kohlenhydrat-Bedarf</span>
+                    <div className="text-xl font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-0.5">
+                      {pacingSim.estimatedCarbsGrams} g <span className="text-xs font-normal text-slate-500">Carbs</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                      Arbeit: {pacingSim.estimatedWorkKj} kJ (~{Math.ceil(pacingSim.estimatedCarbsGrams / 25)} Gels)
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Min. W&apos;bal Puffer</span>
+                    <div className={`text-xl font-black font-mono tabular-nums mt-0.5 ${
+                      pacingSim.minWbalPct < 25 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'
+                    }`}>
+                      {pacingSim.minWbalPct.toFixed(0)}%
+                    </div>
+                    <span className="text-[10px] text-slate-400">
+                      {pacingSim.minWbalPct < 25 ? 'Warnung: Hohe Laktatspitzen' : 'Sicherer anaerober Puffer'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Segment Pacing & Cue Sheet Table */}
+                {pacingSim.splits.length > 0 && (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 max-h-96">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 uppercase font-black text-[10px] sticky top-0 z-10 border-b border-slate-200 dark:border-slate-700">
+                        <tr>
+                          <th className="py-2.5 px-3">Abschnitt</th>
+                          <th className="py-2.5 px-3">Terrain & Ø Steigung</th>
+                          <th className="py-2.5 px-3 text-right">Ziel-Watt</th>
+                          <th className="py-2.5 px-3 text-right">Sim. Tempo</th>
+                          <th className="py-2.5 px-3 text-right">Split-Zeit</th>
+                          <th className="py-2.5 px-3 text-right">Kumuliert / Ghost</th>
+                          <th className="py-2.5 px-3 text-right">W&apos;bal</th>
+                          <th className="py-2.5 px-3">Verpflegungs-Cue</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-mono tabular-nums">
+                        {pacingSim.splits.map((s) => (
+                          <tr
+                            key={s.segmentIndex}
+                            onClick={() => {
+                              if (onSelectTrackPoint) {
+                                triggerHaptic('light');
+                                onSelectTrackPoint(s.lat, s.lng);
+                              }
+                            }}
+                            className="hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30 cursor-pointer transition-colors"
+                          >
+                            <td className="py-2 px-3 font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              km {s.startKm.toFixed(1)}–{s.endKm.toFixed(1)}
+                            </td>
+                            <td className="py-2 px-3 font-sans whitespace-nowrap">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
+                                s.avgGradePct >= 7
+                                  ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                                  : s.terrainType === 'climb'
+                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : s.terrainType === 'descent'
+                                  ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300'
+                                  : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                              }`}>
+                                {s.avgGradePct >= 7 ? 'Steilwand' : s.terrainType === 'climb' ? 'Anstieg' : s.terrainType === 'descent' ? 'Abfahrt' : 'Flach/Welle'}
+                              </span>
+                              <span className="ml-1.5 font-mono text-slate-600 dark:text-slate-400">
+                                {s.avgGradePct > 0 ? `+${s.avgGradePct}%` : `${s.avgGradePct}%`} (+{s.ascentM}m)
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-black text-indigo-600 dark:text-indigo-400 whitespace-nowrap">
+                              {s.targetPowerW} W <span className="text-[10px] font-normal text-slate-400">({s.targetWkg} W/kg)</span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                              {s.simulatedSpeedKmh.toFixed(1)} km/h
+                            </td>
+                            <td className="py-2 px-3 text-right text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                              {formatSecondsToDigital(s.segmentTimeSec)}
+                            </td>
+                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                              <span className="font-bold text-slate-900 dark:text-white">
+                                {formatSecondsToDigital(s.cumulativeTimeSec)}
+                              </span>
+                              {s.timeDeltaSec !== null && (
+                                <span className={`ml-1.5 text-[10px] font-bold ${
+                                  s.timeDeltaSec <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'
+                                }`}>
+                                  ({s.timeDeltaSec <= 0 ? `-${Math.round(Math.abs(s.timeDeltaSec))}s` : `+${Math.round(s.timeDeltaSec)}s`})
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                              <span className={`font-bold ${
+                                s.endWbalPct < 30 ? 'text-rose-500' : s.endWbalPct < 60 ? 'text-amber-500' : 'text-emerald-500'
+                              }`}>
+                                {s.endWbalPct.toFixed(0)}%
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 font-sans text-[11px] whitespace-nowrap">
+                              {s.nutritionCue ? (
+                                <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800/60">
+                                  {s.nutritionCue}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
               <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
                 Taktische Routen-Tipps & Sicherheitshinweise
               </h4>
@@ -2315,6 +3083,7 @@ GPX Route Master Pro`;
               initialWeight={customWeight}
               initialFtp={customFtp}
               onOpenGlossary={onOpenGlossary}
+              onSelectTrackPoint={onSelectTrackPoint}
             />
           )}
 
@@ -2322,7 +3091,8 @@ GPX Route Master Pro`;
             <ZonesTab
               track={track}
               activityType={activityType}
-              initialMaxHr={userMaxHr}
+              initialMaxHr={customMaxHr}
+              onMaxHrChange={setCustomMaxHr}
               initialFtp={customFtp}
               initialWeight={customWeight}
               onOpenGlossary={onOpenGlossary}

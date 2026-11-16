@@ -12,6 +12,8 @@ import {
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { parseGPX } from '../utils/gpxUtils';
+import { NumericProfileInput } from './NumericProfileInput';
+import { estimateCriticalPowerFromBests } from '../utils/wbalEngine';
 
 interface FitnessPerformanceAnalysisProps {
   onClose?: () => void;
@@ -878,6 +880,14 @@ export default function FitnessPerformanceAnalysis({
     });
   }, [sportFilteredActivities, userWeight]);
 
+  // Critical Power (CP) & W' (Anaerobic Work Capacity) Monod-Scherrer Regression Model
+  const cpModel = useMemo(() => {
+    const bests = allTimePowerCurve
+      .filter(p => p.power > 0)
+      .map(p => ({ durationSec: p.duration, label: p.label, watts: p.power }));
+    return estimateCriticalPowerFromBests(bests, ftp || 220, userWeight || 75);
+  }, [allTimePowerCurve, ftp, userWeight]);
+
   // Overall training polarization & zones aggregation
   const trainingZonesAggr = useMemo(() => {
     const isRunningView = filterType === 'running';
@@ -1631,11 +1641,14 @@ export default function FitnessPerformanceAnalysis({
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Funktionelle Leistungsschwelle (FTP):</span>
               <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
-                <input 
-                  type="number" 
-                  value={ftp} 
-                  onChange={e => handleSaveFtp(parseInt(e.target.value) || 0)}
-                  className="w-14 text-center font-mono font-extrabold text-sm text-amber-500 focus:outline-none"
+                <NumericProfileInput
+                  min={50}
+                  max={600}
+                  step={5}
+                  value={ftp}
+                  onChange={handleSaveFtp}
+                  ariaLabel="FTP in Watt"
+                  className="w-14 text-center font-mono font-extrabold tabular-nums text-sm text-amber-500 bg-transparent focus:outline-none"
                 />
                 <span className="text-xs font-bold text-slate-400 ml-1">W</span>
               </div>
@@ -1644,11 +1657,14 @@ export default function FitnessPerformanceAnalysis({
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Maximalpuls (HF Max):</span>
               <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
-                <input 
-                  type="number" 
-                  value={maxHr} 
-                  onChange={e => handleSaveMaxHr(parseInt(e.target.value) || 0)}
-                  className="w-14 text-center font-mono font-extrabold text-sm text-rose-500 focus:outline-none"
+                <NumericProfileInput
+                  min={100}
+                  max={230}
+                  step={1}
+                  value={maxHr}
+                  onChange={handleSaveMaxHr}
+                  ariaLabel="Maximalpuls in Schlägen pro Minute"
+                  className="w-14 text-center font-mono font-extrabold tabular-nums text-sm text-rose-500 bg-transparent focus:outline-none"
                 />
                 <span className="text-xs font-bold text-slate-400 ml-1">bpm</span>
               </div>
@@ -1657,17 +1673,15 @@ export default function FitnessPerformanceAnalysis({
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Gewicht:</span>
               <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
-                <input 
-                  type="number"
+                <NumericProfileInput
                   min={30}
                   max={250}
-                  step="0.5"
-                  value={userWeight} 
-                  onChange={e => {
-                    const val = parseFloat(e.target.value);
-                    if (!Number.isNaN(val) && val > 0) onUpdateWeight?.(val);
-                  }}
-                  className="w-14 text-center font-mono font-extrabold text-sm text-emerald-500 bg-transparent focus:outline-none"
+                  step={0.5}
+                  allowDecimal
+                  value={userWeight}
+                  onChange={(val) => onUpdateWeight?.(val)}
+                  ariaLabel="Gewicht in Kilogramm"
+                  className="w-14 text-center font-mono font-extrabold tabular-nums text-sm text-emerald-500 bg-transparent focus:outline-none"
                 />
                 <span className="text-xs font-bold text-slate-400 ml-1">kg</span>
               </div>
@@ -1676,16 +1690,14 @@ export default function FitnessPerformanceAnalysis({
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Alter:</span>
               <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 shadow-2xs">
-                <input 
-                  type="number"
+                <NumericProfileInput
                   min={10}
                   max={100}
-                  value={userAge} 
-                  onChange={e => {
-                    const val = parseInt(e.target.value, 10);
-                    if (!Number.isNaN(val) && val > 0) onUpdateAge?.(val);
-                  }}
-                  className="w-12 text-center font-mono font-extrabold text-sm text-indigo-500 bg-transparent focus:outline-none"
+                  step={1}
+                  value={userAge}
+                  onChange={(val) => onUpdateAge?.(val)}
+                  ariaLabel="Alter in Jahren"
+                  className="w-12 text-center font-mono font-extrabold tabular-nums text-sm text-indigo-500 bg-transparent focus:outline-none"
                 />
                 <span className="text-xs font-bold text-slate-400 ml-1">Jahre</span>
               </div>
@@ -2330,12 +2342,12 @@ export default function FitnessPerformanceAnalysis({
                   <div className="bg-slate-50 dark:bg-slate-800/30 border border-slate-200/50 dark:border-slate-800 rounded-3xl p-4 md:p-6">
                     <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                       <h3 className="text-xs font-black text-slate-700 dark:text-slate-350 uppercase tracking-wider flex items-center gap-1.5">
-                        <Zap className="w-4 h-4 text-amber-500 animate-pulse" />
+                        <Zap className="w-4 h-4 text-amber-500" />
                         {filterType === 'running' 
-                          ? '🏃 Running Power-Duration (MMP) - Stryd/Vance-Modell' 
+                          ? 'Running Power-Duration (MMP) - Stryd/Vance-Modell' 
                           : filterType === 'cycling' 
-                          ? '🚴 Radsport Power-Duration (MMP) - Andy Coggan-Modell' 
-                          : '⚡ All-time Mean Maximal Power (MMP) - Leistungskurve'}
+                          ? 'Radsport Power-Duration (MMP) - Andy Coggan-Modell' 
+                          : 'All-time Mean Maximal Power (MMP) - Leistungskurve'}
                       </h3>
                       <span className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border ${
                         filterType === 'running'
@@ -2401,20 +2413,143 @@ export default function FitnessPerformanceAnalysis({
                           <span className="text-[9px] font-extrabold uppercase tracking-widest text-slate-400">
                             Peak {item.duration === 1 ? '1 Sekunde (Sprint)' : item.duration === 5 ? '5 Sekunden (Sprint)' : item.duration === 60 ? '1 Minute (Anaerob)' : '20 Minuten (Schwelle / FTP)'}
                           </span>
-                          <div className="text-xl font-black text-slate-800 dark:text-white font-mono mt-1">
+                          <div className="text-xl font-black text-slate-800 dark:text-white font-mono tabular-nums mt-1">
                             {item.power} W
                           </div>
-                          <div className="text-xs font-bold text-slate-500 font-mono mt-0.5">
+                          <div className="text-xs font-bold text-slate-500 font-mono tabular-nums mt-0.5">
                             {item.relPower} W/kg
                           </div>
                           <div className="text-[9px] text-slate-400 mt-2 truncate font-semibold" title={item.activityName}>
-                            {item.isRun ? '🏃' : '🚴'} {item.activityName || 'N/A'}
+                            {item.isRun ? 'Lauf · ' : 'Rad · '} {item.activityName || 'N/A'}
                           </div>
                           <div className="text-[8px] text-slate-400 font-mono mt-0.5">
                             {item.date || 'N/A'}
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Critical Power (CP) & W' Monod-Scherrer Model (GoldenCheetah / WKO5 Style) */}
+                  <div className="bg-slate-50 dark:bg-slate-800/30 border border-slate-200/60 dark:border-slate-800 rounded-3xl p-4 md:p-6 space-y-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 dark:border-slate-800 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0">
+                          <Target className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-wider">
+                              Critical Power (CP) &amp; W&apos;-Modell (Monod-Scherrer)
+                            </h3>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300 border border-violet-200 dark:border-violet-800 font-mono">
+                              R² = {cpModel.rSquared.toFixed(3)}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            Trennt deine aerobe Dauerleistungsgrenze (CP) von deiner anaeroben Arbeitskapazität (W&apos;) über CP
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="px-3 py-1 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-xs font-black text-indigo-700 dark:text-indigo-300">
+                        Fahrertyp: {cpModel.phenotype}
+                      </div>
+                    </div>
+
+                    {/* CP & W' KPI Grid */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                          Critical Power (CP)
+                        </span>
+                        <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono tabular-nums mt-1">
+                          {cpModel.cpWatts} W
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-500 tabular-nums">
+                          {cpModel.cpWkg} W/kg (Aerobe Schwelle)
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                          Anaerobe Batterie (W&apos;)
+                        </span>
+                        <div className="text-2xl font-black text-violet-600 dark:text-violet-400 font-mono tabular-nums mt-1">
+                          {cpModel.wPrimeKj} kJ
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-500 tabular-nums">
+                          {Math.round(cpModel.wPrimeJoules / Math.max(40, userWeight))} J/kg Reserve &gt; CP
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                          Maximalleistung (Pmax)
+                        </span>
+                        <div className="text-2xl font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-1">
+                          {cpModel.pMaxWatts} W
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-500 tabular-nums">
+                          {(cpModel.pMaxWatts / Math.max(40, userWeight)).toFixed(1)} W/kg Neuromuskulär
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                          W&apos; / CP Verhältnis
+                        </span>
+                        <div className="text-2xl font-black text-slate-900 dark:text-white font-mono tabular-nums mt-1">
+                          {(cpModel.wPrimeJoules / Math.max(100, cpModel.cpWatts)).toFixed(0)} s
+                        </div>
+                        <span className="text-xs font-semibold text-slate-500">
+                          Anaerobe Erschöpfungszeit @ 2×CP
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Phenotype Description */}
+                    <div className="p-3.5 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200/60 dark:border-indigo-900/40 text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                      <strong className="text-indigo-700 dark:text-indigo-300">{cpModel.phenotype}:</strong> {cpModel.phenotypeDescription}
+                    </div>
+
+                    {/* Aerobic vs Anaerobic Power Contribution Table */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        <span>Modellierte Leistung &amp; Energiesystem-Anteil (Aerob CP vs. Anaerob W&apos;)</span>
+                        <div className="flex items-center gap-3 text-[10px]">
+                          <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                            <span className="w-2.5 h-2.5 rounded-xs bg-emerald-500 inline-block" /> Aerob (CP)
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400">
+                            <span className="w-2.5 h-2.5 rounded-xs bg-violet-500 inline-block" /> Anaerob (W&apos;)
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2 text-xs">
+                        {cpModel.curvePoints.map((pt) => {
+                          const total = Math.max(1, pt.modeledWatts);
+                          const aeroPct = Math.round((pt.aerobicWatts / total) * 100);
+                          const anaeroPct = Math.max(0, 100 - aeroPct);
+                          return (
+                            <div key={pt.durationSec} className="p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700 space-y-1.5">
+                              <div className="flex items-center justify-between font-mono">
+                                <span className="font-black text-slate-500 text-[10px] uppercase">{pt.label}</span>
+                                <span className="font-black text-slate-900 dark:text-white tabular-nums">{pt.modeledWatts} W</span>
+                              </div>
+                              <div className="h-2 w-full bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden flex">
+                                <div style={{ width: `${aeroPct}%` }} className="bg-emerald-500" title={`Aerob: ${pt.aerobicWatts}W (${aeroPct}%)`} />
+                                <div style={{ width: `${anaeroPct}%` }} className="bg-violet-500" title={`Anaerob: ${pt.anaerobicWatts}W (${anaeroPct}%)`} />
+                              </div>
+                              <div className="flex justify-between text-[10px] font-mono tabular-nums text-slate-500">
+                                <span className="text-emerald-600 dark:text-emerald-400">{aeroPct}% CP</span>
+                                <span className="text-violet-600 dark:text-violet-400">{anaeroPct}% W&apos;</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
 

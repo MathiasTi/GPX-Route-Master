@@ -91,6 +91,8 @@ export interface GPXTrack {
   tags?: string[];
   dateCreated?: string;
   originalFilename?: string;
+  hasPower?: boolean;
+  hasHR?: boolean;
 }
 
 export interface TimeGap {

@@ -2223,6 +2223,99 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  // GET /api/activities/heatmap-tracks: Lightweight downsampled polylines for Personal Lifetime Heatmap overlay
+  app.get("/api/activities/heatmap-tracks", (req, res) => {
+    try {
+      const maxTracks = Math.min(250, Math.max(20, parseInt(req.query.limit as string) || 160));
+      const refs = getFilteredActivityRefs({}, maxTracks);
+      if (refs.length === 0) {
+        return res.json({ success: true, tracks: [], totalCount: 0 });
+      }
+      const { libraryRecords, garminRecords } = getActivitiesBulkFull(refs);
+
+      const sampleCoords = (rawJson: string | undefined | null, maxPts = 65): [number, number][] => {
+        if (!rawJson) return [];
+        const pts = safeJsonParse(rawJson, []).data;
+        if (!Array.isArray(pts) || pts.length < 2) return [];
+        const step = Math.max(1, Math.floor(pts.length / maxPts));
+        const coords: [number, number][] = [];
+        for (let i = 0; i < pts.length; i += step) {
+          const p = pts[i];
+          const lat = Number(p?.lat);
+          const lng = Number(p?.lng ?? p?.lon);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && (Math.abs(lat) > 0.01 || Math.abs(lng) > 0.01)) {
+            coords.push([Number(lat.toFixed(5)), Number(lng.toFixed(5))]);
+          }
+        }
+        const last = pts[pts.length - 1];
+        const lastLat = Number(last?.lat);
+        const lastLng = Number(last?.lng ?? last?.lon);
+        if (
+          coords.length > 0 &&
+          Number.isFinite(lastLat) &&
+          Number.isFinite(lastLng) &&
+          (Math.abs(lastLat) > 0.01 || Math.abs(lastLng) > 0.01)
+        ) {
+          coords.push([Number(lastLat.toFixed(5)), Number(lastLng.toFixed(5))]);
+        }
+        return coords.length >= 2 ? coords : [];
+      };
+
+      const classifySport = (typeStr?: string | null, nameStr?: string | null): 'cycling' | 'running' | 'other' => {
+        const s = `${typeStr || ''} ${nameStr || ''}`.toLowerCase();
+        if (s.includes('run') || s.includes('lauf') || s.includes('jog') || s.includes('trail')) return 'running';
+        if (s.includes('cycl') || s.includes('rad') || s.includes('bike') || s.includes('ride') || s.includes('gravel') || s.includes('mtb')) return 'cycling';
+        return 'cycling';
+      };
+
+      const heatmapTracks: Array<{
+        id: string;
+        name: string;
+        sport: 'cycling' | 'running' | 'other';
+        distanceKm: number;
+        source: 'library' | 'garmin';
+        coords: [number, number][];
+      }> = [];
+
+      for (const r of libraryRecords) {
+        const coords = sampleCoords(r.points_json, 65);
+        if (coords.length >= 2) {
+          heatmapTracks.push({
+            id: `lib-${r.id}`,
+            name: r.name || 'Route',
+            sport: classifySport(r.activity_type, r.name),
+            distanceKm: Number((r.distance || 0).toFixed(1)),
+            source: 'library',
+            coords
+          });
+        }
+      }
+
+      for (const g of garminRecords) {
+        const coords = sampleCoords(g.points_json, 65);
+        if (coords.length >= 2) {
+          heatmapTracks.push({
+            id: `garmin-${g.id}`,
+            name: g.name || 'Garmin Aktivität',
+            sport: classifySport(g.type, g.name),
+            distanceKm: Number((g.distance || 0).toFixed(1)),
+            source: 'garmin',
+            coords
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        tracks: heatmapTracks,
+        totalCount: heatmapTracks.length
+      });
+    } catch (err: any) {
+      console.error("Error loading heatmap tracks:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to load heatmap tracks" });
+    }
+  });
+
   // POST /api/activities/bulk-load: Load full un-downsampled raw GPS payloads for selected activities
   app.post("/api/activities/bulk-load", (req, res) => {
     try {
@@ -3311,11 +3404,12 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
-  // Fetch all health metrics
+  // Fetch all health metrics (supports ?includePoints=false for lightweight dashboard views)
   app.get("/api/health-metrics", (req, res) => {
     try {
-      const data = getHealthMetrics();
-      if (data && data.activities) {
+      const includePoints = req.query.includePoints !== "false";
+      const data = getHealthMetrics("default", { includePoints });
+      if (includePoints && data && data.activities) {
         data.activities = data.activities.map(act => downsampleActivity(act, 1000));
       }
       res.json({ success: true, data });

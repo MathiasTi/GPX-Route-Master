@@ -818,6 +818,33 @@ flowchart TD
   - Full transparency across all architectural layers.
   - Clear governance for future refactoring, domain extensions, and infrastructure migrations.
 
+---
+
+## 26. Multi-View Workspace, Precomputed Telemetry & Bilingual Customization Layer (v2.9.7)
+
+GPX Route Master has evolved from a single-map viewer into a 5-page workspace (`Map`, `Planned Tours`, `Activities`, `Activities Dashboard`, `Fitness & Health`) backed by server-precomputed telemetry, automated SQLite data healing, and a reactive bilingual theme system.
+
+### Workspace & Settings Architecture
+
+```mermaid
+flowchart LR
+    Prefs["AppPreferences (utils/appSettings.ts)<br>Language (DE/EN) · UI Style · Density · Units"] --> DOM["DOM Root Attributes<br>data-ui-style · data-ui-density · data-ui-radius"]
+    DOM --> CSS["Tailwind v4 CSS Overrides (index.css)<br>6 Presets · Light/Dark/System · Motion"]
+    Prefs --> LangSync["useDomLanguageSync (MutationObserver + WeakMap)<br>Instant DE ↔ EN UI & Tooltip Translation"]
+    Prefs --> DB["SQLite /api/settings (app_preferences JSON)"]
+```
+
+### Key Subsystems Added
+1. **Server-Side Power Telemetry Precomputation (`server.ts` → `computePowerTelemetry`)**:
+   - Full-resolution 1 Hz timestamped power streams are evaluated inside `downsampleActivity` *before* reducing tracks to 1,000 map/chart points.
+   - Precomputed `powerTelemetry` (`np`, `variabilityIndex`, `avgPower`, `maxPower`, and exact `1s`–`1h` Mean Maximal Power peaks) is cached in `downsampledPointsCache` and attached to `/api/health-metrics`, ensuring accurate `20m` and `1h` MMP curves on the client.
+2. **Canonical Sport Classification & Database Healing (`utils/db.ts`, `utils/gpxUtils.ts`, `utils/fitUtils.ts`)**:
+   - Type-first sport matching (`cycling`, `indoor_cycling`, `hiking`, `running`) with German loop-token stripping (`Runde`, `Umrundung`, `Rund um`) prevents cycling tours from being misclassified as runs.
+   - Migration `2.9.7-heal-metrics-and-catalog` resets synthetic loop distances on stationary workouts (`stop_watch`, `strength_training`, `hiit`, `indoor_cardio`), clears `~21.6255 km/h` empty-GPS virtual stubs, heals `garmin_steps.distance` (`steps * 0.000762`), and rebuilds `activities_catalog`.
+3. **Settings Modal & Live UI Themes (`components/AppSettingsModal.tsx`, `utils/appSettings.ts`, `index.css`)**:
+   - Supports 6 live theme presets (`Velo Royal`, `Aero Glass`, `Peloton Pro`, `Alpine Trail`, `Cyber Telemetry`, `Nordic Minimal`), density/corner-radius tokens, `DE` ↔ `EN` DOM translation with lossless `WeakMap` restoration, and workspace automation toggles (`autoFitOnLoad`, `autoSurfaceAnalysis`, `showElevationProfile`, `enableHaptics`).
+
+
 
 
 

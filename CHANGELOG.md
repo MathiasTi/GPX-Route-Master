@@ -6,6 +6,22 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [2.9.7] - 2026-11-17
+
+### Einstellungen, Deutsch/Englisch-Sprachmenü, 6 UI-Stile & Metrik-Verifikation
+- **Umfassendes Einstellungs- & Anpassungsmenü (`components/AppSettingsModal.tsx`, `utils/appSettings.ts`, `App.tsx`, `index.css`)**:
+  - **Deutsch / Englisch (`DE` / `EN`)**: 1-Klick-Sprachumschalter in der Kopfzeile sowie verlustfreie DOM-Übersetzung (`useDomLanguageSync` + `translateUiText`) für Navigation, Seitenleiste, Touren-Bibliothek, Aktivitäten-Dashboard und Fitness-Cockpit.
+  - **6 wählbare UI-Stile**: *Velo Royal*, *Aero Glass*, *Peloton Pro*, *Alpine Trail*, *Cyber Telemetry* und *Nordic Minimal*, kombiniert mit Hell/Dunkel/System-Modus, UI-Dichte (*Kompakt*, *Standard*, *Groß*), Ecken-Stil (*Kantig*, *Ausgewogen*, *Weich*) und Animationsschalter.
+  - **Athleten- & Workspace-Optionen**: FTP, Gewicht, Radgewicht, Alter, Max-HF (`220 − Alter` / Tanaka), Ruhepuls-Basis, Standard-Startseite, Kartenebene, Auto-Fit, automatische OSM-Belagsanalyse, Höhenprofil-Standard und haptisches Feedback – persistiert in `localStorage` und SQLite (`/api/settings`).
+- **Verifikation & Korrektur der Gesundheits- und Aktivitätsmetriken (`utils/db.ts`, `utils/fitUtils.ts`, `utils/garminPersonalApi.ts`, `utils/gpxUtils.ts`, `server.ts`, `GarminDashboard.tsx`, `FitnessPerformanceAnalysis.tsx`, `ActivitiesDashboardView.tsx`)**:
+  - **Stationäre Workouts & Schritt-Distanzen**: Verhinderung synthetischer ~21,6 km/h-Loop-Distanzen auf `stop_watch`, `strength_training`, `hiit` und `indoor_cardio` sowie Bereinigung von `garmin_steps.distance` über Migration `2.9.7-heal-metrics-and-catalog`.
+  - **Sportarten-Klassifizierung**: Type-first-Erkennung (`cycl`, `hik`) und Bereinigung deutscher Rundfahrt-Begriffe (*Runde*, *Umrundung*, *Rund um*) verhindern Fehlzuordnungen von Radtouren als Läufe.
+  - **Leistungs- & Workload-Berechnung**: Serverseitige 1-Hz-Vorberechnung von NP, VI und `1s`–`1h`-MMP-Bestwerten vor dem 1.000-Punkte-Downsampling; kalenderbasierte 4-Wochen-ACWR, gerundete HR-Zonen-Zuordnung, nicht-überlappende KPI-Deltas, korrigierte VAM-Steigzeit und gewichtete Geschwindigkeits-/Pace-Statistiken.
+- **Geplante Touren, 2-Track-Kartenvergleich & Aktivitäten-Dashboard (`PlannedToursView.tsx`, `ActivitiesDashboardView.tsx`, `Map.tsx`)**:
+  - Separate Seite *Geplante Touren* (Komoot-Stil), direkter 2-Track-Vergleich auf der Karte sowie ein eigenes *Aktivitäten-Dashboard* mit Woche/Monat/Jahr/Gesamt-Auswahl.
+
+---
+
 ## [2.9.3] - 2026-11-13
 
 ### Eigene Fitness- & Gesundheits-Seite, DB-Schutz & Garmin GPS-Fix

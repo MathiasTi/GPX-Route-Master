@@ -1389,7 +1389,15 @@ const App: React.FC = () => {
 
     setSuccessMessage(`${approvedTracks.length} Aktivität(en) erfolgreich in den Workspace übernommen`);
     setTimeout(() => setSuccessMessage(null), 4000);
-  }, [saveToHistory, setSelectedDate, setSelectedTime]);
+
+    if (appPrefs.autoSurfaceAnalysis) {
+      for (const tr of approvedTracks) {
+        if (hasRealGpsData(tr)) {
+          setTimeout(() => analyzeTrackSurface(tr.id, false), 120);
+        }
+      }
+    }
+  }, [saveToHistory, setSelectedDate, setSelectedTime, appPrefs.autoSurfaceAnalysis, analyzeTrackSurface]);
 
   const handleOpenValidation = useCallback((trackId: string) => {
     const target = tracks.find(t => t.id === trackId);
@@ -1507,13 +1515,13 @@ const App: React.FC = () => {
     const primary = prepared[0];
     setMarkedTrackId(primary?.id ?? null);
     setCompareTrackId(null);
-    setIsProfileCollapsed(false);
+    setIsProfileCollapsed(!appPrefs.showElevationProfile);
 
     const gpsTracks = prepared.filter(tr => hasRealGpsData(tr));
     if (jumpToMap) {
       navigateWorkspace('map');
     }
-    const tightBounds = computeTightTrackBounds(gpsTracks);
+    const tightBounds = appPrefs.autoFitOnLoad ? computeTightTrackBounds(gpsTracks) : null;
     if (tightBounds) {
       if (is3D) {
         const latDiff = Math.max(0.002, tightBounds.maxLat - tightBounds.minLat);
@@ -1538,7 +1546,7 @@ const App: React.FC = () => {
       }
     }
     triggerHaptic('success');
-  }, [hydrateTrackSurface, saveToHistory, navigateWorkspace, is3D]);
+  }, [hydrateTrackSurface, saveToHistory, navigateWorkspace, is3D, appPrefs.showElevationProfile, appPrefs.autoFitOnLoad]);
  
   const handleMerge = useCallback(() => {
     if (tracks.length < 2) return;
@@ -1587,13 +1595,13 @@ const App: React.FC = () => {
       setMarkedTrackId(preparedTrack.id);
     }
 
-    const tightBounds = computeTightTrackBounds([preparedTrack]);
+    const tightBounds = appPrefs.autoFitOnLoad ? computeTightTrackBounds([preparedTrack]) : null;
     if (tightBounds) {
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
       }, 40);
     }
-  }, [tracks, hydrateTrackSurface]);
+  }, [tracks, hydrateTrackSurface, appPrefs.autoFitOnLoad]);
 
   const handleLoadCatalogTracksToMap = useCallback((
     loadedTracks: GPXTrack[],
@@ -1642,7 +1650,7 @@ const App: React.FC = () => {
 
     if (primaryTrackId) {
       setMarkedTrackId(primaryTrackId);
-      setIsProfileCollapsed(false);
+      setIsProfileCollapsed(!appPrefs.showElevationProfile);
     }
 
     const gpsTracks = hydratedPrepared.filter((tr) => hasRealGpsData(tr));
@@ -1654,7 +1662,7 @@ const App: React.FC = () => {
       setIntensiveAnalysisOpen(true);
     }
 
-    if (options?.fitToTracks !== false && gpsTracks.length > 0) {
+    if (options?.fitToTracks !== false && appPrefs.autoFitOnLoad && gpsTracks.length > 0) {
       const tightBounds = computeTightTrackBounds(gpsTracks);
       if (tightBounds) {
         if (is3D) {
@@ -1672,7 +1680,7 @@ const App: React.FC = () => {
     }
 
     triggerHaptic('success');
-  }, [handleFitVisibleTracks, navigateWorkspace, is3D]);
+  }, [handleFitVisibleTracks, navigateWorkspace, is3D, appPrefs.showElevationProfile, appPrefs.autoFitOnLoad]);
 
   const handleCatalogActivityMetadataUpdated = useCallback((
     workspaceTrackId: string,
@@ -3226,6 +3234,22 @@ const App: React.FC = () => {
           </main>
         </div>
       </div>
+
+      {/* Global Success Toast */}
+      {successMessage && (
+        <div className="fixed bottom-4 right-4 z-[1350] bg-emerald-600/95 backdrop-blur-sm text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold flex items-center gap-2.5 max-w-sm border border-emerald-400/40">
+          <span className="w-2 h-2 rounded-full bg-emerald-200 shrink-0" />
+          <span className="flex-1">{successMessage}</span>
+          <button
+            type="button"
+            onClick={() => setSuccessMessage(null)}
+            className="text-emerald-100 hover:text-white cursor-pointer"
+            aria-label={tr(appPrefs.language, 'Schließen', 'Close')}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Global Settings & UI Style Customization Modal */}
       <AnimatePresence>

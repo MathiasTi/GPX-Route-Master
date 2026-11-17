@@ -577,7 +577,6 @@ const DE_TO_EN_PATTERN_REPLACEMENTS: Array<[RegExp, PatternReplacer]> = [
 
 const INLINE_WORD_REPLACEMENTS: Array<[RegExp, string]> = SORTED_PHRASE_ENTRIES
   .filter(([de]) => /^[A-Za-zÄÖÜäöüß0-9 .\-/()]+$/.test(de) && de.length >= 4)
-  .slice(0, 90)
   .map(([de, en]) => {
     const escaped = de.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return [new RegExp(`(^|[\\s(·,/])${escaped}(?=$|[\\s),·/:!?])`, 'g'), `$1${en}`];

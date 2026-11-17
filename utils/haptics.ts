@@ -4,6 +4,9 @@
  * Trigger subtle haptic feedback on supported mobile browsers (Android / iOS web)
  */
 export const triggerHaptic = (type: 'light' | 'medium' | 'heavy' | 'success' | 'error' = 'light') => {
+  if (typeof document !== 'undefined' && document.documentElement.dataset.haptics === 'false') {
+    return;
+  }
   if (typeof window !== 'undefined' && 'navigator' in window && 'vibrate' in navigator) {
     try {
       switch (type) {

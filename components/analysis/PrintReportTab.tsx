@@ -1,9 +1,11 @@
-import React from 'react';
-import { Printer, Download, MapPin, Calendar, Clock, Mountain, TrendingUp, Flame, Droplets, CheckCircle2, Shield } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Printer, Mountain, Flame, Droplets } from 'lucide-react';
 import { GPXTrack } from '../../types';
 import { IntensiveAnalysisResult, formatSecondsToTime } from '../../utils/intensiveAnalysis';
 import { formatPace } from '../../utils/gpxUtils';
 import { triggerHaptic } from '../../utils/haptics';
+import { resolveTrackCapabilities } from '../../utils/trackTelemetryCapabilities';
+import { computePauseAwareRunningMetrics } from '../../utils/runningMetricsEngine';
 
 interface PrintReportTabProps {
   track: GPXTrack;
@@ -12,6 +14,14 @@ interface PrintReportTabProps {
 
 export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis }) => {
   const isRun = (analysis.activityType || track.activityType) === 'running';
+  const capabilities = useMemo(
+    () => resolveTrackCapabilities({ ...track, activityType: isRun ? 'running' : 'cycling' }),
+    [track, isRun]
+  );
+  const runningMetrics = useMemo(() => {
+    if (!isRun || !capabilities.hasPowerPhysicsTabData) return null;
+    return computePauseAwareRunningMetrics(track);
+  }, [isRun, capabilities.hasPowerPhysicsTabData, track]);
 
   const handlePrint = () => {
     triggerHaptic('medium');
@@ -26,7 +36,7 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
           <Printer className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
           <div>
             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
-              Druck- & PDF-Report
+              Druck- &amp; PDF-Report
             </h3>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
               Optimiert für den standardisierten A4-Ausdruck und den PDF-Export deiner {isRun ? 'Laufstrecke' : 'Tour'}
@@ -37,7 +47,7 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
         <button
           type="button"
           onClick={handlePrint}
-          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-2 shadow-md transition-all cursor-pointer"
+          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-2 shadow-md transition-all cursor-pointer whitespace-nowrap"
         >
           <Printer className="w-4 h-4" />
           Report drucken / PDF speichern
@@ -53,20 +63,20 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
         <div className="border-b border-slate-200 dark:border-slate-800 pb-5 flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mb-1">
-              <span>{isRun ? '🏃 Laufsport • Offizieller Aktivitätsbericht' : '🚴 Radsport • Offizieller Aktivitätsbericht'}</span>
-              <span>•</span>
+              <span>{isRun ? '🏃 Laufsport · Aktivitätsbericht' : '🚴 Radsport · Aktivitätsbericht'}</span>
+              <span>·</span>
               <span>{isRun ? 'Laufen / Trail' : 'Radsport'}</span>
             </div>
             <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
               {analysis.trackName}
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Erstellt am {new Date().toLocaleDateString('de-DE', { day: '2-digit', month: 'long', year: 'numeric' })} • Berechnet mit GPX Route Master Pro
+              Erstellt am {new Date().toLocaleDateString('de-DE', { day: '2-digit', month: 'long', year: 'numeric' })}
             </p>
           </div>
 
           <div className="text-right">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-mono font-bold">
+            <div className="text-xs font-mono font-bold text-slate-700 dark:text-slate-200 tabular-nums">
               Schwierigkeit: {analysis.difficultyScore}/10
             </div>
           </div>
@@ -76,39 +86,88 @@ export const PrintReportTab: React.FC<PrintReportTabProps> = ({ track, analysis 
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Distanz</span>
-            <span className="text-lg font-black text-slate-900 dark:text-white font-mono">{analysis.totalDistanceKm} km</span>
+            <span className="text-lg font-black text-slate-900 dark:text-white font-mono tabular-nums">{analysis.totalDistanceKm} km</span>
           </div>
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Höhenmeter</span>
-            <span className="text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono">+{Math.round(analysis.totalAscentMeters)} m</span>
-          </div>
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Abstieg</span>
-            <span className="text-lg font-black text-rose-600 dark:text-rose-400 font-mono">-{Math.round(analysis.totalDescentMeters)} m</span>
-          </div>
+          {capabilities.hasRealElevation && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Höhenmeter</span>
+              <span className="text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono tabular-nums">+{Math.round(analysis.totalAscentMeters)} m</span>
+            </div>
+          )}
+          {capabilities.hasRealElevation && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Abstieg</span>
+              <span className="text-lg font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums">-{Math.round(analysis.totalDescentMeters)} m</span>
+            </div>
+          )}
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
               {isRun ? 'Laufzeit (Netto)' : 'Fahrzeit (Netto)'}
             </span>
-            <span className="text-lg font-black text-slate-900 dark:text-white font-mono">
+            <span className="text-lg font-black text-slate-900 dark:text-white font-mono tabular-nums">
               {formatSecondsToTime(analysis.estimatedMovingTimeSeconds)}
             </span>
           </div>
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
-              {isRun ? 'Ø-Pace' : 'Ø-Tempo'}
+              {isRun ? 'Ø Pace' : 'Ø Tempo'}
             </span>
-            <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono">
-              {isRun 
-                ? formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm)
+            <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono tabular-nums">
+              {isRun
+                ? runningMetrics?.avgPaceFormatted
+                  ? `${runningMetrics.avgPaceFormatted} /km`
+                  : formatPace(analysis.estimatedMovingTimeSeconds, track.distance > 0 ? track.distance : analysis.totalDistanceKm)
                 : `${analysis.estimatedAverageSpeedKmh} km/h`}
             </span>
           </div>
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Höchster Punkt</span>
-            <span className="text-lg font-black text-slate-900 dark:text-white font-mono">{Math.round(analysis.maxElevation)} m ü.NN</span>
-          </div>
+          {capabilities.hasRealElevation && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Höchster Punkt</span>
+              <span className="text-lg font-black text-slate-900 dark:text-white font-mono tabular-nums">{Math.round(analysis.maxElevation)} m ü.NN</span>
+            </div>
+          )}
         </div>
+
+        {/* Running-Specific Real Telemetry Summary (strictly gated) */}
+        {isRun && runningMetrics && (capabilities.hasGapData || capabilities.hasRtssData || capabilities.hasPaHrData || capabilities.hasCadence) && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {capabilities.hasGapData && runningMetrics.avgGapPaceFormatted && (
+              <div className="p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/70 dark:border-emerald-900/40">
+                <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider block mb-0.5">GAP (Minetti)</span>
+                <span className="text-base font-black text-slate-900 dark:text-white font-mono tabular-nums">
+                  {runningMetrics.avgGapPaceFormatted} min/km
+                </span>
+              </div>
+            )}
+            {capabilities.hasRtssData && runningMetrics.rTss !== null && (
+              <div className="p-3 rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/70 dark:border-rose-900/40">
+                <span className="text-[10px] font-bold text-rose-700 dark:text-rose-400 uppercase tracking-wider block mb-0.5">rTSS / D&apos;bal Min</span>
+                <span className="text-base font-black text-slate-900 dark:text-white font-mono tabular-nums">
+                  {runningMetrics.rTss} rTSS · {runningMetrics.minDbalPct}%
+                </span>
+              </div>
+            )}
+            {capabilities.hasPaHrData && runningMetrics.paHrEf !== null && (
+              <div className="p-3 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200/70 dark:border-indigo-900/40">
+                <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-400 uppercase tracking-wider block mb-0.5">Pa:HR / Drift</span>
+                <span className="text-base font-black text-slate-900 dark:text-white font-mono tabular-nums">
+                  EF {runningMetrics.paHrEf.toFixed(2)}
+                  {runningMetrics.hasValidDecoupling && runningMetrics.aerobicDecouplingPct !== null
+                    ? ` (${runningMetrics.aerobicDecouplingPct >= 0 ? '+' : ''}${runningMetrics.aerobicDecouplingPct}%)`
+                    : ''}
+                </span>
+              </div>
+            )}
+            {capabilities.hasCadence && runningMetrics.avgCadenceSpm !== null && (
+              <div className="p-3 rounded-xl bg-sky-50/50 dark:bg-sky-950/20 border border-sky-200/70 dark:border-sky-900/40">
+                <span className="text-[10px] font-bold text-sky-700 dark:text-sky-400 uppercase tracking-wider block mb-0.5">Ø Schrittfrequenz</span>
+                <span className="text-base font-black text-slate-900 dark:text-white font-mono tabular-nums">
+                  {runningMetrics.avgCadenceSpm} spm
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Climbs Breakdown Table */}
         <div className="space-y-2">

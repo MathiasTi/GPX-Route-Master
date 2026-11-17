@@ -1,5 +1,6 @@
 import { GPXTrack } from '../types';
 import { calculateDistance } from './gpxUtils';
+import { minettiGapFactor, formatPaceSeconds } from './runningMetricsEngine';
 
 export type PacingStrategyMode = 'even' | 'variable_climb' | 'negative_split';
 
@@ -328,3 +329,258 @@ export function runPacingSimulation(
     splits
   };
 }
+
+export interface RunningPacingSimulationOptions {
+  criticalPaceSecKm: number; // e.g., 270 = 4:30 min/km
+  dPrimeMeters?: number; // default 200m
+  strategy: PacingStrategyMode;
+  targetEffortPct: number; // e.g., 88 means 88% of Critical Speed
+  subType?: 'road' | 'trail';
+  segmentLengthKm?: number;
+}
+
+export interface RunningPacingSegmentSplit {
+  segmentIndex: number;
+  startKm: number;
+  endKm: number;
+  distanceKm: number;
+  startEleM: number;
+  endEleM: number;
+  ascentM: number;
+  descentM: number;
+  avgGradePct: number;
+  terrainType: 'climb' | 'flat' | 'descent';
+  targetGapPaceFormatted: string;
+  targetFlatPaceFormatted: string;
+  targetEffortPctCs: number;
+  simulatedSpeedKmh: number;
+  segmentTimeSec: number;
+  cumulativeTimeSec: number;
+  actualCumulativeTimeSec: number | null;
+  timeDeltaSec: number | null;
+  endDbalPct: number;
+  nutritionCue: string | null;
+  lat: number;
+  lng: number;
+}
+
+export interface RunningPacingSimulationResult {
+  totalDistanceKm: number;
+  simulatedTotalTimeSec: number;
+  actualTotalTimeSec: number | null;
+  totalTimeSavedSec: number | null;
+  avgTargetPaceFormatted: string;
+  avgGapPaceFormatted: string;
+  targetIf: number;
+  estimatedRtss: number;
+  estimatedCarbsGrams: number;
+  minDbalPct: number;
+  splits: RunningPacingSegmentSplit[];
+}
+
+export function runRunningPacingSimulation(
+  track: GPXTrack,
+  options: RunningPacingSimulationOptions
+): RunningPacingSimulationResult {
+  const points = track.points || [];
+  const csPaceSec = Math.max(150, Math.min(600, options.criticalPaceSecKm || 270));
+  const csMs = 1000 / csPaceSec;
+  const dPrimeM = Math.max(60, Math.min(600, options.dPrimeMeters || 200));
+  const targetRatio = Math.max(0.6, Math.min(1.12, (options.targetEffortPct || 88) / 100));
+  const baseTargetGapMs = csMs * targetRatio;
+  const trailPenalty = options.subType === 'trail' ? 0.90 : 1.0;
+
+  const totalTrackKm = Math.max(0.1, track.distance || 1);
+  const segLenKm =
+    options.segmentLengthKm ||
+    (totalTrackKm <= 15 ? 1 : totalTrackKm <= 45 ? 2.5 : 5);
+
+  if (points.length < 2) {
+    return {
+      totalDistanceKm: 0,
+      simulatedTotalTimeSec: 0,
+      actualTotalTimeSec: null,
+      totalTimeSavedSec: null,
+      avgTargetPaceFormatted: formatPaceSeconds(1000 / baseTargetGapMs),
+      avgGapPaceFormatted: formatPaceSeconds(1000 / baseTargetGapMs),
+      targetIf: Number(targetRatio.toFixed(2)),
+      estimatedRtss: 0,
+      estimatedCarbsGrams: 0,
+      minDbalPct: 100,
+      splits: [],
+    };
+  }
+
+  let currentDbalM = dPrimeM;
+  let minDbalPct = 100;
+
+  const firstTimeMs =
+    points[0].time instanceof Date
+      ? points[0].time.getTime()
+      : points[0].time
+      ? new Date(points[0].time).getTime()
+      : null;
+  const lastPt = points[points.length - 1];
+  const lastTimeMs =
+    lastPt.time instanceof Date
+      ? lastPt.time.getTime()
+      : lastPt.time
+      ? new Date(lastPt.time).getTime()
+      : null;
+  const hasRealTimestamps =
+    firstTimeMs !== null &&
+    lastTimeMs !== null &&
+    Number.isFinite(firstTimeMs) &&
+    Number.isFinite(lastTimeMs) &&
+    lastTimeMs > firstTimeMs + 60000;
+
+  const splits: RunningPacingSegmentSplit[] = [];
+  let segStartKm = 0;
+  let segStartEle = points[0].ele || 0;
+  let segAscent = 0;
+  let segDescent = 0;
+  let cumDistKm = 0;
+  let cumulativeSimSec = 0;
+  let gapEquivDistM = 0;
+  let sumFourthMsSec = 0;
+  let lastNutritionMarkSec = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const p1 = points[i - 1];
+    const p2 = points[i];
+    const dKm = calculateDistance(p1, p2);
+    if (!Number.isFinite(dKm) || dKm <= 0) continue;
+
+    cumDistKm += dKm;
+    const dEle = (p2.ele || 0) - (p1.ele || 0);
+    if (dEle > 0) segAscent += dEle;
+    else segDescent += Math.abs(dEle);
+
+    const isLastPoint = i === points.length - 1;
+    const currentSegKm = cumDistKm - segStartKm;
+
+    if (currentSegKm >= segLenKm || (isLastPoint && currentSegKm > 0.05)) {
+      const endEle = p2.ele || 0;
+      const avgGrade = (endEle - segStartEle) / (currentSegKm * 1000);
+      const avgGradePct = Number((avgGrade * 100).toFixed(1));
+      const progressRatio = cumDistKm / Math.max(0.1, totalTrackKm);
+
+      let terrainType: RunningPacingSegmentSplit['terrainType'] = 'flat';
+      if (avgGradePct >= 2.2) terrainType = 'climb';
+      else if (avgGradePct <= -2.0) terrainType = 'descent';
+
+      let effortMultiplier = 1.0;
+      if (options.strategy === 'variable_climb') {
+        if (avgGradePct >= 7) effortMultiplier = 1.08;
+        else if (avgGradePct >= 3) effortMultiplier = 1.04;
+        else if (avgGradePct <= -4) effortMultiplier = 0.88;
+        else if (avgGradePct <= -2) effortMultiplier = 0.94;
+      } else if (options.strategy === 'negative_split') {
+        const ramp = 0.95 + 0.10 * progressRatio;
+        effortMultiplier = ramp * (terrainType === 'climb' ? 1.02 : 1.0);
+      }
+
+      let targetGapMs = baseTargetGapMs * effortMultiplier;
+      if (targetGapMs > csMs) {
+        const maxSustainableMs = csMs + (currentDbalM * 0.65) / 240;
+        targetGapMs = Math.min(targetGapMs, maxSustainableMs);
+      }
+
+      const gFactor = minettiGapFactor(avgGrade);
+      const actualSpeedMs = Math.max(0.85, (targetGapMs / gFactor) * trailPenalty);
+      const simulatedSpeedKmh = Number((actualSpeedMs * 3.6).toFixed(1));
+      const segmentTimeSec = Math.max(1, Math.round((currentSegKm * 1000) / actualSpeedMs));
+      cumulativeSimSec += segmentTimeSec;
+
+      const effectiveGapMs = actualSpeedMs * gFactor;
+      gapEquivDistM += currentSegKm * 1000 * gFactor;
+      sumFourthMsSec += Math.pow(effectiveGapMs, 4) * segmentTimeSec;
+
+      if (effectiveGapMs > csMs) {
+        currentDbalM = Math.max(0, currentDbalM - (effectiveGapMs - csMs) * segmentTimeSec);
+      } else {
+        const dV = Math.max(0, csMs - effectiveGapMs);
+        const tauD = 546 * Math.exp(-0.45 * dV) + 316;
+        currentDbalM = dPrimeM - (dPrimeM - currentDbalM) * Math.exp(-segmentTimeSec / tauD);
+      }
+      const endDbalPct = Math.max(0, Math.min(100, Math.round((currentDbalM / dPrimeM) * 100)));
+      if (endDbalPct < minDbalPct) minDbalPct = endDbalPct;
+
+      let actualCumulativeTimeSec: number | null = null;
+      let timeDeltaSec: number | null = null;
+      if (hasRealTimestamps && firstTimeMs !== null && p2.time) {
+        const ptTimeMs = p2.time instanceof Date ? p2.time.getTime() : new Date(p2.time).getTime();
+        if (Number.isFinite(ptTimeMs) && ptTimeMs >= firstTimeMs) {
+          actualCumulativeTimeSec = Math.round((ptTimeMs - firstTimeMs) / 1000);
+          timeDeltaSec = cumulativeSimSec - actualCumulativeTimeSec;
+        }
+      }
+
+      let nutritionCue: string | null = null;
+      if (cumulativeSimSec - lastNutritionMarkSec >= 1800) {
+        nutritionCue = `${effectiveGapMs >= csMs * 0.92 ? 25 : 20}g Gel / KH + 150ml Wasser`;
+        lastNutritionMarkSec = cumulativeSimSec;
+      }
+
+      splits.push({
+        segmentIndex: splits.length + 1,
+        startKm: Number(segStartKm.toFixed(1)),
+        endKm: Number(cumDistKm.toFixed(1)),
+        distanceKm: Number(currentSegKm.toFixed(2)),
+        startEleM: Math.round(segStartEle),
+        endEleM: Math.round(endEle),
+        ascentM: Math.round(segAscent),
+        descentM: Math.round(segDescent),
+        avgGradePct,
+        terrainType,
+        targetGapPaceFormatted: formatPaceSeconds(1000 / Math.max(0.5, effectiveGapMs)),
+        targetFlatPaceFormatted: formatPaceSeconds(1000 / Math.max(0.5, actualSpeedMs)),
+        targetEffortPctCs: Math.round((effectiveGapMs / csMs) * 100),
+        simulatedSpeedKmh,
+        segmentTimeSec,
+        cumulativeTimeSec: cumulativeSimSec,
+        actualCumulativeTimeSec,
+        timeDeltaSec,
+        endDbalPct,
+        nutritionCue,
+        lat: p2.lat,
+        lng: p2.lng,
+      });
+
+      segStartKm = cumDistKm;
+      segStartEle = endEle;
+      segAscent = 0;
+      segDescent = 0;
+    }
+  }
+
+  const avgFlatMs = cumulativeSimSec > 0 ? (cumDistKm * 1000) / cumulativeSimSec : baseTargetGapMs;
+  const avgGapMs = cumulativeSimSec > 0 ? gapEquivDistM / cumulativeSimSec : baseTargetGapMs;
+  const ngpMs = cumulativeSimSec > 0 ? Math.pow(sumFourthMsSec / cumulativeSimSec, 0.25) : avgGapMs;
+  const targetIf = Number((ngpMs / csMs).toFixed(2));
+  const estimatedRtss = Math.round(((cumulativeSimSec * ngpMs * targetIf) / (csMs * 3600)) * 100);
+  const hours = cumulativeSimSec / 3600;
+  const estimatedCarbsGrams = cumulativeSimSec > 2700 ? Math.round(hours * (targetIf >= 0.9 ? 65 : 50)) : 0;
+
+  const actualTotalTimeSec =
+    hasRealTimestamps && firstTimeMs !== null && lastTimeMs !== null
+      ? Math.round((lastTimeMs - firstTimeMs) / 1000)
+      : track.duration && track.duration > 60
+      ? Math.round(track.duration)
+      : null;
+
+  return {
+    totalDistanceKm: Number(cumDistKm.toFixed(1)),
+    simulatedTotalTimeSec: cumulativeSimSec,
+    actualTotalTimeSec,
+    totalTimeSavedSec: actualTotalTimeSec !== null ? actualTotalTimeSec - cumulativeSimSec : null,
+    avgTargetPaceFormatted: formatPaceSeconds(1000 / Math.max(0.5, avgFlatMs)),
+    avgGapPaceFormatted: formatPaceSeconds(1000 / Math.max(0.5, avgGapMs)),
+    targetIf,
+    estimatedRtss,
+    estimatedCarbsGrams,
+    minDbalPct,
+    splits,
+  };
+}
+

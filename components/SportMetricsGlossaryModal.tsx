@@ -22,17 +22,19 @@ import {
   Copy,
   RotateCcw,
   Sliders,
-  HelpCircle
+  HelpCircle,
+  Footprints
 } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
+import { minettiGapFactor, formatPaceSeconds } from '../utils/runningMetricsEngine';
 
-export type MetricCategory = 'all' | 'climbing' | 'power' | 'training_load' | 'cardio' | 'efficiency' | 'nutrition';
+export type MetricCategory = 'all' | 'running' | 'climbing' | 'power' | 'training_load' | 'cardio' | 'efficiency' | 'nutrition';
 
 export interface GlossaryMetric {
   id: string;
   name: string;
   shortName: string;
-  category: 'climbing' | 'power' | 'training_load' | 'cardio' | 'efficiency' | 'nutrition';
+  category: 'running' | 'climbing' | 'power' | 'training_load' | 'cardio' | 'efficiency' | 'nutrition';
   badgeColor: string;
   definition: string;
   formula?: string;
@@ -570,6 +572,164 @@ export const GLOSSARY_METRICS: GlossaryMetric[] = [
       'Trainiere deine Rennverpflegung immer vorab im Training unter vollem Renntempo.'
     ],
     tags: ['Kohlenhydrate', 'Carbs', 'Ernährung', 'Hungerast', 'Gels', 'Magen-Darm']
+  },
+  // --- RUNNING & TRAIL ---
+  {
+    id: 'gap',
+    name: 'Grade Adjusted Pace & Normalized Graded Pace',
+    shortName: 'GAP / NGP',
+    category: 'running',
+    badgeColor: 'emerald',
+    definition: 'Die auf ebenes Gelände normierte Lauf-Pace (Grade Adjusted Pace). Steigungen erhöhen den metabolischen Energiebedarf deutlich stärker als ihn Bergab-Passagen einsparen – die GAP rechnet jeden Abschnitt über die biomechanische Minetti-Kurve in eine äquivalente Flachland-Pace um (Pausen werden zuvor herausgerechnet). Die NGP gewichtet diese intensitätsmäßig über die gesamte Aktivität.',
+    formula: 'GAP-Geschwindigkeit = Laufgeschwindigkeit × Minetti-Kostenfaktor(Steigung) / Kosten(0 %)',
+    unit: 'min/km (Pace)',
+    origin: 'Prof. Alberto Minetti (2002) / Strava & TrainingPeaks Standard',
+    interpretation: {
+      good: 'Eine konstante GAP über flache und hügelige Abschnitte hinweg zeigt exaktes, energieschonendes Pacing.',
+      warning: 'Starke Einbrüche der GAP bergab (durch Bremsbelastung auf den Quadrizeps) kosten im Wettkampf oft mehr Zeit als der Anstieg.',
+      pro: 'Eliteläufer im Trailrunning steuern Steigungen strikt nach GAP und NGP statt nach der reinen Tacho-Pace.'
+    },
+    benchmarks: [
+      { label: '+10 % Anstieg', value: '≈ 1,56× flach', desc: 'Eine reale 6:15/km am 10%-Berg entspricht ca. 4:00 min/km im Flachen' },
+      { label: '0 % Flachebene', value: '1,00× Basis', desc: 'GAP entspricht exakt der aktuellen Bewegungs-Pace (ohne Pausen)' },
+      { label: '-10 % Gefälle', value: '≈ 0,80× flach', desc: 'Optimale Entlastung; noch steilere Gefälle (< -15 %) bremsen exzentrisch' }
+    ],
+    practicalTips: [
+      'Steuere Bergläufe nach GAP statt nach Ist-Pace, damit du am Fuß des Anstiegs nicht überziehst.',
+      'Standzeiten und Aufzeichnungs-Pausen fließen nicht in die Durchschnitts-GAP oder NGP ein.'
+    ],
+    tags: ['Laufen', 'Trail', 'GAP', 'NGP', 'Steigung', 'Minetti', 'Pace']
+  },
+  {
+    id: 'rtss',
+    name: 'Running Training Stress Score',
+    shortName: 'rTSS',
+    category: 'running',
+    badgeColor: 'indigo',
+    definition: 'Das Lauf-Äquivalent zum Training Stress Score (TSS). Während beim Radfahren Wattwerte genutzt werden, quantifiziert rTSS die objektive Laufbelastung aus pausenfreier Bewegungsdauer, der steigungsbereinigten Normalized Graded Pace (NGP) und deiner persönlichen Critical Speed / Laktatschwellen-Pace.',
+    formula: 'rTSS = (Bewegungszeit_s × NGP_m/s × IF) / (CS_m/s × 3600) × 100   mit IF = NGP / CS',
+    unit: 'Punkte (100 = 1 Std. bei Critical Speed)',
+    origin: 'TrainingPeaks / Dr. Phil Skiba',
+    interpretation: {
+      good: '30 – 70 rTSS für lockere Grundlagenläufe; 80 – 130 rTSS für intensive Longruns oder Tempoläufe.',
+      warning: 'Da Laufen eine hohe exzentrische Aufprall-Belastung besitzt, entspricht 100 rTSS muskulär oft ca. 130–150 Rad-TSS.',
+      pro: 'Steigere deine wöchentliche rTSS-Summe um maximal 5–10 %, um Überlastungsverletzungen vorzubeugen.'
+    },
+    benchmarks: [
+      { label: 'Regenerationslauf', value: '< 45 rTSS', desc: 'Vollständige Erholung innerhalb von 12 Stunden' },
+      { label: 'Solider Ausdauerlauf', value: '60 – 110 rTSS', desc: 'Kernreiz für aerobe Basis ohne Überlastung' },
+      { label: 'Halbmarathon / Harter Longrun', value: '120 – 190 rTSS', desc: 'Erhöhter Regenerationsbedarf (24–48 Std.)' },
+      { label: 'Marathon / Berglauf-Wettkampf', value: '220 – 350+ rTSS', desc: 'Mehrere Tage aktive Regeneration nötig' }
+    ],
+    practicalTips: [
+      'Prüfe dein NGP-zu-CS-Verhältnis (IF): Ein Wert > 0,95 über > 60 Min spricht für eine sehr hohe Schwellendichte.',
+      'Aufzeichnungs- und Standpausen werden aus der Bewegungszeit entfernt, sodass Pausen den rTSS nicht verfälschen.'
+    ],
+    tags: ['rTSS', 'Laufen', 'Belastung', 'NGP', 'Intensity Factor', 'Training Stress']
+  },
+  {
+    id: 'critical_speed_dbal',
+    name: 'Critical Speed & D\'-Balance (Laufen)',
+    shortName: 'CS & D\'bal',
+    category: 'running',
+    badgeColor: 'cyan',
+    definition: 'Critical Speed (CS) ist die höchste nachhaltig aerob aufrechterhaltbare Laufgeschwindigkeit (vergleichbar mit CP/FTP beim Radfahren). D\' ("D-Prime", Einheit Meter) ist dein begrenzter anaerober Distanzspeicher oberhalb von CS. Das D\'bal-Modell verfolgt – analog zu W\'bal beim Radfahren – wie viel deiner anaeroben Reserve an Anstiegen oder in Intervallen verbraucht wird und wie schnell sie in Erholungspassagen oder Pausen regeneriert.',
+    formula: 'Verbrauch (dt): ΔD\' = -(v_GAP - CS) · dt   |   Erholung (dt, inkl. Pausen mit v=0): Skiba-Exponentialkurve gegen D\'₀',
+    unit: 'CS in min/km (m/s) · D\'bal in m & %',
+    origin: 'Skiba, Jones & Vanhatalo (Critical-Speed-Modell)',
+    interpretation: {
+      good: 'D\'bal bleibt an Hügeln im grünen/blauen Bereich (> 35 %) – du läufst kontrolliert und ohne Laktat-Überlauf.',
+      warning: 'Fällt D\'bal gegen 0 m (< 10 %), droht unmittelbares Verlangsamen an der nächsten Rampe.',
+      pro: 'Beim Radfahren kommt statt CS/D\'bal das Leistungsmodell CP & W\'bal (Watt & kJ) zum Einsatz.'
+    },
+    benchmarks: [
+      { label: 'Freizeitläufer', value: 'CS 5:15–6:00/km · D\' 150–200 m', desc: 'Grundlagenbereich & Einstieg' },
+      { label: 'Ambitionierter Läufer', value: 'CS 3:55–4:35/km · D\' 200–280 m', desc: 'Starke Tempohärte über 10 km bis Marathon' },
+      { label: 'Elite / Bahnläufer', value: 'CS < 3:15/km · D\' 250–380 m', desc: 'Extreme Spurt- und Hügelreserve' }
+    ],
+    practicalTips: [
+      'Nutze die GAP-Geschwindigkeit für CS & D\'bal, weil steile Trail-Anstiege sonst durch langsame km/h falsch als Erholung gewertet würden.',
+      'Während Standpausen erholt sich D\'bal mit maximalem Erholungsgradienten (v = 0 m/s).'
+    ],
+    tags: ['D\'bal', 'D-bal', 'Critical Speed', 'CS', 'Anaerob', 'Laufen', 'Skiba', 'Match']
+  },
+  {
+    id: 'pa_hr',
+    name: 'Pace-to-Heart-Rate & Aerobe Entkopplung',
+    shortName: 'Pa:HR (EF & Drift)',
+    category: 'running',
+    badgeColor: 'rose',
+    definition: 'Pa:HR kombiniert zwei zentrale Herzfrequenz-Laufmetriken: Den Efficiency Factor (EF = GAP-Geschwindigkeit in m/min geteilt durch die Ø Herzfrequenz) sowie die Aerobe Entkopplung ("Cardiac Drift", Vergleich von EF in der 1. vs. 2. Laufhälfte). Beides misst, wie ökonomisch dein Herz-Kreislauf-System arbeitet.',
+    formula: 'EF = v_GAP (m/min) / HF (bpm)   |   Drift (%) = ((EF₁ - EF₂) / EF₁) × 100',
+    unit: 'EF in m/min/bpm · Entkopplung in %',
+    origin: 'Joe Friel (Training Bible / Endurance Metrics)',
+    interpretation: {
+      good: 'Ein Drift von < 5 % bei langen Dauerläufen (> 60 Min) bestätigt eine sehr stabile aerobe Grundlagenausdauer.',
+      warning: 'Werte > 8–10 % deuten auf unzureichende Grundlagenausdauer, Hitze-Belastung oder Flüssigkeitsmangel hin.',
+      pro: 'Steigt dein EF über mehrere Trainingswochen bei konstanter Herzfrequenz an, wirst du bei gleichem Puls messbar schneller.'
+    },
+    benchmarks: [
+      { label: 'Sehr stabil (Aerob stark)', value: 'Drift < 3,5 %', desc: 'Hervorragende Ermüdungsresistenz im Grundlagenbereich' },
+      { label: 'Normal / Solide', value: 'Drift 3,5 – 5,5 %', desc: 'Gutes Verhältnis von Tempohärte und Ausdauer' },
+      { label: 'Ausbaufähig / Ermüdung', value: 'Drift > 7,5 %', desc: 'Mehr lange, ruhige Einheiten (Zone 2) und bessere Hydration empfohlen' }
+    ],
+    practicalTips: [
+      'Wird nur berechnet, wenn sowohl Lauf-Pace/GAP als auch echte Herzfrequenzdaten vorliegen (mind. 20 Min aktive Laufzeit für stabilen Drift).',
+      'Durch pausenfreie Auswertung verfälschen Trink- oder Ampelstopps den Durchschnittspuls nicht.'
+    ],
+    tags: ['Pa:HR', 'EF', 'Efficiency Factor', 'Drift', 'Entkopplung', 'Herzfrequenz', 'Laufen']
+  },
+  {
+    id: 'running_cadence',
+    name: 'Schrittfrequenz im Laufen (Normalisiert)',
+    shortName: 'Cadence (spm)',
+    category: 'running',
+    badgeColor: 'violet',
+    definition: 'Die Anzahl der Bodenkontakte beider Füße pro Minute (Steps per Minute, spm). Viele Laufuhren und FIT-Dateien speichern technisch nur ganze Schrittzyklen eines Beines (z.B. 85–95 Zyklen/min); diese App erkennt Einbein-Werte (< 110) automatisch und normalisiert sie konsistent auf volle spm (170–190 spm), jeweils getrennt für Flachland, Anstieg und Gefälle (ohne Pausen).',
+    formula: 'spm = Rohwert < 110 ? Rohwert × 2 : Rohwert   (nur aktive Laufsegmente)',
+    unit: 'spm (Schritte pro Minute)',
+    origin: 'Laufbiomechanik (Jack Daniels / Sports Biomechanics)',
+    interpretation: {
+      good: '170 – 188 spm minimieren Bremskräfte ("Overstriding") und reduzieren Stoßbelastungen auf Knie und Hüfte.',
+      warning: 'Unter 160 spm bei schneller Pace deutet meist auf zu lange Schritte mit Fersenauftritt vor dem Körperschwerpunkt hin.',
+      pro: 'Im steilen Berglauf und Trail sinkt die Schrittfrequenz physiologisch etwas ab oder passt sich dem Gelände über kurze Trippelschritte an.'
+    },
+    benchmarks: [
+      { label: 'Niedrig (lange Schritte)', value: '< 162 spm', desc: 'Höhere Bodenkontaktzeit und Bremsimpuls' },
+      { label: 'Ökonomisch / Empfohlen', value: '170 – 184 spm', desc: 'Effiziente Laufökonomie und geringeres Verletzungsrisiko' },
+      { label: 'Hoch / Wettkampf', value: '185 – 200+ spm', desc: 'Typisch bei hohem Tempo oder technischen Trail-Passagen' }
+    ],
+    practicalTips: [
+      'Erhöhe deine Schrittfrequenz behutsam in 2–3 %-Schritten, statt abrupt auf 180 spm umzustellen.',
+      'Bergab helfen etwas kürzere, schnellere Schritte (höhere spm), um die Aufprallkräfte abzufedern.'
+    ],
+    tags: ['Cadence', 'Schrittfrequenz', 'spm', 'Lauftechnik', 'Laufen', 'Biomechanik']
+  },
+  {
+    id: 'wbal',
+    name: 'W\'-Balance (Anaerobe Arbeitskapazität · Radsport)',
+    shortName: 'W\'bal',
+    category: 'power',
+    badgeColor: 'cyan',
+    definition: 'Die verbleibende anaerobe Arbeitskapazität (Batterieladung) oberhalb der Critical Power (CP) beim Radfahren. Jeder Antritt und jeder steile Anstieg über CP entlädt den Speicher W\' (gemessen in Kilojoule, kJ); in lockeren Abfahrten und während Pausen (P = 0 W) füllt sich der Speicher nach Dr. Phil Skibas Exponentialmodell wieder auf. Für Lauftracks verwendet diese App stattdessen Critical Speed (CS) & D\'bal.',
+    formula: 'W\'bal(t) = W\' - ∫ (W_exp(u)) · e^(-(t-u)/τ) du   mit τ = 546 · e^(-0.01·(CP - P)) + 316',
+    unit: 'kJ & % Reserve (Radsport)',
+    origin: 'Dr. Philip F. Skiba (2012, W\'bal-Differentialmodell)',
+    interpretation: {
+      good: 'W\'bal zwischen 30 % und 100 % erlaubt noch wiederholte harte Antritte am Berg oder im Sprint.',
+      warning: 'Unter 10 % droht akuter Leistungseinbruch ("Match verbrannt"). Plane gezielte Entlastung unterhalb CP ein.',
+      pro: 'Hinweis: Ausschließlich für Radsport mit Leistungs- oder Pausenzeiten relevant; beim Laufen ersetzt D\'bal (in Metern) diese Metrik.'
+    },
+    benchmarks: [
+      { label: 'Ausdauer-Typ / Bergfahrer', value: 'W\' ≈ 15 – 20 kJ', desc: 'Kleine anaerobe Spitze, sehr effiziente Regeneration' },
+      { label: 'Allrounder / Klassiker', value: 'W\' ≈ 20 – 25 kJ', desc: 'Solide Attacken über 1–3 Minuten am Anstieg' },
+      { label: 'Sprinter / Bahn', value: 'W\' ≈ 25 – 35+ kJ', desc: 'Massive Kurzzeit-Kapazität über FTP' }
+    ],
+    practicalTips: [
+      'Achte auf Standzeiten und Rollpassagen: Die Zeitachse rechnet reale Erholung (0 W) korrekt in die W\'bal-Regeneration ein.',
+      'Nutze die Split-Matches-Analyse im Cockpit, um deine härtesten Belastungsspitzen ("Matches") auf der Strecke zu identifizieren.'
+    ],
+    tags: ['W\'bal', 'Wbal', 'W-Prime', 'CP', 'Skiba', 'Anaerob', 'Radsport', 'Matches']
   }
 ];
 
@@ -592,7 +752,7 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
   const [activeTab, setActiveTab] = useState<'glossary' | 'calculator'>('glossary');
 
   // Interactive Calculator State
-  const [calcType, setCalcType] = useState<'vam' | 'tss' | 'if_vi' | 'climb_score'>('vam');
+  const [calcType, setCalcType] = useState<'vam' | 'tss' | 'if_vi' | 'climb_score' | 'running_gap'>('vam');
   
   // VAM Calculator inputs
   const [calcEleGain, setCalcEleGain] = useState(650);
@@ -603,6 +763,12 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
   const [calcNp, setCalcNp] = useState(230);
   const [calcFtp, setCalcFtp] = useState(260);
   const [calcAvgPower, setCalcAvgPower] = useState(210);
+
+  // Running GAP & rTSS Calculator inputs
+  const [calcRunPaceSecKm, setCalcRunPaceSecKm] = useState(315); // 5:15 min/km
+  const [calcRunGradePct, setCalcRunGradePct] = useState(6);
+  const [calcRunCsSecKm, setCalcRunCsSecKm] = useState(270); // 4:30 min/km
+  const [calcRunDurationMin, setCalcRunDurationMin] = useState(60);
 
   // Climb Score Calculator inputs
   const [calcClimbEle, setCalcClimbEle] = useState(900);
@@ -661,8 +827,27 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
     return { score, grade: Number(grade.toFixed(1)), cat };
   }, [calcClimbEle, calcClimbDist]);
 
+  const calculatedRunningGap = useMemo(() => {
+    const factor = minettiGapFactor(calcRunGradePct);
+    const actualSpeedMs = 1000 / Math.max(120, calcRunPaceSecKm);
+    const gapSpeedMs = actualSpeedMs * factor;
+    const gapPaceSecKm = 1000 / Math.max(0.5, gapSpeedMs);
+    const csSpeedMs = 1000 / Math.max(120, calcRunCsSecKm);
+    const ifVal = gapSpeedMs / csSpeedMs;
+    const rTss = Math.round(((calcRunDurationMin * 60 * gapSpeedMs * ifVal) / (csSpeedMs * 3600)) * 100);
+    return {
+      factor: Number(factor.toFixed(2)),
+      gapPaceFormatted: formatPaceSeconds(gapPaceSecKm),
+      actualPaceFormatted: formatPaceSeconds(calcRunPaceSecKm),
+      csPaceFormatted: formatPaceSeconds(calcRunCsSecKm),
+      ifVal: Number(ifVal.toFixed(2)),
+      rTss
+    };
+  }, [calcRunPaceSecKm, calcRunGradePct, calcRunCsSecKm, calcRunDurationMin]);
+
   const categories: { id: MetricCategory; label: string; icon: any }[] = [
     { id: 'all', label: 'Alle Metriken', icon: BookOpen },
+    { id: 'running', label: 'Laufen & Trail', icon: Footprints },
     { id: 'climbing', label: 'Klettern & Pässe', icon: Mountain },
     { id: 'power', label: 'Watt & Leistung', icon: Zap },
     { id: 'training_load', label: 'Belastung & Form (PMC)', icon: TrendingUp },
@@ -693,12 +878,9 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <h2 className="text-sm sm:text-base font-black tracking-tight truncate">Sport-Metriken & Glossar</h2>
-                <span className="hidden sm:inline-flex text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shrink-0">
-                  Wissenschaftlich fundiert
-                </span>
               </div>
               <p className="text-xs text-slate-400 truncate hidden sm:block">
-                Präzise Definitionen, Formeln, Schwellenwerte und physiologische Hintergründe (VAM, TSS, FTP, EF, VO2max)
+                Präzise Definitionen, Formeln &amp; Referenzwerte für Radsport und Laufen (GAP, rTSS, CS, D&apos;bal, Pa:HR, W&apos;bal, FTP)
               </p>
             </div>
           </div>
@@ -753,7 +935,7 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Metrik suchen (z.B. VAM, TSS, FTP)..."
+                    placeholder="Metrik suchen (z.B. GAP, D'bal, rTSS, VAM, FTP)..."
                     className="w-full pl-8 pr-7 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 font-medium"
                   />
                   {searchQuery && (
@@ -969,7 +1151,7 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
         ) : (
           /* Interactive Metric Calculators Tab */
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
-            <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
               <button
                 onClick={() => { triggerHaptic('light'); setCalcType('vam'); }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
@@ -1013,6 +1195,17 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
               >
                 <Award size={13} />
                 <span>Bergwertungs-Score</span>
+              </button>
+              <button
+                onClick={() => { triggerHaptic('light'); setCalcType('running_gap'); }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  calcType === 'running_gap'
+                    ? 'bg-emerald-600 text-white shadow'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                <Footprints size={13} />
+                <span>Lauf-GAP &amp; rTSS</span>
               </button>
             </div>
 
@@ -1300,6 +1493,106 @@ export const SportMetricsGlossaryModal: React.FC<SportMetricsGlossaryModalProps>
                     <div className="p-2.5 rounded-xl bg-slate-900/50">
                       <span className="text-[10px] text-slate-400 block uppercase font-bold">Ø Steigung</span>
                       <span className="text-base font-black text-rose-300 font-mono">{calculatedClimbScore.grade}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {calcType === 'running_gap' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 space-y-4">
+                  <h4 className="text-sm font-black text-slate-800 dark:text-white flex items-center gap-2">
+                    <Footprints size={16} className="text-emerald-500" />
+                    Lauf-GAP &amp; rTSS Rechner (Minetti-Modell)
+                  </h4>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <label className="text-slate-500">Aktuelle Lauf-Pace</label>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-mono font-black tabular-nums">{calculatedRunningGap.actualPaceFormatted} min/km</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="180"
+                      max="600"
+                      step="5"
+                      value={calcRunPaceSecKm}
+                      onChange={(e) => setCalcRunPaceSecKm(Number(e.target.value))}
+                      className="w-full accent-emerald-600"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <label className="text-slate-500">Strecken-Steigung (%)</label>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-mono font-black tabular-nums">{calcRunGradePct > 0 ? `+${calcRunGradePct}` : calcRunGradePct}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-20"
+                      max="25"
+                      step="1"
+                      value={calcRunGradePct}
+                      onChange={(e) => setCalcRunGradePct(Number(e.target.value))}
+                      className="w-full accent-emerald-600"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <label className="text-slate-500">Critical Speed / Schwellen-Pace</label>
+                      <span className="text-cyan-600 dark:text-cyan-400 font-mono font-black tabular-nums">{calculatedRunningGap.csPaceFormatted} min/km</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="180"
+                      max="480"
+                      step="5"
+                      value={calcRunCsSecKm}
+                      onChange={(e) => setCalcRunCsSecKm(Number(e.target.value))}
+                      className="w-full accent-cyan-600"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <label className="text-slate-500">Bewegungszeit (ohne Pausen)</label>
+                      <span className="text-indigo-600 dark:text-indigo-400 font-mono font-black tabular-nums">{calcRunDurationMin} min</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="15"
+                      max="240"
+                      step="5"
+                      value={calcRunDurationMin}
+                      onChange={(e) => setCalcRunDurationMin(Number(e.target.value))}
+                      className="w-full accent-indigo-600"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-6 rounded-2xl bg-gradient-to-br from-emerald-900/40 to-teal-900/40 border border-emerald-500/30 flex flex-col justify-center items-center text-center space-y-4">
+                  <div>
+                    <span className="text-xs font-extrabold uppercase tracking-widest text-emerald-300">
+                      Grade Adjusted Pace (GAP)
+                    </span>
+                    <div className="text-5xl font-black text-white font-mono tabular-nums tracking-tight mt-1">
+                      {calculatedRunningGap.gapPaceFormatted} <span className="text-xl font-normal text-emerald-300">/km</span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1 font-mono">
+                      Minetti-Kostenfaktor: {calculatedRunningGap.factor.toFixed(2)}×
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 w-full pt-3 border-t border-emerald-500/20">
+                    <div className="p-2.5 rounded-xl bg-slate-900/50">
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Intensity Factor</span>
+                      <span className="text-base font-black text-emerald-300 font-mono tabular-nums">{calculatedRunningGap.ifVal.toFixed(2)} IF</span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-slate-900/50">
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Geschätzter rTSS</span>
+                      <span className="text-base font-black text-emerald-300 font-mono tabular-nums">{calculatedRunningGap.rTss} rTSS</span>
                     </div>
                   </div>
                 </div>

@@ -3156,7 +3156,6 @@ const App: React.FC = () => {
                 estimatedSpeed={estimatedSpeed}
                 selectedDate={selectedDate}
                 selectedTime={selectedTime}
-                onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack.id, 'power')}
                 onOpenIntensiveAnalysis={() => handleOpenTrackAnalysis(markedTrack.id, 'overview')}
                 onOpenVideoExport={() => setIsExportModalOpen(true)}
                 ftp={ftp}

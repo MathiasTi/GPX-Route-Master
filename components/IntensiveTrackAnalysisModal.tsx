@@ -20,7 +20,15 @@ import {
   getClimbHexColor
 } from '../utils/intensiveAnalysis';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ComposedChart, Bar, Line, Legend, Cell } from 'recharts';
-import { calculateDistance, detectActivityType, detectTrackPauses, formatPace, getPaceString } from '../utils/gpxUtils';
+import {
+  calculateDistance,
+  detectActivityType,
+  detectTrackPauses,
+  formatPace,
+  getPaceString,
+  estimateMedianSamplingIntervalSec,
+  isRecordingPauseGap
+} from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
@@ -28,7 +36,17 @@ import { RawDataTab } from './analysis/RawDataTab';
 import { PrintReportTab } from './analysis/PrintReportTab';
 import { NumericProfileInput } from './NumericProfileInput';
 import { Climb3DProfileCard } from './analysis/Climb3DProfileCard';
-import { runPacingSimulation, PacingStrategyMode } from '../utils/pacingSimulator';
+import {
+  runPacingSimulation,
+  runRunningPacingSimulation,
+  PacingStrategyMode
+} from '../utils/pacingSimulator';
+import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
+import {
+  computePauseAwareRunningMetrics,
+  deriveDefaultCriticalSpeedMs,
+  formatPaceSeconds
+} from '../utils/runningMetricsEngine';
 
 interface IntensiveElevationChartProps {
   data: Array<{
@@ -420,10 +438,48 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const [splitIntervalKm, setSplitIntervalKm] = useState<1 | 5 | 10>(1);
   const [isMobileParamsExpanded, setIsMobileParamsExpanded] = useState<boolean>(false);
 
+  // Capabilities for strict sport- and sensor-based gating (no fake telemetry)
+  const capabilities = useMemo(
+    () => resolveTrackCapabilities({ ...track, activityType }),
+    [track, activityType]
+  );
+
+  // Guard activeTab so unavailable tabs fallback to overview
+  useEffect(() => {
+    if (
+      (activeTab === 'power' && !capabilities.hasPowerPhysicsTabData) ||
+      (activeTab === 'zones' && !capabilities.hasZonesTabData)
+    ) {
+      setActiveTab('overview');
+    }
+  }, [activeTab, capabilities.hasPowerPhysicsTabData, capabilities.hasZonesTabData]);
+
+  // Default Critical Pace for running metrics & pacing
+  const defaultCsPaceSecKm = useMemo(() => {
+    const csMs = deriveDefaultCriticalSpeedMs(track);
+    return Math.max(170, Math.min(540, Math.round(1000 / Math.max(1.5, csMs))));
+  }, [track]);
+
+  const [runningCsPaceSecKm, setRunningCsPaceSecKm] = useState<number>(defaultCsPaceSecKm);
+  const [runningTargetEffortPct, setRunningTargetEffortPct] = useState<number>(88);
+
+  useEffect(() => {
+    setRunningCsPaceSecKm(defaultCsPaceSecKm);
+  }, [track.id, defaultCsPaceSecKm]);
+
   // Automatic Pause & Net Time Analysis
   const pauseAnalysis = useMemo(() => {
     return detectTrackPauses(track);
   }, [track]);
+
+  // Pause-aware Running Metrics (GAP, NGP, CS, D'bal, rTSS, Pa:HR, spm Cadence)
+  const runningMetrics = useMemo(() => {
+    if (activityType !== 'running') return null;
+    return computePauseAwareRunningMetrics(
+      { ...track, activityType: 'running' },
+      { criticalPaceSecKm: runningCsPaceSecKm, dPrimeMeters: 200 }
+    );
+  }, [track, activityType, runningCsPaceSecKm]);
 
   // Compute Analysis
   const analysis: IntensiveAnalysisResult = useMemo(() => {
@@ -473,6 +529,7 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
     let totalDuration = 0;
     let totalDistance = 0;
     const baseSpeedKmh = Math.max(4, analysis.estimatedAverageSpeedKmh || estimatedSpeed || 20);
+    const medianDtSec = estimateMedianSamplingIntervalSec(pts);
 
     for (let i = 1; i < pts.length; i++) {
       const p0 = pts[i - 1];
@@ -481,20 +538,29 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       if (!Number.isFinite(dKm) || dKm <= 0.0005 || dKm > 2) continue;
 
       const dEle = (p1.ele ?? 0) - (p0.ele ?? 0);
-      const rawGradePct = p0.ele !== undefined && p1.ele !== undefined
+      const rawGradePct = capabilities.hasRealElevation && p0.ele !== undefined && p1.ele !== undefined
         ? (dEle / (dKm * 1000)) * 100
         : 0;
       const gradePct = Math.max(-35, Math.min(35, rawGradePct));
 
       let dtSec = 0;
-      if (p0.time && p1.time) {
+      if (capabilities.hasTimestamps && p0.time && p1.time) {
         const t0 = new Date(p0.time as any).getTime();
         const t1 = new Date(p1.time as any).getTime();
-        if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0 && t1 - t0 < 600000) {
-          dtSec = (t1 - t0) / 1000;
+        if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0) {
+          const rawDt = (t1 - t0) / 1000;
+          if (rawDt >= 600 || isRecordingPauseGap(rawDt, dKm, medianDtSec)) {
+            continue;
+          }
+          const stepSpeedKmh = (dKm / rawDt) * 3600;
+          if (stepSpeedKmh < 1.6) {
+            continue;
+          }
+          dtSec = rawDt;
         }
       }
       if (dtSec <= 0) {
+        if (capabilities.hasTimestamps) continue;
         const gradeFactor = gradePct > 0
           ? 1 / (1 + gradePct * (activityType === 'running' ? 0.08 : 0.14))
           : 1 + Math.min(0.45, Math.abs(gradePct) * 0.03);
@@ -528,11 +594,24 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
         avgHr
       };
     });
-  }, [track.points, activityType, analysis.estimatedAverageSpeedKmh, estimatedSpeed]);
+  }, [track.points, activityType, analysis.estimatedAverageSpeedKmh, estimatedSpeed, capabilities.hasRealElevation, capabilities.hasTimestamps]);
 
-  // Heart Rate Zones Time-in-Zone Analysis based on customMaxHr
+  // Heart Rate Zones Time-in-Zone Analysis (strictly real HR data, pause-aware; zero fake fallback)
   const hrZoneAnalysis = useMemo(() => {
     const safeMaxHr = Math.max(120, Math.min(230, Math.round(customMaxHr || 185)));
+    if (!capabilities.hasHeartRate) {
+      return {
+        safeMaxHr,
+        hasRealHrData: false,
+        avgHr: 0,
+        maxRecordedHr: 0,
+        totalSec: 0,
+        aerobicPct: 0,
+        thresholdPeakPct: 0,
+        zones: []
+      };
+    }
+
     const z1Max = Math.round(safeMaxHr * 0.60);
     const z2Max = Math.round(safeMaxHr * 0.70);
     const z3Max = Math.round(safeMaxHr * 0.80);
@@ -597,10 +676,7 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
     ];
 
     const pts = track.points || [];
-    const totalTargetSec = Math.max(
-      60,
-      analysis.estimatedMovingTimeSeconds || track.duration || Math.round((Math.max(1, track.distance) / 20) * 3600)
-    );
+    const medianDtSec = estimateMedianSamplingIntervalSec(pts);
     const zoneSeconds = [0, 0, 0, 0, 0];
     let weightedHrSum = 0;
     let totalValidHrSec = 0;
@@ -613,8 +689,16 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
         if (i > 0 && pts[i].time && pts[i - 1].time) {
           const t0 = new Date(pts[i - 1].time as any).getTime();
           const t1 = new Date(pts[i].time as any).getTime();
-          if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0 && t1 - t0 <= 60000) {
-            dt = (t1 - t0) / 1000;
+          if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0) {
+            const rawDt = (t1 - t0) / 1000;
+            const dKm = calculateDistance(pts[i - 1], pts[i]);
+            if (rawDt >= 600 || isRecordingPauseGap(rawDt, dKm, medianDtSec)) {
+              continue;
+            }
+            if ((dKm / rawDt) * 3600 < 1.6) {
+              continue;
+            }
+            dt = rawDt;
           }
         }
         totalValidHrSec += dt;
@@ -629,33 +713,25 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       }
     }
 
-    const hasRealHrData = totalValidHrSec > 0;
-
-    if (hasRealHrData) {
-      const scale = totalTargetSec / totalValidHrSec;
-      for (let j = 0; j < 5; j++) {
-        zoneSeconds[j] = Math.round(zoneSeconds[j] * scale);
-      }
-    } else {
-      // Physiological terrain-based modeling when no HR sensor was recorded
-      const climbRatio = analysis.totalDistanceKm > 0
-        ? (analysis.climbingDistanceKm + analysis.steepClimbDistanceKm * 1.6) / analysis.totalDistanceKm
-        : 0.2;
-      const intensityShift = Math.min(0.25, Math.max(0, climbRatio * 0.45));
-      zoneSeconds[0] = Math.round(totalTargetSec * Math.max(0.08, 0.18 - intensityShift * 0.4));
-      zoneSeconds[1] = Math.round(totalTargetSec * Math.max(0.28, 0.46 - intensityShift * 0.5));
-      zoneSeconds[2] = Math.round(totalTargetSec * (0.22 + intensityShift * 0.35));
-      zoneSeconds[3] = Math.round(totalTargetSec * (0.10 + intensityShift * 0.40));
-      zoneSeconds[4] = Math.max(0, totalTargetSec - (zoneSeconds[0] + zoneSeconds[1] + zoneSeconds[2] + zoneSeconds[3]));
+    if (totalValidHrSec <= 0) {
+      return {
+        safeMaxHr,
+        hasRealHrData: false,
+        avgHr: 0,
+        maxRecordedHr: 0,
+        totalSec: 0,
+        aerobicPct: 0,
+        thresholdPeakPct: 0,
+        zones: []
+      };
     }
 
-    const sumSec = Math.max(1, zoneSeconds.reduce((a, b) => a + b, 0));
-    const avgHr = hasRealHrData
-      ? Math.round(weightedHrSum / totalValidHrSec)
-      : Math.round(safeMaxHr * (0.68 + Math.min(0.12, (analysis.difficultyScore || 4) * 0.012)));
+    const roundedZonesSec = zoneSeconds.map((s) => Math.round(s));
+    const sumSec = Math.max(1, roundedZonesSec.reduce((a, b) => a + b, 0));
+    const avgHr = Math.round(weightedHrSum / totalValidHrSec);
 
     const zones = zoneDefs.map((z, idx) => {
-      const seconds = zoneSeconds[idx];
+      const seconds = roundedZonesSec[idx];
       const minutes = Number((seconds / 60).toFixed(1));
       const percent = Number(((seconds / sumSec) * 100).toFixed(1));
       return {
@@ -673,15 +749,15 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
 
     return {
       safeMaxHr,
-      hasRealHrData,
+      hasRealHrData: true,
       avgHr,
-      maxRecordedHr: hasRealHrData ? maxRecordedHr : Math.round(safeMaxHr * 0.92),
+      maxRecordedHr,
       totalSec: sumSec,
       aerobicPct,
       thresholdPeakPct,
       zones
     };
-  }, [track.points, track.duration, track.distance, customMaxHr, analysis.estimatedMovingTimeSeconds, analysis.totalDistanceKm, analysis.climbingDistanceKm, analysis.steepClimbDistanceKm, analysis.difficultyScore]);
+  }, [track.points, customMaxHr, capabilities.hasHeartRate]);
 
   // Downsample profile data for elevation & grade chart with climb mapping
   const elevationData = useMemo(() => {
@@ -745,6 +821,17 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       segmentLengthKm: pacingSplitKm
     });
   }, [track, customFtp, customWeight, subType, activityType, pacingWindKmh, pacingIfPct, pacingStrategy, pacingSplitKm]);
+
+  const runningPacingSim = useMemo(() => {
+    return runRunningPacingSimulation(track, {
+      criticalPaceSecKm: runningCsPaceSecKm,
+      dPrimeMeters: 200,
+      strategy: pacingStrategy,
+      targetEffortPct: runningTargetEffortPct,
+      subType: subType === 'trail' ? 'trail' : 'road',
+      segmentLengthKm: pacingSplitKm
+    });
+  }, [track, runningCsPaceSecKm, pacingStrategy, runningTargetEffortPct, subType, pacingSplitKm]);
 
   const handleCopySummary = () => {
     triggerHaptic();
@@ -1152,23 +1239,29 @@ GPX Route Master Pro`;
             <span>{activityType === 'running' ? 'Laufzeit & Physis' : 'Fahrzeit & Physis'}</span>
           </button>
 
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'power'}
-            onClick={() => {
-              triggerHaptic('light');
-              setActiveTab('power');
-            }}
-            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
-              activeTab === 'power'
-                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
-                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <span>Leistung &amp; Physik</span>
-          </button>
+          {capabilities.hasPowerPhysicsTabData && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'power'}
+              onClick={() => {
+                triggerHaptic('light');
+                setActiveTab('power');
+              }}
+              className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
+                activeTab === 'power'
+                  ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                  : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {capabilities.isRunning ? (
+                <Activity className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              ) : (
+                <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              )}
+              <span>{capabilities.isRunning ? "Laufmetriken & D'bal" : 'Leistung & Physik'}</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -1193,23 +1286,25 @@ GPX Route Master Pro`;
             )}
           </button>
 
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'zones'}
-            onClick={() => {
-              triggerHaptic('light');
-              setActiveTab('zones');
-            }}
-            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
-              activeTab === 'zones'
-                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
-                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-            <span>Trainingszonen</span>
-          </button>
+          {capabilities.hasZonesTabData && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'zones'}
+              onClick={() => {
+                triggerHaptic('light');
+                setActiveTab('zones');
+              }}
+              className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
+                activeTab === 'zones'
+                  ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                  : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+              <span>Trainingszonen</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -1432,6 +1527,104 @@ GPX Route Master Pro`;
                 </div>
               </div>
 
+              {/* Pause-Aware Running Telemetry Summary (strictly gated per available metric) */}
+              {activityType === 'running' && runningMetrics && runningMetrics.hasData && (
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                      <span className="font-bold">Lauf-Telemetrie</span>
+                      <span className="text-slate-400">·</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Pausenbereinigt ({formatSecondsToTime(runningMetrics.movingTimeSec)} netto)
+                      </span>
+                    </div>
+                    {capabilities.hasPowerPhysicsTabData && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerHaptic('light');
+                          setActiveTab('power');
+                        }}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        <span>CS &amp; D&apos;bal Analyse</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 font-mono tabular-nums">
+                    {runningMetrics.avgGapPaceFormatted && (
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800">
+                        <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400 block">GAP · Steigungs-Pace</span>
+                        <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                          {runningMetrics.avgGapPaceFormatted}
+                        </span>
+                        {runningMetrics.ngpPaceFormatted && (
+                          <span className="font-sans text-[10px] text-slate-400 block">
+                            NGP {runningMetrics.ngpPaceFormatted}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {runningMetrics.rTss !== null && (
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800">
+                        <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400 block">rTSS (Belastung)</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">
+                          {runningMetrics.rTss} rTSS
+                        </span>
+                        {runningMetrics.intensityFactor !== null && (
+                          <span className="font-sans text-[10px] text-slate-400 block">
+                            IF {runningMetrics.intensityFactor.toFixed(2)} · CS {runningMetrics.criticalPaceFormatted}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {capabilities.hasDbalData && (
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800">
+                        <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400 block">Min. D&apos;bal Reserve</span>
+                        <span className={`text-sm font-black ${
+                          runningMetrics.minDbalPct < 25 ? 'text-rose-600 dark:text-rose-400' : 'text-cyan-600 dark:text-cyan-400'
+                        }`}>
+                          {runningMetrics.minDbalPct.toFixed(0)}% ({Math.round(runningMetrics.minDbalMeters)} m)
+                        </span>
+                        <span className="font-sans text-[10px] text-slate-400 block">
+                          {runningMetrics.matches.length} Anaerobe Surges
+                        </span>
+                      </div>
+                    )}
+
+                    {runningMetrics.paHrEf !== null && (
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800">
+                        <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400 block">Pa:HR Effizienz</span>
+                        <span className="text-sm font-black text-rose-600 dark:text-rose-400">
+                          {runningMetrics.paHrEf.toFixed(2)} m/bpm
+                        </span>
+                        <span className="font-sans text-[10px] text-slate-400 block">
+                          {runningMetrics.hasValidDecoupling && runningMetrics.aerobicDecouplingPct !== null
+                            ? `Drift ${runningMetrics.aerobicDecouplingPct > 0 ? '+' : ''}${runningMetrics.aerobicDecouplingPct.toFixed(1)}%`
+                            : 'Zu kurz für Drift'}
+                        </span>
+                      </div>
+                    )}
+
+                    {runningMetrics.avgCadenceSpm !== null && (
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800">
+                        <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400 block">Ø Schrittfrequenz</span>
+                        <span className="text-sm font-black text-purple-600 dark:text-purple-400">
+                          {runningMetrics.avgCadenceSpm} spm
+                        </span>
+                        <span className="font-sans text-[10px] text-slate-400 block">
+                          Max {runningMetrics.maxCadenceSpm} spm
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Elevation & Grade Chart with Colored Climb Segments */}
               <IntensiveElevationChart
                 data={elevationData}
@@ -1546,7 +1739,8 @@ GPX Route Master Pro`;
                 </div>
               </div>
 
-              {/* Heart Rate Zones Visual Time-in-Zone Chart (based on Max HR) */}
+              {/* Heart Rate Zones Visual Time-in-Zone Chart (strictly real HR sensor data only) */}
+              {hrZoneAnalysis.hasRealHrData && (
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-start gap-2.5">
@@ -1558,20 +1752,12 @@ GPX Route Master Pro`;
                         <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
                           Herzfrequenz-Zonen &amp; Zeitverteilung (HFmax: {hrZoneAnalysis.safeMaxHr} bpm)
                         </h3>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            hrZoneAnalysis.hasRealHrData
-                              ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60'
-                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60'
-                          }`}
-                        >
-                          {hrZoneAnalysis.hasRealHrData ? 'Live-HF-Sensordaten' : 'Physiologisches Streckenmodell'}
+                        <span className="text-[11px] font-medium text-rose-600 dark:text-rose-400">
+                          · Live-HF-Sensordaten
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                        {hrZoneAnalysis.hasRealHrData
-                          ? `Aufgezeichnete Pulsverteilung • Ø ${hrZoneAnalysis.avgHr} bpm (${Math.round((hrZoneAnalysis.avgHr / hrZoneAnalysis.safeMaxHr) * 100)}% HFmax) • Spitze ${hrZoneAnalysis.maxRecordedHr} bpm`
-                          : `Modellierte Zeit in 5 Pulsbereichen auf Basis von Steigung, Tempo und HFmax (~Ø ${hrZoneAnalysis.avgHr} bpm)`}
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
+                        Aufgezeichnete Pulsverteilung · Ø {hrZoneAnalysis.avgHr} bpm ({Math.round((hrZoneAnalysis.avgHr / hrZoneAnalysis.safeMaxHr) * 100)}% HFmax) · Spitze {hrZoneAnalysis.maxRecordedHr} bpm
                       </p>
                     </div>
                   </div>
@@ -1597,7 +1783,7 @@ GPX Route Master Pro`;
                         triggerHaptic('light');
                         setActiveTab('zones');
                       }}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                     >
                       <span>Alle Zonen-Details</span>
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -1758,6 +1944,7 @@ GPX Route Master Pro`;
                   </div>
                 </div>
               </div>
+              )}
             </div>
           )}
 
@@ -2169,6 +2356,8 @@ GPX Route Master Pro`;
               : 1;
             const hasAnyHr = realSplits.some(s => s.avgHr !== undefined && s.avgHr > 0);
             const hasAnyPower = realSplits.some(s => s.avgPower !== undefined && s.avgPower > 0);
+            const hasAnyGap = isRunningMode && realSplits.some(s => Boolean(s.avgGapPaceFormatted));
+            const hasAnyCadence = realSplits.some(s => s.avgCadence !== undefined && s.avgCadence > 0);
             const hasRealTiming = realSplits.some(s => s.isRealTiming);
 
             return (
@@ -2345,9 +2534,11 @@ GPX Route Master Pro`;
                       <tr>
                         <th className="p-2.5"># / km</th>
                         <th className="p-2.5">{isRunningMode ? 'Pace & Tempo' : 'Tempo & Pace'}</th>
+                        {hasAnyGap && <th className="p-2.5">GAP /km</th>}
                         <th className="p-2.5 w-36 hidden md:table-cell">Intensitäts-Profil</th>
                         <th className="p-2.5">±Hm / Ø %</th>
                         {hasAnyHr && <th className="p-2.5">Ø Puls</th>}
+                        {hasAnyCadence && <th className="p-2.5">{isRunningMode ? 'Ø spm' : 'Ø rpm'}</th>}
                         {hasAnyPower && <th className="p-2.5">Ø Watt</th>}
                         <th className="p-2.5">Dauer</th>
                         <th className="p-2.5">Kumuliert</th>
@@ -2406,6 +2597,18 @@ GPX Route Master Pro`;
                               )}
                             </td>
 
+                            {hasAnyGap && (
+                              <td className="p-2.5">
+                                {split.avgGapPaceFormatted ? (
+                                  <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                                    {split.avgGapPaceFormatted}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
+                              </td>
+                            )}
+
                             <td className="p-2.5 hidden md:table-cell">
                               <div className="w-full bg-slate-200/70 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
                                 <div
@@ -2457,6 +2660,18 @@ GPX Route Master Pro`;
                               </td>
                             )}
 
+                            {hasAnyCadence && (
+                              <td className="p-2.5">
+                                {split.avgCadence ? (
+                                  <span className="text-purple-600 dark:text-purple-400 font-bold">
+                                    {split.avgCadence} <span className="text-[10px] font-normal">{isRunningMode ? 'spm' : 'rpm'}</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
+                              </td>
+                            )}
+
                             {hasAnyPower && (
                               <td className="p-2.5">
                                 {split.avgPower ? (
@@ -2487,7 +2702,7 @@ GPX Route Master Pro`;
                                   }
                                   onClose();
                                 }}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/70 transition-colors cursor-pointer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/70 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                                 title={`Kilometer-Abschnitt km ${split.startKm}–${split.endKm} auf Karte & im Höhenprofil markieren`}
                               >
                                 <Crosshair className="w-3 h-3" />
@@ -2506,7 +2721,278 @@ GPX Route Master Pro`;
 
           {activeTab === 'tactics' && (
             <div className="space-y-6">
-              {/* Interactive Pacing & Target Time Simulator (BestBikeSplit Style) */}
+              {activityType === 'running' ? (
+                /* Interactive Running GAP, Critical Speed & D'bal Pacing Simulator */
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                        <Activity className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">
+                            Interaktiver Lauf-Pacing &amp; GAP-Simulator
+                          </h4>
+                          <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                            · CS &amp; D&apos;bal geschützt
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Simuliert optimale Flach- &amp; Steigungs-Paces (GAP nach Minetti), rTSS und anaerobe D&apos;bal-Reserve je Abschnitt
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-[11px]">
+                      <span className="px-2 font-semibold text-slate-500">Splits:</span>
+                      {[1, 2.5, 5, 10].map((km) => (
+                        <button
+                          key={km}
+                          type="button"
+                          onClick={() => {
+                            triggerHaptic('light');
+                            setPacingSplitKm(km);
+                          }}
+                          className={`px-2 py-1 rounded-lg font-mono font-bold transition-colors cursor-pointer ${
+                            pacingSplitKm === km
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          {km} km
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Running Simulator Controls Row */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200/70 dark:border-slate-800">
+                    <div className="space-y-1.5">
+                      <label className="block font-bold text-slate-700 dark:text-slate-300">
+                        Lauf-Strategie:
+                      </label>
+                      <div className="grid grid-cols-3 gap-1">
+                        {[
+                          { id: 'even' as PacingStrategyMode, label: 'Konstant GAP', desc: 'Gleichmäßiger GAP-Einsatz' },
+                          { id: 'variable_climb' as PacingStrategyMode, label: 'Trail Berg+', desc: 'Kontrollierter Anstieg, Locker Bergab' },
+                          { id: 'negative_split' as PacingStrategyMode, label: 'Negativ-Split', desc: 'Ruhiger Start, starkes Finale' }
+                        ].map(st => (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic('light');
+                              setPacingStrategy(st.id);
+                            }}
+                            title={st.desc}
+                            className={`py-1.5 px-2 rounded-lg font-bold text-[11px] transition-colors cursor-pointer text-center ${
+                              pacingStrategy === st.id
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                        <span>Critical Speed (CS Pace):</span>
+                        <span className="font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          {formatPaceSeconds(runningCsPaceSecKm)}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={180}
+                        max={480}
+                        step={5}
+                        value={runningCsPaceSecKm}
+                        onChange={(e) => setRunningCsPaceSecKm(parseInt(e.target.value, 10))}
+                        className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                        <span>3:00/km (Elite)</span>
+                        <span>4:30/km</span>
+                        <span>8:00/km</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                        <span>Ziel-Belastung (% CS):</span>
+                        <span className="font-mono text-indigo-600 dark:text-indigo-400 tabular-nums">
+                          {runningTargetEffortPct}% ({runningPacingSim.avgGapPaceFormatted})
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={65}
+                        max={105}
+                        step={1}
+                        value={runningTargetEffortPct}
+                        onChange={(e) => setRunningTargetEffortPct(parseInt(e.target.value, 10))}
+                        className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                        <span>65% (Locker)</span>
+                        <span>85% (Marathon)</span>
+                        <span>100% (CS)</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Running Pacing KPI Summary */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Simulierte Zielzeit</span>
+                      <div className="text-xl font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
+                        {formatSecondsToTime(runningPacingSim.simulatedTotalTimeSec)}
+                      </div>
+                      {runningPacingSim.totalTimeSavedSec !== null ? (
+                        <span className={`text-[10px] font-mono font-bold tabular-nums ${
+                          runningPacingSim.totalTimeSavedSec >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                        }`}>
+                          {runningPacingSim.totalTimeSavedSec >= 0
+                            ? `-${formatSecondsToTime(runningPacingSim.totalTimeSavedSec)} schneller als Track`
+                            : `+${formatSecondsToTime(Math.abs(runningPacingSim.totalTimeSavedSec))} langsamer als Track`}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                          Ø Flach {runningPacingSim.avgTargetPaceFormatted}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Ziel-GAP &amp; rTSS</span>
+                      <div className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono tabular-nums mt-0.5">
+                        {runningPacingSim.avgGapPaceFormatted}
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                        IF {runningPacingSim.targetIf} · {runningPacingSim.estimatedRtss} rTSS
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Verpflegung / Gels</span>
+                      <div className="text-xl font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-0.5">
+                        {runningPacingSim.estimatedCarbsGrams} g <span className="text-xs font-normal text-slate-500">Carbs</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                        {runningPacingSim.estimatedCarbsGrams > 0 ? `~${Math.ceil(runningPacingSim.estimatedCarbsGrams / 25)} Gels empfohlen` : 'Nur Wasser nötig'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Min. D&apos;bal Reserve</span>
+                      <div className={`text-xl font-black font-mono tabular-nums mt-0.5 ${
+                        runningPacingSim.minDbalPct < 25 ? 'text-rose-600 dark:text-rose-400' : 'text-cyan-600 dark:text-cyan-400'
+                      }`}>
+                        {runningPacingSim.minDbalPct.toFixed(0)}%
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        {runningPacingSim.minDbalPct < 25 ? 'Warnung: Zu hart am Berg' : 'Sicherer D&apos;bal Puffer'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Running Segment Cue Sheet */}
+                  {runningPacingSim.splits.length > 0 && (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 max-h-96">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 uppercase font-black text-[10px] sticky top-0 z-10 border-b border-slate-200 dark:border-slate-700">
+                          <tr>
+                            <th className="py-2.5 px-3">Abschnitt</th>
+                            <th className="py-2.5 px-3">Terrain &amp; Ø Steigung</th>
+                            <th className="py-2.5 px-3 text-right">Ziel-GAP</th>
+                            <th className="py-2.5 px-3 text-right">Real-Pace</th>
+                            <th className="py-2.5 px-3 text-right">Split-Zeit</th>
+                            <th className="py-2.5 px-3 text-right">Kumuliert</th>
+                            <th className="py-2.5 px-3 text-right">D&apos;bal</th>
+                            <th className="py-2.5 px-3">Verpflegungs-Cue</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-mono tabular-nums">
+                          {runningPacingSim.splits.map((s) => (
+                            <tr
+                              key={s.segmentIndex}
+                              onClick={() => {
+                                if (onSelectTrackPoint) {
+                                  triggerHaptic('light');
+                                  onSelectTrackPoint(s.lat, s.lng);
+                                }
+                              }}
+                              className="hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30 cursor-pointer transition-colors"
+                            >
+                              <td className="py-2 px-3 font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                                km {s.startKm.toFixed(1)}–{s.endKm.toFixed(1)}
+                              </td>
+                              <td className="py-2 px-3 font-sans whitespace-nowrap">
+                                <span className={`font-semibold text-[11px] ${
+                                  s.avgGradePct >= 7
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : s.terrainType === 'climb'
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : s.terrainType === 'descent'
+                                    ? 'text-sky-600 dark:text-sky-400'
+                                    : 'text-slate-600 dark:text-slate-300'
+                                }`}>
+                                  {s.avgGradePct >= 7 ? 'Steiler Anstieg' : s.terrainType === 'climb' ? 'Anstieg' : s.terrainType === 'descent' ? 'Gefälle' : 'Flach/Welle'}
+                                </span>
+                                <span className="ml-1.5 font-mono text-slate-500 dark:text-slate-400">
+                                  {s.avgGradePct > 0 ? `+${s.avgGradePct}%` : `${s.avgGradePct}%`} (+{s.ascentM}m)
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-right font-black text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                                {s.targetGapPaceFormatted}
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                                {s.targetFlatPaceFormatted}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                                {formatSecondsToDigital(s.segmentTimeSec)}
+                              </td>
+                              <td className="py-2 px-3 text-right whitespace-nowrap">
+                                <span className="font-bold text-slate-900 dark:text-white">
+                                  {formatSecondsToDigital(s.cumulativeTimeSec)}
+                                </span>
+                                {s.timeDeltaSec !== null && (
+                                  <span className={`ml-1.5 text-[10px] font-bold ${
+                                    s.timeDeltaSec <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'
+                                  }`}>
+                                    ({s.timeDeltaSec <= 0 ? `-${Math.round(Math.abs(s.timeDeltaSec))}s` : `+${Math.round(s.timeDeltaSec)}s`})
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-right whitespace-nowrap">
+                                <span className={`font-bold ${
+                                  s.endDbalPct < 30 ? 'text-rose-500' : s.endDbalPct < 60 ? 'text-amber-500' : 'text-cyan-600 dark:text-cyan-400'
+                                }`}>
+                                  {s.endDbalPct.toFixed(0)}%
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 font-sans text-[11px] whitespace-nowrap">
+                                {s.nutritionCue ? (
+                                  <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                                    {s.nutritionCue}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ) : (
+              /* Interactive Cycling Pacing & Target Time Simulator (BestBikeSplit Style) */
               <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
                   <div className="flex items-center gap-2.5">
@@ -2516,10 +3002,10 @@ GPX Route Master Pro`;
                     <div>
                       <div className="flex items-center gap-2">
                         <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">
-                          Interaktiver Pacing- & Zielzeit-Simulator (BestBikeSplit-Stil)
+                          Interaktiver Pacing- &amp; Zielzeit-Simulator (BestBikeSplit-Stil)
                         </h4>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-                          Physik & W&apos;bal geschützt
+                        <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+                          · Physik &amp; W&apos;bal geschützt
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -2657,7 +3143,7 @@ GPX Route Master Pro`;
                   </div>
 
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
-                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Ziel-NP &Ø Leistung</span>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Ziel-NP &amp; Ø Leistung</span>
                     <div className="text-xl font-black text-indigo-600 dark:text-indigo-400 font-mono tabular-nums mt-0.5">
                       {pacingSim.normalizedTargetPowerW} W <span className="text-xs font-normal text-slate-500">(Ø {pacingSim.avgTargetPowerW} W)</span>
                     </div>
@@ -2696,7 +3182,7 @@ GPX Route Master Pro`;
                       <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 uppercase font-black text-[10px] sticky top-0 z-10 border-b border-slate-200 dark:border-slate-700">
                         <tr>
                           <th className="py-2.5 px-3">Abschnitt</th>
-                          <th className="py-2.5 px-3">Terrain & Ø Steigung</th>
+                          <th className="py-2.5 px-3">Terrain &amp; Ø Steigung</th>
                           <th className="py-2.5 px-3 text-right">Ziel-Watt</th>
                           <th className="py-2.5 px-3 text-right">Sim. Tempo</th>
                           <th className="py-2.5 px-3 text-right">Split-Zeit</th>
@@ -2780,6 +3266,7 @@ GPX Route Master Pro`;
                   </div>
                 )}
               </div>
+              )}
 
               <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
                 Taktische Routen-Tipps & Sicherheitshinweise

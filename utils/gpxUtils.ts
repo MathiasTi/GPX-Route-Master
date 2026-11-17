@@ -906,6 +906,7 @@ export const findClimbs = (
 };
 
 export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, speedKmh: number = 15, activityType?: 'cycling' | 'running'): GPXPoint[] => {
+  const medianDtSec = estimateMedianSamplingIntervalSec(points);
   if (activityType === 'running') {
     // Smooth elevations to reduce GPS noise
     const eleSmoothed = new Float64Array(points.length);
@@ -929,7 +930,8 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
 
       if (i > 0) {
         const pPrev = points[i - 1];
-        const distM = calculateDistance(pPrev, p) * 1000;
+        const distKm = calculateDistance(pPrev, p);
+        const distM = distKm * 1000;
         
         if (distM > 1) {
           const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
@@ -940,8 +942,12 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
         const t2 = toDate(pPrev.time);
         if (t1 && t2) {
           const dt = (t1.getTime() - t2.getTime()) / 1000;
-          if (dt > 0 && dt < 120 && distM > 0) {
-            speedMs = distM / dt;
+          if (dt > 0) {
+            if (dt >= 600 || isRecordingPauseGap(dt, distKm, medianDtSec)) {
+              speedMs = 0;
+            } else if (distM > 0) {
+              speedMs = distM / dt;
+            }
           }
         }
       }
@@ -1000,7 +1006,8 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
 
     if (i > 0) {
       const pPrev = points[i - 1];
-      const distM = calculateDistance(pPrev, p) * 1000;
+      const distKm = calculateDistance(pPrev, p);
+      const distM = distKm * 1000;
       
       if (distM > 1) {
         const eleDiff = eleSmoothed[i] - eleSmoothed[i - 1];
@@ -1011,8 +1018,12 @@ export const estimateTrackPower = (points: GPXPoint[], weightKg: number = 75, sp
       const t2 = toDate(pPrev.time);
       if (t1 && t2) {
         const dt = (t1.getTime() - t2.getTime()) / 1000;
-        if (dt > 0 && dt < 120 && distM > 0) {
-          speedMs = distM / dt;
+        if (dt > 0) {
+          if (dt >= 600 || isRecordingPauseGap(dt, distKm, medianDtSec)) {
+            speedMs = 0;
+          } else if (distM > 0) {
+            speedMs = distM / dt;
+          }
         }
       }
     }
@@ -1073,9 +1084,12 @@ export const calculatePowerStats = (
     return sum / count;
   });
 
-  // 2. Time-weighted Average Power and Work
+  // 2. Time-weighted Average Power and Work (pause-aware!)
+  const statsMedianDtSec = estimateMedianSamplingIntervalSec(processedPoints);
   let totalEnergy = 0;
   let totalTime = 0;
+  const activeSegments: Array<{ dt: number; avgP: number }> = [];
+
   for (let i = 1; i < processedPoints.length; i++) {
     const p1 = processedPoints[i - 1];
     const p2 = processedPoints[i];
@@ -1083,10 +1097,12 @@ export const calculatePowerStats = (
     const t2 = toDate(p2.time);
     if (p1.power !== undefined && p2.power !== undefined && t1 && t2) {
       const dt = (t2.getTime() - t1.getTime()) / 1000;
-      if (dt > 0 && dt < 30) {
+      const distKm = calculateDistance(p1, p2);
+      if (dt > 0 && dt < 600 && !isRecordingPauseGap(dt, distKm, statsMedianDtSec)) {
         const avgP = (smoothedPower[i]! + smoothedPower[i - 1]!) / 2;
         totalEnergy += avgP * dt;
         totalTime += dt;
+        activeSegments.push({ dt, avgP });
       }
     }
   }
@@ -1097,69 +1113,45 @@ export const calculatePowerStats = (
   const validSmoothed = smoothedPower.filter(p => p !== undefined) as number[];
   const maxPower = validSmoothed.length > 0 ? Math.max(...validSmoothed) : 0;
 
-  // 4. Best 20s, 1m, 20m using 1s interpolation
-  const timedPoints = processedPoints.map((p, i) => ({ ...p, power: smoothedPower[i] })).filter(p => p.time && p.power !== undefined);
-  if (timedPoints.length < 2) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
-
-  const tStart = toDate(timedPoints[0].time);
-  const tEnd = toDate(timedPoints[timedPoints.length - 1].time);
-  if (!tStart || !tEnd) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
-
-  const startTime = tStart.getTime();
-  const endTime = tEnd.getTime();
-  const durationSec = Math.floor((endTime - startTime) / 1000);
-  
-  if (isNaN(durationSec) || durationSec < 5 || durationSec > 604800) return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
-
-  const power1s = new Float32Array(durationSec + 1);
-  let pIdx = 0;
-  for (let t = 0; t <= durationSec; t++) {
-    const targetTime = startTime + t * 1000;
-    while (pIdx < timedPoints.length - 1 && (toDate(timedPoints[pIdx + 1].time)?.getTime() ?? 0) < targetTime) {
-      pIdx++;
-    }
-    const p1 = timedPoints[pIdx];
-    const p2 = timedPoints[pIdx + 1];
-    if (p2) {
-      const t1 = toDate(p1.time)?.getTime() ?? 0;
-      const t2 = toDate(p2.time)?.getTime() ?? 0;
-      if (t2 <= t1) {
-        power1s[t] = p1.power!;
-      } else if (t2 - t1 > 5000) { // Gap larger than 5 seconds
-        if (targetTime - t1 <= 2000) power1s[t] = p1.power!;
-        else if (t2 - targetTime <= 2000) power1s[t] = p2.power!;
-        else power1s[t] = 0;
-      } else {
-        const ratio = (targetTime - t1) / (t2 - t1);
-        power1s[t] = p1.power! + (p2.power! - p1.power!) * ratio;
-      }
-    } else {
-      power1s[t] = p1.power!;
-    }
+  // 4. Build pause-free 1s active power stream for rolling bests & Normalized Power (NP)
+  const activeSecTotal = Math.min(604800, Math.round(totalTime));
+  if (activeSecTotal < 5 || activeSegments.length === 0) {
+    return { avgPower, maxPower, best20s: avgPower, best1m: avgPower, best20m: avgPower, work };
   }
 
+  const power1s = new Float32Array(activeSecTotal);
+  let pCursor = 0;
+  for (let s = 0; s < activeSegments.length && pCursor < activeSecTotal; s++) {
+    const seg = activeSegments[s];
+    const steps = Math.max(1, Math.round(seg.dt));
+    for (let k = 0; k < steps && pCursor < activeSecTotal; k++) {
+      power1s[pCursor++] = seg.avgP;
+    }
+  }
+  const activeLength = Math.max(1, pCursor);
+
   const getBestRolling = (window: number) => {
-    if (power1s.length < window) return avgPower;
+    if (activeLength < window) return avgPower;
     let currentSum = 0;
     for (let i = 0; i < window; i++) currentSum += power1s[i];
     let maxSum = currentSum;
-    for (let i = window; i < power1s.length; i++) {
+    for (let i = window; i < activeLength; i++) {
       currentSum += power1s[i] - power1s[i - window];
       if (currentSum > maxSum) maxSum = currentSum;
     }
     return maxSum / window;
   };
 
-  // 5. Normalized Power (NP)
+  // 5. Normalized Power (NP) over active moving time
   let normalizedPower = avgPower;
-  if (power1s.length >= 30) {
+  if (activeLength >= 30) {
     let rollingSum30 = 0;
     for (let i = 0; i < 30; i++) rollingSum30 += power1s[i];
     
     let sumPowers = Math.pow(rollingSum30 / 30, 4);
     let count = 1;
     
-    for (let i = 30; i < power1s.length; i++) {
+    for (let i = 30; i < activeLength; i++) {
       rollingSum30 += power1s[i] - power1s[i - 30];
       sumPowers += Math.pow(rollingSum30 / 30, 4);
       count++;

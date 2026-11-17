@@ -7,6 +7,8 @@ import { getApiUrl, apiFetch } from '../utils/api';
 import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
+import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
+import { computePauseAwareRunningMetrics } from '../utils/runningMetricsEngine';
 import { triggerHaptic } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
@@ -138,20 +140,22 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
     }
   };
 
-  const hasPower = useMemo(
-    () => track.points.some(p => p.power !== undefined && p.power !== null && p.power > 0),
-    [track.points]
-  );
-  const hasHR = useMemo(
-    () => track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0),
-    [track.points]
-  );
+  const capabilities = useMemo(() => resolveTrackCapabilities(track), [track]);
+  const hasHR = capabilities.hasHeartRate;
   const maxSlopeDisplay = useMemo(() => {
+    if (!capabilities.hasRealElevation) return 0;
     if (track.maxSlope && track.maxSlope > 0) return track.maxSlope;
     if (track.points && track.points.length > 1) return calculateElevationStats(track.points).maxSlope || 0;
     return 0;
-  }, [track.maxSlope, track.points]);
-  const showAnalyticsAndZones = hasPower && hasHR;
+  }, [capabilities.hasRealElevation, track.maxSlope, track.points]);
+
+  const runningSummary = useMemo(() => {
+    if (!expanded || !capabilities.isRunning) return null;
+    if (!capabilities.hasGapData && !capabilities.hasRtssData && !capabilities.hasPaHrData && !capabilities.hasDbalData && !capabilities.hasCadence) {
+      return null;
+    }
+    return computePauseAwareRunningMetrics(track);
+  }, [expanded, capabilities, track]);
 
   const trackClimbs = useMemo(() => {
     return track.climbs && track.climbs.length > 0 ? track.climbs : findClimbs(track.points || []);
@@ -335,16 +339,20 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
             <span className="font-bold text-slate-700 dark:text-slate-300">
               {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
             </span>
+            {capabilities.hasRealElevation && (
+              <>
+                <span>·</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                  +{Math.round(track.ascent)}m
+                </span>
+              </>
+            )}
             <span>·</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-              +{Math.round(track.ascent)}m
-            </span>
-            <span>·</span>
-            <span>
+            <span title={track.duration ? 'Aktive Bewegungszeit (ohne Pausen)' : 'Geschätzte Dauer basierend auf Vorgabetempo'}>
               {track.duration ? (
                 `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
               ) : (
-                `${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
+                `~${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
               )}
             </span>
             <span>·</span>
@@ -355,11 +363,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
               ) : (
                 track.activityType === 'running'
-                  ? getPaceString(estimatedSpeed)
-                  : `${estimatedSpeed} km/h`
+                  ? `~${getPaceString(estimatedSpeed)}`
+                  : `~${estimatedSpeed} km/h`
               )}
             </span>
-            {trackClimbs && trackClimbs.length > 0 && (
+            {capabilities.hasRealElevation && trackClimbs && trackClimbs.length > 0 && (
               <>
                 <span>·</span>
                 <span className="text-amber-600 dark:text-amber-400 font-semibold">{trackClimbs.length}⛰️</span>
@@ -414,19 +422,19 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                       </button>
                     )}
 
-                    {onOpenAnalytics && (hasPower || hasHR) && (
+                    {onOpenAnalytics && capabilities.hasPowerPhysicsTabData && (
                       <button
                         type="button"
                         onClick={() => onOpenAnalytics(track.id)}
                         className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="Leistungsphysik im Cockpit öffnen"
+                        title={capabilities.isRunning ? "Laufmetriken (GAP, CS & D'bal) im Cockpit öffnen" : "Leistungsphysik im Cockpit öffnen"}
                       >
                         <BarChart2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                        <span>Leistung</span>
+                        <span>{capabilities.isRunning ? 'Laufdaten' : 'Leistung'}</span>
                       </button>
                     )}
 
-                    {onOpenTrainingZones && (hasPower || hasHR) && (
+                    {onOpenTrainingZones && capabilities.hasZonesTabData && (
                       <button
                         type="button"
                         onClick={() => onOpenTrainingZones(track.id)}
@@ -585,57 +593,59 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   </div>
                 </div>
 
-                {/* Bento Grid Row 2: Anstieg, Abstieg, Max. Steigung */}
-                <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
-                  <div 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const climbs = trackClimbs && trackClimbs.length > 0 ? trackClimbs : findClimbs(track.points || []);
-                      if (climbs.length > 0 && onSelection) {
-                        const pts = climbs.flatMap(c => track.points.slice(c.startIndex, c.endIndex + 1));
-                        if (pts.length > 0) {
-                          const lats = pts.map(p => p.lat);
-                          const lngs = pts.map(p => p.lng);
-                          const minLat = Math.min(...lats);
-                          const maxLat = Math.max(...lats);
-                          const minLng = Math.min(...lngs);
-                          const maxLng = Math.max(...lngs);
-                          const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
-                          const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
-                          onSelection({
-                            minLat: minLat - latBuf,
-                            maxLat: maxLat + latBuf,
-                            minLng: minLng - lngBuf,
-                            maxLng: maxLng + lngBuf
-                          });
+                {/* Bento Grid Row 2: Anstieg, Abstieg, Max. Steigung (only if real elevation exists) */}
+                {capabilities.hasRealElevation && (
+                  <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+                    <div 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const climbs = trackClimbs && trackClimbs.length > 0 ? trackClimbs : findClimbs(track.points || []);
+                        if (climbs.length > 0 && onSelection) {
+                          const pts = climbs.flatMap(c => track.points.slice(c.startIndex, c.endIndex + 1));
+                          if (pts.length > 0) {
+                            const lats = pts.map(p => p.lat);
+                            const lngs = pts.map(p => p.lng);
+                            const minLat = Math.min(...lats);
+                            const maxLat = Math.max(...lats);
+                            const minLng = Math.min(...lngs);
+                            const maxLng = Math.max(...lngs);
+                            const latBuf = Math.max((maxLat - minLat) * 0.1, 0.002);
+                            const lngBuf = Math.max((maxLng - minLng) * 0.1, 0.002);
+                            onSelection({
+                              minLat: minLat - latBuf,
+                              maxLat: maxLat + latBuf,
+                              minLng: minLng - lngBuf,
+                              maxLng: maxLng + lngBuf
+                            });
+                          }
                         }
-                      }
-                    }}
-                    className="bg-emerald-500/5 dark:bg-emerald-950/20 border border-emerald-100/50 dark:border-emerald-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 transition-colors"
-                    title="Klicken zum Zoomen auf Anstiege auf der Karte"
-                  >
-                    <span className="text-[8px] text-emerald-600 dark:text-emerald-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
-                      Anstieg
-                    </span>
-                    <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
-                      +{Math.round(track.ascent).toLocaleString('de-DE')}m
-                    </span>
+                      }}
+                      className="bg-emerald-500/5 dark:bg-emerald-950/20 border border-emerald-100/50 dark:border-emerald-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-100/40 dark:hover:bg-emerald-900/30 transition-colors"
+                      title="Klicken zum Zoomen auf Anstiege auf der Karte"
+                    >
+                      <span className="text-[8px] text-emerald-600 dark:text-emerald-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                        Anstieg
+                      </span>
+                      <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
+                        +{Math.round(track.ascent).toLocaleString('de-DE')}m
+                      </span>
+                    </div>
+                    <div className="bg-rose-500/5 dark:bg-rose-950/20 border border-rose-100/50 dark:border-rose-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-rose-600 dark:text-rose-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
+                        Abstieg
+                      </span>
+                      <span className="font-extrabold text-rose-700 dark:text-rose-400">
+                        -{Math.round(track.descent).toLocaleString('de-DE')}m
+                      </span>
+                    </div>
+                    <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
+                      <span className="font-extrabold text-slate-700 dark:text-slate-300">
+                        {maxSlopeDisplay.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
+                      </span>
+                    </div>
                   </div>
-                  <div className="bg-rose-500/5 dark:bg-rose-950/20 border border-rose-100/50 dark:border-rose-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-rose-600 dark:text-rose-400 font-sans font-semibold uppercase tracking-wider flex items-center gap-0.5">
-                      Abstieg
-                    </span>
-                    <span className="font-extrabold text-rose-700 dark:text-rose-400">
-                      -{Math.round(track.descent).toLocaleString('de-DE')}m
-                    </span>
-                  </div>
-                  <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
-                    <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Steigung</span>
-                    <span className="font-extrabold text-slate-700 dark:text-slate-300">
-                      {maxSlopeDisplay.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
-                    </span>
-                  </div>
-                </div>
+                )}
 
                 {/* Miscellaneous status bar for HR or point length */}
                 <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-slate-500 font-mono border-t border-slate-100/60 dark:border-slate-800/60 pt-1.5 mt-0.5">
@@ -655,16 +665,57 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   </div>
                 )}
 
-                {/* Power Stats Widget */}
-                {track.powerStats && (
-                  <div className="bg-amber-500/5 dark:bg-amber-950/20 border border-amber-100/50 dark:border-amber-900/30 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono">
+                {/* Cycling Power Stats Widget (gated to cycling with power/timing data) */}
+                {!capabilities.isRunning && capabilities.hasWbalData && track.powerStats && (
+                  <div className="bg-amber-500/5 dark:bg-amber-950/20 border border-amber-100/50 dark:border-amber-900/30 rounded-lg px-2 py-1 flex justify-between items-center text-[10px] font-mono tabular-nums">
                     <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-extrabold text-[8px] uppercase tracking-wider">
                       <Zap className="w-3 h-3 fill-amber-500/10" /> NP Daten
                     </span>
-                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span className="font-bold text-slate-700 dark:text-slate-200" title="Normalized Power">NP {Math.round(track.powerStats.normalizedPower || 0)}W</span>
                     <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">IF {(track.powerStats.intensityFactor || 0).toFixed(2)}</span>
                     <span className="font-medium text-slate-500 dark:text-slate-400 text-[9px]">TSS {Math.round(track.powerStats.tss || 0)}</span>
+                  </div>
+                )}
+
+                {/* Running Telemetry Strip (gated per real available metric, pause-free) */}
+                {capabilities.isRunning && runningSummary?.hasData && (
+                  <div className="bg-emerald-50/40 dark:bg-emerald-950/20 border border-emerald-200/70 dark:border-emerald-800/50 rounded-lg px-2 py-1.5 space-y-1 text-[10px] font-mono tabular-nums">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[8px] font-sans font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                        Lauf-Telemetrie
+                      </span>
+                      {capabilities.hasRtssData && runningSummary.rTss !== null && runningSummary.rTss > 0 && (
+                        <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300" title="Running Training Stress Score (ohne Pausen)">
+                          rTSS {Math.round(runningSummary.rTss)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9.5px] text-slate-700 dark:text-slate-200">
+                      {capabilities.hasGapData && runningSummary.avgGapPaceFormatted && (
+                        <span title="Grade Adjusted Pace (ohne Pausen)">
+                          <span className="text-slate-400">GAP </span>
+                          <strong>{runningSummary.avgGapPaceFormatted}</strong>
+                        </span>
+                      )}
+                      {capabilities.hasDbalData && (
+                        <span title="Critical Speed & minimale D'bal Reserve">
+                          <span className="text-slate-400">CS </span>
+                          <strong>{runningSummary.criticalPaceFormatted}</strong>
+                        </span>
+                      )}
+                      {capabilities.hasPaHrData && runningSummary.paHrEf !== null && (
+                        <span title="Pace-to-HR Efficiency Factor (m/min pro bpm)">
+                          <span className="text-slate-400">EF </span>
+                          <strong>{runningSummary.paHrEf.toFixed(2)}</strong>
+                        </span>
+                      )}
+                      {capabilities.hasCadence && runningSummary.avgCadenceSpm !== null && (
+                        <span title="Durchschnittliche Schrittfrequenz (Schritte/min)">
+                          <strong>{Math.round(runningSummary.avgCadenceSpm)} spm</strong>
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
 

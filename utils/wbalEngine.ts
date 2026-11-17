@@ -1,5 +1,9 @@
 import { GPXPoint, GPXTrack } from '../types';
-import { calculateDistance } from './gpxUtils';
+import {
+  calculateDistance,
+  estimateMedianSamplingIntervalSec,
+  isRecordingPauseGap,
+} from './gpxUtils';
 
 export interface WbalPoint {
   index: number;
@@ -75,8 +79,8 @@ export interface CpModelEstimate {
  * - Reconstitution (P <= CP): tau_W' = 546 * exp(-0.01 * (CP - P)) + 316
  *   W'bal(t) = W' - (W' - W'bal(t-1)) * exp(-dt / tau_W')
  *
- * When a track lacks native power meter data, mechanical power is estimated
- * from gradient, speed, and system mass so W'bal remains available on all tracks.
+ * Pause-aware: detected timer/auto-pause gaps reconstitute W'bal physiologically at P = 0W
+ * across real pause duration without counting pause distance as movement.
  */
 export function computeTrackWbal(
   track: GPXTrack,
@@ -129,7 +133,7 @@ export function computeTrackWbal(
   let timeAboveCpSec = 0;
   let workAboveCpJ = 0;
 
-  // Match detection state (a "match" is a sustained effort > CP that burns >= 18% of W' or >= 3.0 kJ)
+  // Match detection state (a "match" is a sustained effort > CP that burns >= 16% of W' or >= 2.5 kJ)
   const matches: WbalMatch[] = [];
   let inMatch = false;
   let matchStartIdx = 0;
@@ -144,18 +148,19 @@ export function computeTrackWbal(
   const rho = 1.225;
   const cda = track.activityType === 'running' ? 0.42 : 0.32;
   const crr = track.activityType === 'running' ? 0.008 : 0.0045;
+  const medianDtSec = estimateMedianSamplingIntervalSec(points);
 
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     let dt = 1;
     let distStepKm = 0;
     let grade = 0;
+    let isPauseGap = false;
 
     if (i > 0) {
       const prev = points[i - 1];
       distStepKm = calculateDistance(prev, pt);
       if (!Number.isFinite(distStepKm) || distStepKm < 0) distStepKm = 0;
-      cumDistKm += distStepKm;
 
       const distM = distStepKm * 1000;
       const dEle = (pt.ele || 0) - (prev.ele || 0);
@@ -167,15 +172,23 @@ export function computeTrackWbal(
         const t2 = pt.time instanceof Date ? pt.time.getTime() : new Date(pt.time).getTime();
         const t1 = prev.time instanceof Date ? prev.time.getTime() : new Date(prev.time).getTime();
         const diffSec = (t2 - t1) / 1000;
-        if (Number.isFinite(diffSec) && diffSec > 0 && diffSec <= 120) {
-          dt = diffSec;
+        if (Number.isFinite(diffSec) && diffSec > 0) {
+          if (diffSec >= 600 || isRecordingPauseGap(diffSec, distStepKm, medianDtSec)) {
+            isPauseGap = true;
+            dt = Math.min(diffSec, 3600);
+          } else {
+            dt = diffSec;
+            cumDistKm += distStepKm;
+          }
         } else if (distM > 0) {
           dt = Math.max(1, distM / defaultSpeedMs);
+          cumDistKm += distStepKm;
         }
       } else if (distM > 0) {
         // Adjust speed by slope when timestamps are missing
         const slopeFactor = grade > 0 ? Math.max(0.32, 1 - grade * 5.2) : Math.min(1.55, 1 - grade * 2.5);
         dt = Math.max(1, distM / Math.max(1.5, defaultSpeedMs * slopeFactor));
+        cumDistKm += distStepKm;
       }
       elapsedSec += dt;
     }
@@ -183,21 +196,29 @@ export function computeTrackWbal(
     let powerW = 0;
     let isEstimatedPower = false;
 
-    if (typeof pt.power === 'number' && Number.isFinite(pt.power) && pt.power >= 0) {
+    if (isPauseGap) {
+      powerW = 0;
+      isEstimatedPower = !hasNativePower;
+    } else if (typeof pt.power === 'number' && Number.isFinite(pt.power) && pt.power >= 0) {
       powerW = pt.power;
     } else {
       isEstimatedPower = true;
       const distM = distStepKm * 1000;
-      const vMs = i === 0 ? defaultSpeedMs : Math.max(1.2, Math.min(19, distM > 0.2 ? distM / Math.max(0.5, dt) : defaultSpeedMs));
-      const fGravity = totalMassKg * g * grade;
-      const fRoll = totalMassKg * g * crr * Math.cos(Math.atan(grade));
-      const fAero = 0.5 * rho * cda * vMs * vMs;
-      const rawWheelW = (fGravity + fRoll + fAero) * vMs;
-      powerW = grade < -0.04 ? 0 : Math.max(0, Math.min(ftp * 2.1, Math.round(rawWheelW / 0.97)));
+      const vMs = i === 0 ? defaultSpeedMs : Math.max(0, Math.min(22, dt > 0 ? distM / dt : defaultSpeedMs));
+      if (i > 0 && vMs * 3.6 < 1.6) {
+        powerW = 0;
+      } else {
+        const effectiveV = Math.max(1.2, vMs);
+        const fGravity = totalMassKg * g * grade;
+        const fRoll = totalMassKg * g * crr * Math.cos(Math.atan(grade));
+        const fAero = 0.5 * rho * cda * effectiveV * effectiveV;
+        const rawWheelW = (fGravity + fRoll + fAero) * effectiveV;
+        powerW = grade < -0.04 ? 0 : Math.max(0, Math.min(ftp * 2.1, Math.round(rawWheelW / 0.97)));
+      }
     }
 
     if (i > 0) {
-      if (powerW > cpWatts) {
+      if (!isPauseGap && powerW > cpWatts) {
         const excessJ = (powerW - cpWatts) * dt;
         currentWbalJ = Math.max(0, currentWbalJ - excessJ);
         timeAboveCpSec += dt;
@@ -220,14 +241,16 @@ export function computeTrackWbal(
         const pctNow = (currentWbalJ / wPrimeJoules) * 100;
         if (pctNow < matchMinWbalPct) matchMinWbalPct = pctNow;
       } else {
-        // Skiba reconstitution time constant tau_W'
-        const dCp = Math.max(0, cpWatts - powerW);
+        // Skiba reconstitution time constant tau_W' (uses P = 0W during pauses)
+        const recPower = isPauseGap ? 0 : powerW;
+        const dCp = Math.max(0, cpWatts - recPower);
         const tauW = 546 * Math.exp(-0.01 * dCp) + 316;
-        currentWbalJ = wPrimeJoules - (wPrimeJoules - currentWbalJ) * Math.exp(-dt / tauW);
+        const effectiveRecDt = isPauseGap ? Math.min(dt, 1800) : dt;
+        currentWbalJ = wPrimeJoules - (wPrimeJoules - currentWbalJ) * Math.exp(-effectiveRecDt / tauW);
         currentWbalJ = Math.min(wPrimeJoules, Math.max(0, currentWbalJ));
 
         if (inMatch) {
-          // Close match if recovery exceeds 10s or power drops well below CP
+          // Close match if recovery or pause occurs
           const minBurnThresholdJ = Math.max(2500, wPrimeJoules * 0.16);
           if (matchBurnedJ >= minBurnThresholdJ && matchDurationSec >= 10) {
             const startPt = points[matchStartIdx] || pt;

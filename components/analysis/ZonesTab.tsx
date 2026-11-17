@@ -1,9 +1,17 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Heart, Zap, Sliders, Activity, Clock, ShieldCheck, Award, Info, Gauge } from 'lucide-react';
+import { Heart, Zap, Clock, Gauge, Info } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { GPXTrack, GPXPoint } from '../../types';
 import { triggerHaptic } from '../../utils/haptics';
-import { estimateTrackPower } from '../../utils/gpxUtils';
+import {
+  estimateTrackPower,
+  calculateDistance,
+  estimateMedianSamplingIntervalSec,
+  isRecordingPauseGap,
+  computeActiveTrackStats
+} from '../../utils/gpxUtils';
+import { resolveTrackCapabilities, isFitTrackFile } from '../../utils/trackTelemetryCapabilities';
+import { resolveTrackPointSpeedsKmh } from '../../domain/telemetry/pointMetricsEngine';
 
 interface ZonesTabProps {
   track: GPXTrack;
@@ -21,11 +29,20 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
   initialMaxHr = 185,
   onMaxHrChange,
   initialFtp = 220,
-  initialWeight = 75,
-  onOpenGlossary
+  initialWeight = 75
 }) => {
   const effectiveActivityType = activityType || track.activityType || 'cycling';
   const isRunning = effectiveActivityType === 'running';
+  const capabilities = useMemo(
+    () => resolveTrackCapabilities({ ...track, activityType: effectiveActivityType }),
+    [track, effectiveActivityType]
+  );
+
+  const canShowPace = isRunning && capabilities.hasPaceOrSpeed;
+  const canShowHr = capabilities.hasHeartRate;
+  const canShowPower = isRunning
+    ? capabilities.hasNativePower
+    : capabilities.hasNativePower || capabilities.hasTimestamps;
 
   const [maxHr, setMaxHr] = useState<number>(initialMaxHr);
   const [ftp, setFtp] = useState<number>(initialFtp);
@@ -42,56 +59,71 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
     }
   }, [initialFtp]);
 
-  // Compute detected average running pace from track
+  const activeTrackStats = useMemo(() => {
+    if (!capabilities.hasTimestamps || !track.points || track.points.length < 2) return null;
+    return computeActiveTrackStats(track.points);
+  }, [capabilities.hasTimestamps, track.points]);
+
+  const resolvedSpeedsKmh = useMemo(() => {
+    if (!capabilities.hasPaceOrSpeed || !track.points || track.points.length < 2) return [];
+    return resolveTrackPointSpeedsKmh(track.points, {
+      isFitFile: isFitTrackFile(track),
+      activityType: effectiveActivityType,
+      trackDistanceKm: track.distance,
+      trackDurationSec: track.duration,
+    });
+  }, [capabilities.hasPaceOrSpeed, track, effectiveActivityType]);
+
+  // Compute detected average running pace from pause-aware track metrics or resolved speeds
   const detectedAvgPaceSec = useMemo(() => {
-    if (track.distance > 0 && track.duration && track.duration > 0) {
-      const p = track.duration / track.distance;
+    const activeDuration = activeTrackStats?.activeDurationSeconds || track.duration;
+    if (track.distance > 0 && activeDuration && activeDuration > 0) {
+      const p = activeDuration / track.distance;
       if (p >= 150 && p <= 900) return p;
     }
-    const pts = track.points || [];
-    const speeds = pts.map(p => p.speed).filter(s => s !== undefined && s > 2 && s < 25) as number[];
-    if (speeds.length > 0) {
-      const avgSpd = speeds.reduce((a, b) => a + b, 0) / speeds.length;
+    const validSpeeds = resolvedSpeedsKmh.filter(
+      (s): s is number => typeof s === 'number' && Number.isFinite(s) && s >= 2.5 && s < 26
+    );
+    if (validSpeeds.length > 0) {
+      const avgSpd = validSpeeds.reduce((a, b) => a + b, 0) / validSpeeds.length;
       const paceFromSpd = 3600 / avgSpd;
       if (paceFromSpd >= 150 && paceFromSpd <= 900) return paceFromSpd;
     }
     return 330; // 5:30 min/km default
-  }, [track]);
+  }, [activeTrackStats, track.duration, track.distance, resolvedSpeedsKmh]);
 
   // Running threshold pace (in seconds per km, e.g. 270 = 4:30 min/km)
   const [thresholdPace, setThresholdPace] = useState<number>(() => {
     return Math.round(detectedAvgPaceSec * 0.94);
   });
 
-  // Re-sync threshold pace when track or activityType changes
   useEffect(() => {
     if (isRunning) {
       setThresholdPace(Math.round(detectedAvgPaceSec * 0.94));
     }
   }, [track.id, isRunning, detectedAvgPaceSec]);
 
-  // Default view mode: 'pace' for running, 'power' for cycling
-  const [zoneView, setZoneView] = useState<'pace' | 'hr' | 'power'>(
-    isRunning ? 'pace' : 'power'
-  );
+  const [zoneView, setZoneView] = useState<'pace' | 'hr' | 'power'>(() => {
+    if (canShowPace) return 'pace';
+    if (canShowHr) return 'hr';
+    return 'power';
+  });
 
-  // Auto-switch view when activityType changes
+  // Ensure zoneView stays on an available tab when switching track/sport
   useEffect(() => {
-    if (isRunning && zoneView === 'power' && !track.points?.some(p => p.power !== undefined && p.power > 0)) {
-      setZoneView('pace');
-    } else if (!isRunning && zoneView === 'pace') {
-      setZoneView('power');
+    const valid =
+      (zoneView === 'pace' && canShowPace) ||
+      (zoneView === 'hr' && canShowHr) ||
+      (zoneView === 'power' && canShowPower);
+    if (!valid) {
+      if (canShowPace) setZoneView('pace');
+      else if (canShowHr) setZoneView('hr');
+      else if (canShowPower) setZoneView('power');
     }
-  }, [isRunning]);
+  }, [zoneView, canShowPace, canShowHr, canShowPower]);
 
-  // Check if track has real HR or Power data
-  const hasRealHr = useMemo(() => {
-    return (track.points || []).some(p => p.hr !== undefined && p.hr > 0);
-  }, [track.points]);
-
-  const hasRealPower = useMemo(() => {
-    return (track.points || []).some(p => p.power !== undefined && p.power > 0);
-  }, [track.points]);
+  const hasRealHr = capabilities.hasHeartRate;
+  const hasRealPower = capabilities.hasNativePower;
 
   // Helper to format pace in mm:ss min/km
   const formatPace = (secsPerKm: number): string => {
@@ -176,81 +208,53 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
     ];
   }, [thresholdPace]);
 
-  // Compute time spent in each Pace Zone
+  // Compute time spent in each Pace Zone (pause-aware!)
   const paceDistribution = useMemo(() => {
     const points = track.points || [];
-    const totalDurationSec = track.duration || Math.max(1800, (track.distance / 10) * 3600);
     const zoneSeconds = [0, 0, 0, 0, 0];
 
-    if (points.length > 1) {
-      let validPaceSecs = 0;
-      for (let i = 0; i < points.length; i++) {
+    if (canShowPace && points.length > 1) {
+      const medianDtSec = estimateMedianSamplingIntervalSec(points);
+      for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1];
         const pt = points[i];
-        let dt = 1;
-        if (i > 0 && pt.time && points[i - 1].time) {
-          const diff = (new Date(pt.time).getTime() - new Date(points[i - 1].time!).getTime()) / 1000;
-          if (diff > 0 && diff <= 30) dt = diff;
+        const distKm = calculateDistance(prev, pt);
+        let dt = 0;
+
+        if (capabilities.hasTimestamps && pt.time && prev.time) {
+          const diff = (new Date(pt.time).getTime() - new Date(prev.time).getTime()) / 1000;
+          if (diff <= 0 || diff >= 600 || isRecordingPauseGap(diff, distKm, medianDtSec)) {
+            continue;
+          }
+          dt = diff;
+        } else {
+          const sp = resolvedSpeedsKmh[i] ?? 10;
+          dt = distKm > 0 ? (distKm / Math.max(2, sp)) * 3600 : 1;
         }
 
-        let paceSec = 0;
-        if (pt.speed && pt.speed > 1.5 && pt.speed < 30) {
-          paceSec = 3600 / pt.speed;
-        } else if (i > 0) {
-          // calculate from lat/lng
-          const pPrev = points[i - 1];
-          const R = 6371000;
-          const dLat = (pt.lat - pPrev.lat) * Math.PI / 180;
-          const dLng = (pt.lng - pPrev.lng) * Math.PI / 180;
-          const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos(pPrev.lat * Math.PI / 180) * Math.cos(pt.lat * Math.PI / 180) *
-                    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          const distM = R * c;
-          if (distM > 1 && dt > 0) {
-            const spdKmh = (distM / dt) * 3.6;
-            if (spdKmh > 1.5 && spdKmh < 30) {
-              paceSec = 3600 / spdKmh;
-            }
-          }
+        const speedKmh = resolvedSpeedsKmh[i];
+        if (!speedKmh || speedKmh < 1.8 || speedKmh > 32) {
+          continue; // Exclude standstill & GPS spikes
         }
+        const paceSec = 3600 / speedKmh;
 
-        if (paceSec > 0) {
-          validPaceSecs += dt;
-          // Assign to zone: lower sec/km = faster speed
-          if (paceSec >= paceZones[0].minSec) {
-            zoneSeconds[0] += dt; // Z1 KB
-          } else if (paceSec >= paceZones[1].minSec) {
-            zoneSeconds[1] += dt; // Z2 GA1
-          } else if (paceSec >= paceZones[2].minSec) {
-            zoneSeconds[2] += dt; // Z3 GA2
-          } else if (paceSec >= paceZones[3].minSec) {
-            zoneSeconds[3] += dt; // Z4 EB
-          } else {
-            zoneSeconds[4] += dt; // Z5 SB
-          }
+        if (paceSec >= paceZones[0].minSec) {
+          zoneSeconds[0] += dt;
+        } else if (paceSec >= paceZones[1].minSec) {
+          zoneSeconds[1] += dt;
+        } else if (paceSec >= paceZones[2].minSec) {
+          zoneSeconds[2] += dt;
+        } else if (paceSec >= paceZones[3].minSec) {
+          zoneSeconds[3] += dt;
+        } else {
+          zoneSeconds[4] += dt;
         }
       }
-
-      if (validPaceSecs > 0) {
-        const factor = totalDurationSec / validPaceSecs;
-        for (let j = 0; j < 5; j++) {
-          zoneSeconds[j] = Math.round(zoneSeconds[j] * factor);
-        }
-      }
-    } else {
-      // Fallback model for running based on elevation/distance
-      const ascent = track.ascent || 100;
-      const climbIntensity = Math.min(1.0, ascent / 400);
-      zoneSeconds[0] = Math.round(totalDurationSec * 0.15);
-      zoneSeconds[1] = Math.round(totalDurationSec * (0.50 - climbIntensity * 0.10));
-      zoneSeconds[2] = Math.round(totalDurationSec * (0.22 + climbIntensity * 0.05));
-      zoneSeconds[3] = Math.round(totalDurationSec * (0.10 + climbIntensity * 0.04));
-      zoneSeconds[4] = Math.max(0, totalDurationSec - zoneSeconds.slice(0, 4).reduce((a, b) => a + b, 0));
     }
 
     const totalCalculated = Math.max(1, zoneSeconds.reduce((a, b) => a + b, 0));
     return paceZones.map((z, idx) => {
-      const secs = zoneSeconds[idx];
+      const secs = Math.round(zoneSeconds[idx]);
       const pct = Math.round((secs / totalCalculated) * 100);
       const mins = Math.floor(secs / 60);
       const hours = Math.floor(mins / 60);
@@ -264,7 +268,7 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
         timeStr
       };
     });
-  }, [track, paceZones]);
+  }, [canShowPace, capabilities.hasTimestamps, track.points, resolvedSpeedsKmh, paceZones]);
 
   // Define 5 standard Heart Rate Zones based on Max HR (adapted for Running vs Cycling)
   const hrZones = useMemo(() => {
@@ -484,46 +488,40 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
     ];
   }, [ftp]);
 
-  // Compute time spent in each HR Zone
+  // Compute time spent in each HR Zone (strictly from real HR sensor data, pause-aware!)
   const hrDistribution = useMemo(() => {
     const points = track.points || [];
-    const totalDurationSec = track.duration || Math.max(1800, (track.distance / 22) * 3600);
     const zoneSeconds = [0, 0, 0, 0, 0];
 
-    if (hasRealHr) {
-      let validCount = 0;
-      for (let i = 0; i < points.length; i++) {
-        const hr = points[i].hr;
-        if (hr && hr > 30) {
-          validCount++;
-          if (hr <= hrZones[0].max) zoneSeconds[0]++;
-          else if (hr <= hrZones[1].max) zoneSeconds[1]++;
-          else if (hr <= hrZones[2].max) zoneSeconds[2]++;
-          else if (hr <= hrZones[3].max) zoneSeconds[3]++;
-          else zoneSeconds[4]++;
+    if (canShowHr && points.length > 1) {
+      const medianDtSec = estimateMedianSamplingIntervalSec(points);
+      for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1];
+        const pt = points[i];
+        const hr = pt.hr;
+        if (!hr || hr <= 35 || hr > 245) continue;
+
+        let dt = 1;
+        if (capabilities.hasTimestamps && pt.time && prev.time) {
+          const diff = (new Date(pt.time).getTime() - new Date(prev.time).getTime()) / 1000;
+          const distKm = calculateDistance(prev, pt);
+          if (diff <= 0 || diff >= 600 || isRecordingPauseGap(diff, distKm, medianDtSec)) {
+            continue;
+          }
+          dt = diff;
         }
+
+        if (hr <= hrZones[0].max) zoneSeconds[0] += dt;
+        else if (hr <= hrZones[1].max) zoneSeconds[1] += dt;
+        else if (hr <= hrZones[2].max) zoneSeconds[2] += dt;
+        else if (hr <= hrZones[3].max) zoneSeconds[3] += dt;
+        else zoneSeconds[4] += dt;
       }
-      if (validCount > 0) {
-        // Normalize to total duration
-        const factor = totalDurationSec / validCount;
-        for (let j = 0; j < 5; j++) {
-          zoneSeconds[j] = Math.round(zoneSeconds[j] * factor);
-        }
-      }
-    } else {
-      // Realistic simulation based on elevation gain & distance
-      const ascent = track.ascent || 500;
-      const climbIntensity = Math.min(1.0, ascent / 1500);
-      zoneSeconds[0] = Math.round(totalDurationSec * (0.20 - climbIntensity * 0.08)); // KB
-      zoneSeconds[1] = Math.round(totalDurationSec * (0.45 - climbIntensity * 0.10)); // GA1
-      zoneSeconds[2] = Math.round(totalDurationSec * (0.22 + climbIntensity * 0.06)); // GA2
-      zoneSeconds[3] = Math.round(totalDurationSec * (0.10 + climbIntensity * 0.08)); // EB
-      zoneSeconds[4] = Math.max(0, totalDurationSec - (zoneSeconds[0] + zoneSeconds[1] + zoneSeconds[2] + zoneSeconds[3])); // SB
     }
 
     const totalCalculated = Math.max(1, zoneSeconds.reduce((a, b) => a + b, 0));
     return hrZones.map((z, idx) => {
-      const secs = zoneSeconds[idx];
+      const secs = Math.round(zoneSeconds[idx]);
       const pct = Math.round((secs / totalCalculated) * 100);
       const mins = Math.floor(secs / 60);
       const hours = Math.floor(mins / 60);
@@ -537,42 +535,40 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
         timeStr
       };
     });
-  }, [track, hasRealHr, hrZones]);
+  }, [canShowHr, capabilities.hasTimestamps, track.points, hrZones]);
 
-  // Compute time spent in each Power Zone
+  // Compute time spent in each Power Zone (strictly gated, pause-aware!)
   const powerDistribution = useMemo(() => {
-    const totalDurationSec = track.duration || Math.max(1800, (track.distance / 22) * 3600);
     const points = track.points || [];
     const zoneSeconds = [0, 0, 0, 0, 0, 0, 0];
 
-    // Determine points to analyze
-    let processedPoints: GPXPoint[] = [];
-    if (hasRealPower) {
-      processedPoints = points;
-    } else if (points.length > 0) {
-      // Calculate realistic physical power profile based on terrain, gradients, weight, and speed
-      const avgSpeedKmh = track.distance > 0 && totalDurationSec > 0
-        ? (track.distance / (totalDurationSec / 3600))
-        : 20;
-      processedPoints = estimateTrackPower(points, initialWeight, avgSpeedKmh, track.activityType);
-    }
+    if (canShowPower && points.length > 1) {
+      let processedPoints: GPXPoint[] = [];
+      if (hasRealPower) {
+        processedPoints = points;
+      } else if (!isRunning && capabilities.hasTimestamps) {
+        const activeDur = activeTrackStats?.activeDurationSeconds || track.duration || 1800;
+        const avgSpeedKmh = track.distance > 0 && activeDur > 0 ? track.distance / (activeDur / 3600) : 22;
+        processedPoints = estimateTrackPower(points, initialWeight, avgSpeedKmh, 'cycling');
+      }
 
-    if (processedPoints.length > 0) {
-      let totalValidSecs = 0;
-      for (let i = 0; i < processedPoints.length; i++) {
-        const pt = processedPoints[i];
-        const pwr = pt.power;
-        if (pwr !== undefined && !isNaN(pwr) && pwr >= 0) {
+      if (processedPoints.length > 1) {
+        const medianDtSec = estimateMedianSamplingIntervalSec(processedPoints);
+        for (let i = 1; i < processedPoints.length; i++) {
+          const prev = processedPoints[i - 1];
+          const pt = processedPoints[i];
+          const pwr = pt.power;
+          if (pwr === undefined || isNaN(pwr) || pwr < 0) continue;
+
           let dt = 1;
-          if (i > 0 && pt.time && processedPoints[i - 1].time) {
-            const tPrev = new Date(processedPoints[i - 1].time!).getTime();
-            const tCurr = new Date(pt.time).getTime();
-            const diff = (tCurr - tPrev) / 1000;
-            if (diff > 0 && diff <= 60) {
-              dt = diff;
+          if (capabilities.hasTimestamps && pt.time && prev.time) {
+            const diff = (new Date(pt.time).getTime() - new Date(prev.time).getTime()) / 1000;
+            const distKm = calculateDistance(prev, pt);
+            if (diff <= 0 || diff >= 600 || isRecordingPauseGap(diff, distKm, medianDtSec)) {
+              continue;
             }
+            dt = diff;
           }
-          totalValidSecs += dt;
 
           if (pwr <= powerZones[0].max) zoneSeconds[0] += dt;
           else if (pwr <= powerZones[1].max) zoneSeconds[1] += dt;
@@ -583,31 +579,11 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
           else zoneSeconds[6] += dt;
         }
       }
-
-      if (totalValidSecs > 0) {
-        const factor = totalDurationSec / totalValidSecs;
-        for (let j = 0; j < 7; j++) {
-          zoneSeconds[j] = Math.round(zoneSeconds[j] * factor);
-        }
-      }
-    } else {
-      // Fallback only if no GPS points exist: dynamically scale based on FTP and elevation profile
-      const ascent = track.ascent || 0;
-      const climbFactor = Math.min(1.5, Math.max(0.6, ascent / 800));
-      const ftpRatio = 250 / Math.max(120, ftp);
-      
-      zoneSeconds[0] = Math.round(totalDurationSec * Math.max(0.06, 0.18 / ftpRatio));
-      zoneSeconds[1] = Math.round(totalDurationSec * Math.max(0.18, 0.46 / (climbFactor * 0.9)));
-      zoneSeconds[2] = Math.round(totalDurationSec * 0.20 * ftpRatio);
-      zoneSeconds[3] = Math.round(totalDurationSec * 0.10 * climbFactor * ftpRatio);
-      zoneSeconds[4] = Math.round(totalDurationSec * 0.04 * climbFactor * ftpRatio);
-      zoneSeconds[5] = Math.round(totalDurationSec * 0.015 * climbFactor * ftpRatio);
-      zoneSeconds[6] = Math.max(0, totalDurationSec - zoneSeconds.slice(0, 6).reduce((a, b) => a + b, 0));
     }
 
     const totalCalc = Math.max(1, zoneSeconds.reduce((a, b) => a + b, 0));
     return powerZones.map((z, idx) => {
-      const secs = zoneSeconds[idx];
+      const secs = Math.round(zoneSeconds[idx]);
       const pct = Math.round((secs / totalCalc) * 100);
       const mins = Math.floor(secs / 60);
       const hours = Math.floor(mins / 60);
@@ -621,7 +597,23 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
         timeStr
       };
     });
-  }, [track, hasRealPower, powerZones, initialWeight, ftp]);
+  }, [canShowPower, isRunning, capabilities.hasTimestamps, track, hasRealPower, powerZones, initialWeight]);
+
+  if (!capabilities.hasZonesTabData) {
+    return (
+      <div className="p-8 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 text-center space-y-2">
+        <Info className="w-8 h-8 text-slate-400 mx-auto" />
+        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+          Keine Zonen-Telemetrie vorhanden
+        </h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+          {isRunning
+            ? 'Für Pace- oder Puls-Zonen werden aufgezeichnete Zeitstempel, Geschwindigkeits- oder Herzfrequenzdaten benötigt.'
+            : 'Für Watt- oder Puls-Zonen werden aufgezeichnete Zeitstempel, Powermeter- oder Herzfrequenzdaten benötigt.'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -678,13 +670,13 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
             </div>
           </div>
 
-          {/* Tab Switcher */}
+          {/* Tab Switcher — strictly gated by available real telemetry */}
           <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
-            {isRunning && (
+            {canShowPace && (
               <button
                 type="button"
                 onClick={() => { setZoneView('pace'); triggerHaptic('light'); }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   zoneView === 'pace'
                     ? 'bg-emerald-600 text-white shadow-sm'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -695,74 +687,78 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={() => { setZoneView('hr'); triggerHaptic('light'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                zoneView === 'hr'
-                  ? 'bg-rose-500 text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Heart className="w-3.5 h-3.5" />
-              Puls-Zonen (5 Zonen)
-            </button>
+            {canShowHr && (
+              <button
+                type="button"
+                onClick={() => { setZoneView('hr'); triggerHaptic('light'); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                  zoneView === 'hr'
+                    ? 'bg-rose-500 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Heart className="w-3.5 h-3.5" />
+                Puls-Zonen (5 Zonen)
+              </button>
+            )}
 
-            <button
-              type="button"
-              onClick={() => { setZoneView('power'); triggerHaptic('light'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                zoneView === 'power'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              {isRunning ? 'Laufleistung (Watt)' : 'Watt-Zonen (Coggan 7)'}
-            </button>
+            {canShowPower && (
+              <button
+                type="button"
+                onClick={() => { setZoneView('power'); triggerHaptic('light'); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                  zoneView === 'power'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {isRunning ? 'Laufleistung (Watt)' : 'Watt-Zonen (Coggan 7)'}
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Dynamic Adjusters based on Sport (Running vs Cycling) */}
+        {/* Dynamic Adjusters based on available dimensions */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-          {/* Max HR Slider */}
-          <div className="space-y-1.5 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-            <div className="flex justify-between font-bold text-slate-700 dark:text-slate-300">
-              <span className="flex items-center gap-1.5">
-                <Heart className="w-3.5 h-3.5 text-rose-500" />
-                Maximale Herzfrequenz (HFmax):
-              </span>
-              <span className="font-mono text-rose-600 dark:text-rose-400 font-black">{maxHr} bpm</span>
+          {canShowHr && (
+            <div className="space-y-1.5 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+              <div className="flex justify-between font-bold text-slate-700 dark:text-slate-300">
+                <span className="flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-rose-500" />
+                  Maximale Herzfrequenz (HFmax):
+                </span>
+                <span className="font-mono text-rose-600 dark:text-rose-400 font-black tabular-nums">{maxHr} bpm</span>
+              </div>
+              <input
+                type="range"
+                min={140}
+                max={220}
+                step={1}
+                value={maxHr}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  setMaxHr(v);
+                  onMaxHrChange?.(v);
+                }}
+                className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
+              />
+              <div className="flex justify-between text-[10px] text-slate-400">
+                <span>140 bpm</span>
+                <span>{isRunning ? 'Laufen: ca. +5 bis 8 bpm vs. Rad' : 'Faustformel: 220 - Alter'}</span>
+                <span>220 bpm</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min={140}
-              max={220}
-              step={1}
-              value={maxHr}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                setMaxHr(v);
-                onMaxHrChange?.(v);
-              }}
-              className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
-            />
-            <div className="flex justify-between text-[10px] text-slate-400">
-              <span>140 bpm</span>
-              <span>{isRunning ? 'Laufen: ca. +5 bis 8 bpm vs. Rad' : 'Faustformel: 220 - Alter'}</span>
-              <span>220 bpm</span>
-            </div>
-          </div>
+          )}
 
-          {/* Sport-Specific Secondary Parameter: Threshold Pace (Running) vs FTP (Cycling) */}
-          {isRunning ? (
+          {canShowPace ? (
             <div className="space-y-1.5 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
               <div className="flex justify-between font-bold text-slate-700 dark:text-slate-300">
                 <span className="flex items-center gap-1.5">
                   <Gauge className="w-3.5 h-3.5 text-emerald-500" />
                   Schwellenpace (Lauf-Schwelle / TDL):
                 </span>
-                <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">
+                <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black tabular-nums">
                   {formatPace(thresholdPace)}
                 </span>
               </div>
@@ -772,7 +768,7 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
                 max={480}
                 step={5}
                 value={thresholdPace}
-                onChange={(e) => setThresholdPace(parseInt(e.target.value))}
+                onChange={(e) => setThresholdPace(parseInt(e.target.value, 10))}
                 className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
               />
               <div className="flex justify-between text-[10px] text-slate-400">
@@ -781,14 +777,14 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
                 <span>8:00 min/km</span>
               </div>
             </div>
-          ) : (
+          ) : canShowPower ? (
             <div className="space-y-1.5 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
               <div className="flex justify-between font-bold text-slate-700 dark:text-slate-300">
                 <span className="flex items-center gap-1.5">
                   <Zap className="w-3.5 h-3.5 text-amber-500" />
                   Schwellenleistung (FTP):
                 </span>
-                <span className="font-mono text-amber-600 dark:text-amber-400 font-black">{ftp} Watt</span>
+                <span className="font-mono text-amber-600 dark:text-amber-400 font-black tabular-nums">{ftp} Watt</span>
               </div>
               <input
                 type="range"
@@ -796,7 +792,7 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
                 max={500}
                 step={5}
                 value={ftp}
-                onChange={(e) => setFtp(parseInt(e.target.value))}
+                onChange={(e) => setFtp(parseInt(e.target.value, 10))}
                 className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
               />
               <div className="flex justify-between text-[10px] text-slate-400">
@@ -805,7 +801,7 @@ export const ZonesTab: React.FC<ZonesTabProps> = ({
                 <span>500 Watt</span>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 

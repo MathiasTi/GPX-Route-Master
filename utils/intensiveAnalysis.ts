@@ -8,6 +8,8 @@ import {
   computeActiveTrackStats,
   detectTrackPauses
 } from './gpxUtils';
+import { minettiGapFactor, formatPaceSeconds } from './runningMetricsEngine';
+import { checkHasRealElevation } from './trackTelemetryCapabilities';
 
 export interface IntensiveClimb {
   index: number;
@@ -696,6 +698,8 @@ export interface RealTrackSplit {
   avgHr?: number;
   maxHr?: number;
   avgPower?: number;
+  avgGapPaceFormatted?: string;
+  avgCadence?: number;
   vam?: number;
   terrainType: string;
   isRealTiming: boolean;
@@ -732,6 +736,18 @@ export function computeRealTrackSplits(
 
   const isCycling = (track.activityType || 'cycling') !== 'running';
   const baseSpeed = fallbackSpeedKmh > 1 ? fallbackSpeedKmh : (isCycling ? 25 : 11);
+  const hasRealElevation = checkHasRealElevation(track);
+
+  let cadenceMultiplier = 1;
+  if (!isCycling) {
+    const rawCads = points
+      .map((p) => p.cadence)
+      .filter((c): c is number => typeof c === 'number' && Number.isFinite(c) && c > 20 && c < 250)
+      .sort((a, b) => a - b);
+    if (rawCads.length > 0 && rawCads[Math.floor(rawCads.length / 2)] < 110) {
+      cadenceMultiplier = 2;
+    }
+  }
 
   const results: RealTrackSplit[] = [];
   let accumDist = 0;
@@ -744,12 +760,15 @@ export function computeRealTrackSplits(
   let splitTimeSec = 0;
   let splitRealTimeCount = 0;
   let cumulativeSec = 0;
+  let splitGapEquivM = 0;
 
   let hrSum = 0;
   let hrCount = 0;
   let maxHr = 0;
   let powerWeightedSum = 0;
   let powerWeightSec = 0;
+  let cadenceWeightedSum = 0;
+  let cadenceWeightSec = 0;
 
   let minLat = points[0].lat;
   let maxLat = points[0].lat;
@@ -781,6 +800,10 @@ export function computeRealTrackSplits(
     cumulativeSec += durationSec;
     const avgSpeedKmh = Number(((distKm / durationSec) * 3600).toFixed(1));
     const paceFormatted = formatPaceMinKm(avgSpeedKmh);
+    const avgGapPaceFormatted =
+      !isCycling && isReal && hasRealElevation && splitGapEquivM > 20
+        ? formatPaceSeconds((durationSec / splitGapEquivM) * 1000)
+        : undefined;
     const vam = durationSec > 10 && splitAscent > 3 ? Math.round((splitAscent / durationSec) * 3600) : 0;
 
     let terrainType = 'Flach';
@@ -801,12 +824,14 @@ export function computeRealTrackSplits(
       cumulativeSeconds: Math.round(cumulativeSec),
       avgSpeedKmh,
       paceFormatted,
+      avgGapPaceFormatted,
       ascentMeters: Math.round(splitAscent),
       descentMeters: Math.round(splitDescent),
       avgGradePercent: gradePct,
       avgHr: hrCount > 0 ? Math.round(hrSum / hrCount) : undefined,
       maxHr: maxHr > 0 ? Math.round(maxHr) : undefined,
       avgPower: powerWeightSec > 0 ? Math.round(powerWeightedSum / powerWeightSec) : undefined,
+      avgCadence: cadenceWeightSec > 0 ? Math.round(cadenceWeightedSum / cadenceWeightSec) : undefined,
       vam: vam > 0 ? vam : undefined,
       terrainType,
       isRealTiming: isReal,
@@ -848,6 +873,14 @@ export function computeRealTrackSplits(
     }
 
     accumDist += stepKm;
+    const stepM = stepKm * 1000;
+
+    if (!isCycling && hasRealElevation && stepM > 0.5) {
+      const stepGrade = ((curr.ele ?? 0) - (prev.ele ?? 0)) / stepM;
+      splitGapEquivM += stepM * minettiGapFactor(stepGrade);
+    } else if (!isCycling && stepM > 0) {
+      splitGapEquivM += stepM;
+    }
 
     if (curr.lat < minLat) minLat = curr.lat;
     if (curr.lat > maxLat) maxLat = curr.lat;
@@ -871,6 +904,13 @@ export function computeRealTrackSplits(
       powerWeightSec += w;
     }
 
+    const ptCad = curr.cadence;
+    if (ptCad !== undefined && Number.isFinite(ptCad) && ptCad > 20 && ptCad < 250) {
+      const w = stepSec > 0 ? stepSec : 1;
+      cadenceWeightedSum += ptCad * cadenceMultiplier * w;
+      cadenceWeightSec += w;
+    }
+
     if (accumDist >= nextSplitTarget) {
       finalizeSplit(accumDist, curr.ele ?? 0);
       splitStartDist = accumDist;
@@ -879,11 +919,14 @@ export function computeRealTrackSplits(
       splitDescent = 0;
       splitTimeSec = 0;
       splitRealTimeCount = 0;
+      splitGapEquivM = 0;
       hrSum = 0;
       hrCount = 0;
       maxHr = 0;
       powerWeightedSum = 0;
       powerWeightSec = 0;
+      cadenceWeightedSum = 0;
+      cadenceWeightSec = 0;
       minLat = curr.lat;
       maxLat = curr.lat;
       minLng = curr.lng;

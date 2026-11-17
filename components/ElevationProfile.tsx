@@ -17,6 +17,8 @@ import {
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/telemetry/pointMetricsEngine';
 import { computeTrackWbal } from '../utils/wbalEngine';
+import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
+import { computePauseAwareRunningMetrics, formatPaceSeconds } from '../utils/runningMetricsEngine';
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
@@ -40,7 +42,6 @@ interface ElevationProfileProps {
   estimatedSpeed?: number;
   selectedDate: string;
   selectedTime: string;
-  onOpenAnalytics?: () => void;
   onOpenIntensiveAnalysis?: () => void;
   onOpenVideoExport?: () => void;
   onReverseTrack?: (id: string) => void;
@@ -88,6 +89,9 @@ interface HoverInfo {
   speed?: number;
   wbalPct?: number;
   wbalKj?: number;
+  dbalPct?: number;
+  dbalMeters?: number;
+  gapPaceFormatted?: string;
   x: number;
   y: number;
   lat: number;
@@ -103,7 +107,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   estimatedSpeed = 15,
   selectedDate,
   selectedTime,
-  onOpenAnalytics,
   onOpenIntensiveAnalysis,
   onOpenVideoExport,
   onReverseTrack,
@@ -135,6 +138,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [showHr, setShowHr] = useState(true);
   const [showSlope, setShowSlope] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
+  const [showGap, setShowGap] = useState(false);
   const [showCadence, setShowCadence] = useState(false);
   const [showWbal, setShowWbal] = useState(false);
   const [showPoiMarkers, setShowPoiMarkers] = useState(true);
@@ -231,10 +235,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return track.color;
   }, [track.color]);
 
+  const capabilities = useMemo(() => resolveTrackCapabilities(track), [track]);
+
   const profileData = useMemo(() => {
     if (!track.points || track.points.length === 0) return null;
 
-    const hasElevationData = track.points.some(p => p.ele !== undefined && p.ele !== null && !isNaN(Number(p.ele)) && p.ele !== 0);
+    const hasElevationData = capabilities.hasRealElevation;
 
     // Ensure every point has a valid elevation, fallback to sinusoidal hill using track.ascent or gentle undulating profile if no ascent/elevation
     let rawPointsToUse = track.points.map((p, idx) => {
@@ -342,7 +348,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
-    const hasSpeedData = rawData.some(d => d.speed !== undefined && d.speed > 0);
+    const hasSpeedData = capabilities.hasPaceOrSpeed && rawData.some(d => d.speed !== undefined && d.speed > 0);
 
     // Always smooth cadence data if available
     const CADENCE_WINDOW = 5;
@@ -462,6 +468,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       maxPosSlopeIdx, 
       maxEleIdx, 
       duration, 
+      hasRealElevation: capabilities.hasRealElevation,
+      hasPaceOrSpeed: capabilities.hasPaceOrSpeed,
       hasTimestamps, 
       hasHr, 
       minHr, 
@@ -485,7 +493,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       slopeMaxLimit,
       slopeRange
     };
-  }, [track, isSmoothed, estimatedSpeed, elevationFilter]);
+  }, [track, isSmoothed, estimatedSpeed, elevationFilter, capabilities]);
 
   const profileMarkers = useMemo(() => {
     if (!profileData || !profileData.data || profileData.data.length === 0) return [];
@@ -589,9 +597,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
   // Detect impossible gradient anomalies (bad summits / sensor cliff spikes)
   const gradientAnomalies = useMemo(() => {
-    if (!track.points || track.points.length < 2) return [];
+    if (!capabilities.hasRealElevation || !track.points || track.points.length < 2) return [];
     return detectImpossibleGradientAnomalies(track.points);
-  }, [track.points]);
+  }, [track.points, capabilities.hasRealElevation]);
 
   const width = dimensions.width;
   const height = dimensions.height;
@@ -627,14 +635,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return Math.abs(data[low].dist - targetDist) < Math.abs(data[high].dist - targetDist) ? low : high;
   };
 
-  // Compute Skiba W'bal series for the active track when W'bal overlay is enabled
+  // Compute Skiba W'bal series for cycling tracks when overlay is enabled
   const wbalResult = useMemo(() => {
-    if (!showWbal) return null;
+    if (!showWbal || !capabilities.hasWbalData) return null;
     return computeTrackWbal(track, {
       cpWatts: Math.max(80, Math.round((ftp || 220) * 0.96)),
       wPrimeKj: 20
     });
-  }, [track, ftp, showWbal]);
+  }, [track, ftp, showWbal, capabilities.hasWbalData]);
+
+  // Compute pause-aware Running GAP & D'bal series when overlay is enabled
+  const runningMetricsResult = useMemo(() => {
+    if (!(showWbal || showGap) || (!capabilities.hasDbalData && !capabilities.hasGapData)) return null;
+    return computePauseAwareRunningMetrics(track);
+  }, [track, showWbal, showGap, capabilities.hasDbalData, capabilities.hasGapData]);
 
   const lookupWbalAtDist = useCallback((distKm: number): { wbalPct?: number; wbalKj?: number } => {
     if (!wbalResult || wbalResult.series.length === 0) return {};
@@ -649,6 +663,25 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const idx = lo >= s.length ? s.length - 1 : hi < 0 ? 0 : (Math.abs(s[lo].distanceKm - distKm) < Math.abs(s[hi].distanceKm - distKm) ? lo : hi);
     return { wbalPct: s[idx].wbalPct, wbalKj: s[idx].wbalKj };
   }, [wbalResult]);
+
+  const lookupRunningAtDist = useCallback((distKm: number): { dbalPct?: number; dbalMeters?: number; gapPaceFormatted?: string } => {
+    if (!runningMetricsResult || runningMetricsResult.series.length === 0) return {};
+    const s = runningMetricsResult.series;
+    let lo = 0;
+    let hi = s.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (s[mid].distanceKm < distKm) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    const idx = lo >= s.length ? s.length - 1 : hi < 0 ? 0 : (Math.abs(s[lo].distanceKm - distKm) < Math.abs(s[hi].distanceKm - distKm) ? lo : hi);
+    const pt = s[idx];
+    return {
+      dbalPct: pt.dbalPct,
+      dbalMeters: pt.dbalMeters,
+      gapPaceFormatted: pt.gapPaceSecKm !== null && pt.gapPaceSecKm > 0 ? formatPaceSeconds(pt.gapPaceSecKm) : undefined
+    };
+  }, [runningMetricsResult]);
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!profileData || !svgRef.current) return;
@@ -680,6 +713,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     }
     hoverRafRef.current = requestAnimationFrame(() => {
       const wbalAt = lookupWbalAtDist(point.dist);
+      const runAt = lookupRunningAtDist(point.dist);
       setHoverInfo({
         dist: point.dist,
         ele: point.ele,
@@ -691,6 +725,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         speed: point.speed,
         wbalPct: wbalAt.wbalPct,
         wbalKj: wbalAt.wbalKj,
+        dbalPct: runAt.dbalPct,
+        dbalMeters: runAt.dbalMeters,
+        gapPaceFormatted: runAt.gapPaceFormatted,
         x,
         y,
         lat: point.lat,
@@ -756,6 +793,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     }
     hoverRafRef.current = requestAnimationFrame(() => {
       const wbalAt = lookupWbalAtDist(point.dist);
+      const runAt = lookupRunningAtDist(point.dist);
       setHoverInfo({
         dist: point.dist,
         ele: point.ele,
@@ -767,6 +805,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         speed: point.speed,
         wbalPct: wbalAt.wbalPct,
         wbalKj: wbalAt.wbalKj,
+        dbalPct: runAt.dbalPct,
+        dbalMeters: runAt.dbalMeters,
+        gapPaceFormatted: runAt.gapPaceFormatted,
         x,
         y,
         lat: point.lat,
@@ -1017,6 +1058,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         hrPoints: '',
         slopePoints: '',
         speedPoints: '',
+        gapPoints: '',
         cadencePoints: '',
         wbalPoints: '',
       };
@@ -1098,6 +1140,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .join(' ')
       : '';
 
+    const gapPoints = showGap && capabilities.hasGapData && runningMetricsResult && runningMetricsResult.series.length > 1
+      ? runningMetricsResult.series
+          .filter((pt) => pt.gapPaceSecKm !== null && pt.gapPaceSecKm > 0)
+          .map((pt) => {
+            const gapSpeedKmh = Math.min(profileData.maxSpeedVal, Math.max(0, 3600 / (pt.gapPaceSecKm as number)));
+            const px = padding.left + (pt.distanceKm / distRange) * graphWidth;
+            const py = height - padding.bottom - ((gapSpeedKmh - profileData.minSpeedVal) / profileData.speedRange) * graphHeight;
+            return `${px},${py}`;
+          })
+          .join(' ')
+      : '';
+
     const cadencePoints = showCadence && profileData.hasCadence
       ? decimated
           .filter((d) => d.cadence !== undefined)
@@ -1109,14 +1163,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .join(' ')
       : '';
 
-    const wbalPoints = showWbal && wbalResult && wbalResult.series.length > 1
-      ? wbalResult.series
-          .map((pt) => {
-            const px = padding.left + (pt.distanceKm / distRange) * graphWidth;
-            const py = height - padding.bottom - (Math.max(0, Math.min(100, pt.wbalPct)) / 100) * graphHeight;
-            return `${px},${py}`;
-          })
-          .join(' ')
+    const wbalPoints = showWbal
+      ? capabilities.hasDbalData && runningMetricsResult && runningMetricsResult.series.length > 1
+        ? runningMetricsResult.series
+            .map((pt) => {
+              const px = padding.left + (pt.distanceKm / distRange) * graphWidth;
+              const py = height - padding.bottom - (Math.max(0, Math.min(100, pt.dbalPct)) / 100) * graphHeight;
+              return `${px},${py}`;
+            })
+            .join(' ')
+        : capabilities.hasWbalData && wbalResult && wbalResult.series.length > 1
+          ? wbalResult.series
+              .map((pt) => {
+                const px = padding.left + (pt.distanceKm / distRange) * graphWidth;
+                const py = height - padding.bottom - (Math.max(0, Math.min(100, pt.wbalPct)) / 100) * graphHeight;
+                return `${px},${py}`;
+              })
+              .join(' ')
+          : ''
       : '';
 
     return {
@@ -1126,6 +1190,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       hrPoints,
       slopePoints,
       speedPoints,
+      gapPoints,
       cadencePoints,
       wbalPoints,
     };
@@ -1143,9 +1208,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     showHr,
     showSlope,
     showSpeed,
+    showGap,
     showCadence,
     showWbal,
     wbalResult,
+    runningMetricsResult,
+    capabilities.hasDbalData,
+    capabilities.hasGapData,
+    capabilities.hasWbalData,
   ]);
 
   if (!profileData) {
@@ -1280,16 +1350,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </button>
           )}
 
-          {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && (
-            <button
-              onClick={onOpenAnalytics}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500 text-white shadow-sm hover:bg-amber-600 transition-all cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              <span>Analyse</span>
-            </button>
-          )}
-
           <div className="hidden xl:flex items-center gap-2.5 pl-2 ml-0.5 border-l border-slate-200 dark:border-slate-700/80">
             <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 whitespace-nowrap">
               <input
@@ -1322,15 +1382,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 HF
               </label>
             )}
-            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 whitespace-nowrap">
-              <input
-                type="checkbox"
-                checked={showSlope}
-                onChange={(e) => setShowSlope(e.target.checked)}
-                className="w-3.5 h-3.5 text-violet-500 rounded bg-slate-100 border-slate-300 focus:ring-violet-500 cursor-pointer"
-              />
-              Steigung
-            </label>
+            {profileData.hasRealElevation && (
+              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={showSlope}
+                  onChange={(e) => setShowSlope(e.target.checked)}
+                  className="w-3.5 h-3.5 text-violet-500 rounded bg-slate-100 border-slate-300 focus:ring-violet-500 cursor-pointer"
+                />
+                Steigung
+              </label>
+            )}
             <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 whitespace-nowrap">
               <input
                 type="checkbox"
@@ -1361,7 +1423,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             )}
           </button>
 
-          {profileData.hasPower && (
+          {profileData.hasPower && !capabilities.isRunning && (
             <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-[10.5px] font-mono font-bold text-slate-700 dark:text-slate-300 whitespace-nowrap">
               FTP {ftp}W
             </span>
@@ -1556,20 +1618,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <span>Intensiv-Analyse</span>
                 </button>
               )}
-
-              {track.powerStats && track.points.some(p => p.hr !== undefined && p.hr !== null && p.hr > 0) && onOpenAnalytics && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowSettingsPopover(false);
-                    onOpenAnalytics();
-                  }}
-                  className="px-2 py-2 rounded-lg bg-amber-500 text-white font-bold text-[10.5px] flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>Analyse</span>
-                </button>
-              )}
             </div>
 
             {/* Pro Route Tools: Umkehren & Bereinigen */}
@@ -1656,15 +1704,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   HF
                 </label>
               )}
-              <label className="flex items-center gap-1.5 cursor-pointer hover:text-violet-600">
-                <input
-                  type="checkbox"
-                  checked={showSlope}
-                  onChange={(e) => setShowSlope(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-violet-500"
-                />
-                Steigung
-              </label>
+              {profileData.hasRealElevation && (
+                <label className="flex items-center gap-1.5 cursor-pointer hover:text-violet-600">
+                  <input
+                    type="checkbox"
+                    checked={showSlope}
+                    onChange={(e) => setShowSlope(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-violet-500"
+                  />
+                  Steigung
+                </label>
+              )}
               {profileData.hasSpeed && (
                 <label className="flex items-center gap-1.5 cursor-pointer hover:text-teal-600">
                   <input
@@ -1673,7 +1723,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                     onChange={(e) => setShowSpeed(e.target.checked)}
                     className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-teal-500"
                   />
-                  Tempo
+                  {capabilities.isRunning ? 'Pace' : 'Tempo'}
+                </label>
+              )}
+              {capabilities.hasGapData && (
+                <label className="flex items-center gap-1.5 cursor-pointer text-emerald-600 dark:text-emerald-400 hover:text-emerald-700">
+                  <input
+                    type="checkbox"
+                    checked={showGap}
+                    onChange={(e) => setShowGap(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-emerald-600"
+                  />
+                  GAP
                 </label>
               )}
               {profileData.hasCadence && (
@@ -1684,18 +1745,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                     onChange={(e) => setShowCadence(e.target.checked)}
                     className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-purple-500"
                   />
-                  {track.activityType === 'running' ? 'Schrittfrequenz' : 'Trittfrequenz'}
+                  {capabilities.isRunning ? 'Schrittfrequenz' : 'Trittfrequenz'}
                 </label>
               )}
-              <label className="flex items-center gap-1.5 cursor-pointer text-cyan-600 dark:text-cyan-400 hover:text-cyan-700">
-                <input
-                  type="checkbox"
-                  checked={showWbal}
-                  onChange={(e) => setShowWbal(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-cyan-600"
-                />
-                W&apos;bal (%)
-              </label>
+              {(capabilities.hasDbalData || capabilities.hasWbalData) && (
+                <label className="flex items-center gap-1.5 cursor-pointer text-cyan-600 dark:text-cyan-400 hover:text-cyan-700">
+                  <input
+                    type="checkbox"
+                    checked={showWbal}
+                    onChange={(e) => setShowWbal(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-slate-100 border-slate-300 text-cyan-600"
+                  />
+                  {capabilities.hasDbalData ? "D'bal (%)" : "W'bal (%)"}
+                </label>
+              )}
               <label className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600">
                 <input
                   type="checkbox"
@@ -1807,7 +1870,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full transition-transform ${isSmoothed ? 'translate-x-3' : 'translate-x-0'}`} />
                 </div>
               </label>
-              {profileData.hasPower && (
+              {profileData.hasPower && !capabilities.isRunning && (
                 <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400">
                   FTP {ftp}W
                 </span>
@@ -2021,8 +2084,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {hoverInfo.power !== undefined && (
                 <span className="text-amber-400 font-black">{Math.round(hoverInfo.power)} W</span>
               )}
-              {showWbal && hoverInfo.wbalPct !== undefined && (
+              {showWbal && capabilities.hasDbalData && hoverInfo.dbalPct !== undefined && (
+                <span className="text-cyan-400 font-black">D&apos; {Math.round(hoverInfo.dbalPct)}%</span>
+              )}
+              {showWbal && capabilities.hasWbalData && hoverInfo.wbalPct !== undefined && (
                 <span className="text-cyan-400 font-black">W&apos; {Math.round(hoverInfo.wbalPct)}%</span>
+              )}
+              {showGap && capabilities.hasGapData && hoverInfo.gapPaceFormatted && (
+                <span className="text-emerald-400 font-bold">GAP {hoverInfo.gapPaceFormatted}</span>
               )}
               {hoverInfo.hr !== undefined && (
                 <span className="text-rose-400 font-black">{Math.round(hoverInfo.hr)} bpm</span>
@@ -2030,9 +2099,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {hoverInfo.speed !== undefined && hoverInfo.speed > 0 && (
                 <span 
                   className="text-teal-300 font-bold"
-                  title={isFitTrack(track) || track.activityType === 'running' ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km'}`}
+                  title={isFitTrack(track) || capabilities.isRunning ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km'}`}
                 >
-                  {isFitTrack(track) || track.activityType === 'running'
+                  {isFitTrack(track) || capabilities.isRunning
                     ? (formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km')
                     : `${hoverInfo.speed.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`}
                 </span>
@@ -2262,6 +2331,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             />
           )}
 
+          {/* Running GAP Line */}
+          {showGap && capabilities.hasGapData && svgPaths.gapPoints && (
+            <polyline
+              fill="none"
+              stroke="#10b981"
+              strokeWidth="1.75"
+              strokeDasharray="4 2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={svgPaths.gapPoints}
+            />
+          )}
+
           {/* Cadence Line */}
           {showCadence && profileData.hasCadence && svgPaths.cadencePoints && (
             <polyline
@@ -2274,8 +2356,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             />
           )}
 
-          {/* W'bal Differential Reserve Line */}
-          {showWbal && svgPaths.wbalPoints && (
+          {/* W'bal / D'bal Differential Reserve Line */}
+          {showWbal && (capabilities.hasDbalData || capabilities.hasWbalData) && svgPaths.wbalPoints && (
             <polyline
               fill="none"
               stroke="#06b6d4"
@@ -2579,8 +2661,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   });
                 }
                 
+                if (showGap && capabilities.hasGapData && hoverInfo.gapPaceFormatted) {
+                  rows.push({
+                    label: "GAP (Pace):",
+                    val: `${hoverInfo.gapPaceFormatted} min/km`,
+                    color: "fill-emerald-400"
+                  });
+                }
+
                 if (hasCadence) {
-                  const isRun = track.activityType === 'running';
+                  const isRun = capabilities.isRunning;
                   const rawCad = hoverInfo.cadence!;
                   const displayCad = isRun && rawCad > 0 && rawCad < 110 ? rawCad * 2 : rawCad;
                   rows.push({
@@ -2590,7 +2680,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   });
                 }
 
-                if (showWbal && hoverInfo.wbalPct !== undefined) {
+                if (showWbal && capabilities.hasDbalData && hoverInfo.dbalPct !== undefined) {
+                  rows.push({
+                    label: "D'bal Reserve:",
+                    val: `${hoverInfo.dbalPct.toFixed(0)}% (${Math.round(hoverInfo.dbalMeters ?? 0)} m)`,
+                    color: "fill-cyan-400"
+                  });
+                } else if (showWbal && capabilities.hasWbalData && hoverInfo.wbalPct !== undefined) {
                   rows.push({
                     label: "W'bal Reserve:",
                     val: `${hoverInfo.wbalPct.toFixed(0)}% (${(hoverInfo.wbalKj ?? 0).toFixed(1)} kJ)`,
@@ -2623,7 +2719,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 const rowHeight = 16;
                 let boxHeight = 44 + rows.length * rowHeight; // Padding header (44px) + rows height
                 
-                const boxWidth = 145;
+                const boxWidth = 165;
                 const isLeftEdge = hoverInfo.x < boxWidth + 20;
                 const tooltipX = isLeftEdge ? hoverInfo.x + 15 : hoverInfo.x - boxWidth - 15;
                 const tooltipY = Math.max(padding.top, Math.min(height - padding.bottom - boxHeight, hoverInfo.y - boxHeight / 2));

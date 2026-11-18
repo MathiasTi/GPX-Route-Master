@@ -922,7 +922,7 @@ export default function FitnessPerformanceAnalysis({
         return;
       }
 
-      // Iterate compact HR and Power numeric arrays directly
+      // Iterate compact HR and Power numeric arrays directly (with summary fallback when stream lacks HR)
       if (hrSamples.length > 0) {
         const dt = act.duration > 0 ? act.duration / hrSamples.length : 1;
         for (let i = 0; i < hrSamples.length; i++) {
@@ -935,6 +935,15 @@ export default function FitnessPerformanceAnalysis({
           else zoneIdx = 4;
           hrZonesSeconds[zoneIdx] += dt;
         }
+      } else if (act.avg_hr) {
+        const ratio = act.avg_hr / maxHr;
+        let zoneIdx = 0;
+        if (ratio < 0.60) zoneIdx = 0;
+        else if (ratio < 0.70) zoneIdx = 1;
+        else if (ratio < 0.80) zoneIdx = 2;
+        else if (ratio < 0.90) zoneIdx = 3;
+        else zoneIdx = 4;
+        hrZonesSeconds[zoneIdx] += act.duration;
       }
 
       if (powerSamples.length > 0) {

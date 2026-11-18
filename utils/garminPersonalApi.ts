@@ -997,8 +997,8 @@ export async function downloadAndParseGarminActivityFit(
       11.576124,
       distKm,
       durSec,
-      existingRecord?.ascent || 20,
-      existingRecord?.descent || 20,
+      existingRecord?.ascent ?? 0,
+      existingRecord?.descent ?? 0,
       existingRecord?.avg_hr,
       actType
     );
@@ -1008,8 +1008,8 @@ export async function downloadAndParseGarminActivityFit(
       points: virtualPts,
       color: '#0284c7',
       distance: Number(distKm.toFixed(2)),
-      ascent: existingRecord?.ascent || 20,
-      descent: existingRecord?.descent || 20,
+      ascent: existingRecord?.ascent ?? 0,
+      descent: existingRecord?.descent ?? 0,
       maxSlope: 2,
       visible: true,
       activityType: actType,

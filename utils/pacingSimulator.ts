@@ -1,5 +1,5 @@
 import { GPXTrack } from '../types';
-import { calculateDistance } from './gpxUtils';
+import { calculateDistance, computeActiveTrackStats } from './gpxUtils';
 import { minettiGapFactor, formatPaceSeconds } from './runningMetricsEngine';
 
 export type PacingStrategyMode = 'even' | 'variable_climb' | 'negative_split';
@@ -304,8 +304,11 @@ export function runPacingSimulation(
   const carbsPerHour = targetIf >= 0.85 ? 80 : targetIf >= 0.75 ? 65 : 50;
   const estimatedCarbsGrams = Math.round(hours * carbsPerHour);
 
+  const activeStats = hasRealTimestamps ? computeActiveTrackStats(points) : null;
   const actualTotalTimeSec =
-    hasRealTimestamps && firstTimeMs !== null && lastTimeMs !== null
+    activeStats && activeStats.activeDurationSeconds > 0
+      ? Math.round(activeStats.activeDurationSeconds)
+      : hasRealTimestamps && firstTimeMs !== null && lastTimeMs !== null
       ? Math.round((lastTimeMs - firstTimeMs) / 1000)
       : track.duration && track.duration > 60
       ? Math.round(track.duration)
@@ -562,8 +565,11 @@ export function runRunningPacingSimulation(
   const hours = cumulativeSimSec / 3600;
   const estimatedCarbsGrams = cumulativeSimSec > 2700 ? Math.round(hours * (targetIf >= 0.9 ? 65 : 50)) : 0;
 
+  const activeStats = hasRealTimestamps ? computeActiveTrackStats(points) : null;
   const actualTotalTimeSec =
-    hasRealTimestamps && firstTimeMs !== null && lastTimeMs !== null
+    activeStats && activeStats.activeDurationSeconds > 0
+      ? Math.round(activeStats.activeDurationSeconds)
+      : hasRealTimestamps && firstTimeMs !== null && lastTimeMs !== null
       ? Math.round((lastTimeMs - firstTimeMs) / 1000)
       : track.duration && track.duration > 60
       ? Math.round(track.duration)

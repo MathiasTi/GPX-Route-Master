@@ -1131,7 +1131,7 @@ export const calculatePowerStats = (
   const activeLength = Math.max(1, pCursor);
 
   const getBestRolling = (window: number) => {
-    if (activeLength < window) return avgPower;
+    if (activeLength < window) return 0;
     let currentSum = 0;
     for (let i = 0; i < window; i++) currentSum += power1s[i];
     let maxSum = currentSum;
@@ -1182,8 +1182,9 @@ export const formatPace = (durationSecs: number, distanceKm: number): string => 
   if (!distanceKm || !durationSecs) return "--:-- min/km";
   const paceTotalSec = durationSecs / distanceKm;
   if (paceTotalSec > 3600) return ">60:00 min/km";
-  const mins = Math.floor(paceTotalSec / 60);
-  const secs = Math.round(paceTotalSec % 60);
+  const roundedTotalSec = Math.round(paceTotalSec);
+  const mins = Math.floor(roundedTotalSec / 60);
+  const secs = roundedTotalSec % 60;
   return `${mins}:${secs.toString().padStart(2, '0')} min/km`;
 };
 
@@ -1191,8 +1192,9 @@ export const getPaceString = (speedKmh: number): string => {
   if (!speedKmh || isNaN(speedKmh) || speedKmh <= 0.1) return "--:-- min/km";
   const paceMinKm = 60 / speedKmh;
   if (paceMinKm > 60) return ">60:00 min/km";
-  const mins = Math.floor(paceMinKm);
-  const secs = Math.floor((paceMinKm % 1) * 60);
+  const roundedTotalSec = Math.round(paceMinKm * 60);
+  const mins = Math.floor(roundedTotalSec / 60);
+  const secs = roundedTotalSec % 60;
   return `${mins}:${secs.toString().padStart(2, '0')} min/km`;
 };
 
@@ -2831,36 +2833,23 @@ export const generateVirtualRoute = (
     const elevationPhase = Math.sin((i / (pointsCount - 1)) * Math.PI);
     ele += elevationPhase * (ascentM || 0);
     
-    // Heart Rate: average heart rate with some small realistic noise
-    let hr = avgHr;
-    if (hr) {
-      const hrNoise = Math.sin(angle * 3) * 5 + (Math.random() - 0.5) * 3;
-      hr = Math.round(hr + hrNoise);
-    }
-    
-    // Cadence
-    let cadence = activityType === 'running' ? 165 : 85;
-    cadence += Math.round((Math.random() - 0.5) * 6);
-    
-    // Power (if cycling or running power)
-    let power: number | undefined = undefined;
-    if (activityType !== 'running') {
-      power = 180 + Math.round(Math.sin(angle * 2) * 40 + (Math.random() - 0.5) * 15);
-      if (power < 0) power = 0;
-    }
-    
+    // Heart Rate: only carry the recorded session average (never fabricate variability)
+    const hr = avgHr && avgHr > 0 ? Math.round(avgHr) : undefined;
+
+    // Placeholder geometry must not fabricate sensor telemetry (power / cadence), otherwise
+    // power curves, NP, TSS and zone distributions would treat synthetic noise as measured data.
+    void activityType;
+
     // Time
     const timeOffsetSec = (i / (pointsCount - 1)) * durationSec;
     const time = new Date(startTime.getTime() + timeOffsetSec * 1000);
-    
+
     points.push({
       lat,
       lng,
       ele: parseFloat(ele.toFixed(1)),
       time,
-      hr,
-      cadence,
-      power
+      hr
     });
   }
   

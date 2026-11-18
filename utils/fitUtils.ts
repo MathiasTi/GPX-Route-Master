@@ -2517,22 +2517,37 @@ export const parseFIT = async (
     const isStationary = isStationaryNonDistanceSport(sportName, fitName, fileName);
     const hasExplicitZeroDistance = sessionDistance !== undefined && sessionDistance <= 0;
     let isVirtual = false;
+    // Authoritative distance for virtual/indoor sessions (never derived from the synthetic map loop)
+    let virtualDistanceKm: number | undefined;
 
     if (sanitizedPoints.length === 0) {
       if (nonGpsRecords.length > 0) {
         isVirtual = true;
         const n = nonGpsRecords.length;
-        const distanceKm =
-          isStationary || hasExplicitZeroDistance
-            ? (sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : 0)
-            : sessionDistance
-              ? sessionDistance / 1000
-              : sessionDuration
-                ? (sessionDuration / 3600) * 28
-                : Math.max(1, (n / 3600) * 28);
+
+        // Derive indoor distance from recorded wheel/treadmill speed (km/h) when the session lacks a total distance
+        let speedIntegratedKm = 0;
+        for (let i = 1; i < n; i++) {
+          const prev = nonGpsRecords[i - 1];
+          const cur = nonGpsRecords[i];
+          if (!prev.time || !cur.time || cur.speed === undefined || !Number.isFinite(cur.speed)) continue;
+          const dtSec = (cur.time.getTime() - prev.time.getTime()) / 1000;
+          if (dtSec <= 0 || dtSec > 10) continue; // skip timer pauses
+          if (cur.speed < 0 || cur.speed > 120) continue;
+          speedIntegratedKm += (cur.speed * dtSec) / 3600;
+        }
+
+        if (isStationary || hasExplicitZeroDistance) {
+          virtualDistanceKm = sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : 0;
+        } else if (sessionDistance !== undefined && sessionDistance > 0) {
+          virtualDistanceKm = sessionDistance / 1000;
+        } else {
+          virtualDistanceKm = speedIntegratedKm > 0.05 ? Number(speedIntegratedKm.toFixed(3)) : 0;
+        }
+
         const startLat = 48.137154;
         const startLng = 11.576124;
-        const circumference = distanceKm || 1;
+        const circumference = virtualDistanceKm || 1;
         const radiusKm = circumference / (2 * Math.PI);
         const rLat = radiusKm / 111;
         const rLng = radiusKm / (111 * Math.cos(startLat * Math.PI / 180));
@@ -2556,20 +2571,21 @@ export const parseFIT = async (
         }
       } else if (sessionDuration !== undefined || sessionDistance !== undefined) {
         isVirtual = true;
-        const virtualDistanceKm =
+        virtualDistanceKm =
           isStationary || hasExplicitZeroDistance || sessionDistance === undefined || sessionDistance <= 0
             ? 0
             : sessionDistance / 1000;
+        // Session-only FIT: build a flat placeholder loop WITHOUT synthetic climbing, power or cadence telemetry
         sanitizedPoints = generateVirtualRoute(
           48.137154,
           11.576124,
           virtualDistanceKm,
           sessionDuration || 1800,
-          50,
-          50,
+          0,
+          0,
           undefined,
           sportName?.toLowerCase().includes('run') ? 'running' : 'cycling'
-        );
+        ).map((p) => ({ lat: p.lat, lng: p.lng, ele: p.ele, time: p.time }));
       } else {
         return null;
       }
@@ -2631,11 +2647,6 @@ export const parseFIT = async (
     const activeStats = computeActiveTrackStats(sanitizedPoints);
     // Prefer FIT session distance (watch/sensor distance excluding paused walks) or pause-free GPS distance
     const sessionDistKm = sessionDistance !== undefined && sessionDistance > 0 ? sessionDistance / 1000 : undefined;
-    const isZeroDistanceVirtual =
-      isVirtual &&
-      (isStationary ||
-        hasExplicitZeroDistance ||
-        (sessionDistance === undefined && nonGpsRecords.length === 0));
     const gpsDistKm =
       activeStats.hasTimestamps &&
       activeStats.pauseDurationSeconds > 0 &&
@@ -2643,8 +2654,9 @@ export const parseFIT = async (
       activeStats.rawDistanceKm - activeStats.activeDistanceKm > 0.02
         ? activeStats.activeDistanceKm
         : rawTotalDist;
-    const totalDist = isZeroDistanceVirtual
-      ? (sessionDistKm ?? 0)
+    // Virtual/indoor sessions never use the length of the synthetic placeholder loop
+    const totalDist = isVirtual
+      ? (virtualDistanceKm ?? 0)
       : sessionDistKm && sessionDistKm > 0
         ? sessionDistKm
         : gpsDistKm;

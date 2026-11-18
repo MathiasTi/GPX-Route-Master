@@ -5,7 +5,22 @@ declare const __APP_URL__: string | undefined;
 function isDisallowedHost(origin: string): boolean {
   if (!origin) return true;
   const lower = origin.toLowerCase();
-  return lower.includes('google.com') || lower.includes('ai.studio') || lower.includes('googleusercontent.com');
+  return (
+    lower.includes('google.com') ||
+    lower.includes('ai.studio') ||
+    lower.includes('googleusercontent.com') ||
+    lower.includes('usercontent.com')
+  );
+}
+
+function isMismatchedDevOrigin(candidateOrigin: string): boolean {
+  if (!candidateOrigin || typeof window === 'undefined' || !window.location) return false;
+  const host = (window.location.hostname || '').toLowerCase();
+  // If the current page is not hosted on an ais-dev domain, never send API calls to ais-dev
+  if (host && !host.includes('ais-dev-') && candidateOrigin.toLowerCase().includes('ais-dev-')) {
+    return true;
+  }
+  return false;
 }
 
 export function getOriginFromString(urlStr: string): string {
@@ -27,10 +42,9 @@ export function getApiUrl(path: string): string {
 
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
 
-  // 1. If running in browser with a valid origin, prefer relative path
+  // 1. If running in browser with a valid origin, prefer relative path.
   // Standard relative paths like '/api/tracks' are natively resolved by the browser
-  // against the current host (whether ais-dev, ais-pre, localhost, or custom domain).
-  // This completely eliminates cross-origin issues, cookie drops, and 401 errors.
+  // against the current host (whether ais-dev, ais-pre, localhost, Cloud Run, or custom domain).
   if (typeof window !== 'undefined' && window.location) {
     const locOrigin = window.location.origin;
     if (locOrigin && locOrigin !== 'null' && locOrigin.startsWith('http') && !isDisallowedHost(locOrigin)) {
@@ -45,7 +59,7 @@ export function getApiUrl(path: string): string {
   // Check window.__APP_ORIGIN__
   if (typeof window !== 'undefined' && (window as any).__APP_ORIGIN__) {
     const candidate = getOriginFromString(String((window as any).__APP_ORIGIN__));
-    if (candidate && !isDisallowedHost(candidate)) {
+    if (candidate && !isDisallowedHost(candidate) && !isMismatchedDevOrigin(candidate)) {
       origin = candidate;
     }
   }
@@ -55,7 +69,7 @@ export function getApiUrl(path: string): string {
     try {
       if (typeof __APP_URL__ !== 'undefined' && __APP_URL__) {
         const candidate = getOriginFromString(__APP_URL__);
-        if (candidate && !isDisallowedHost(candidate)) {
+        if (candidate && !isDisallowedHost(candidate) && !isMismatchedDevOrigin(candidate)) {
           origin = candidate;
         }
       }
@@ -67,7 +81,7 @@ export function getApiUrl(path: string): string {
     try {
       if (typeof process !== 'undefined' && process.env && process.env.APP_URL) {
         const candidate = getOriginFromString(process.env.APP_URL);
-        if (candidate && !isDisallowedHost(candidate)) {
+        if (candidate && !isDisallowedHost(candidate) && !isMismatchedDevOrigin(candidate)) {
           origin = candidate;
         }
       }
@@ -82,7 +96,7 @@ export function getApiUrl(path: string): string {
         const src = (script as HTMLScriptElement).src;
         if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
           const candidate = getOriginFromString(src);
-          if (candidate && !isDisallowedHost(candidate)) {
+          if (candidate && !isDisallowedHost(candidate) && !isMismatchedDevOrigin(candidate)) {
             origin = candidate;
             break;
           }
@@ -91,8 +105,21 @@ export function getApiUrl(path: string): string {
     } catch (e) {}
   }
 
-  // Fallback if inside sandboxed iframe:
-  // Determine whether current context is pre or dev
+  // If still on a proxy host (e.g. usercontent.com) with no backend origin override, prefer same-origin relative path
+  if (!origin && typeof window !== 'undefined' && window.location) {
+    const locOrigin = window.location.origin;
+    if (
+      locOrigin &&
+      locOrigin !== 'null' &&
+      locOrigin.startsWith('http') &&
+      !locOrigin.toLowerCase().includes('ai.studio') &&
+      !locOrigin.toLowerCase().includes('aistudio.google.com')
+    ) {
+      return cleanPath;
+    }
+  }
+
+  // Last-resort fallback inside completely opaque sandboxed iframe (origin === 'null' / 'about:blank')
   if (!origin || origin === 'null' || origin === 'about:blank') {
     origin = 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app';
   }
@@ -190,10 +217,52 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       headers.set('Authorization', `Bearer ${token}`);
     }
     nextInit.headers = headers;
+
+    const isOpaqueOrigin =
+      typeof window !== 'undefined' &&
+      (!window.location?.origin || window.location.origin === 'null');
+
     if (!nextInit.credentials) {
-      nextInit.credentials = 'include';
+      nextInit.credentials = isOpaqueOrigin ? 'same-origin' : 'include';
     }
-    const response = await baseFetch(input, nextInit);
+
+    let response: Response;
+    try {
+      response = await baseFetch(input, nextInit);
+    } catch (firstErr) {
+      let lastErr: unknown = firstErr;
+      let recovered = false;
+
+      // Fallback 1: if credentialed/same-origin CORS fails (e.g. sandboxed iframe), retry with credentials: 'omit' (Bearer header still works)
+      if (nextInit.credentials !== 'omit') {
+        try {
+          response = await baseFetch(input, { ...nextInit, credentials: 'omit' });
+          recovered = true;
+        } catch (omitErr) {
+          lastErr = omitErr;
+        }
+      }
+
+      // Fallback 2: if cross-origin absolute URL failed while running on an HTTP(S) host, retry same-origin relative path
+      if (!recovered) {
+        const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+        if (
+          typeof window !== 'undefined' &&
+          window.location?.origin &&
+          window.location.origin !== 'null' &&
+          window.location.origin.startsWith('http') &&
+          rawUrl &&
+          (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))
+        ) {
+          const parsed = new URL(rawUrl);
+          const relUrl = `${parsed.pathname}${parsed.search}`;
+          response = await baseFetch(relUrl, { ...nextInit, credentials: 'same-origin' });
+        } else {
+          throw lastErr;
+        }
+      }
+    }
+
     if (response.status === 401 && typeof window !== 'undefined') {
       let reqUrl = '';
       if (typeof input === 'string') reqUrl = input;

@@ -15,7 +15,7 @@ import {
   putCachedTileBlob,
   getConfiguredTileCachePolicy
 } from '../utils/tileCacheDb';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, Video, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -111,11 +111,12 @@ interface MapProps {
   onSplitGap?: (originalTrackId: string, splitIndex: number) => void;
   onCloseGap?: (originalTrackId: string, gap: TimeGap) => void;
   onOpenShortcuts?: () => void;
-  onOpenVideoExport?: () => void;
   compareTrackId?: string | null;
   onStartMapComparison?: (track1Id?: string, track2Id?: string) => void;
   onExitMapComparison?: () => void;
   onOpenComparisonModal?: () => void;
+  isSidebarOpen?: boolean;
+  isBottomBarObscuring?: boolean;
 }
 
 interface TrackSeriesPoint {
@@ -969,11 +970,12 @@ const Map: React.FC<MapProps> = ({
   onSplitGap,
   onCloseGap,
   onOpenShortcuts,
-  onOpenVideoExport,
   compareTrackId = null,
   onStartMapComparison,
   onExitMapComparison,
-  onOpenComparisonModal
+  onOpenComparisonModal,
+  isSidebarOpen = false,
+  isBottomBarObscuring = false
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -985,6 +987,22 @@ const Map: React.FC<MapProps> = ({
   const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+
+  // Auto-close Karten-Optionen when sidebar opens or Escape is pressed
+  useEffect(() => {
+    if (isSidebarOpen) {
+      setIsColorMenuOpen(false);
+    }
+  }, [isSidebarOpen]);
+
+  useEffect(() => {
+    if (!isColorMenuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsColorMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isColorMenuOpen]);
 
   // Personal Lifetime Heatmap state (Veloviewer / Strava style)
   const [showLifetimeHeatmap, setShowLifetimeHeatmap] = useState(false);
@@ -2399,7 +2417,7 @@ const Map: React.FC<MapProps> = ({
       </LeafletMapContainer>
 
       {/* Mobile & Touch Floating Action Toolbar */}
-      <div className="absolute bottom-20 right-2 sm:bottom-4 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto">
+      <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} right-2 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto`}>
         {activeTrack && (
           <button
             onClick={() => {
@@ -2432,82 +2450,41 @@ const Map: React.FC<MapProps> = ({
         )}
       </div>
 
-      {/* Strecken-Farbmodus, POI-Filter & 3D-Überflug Cluster (oben rechts) */}
+      {/* Strecken-Farbmodus, POI-Filter & Lebenszeit-Heatmap in Karten-Optionen (oben rechts) */}
       {!isColorMenuOpen ? (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] flex items-center gap-2 pointer-events-auto">
-          <div className="flex items-center bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md overflow-hidden">
-            <button
-              type="button"
-              id="btn-map-lifetime-heatmap"
-              onClick={() => setShowLifetimeHeatmap(prev => !prev)}
-              className={`flex items-center gap-1.5 px-2.5 py-2 min-h-[44px] text-xs font-bold cursor-pointer transition-all select-none ${
-                showLifetimeHeatmap
-                  ? 'bg-orange-500 text-white'
-                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
-              }`}
-              title="Persönliche Lebenszeit-Heatmap aller gespeicherten Touren ein-/ausblenden"
-            >
-              <Flame className={`w-4 h-4 ${showLifetimeHeatmap ? 'text-white animate-pulse' : 'text-orange-500'}`} />
-              <span className="hidden md:inline">Heatmap</span>
-              {showLifetimeHeatmap && (
-                <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-black/20 text-white">
-                  {heatmapLoading ? '…' : filteredHeatmapTracks.length}
-                </span>
-              )}
-            </button>
-            {showLifetimeHeatmap && (
-              <div className="flex items-center border-l border-slate-200 dark:border-slate-700 px-1 py-1 gap-0.5 bg-slate-50 dark:bg-slate-800/80">
-                {([
-                  { id: 'all', label: 'Alle' },
-                  { id: 'cycling', label: 'Rad' },
-                  { id: 'running', label: 'Lauf' }
-                ] as const).map(opt => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setHeatmapSportFilter(opt.id)}
-                    className={`px-1.5 py-1 rounded text-[10px] font-extrabold transition-colors cursor-pointer ${
-                      heatmapSportFilter === opt.id
-                        ? 'bg-orange-500 text-white'
-                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          {onOpenVideoExport && (
-            <button
-              type="button"
-              id="btn-map-3d-flyover"
-              onClick={onOpenVideoExport}
-              className="flex items-center gap-1.5 px-3 py-2 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md border border-emerald-500/50 cursor-pointer transition-all active:scale-95 select-none"
-              title="3D-Überflug Video Studio starten"
-            >
-              <Video className="w-4 h-4 text-emerald-100" />
-              <span className="hidden xs:inline">3D-Überflug</span>
-            </button>
-          )}
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] flex items-center gap-2 pointer-events-auto">
           <button
+            type="button"
             onClick={() => setIsColorMenuOpen(true)}
-            className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-all text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
-            title="Karten-Optionen & Verpflegung einblenden"
+            className="relative bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-all text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
+            title="Karten-Optionen, Heatmap & Verpflegung einblenden"
             id="btn-color-mode-toggle"
           >
             <Palette className="w-3.5 h-3.5 text-indigo-500" />
             <span className="text-[10px] sm:text-xs font-extrabold uppercase tracking-wider hidden sm:inline">Karten-Optionen</span>
+            {showLifetimeHeatmap && (
+              <span
+                className="w-2 h-2 rounded-full bg-orange-500 ring-2 ring-white dark:ring-slate-900 shrink-0"
+                title="Lebenszeit-Heatmap aktiv"
+              />
+            )}
           </button>
         </div>
       ) : (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[1050] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-60 max-w-[90vw]">
+        <>
+          <div
+            className="fixed inset-0 z-[440]"
+            onClick={() => setIsColorMenuOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-64 max-w-[90vw] max-h-[min(74vh,520px)] overflow-y-auto">
           <div className="font-extrabold text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
             <span className="flex items-center gap-1">
               <Palette className="w-3.5 h-3.5 text-indigo-500" />
               Karten-Optionen
             </span>
             <button
+              type="button"
               onClick={() => setIsColorMenuOpen(false)}
               className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-extrabold text-xs cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               title="Minimieren"
@@ -2587,7 +2564,65 @@ const Map: React.FC<MapProps> = ({
 
           <div className="border-t border-slate-100 dark:border-slate-800 my-0.5" />
 
-          {/* Section 2: Verpflegung & POIs */}
+          {/* Section 2: Lebenszeit-Heatmap */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Flame className={`w-3.5 h-3.5 shrink-0 ${showLifetimeHeatmap ? 'text-orange-500' : 'text-slate-400'}`} />
+                <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider truncate">
+                  Lebenszeit-Heatmap
+                </span>
+                {showLifetimeHeatmap && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-orange-500/15 text-orange-600 dark:text-orange-400 font-bold">
+                    {heatmapLoading ? '…' : filteredHeatmapTracks.length}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showLifetimeHeatmap}
+                aria-label="Persönliche Lebenszeit-Heatmap umschalten"
+                id="btn-map-lifetime-heatmap"
+                onClick={() => setShowLifetimeHeatmap(prev => !prev)}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors ${
+                  showLifetimeHeatmap ? 'bg-orange-500' : 'bg-slate-200 dark:bg-slate-700'
+                }`}
+                title="Persönliche Lebenszeit-Heatmap aller gespeicherten Touren ein-/ausblenden"
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    showLifetimeHeatmap ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className={`grid grid-cols-3 gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-lg transition-opacity ${showLifetimeHeatmap ? 'opacity-100' : 'opacity-45 pointer-events-none'}`}>
+              {([
+                { id: 'all', label: 'Alle' },
+                { id: 'cycling', label: 'Rad' },
+                { id: 'running', label: 'Lauf' }
+              ] as const).map(opt => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setHeatmapSportFilter(opt.id)}
+                  className={`py-1 rounded text-[10px] font-extrabold transition-colors cursor-pointer ${
+                    heatmapSportFilter === opt.id
+                      ? 'bg-orange-500 text-white shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 dark:border-slate-800 my-0.5" />
+
+          {/* Section 3: Verpflegung & POIs */}
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Verpflegung & POIs</span>
@@ -2700,13 +2735,14 @@ const Map: React.FC<MapProps> = ({
             }
             return null;
           })()}
-        </div>
+          </div>
+        </>
       )}
 
       {/* Premium Map Legend explaining Surface Types or Zone Ranges */}
       {!hideLegend && (
         isLegendVisible ? (
-          <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]">
+          <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} left-2 sm:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]`}>
             <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
               <span>{colorMode === 'surface' ? 'Oberflächen-Heatmap' : colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
               <button
@@ -2937,7 +2973,7 @@ const Map: React.FC<MapProps> = ({
         ) : (
           <button
             onClick={() => setIsLegendVisible(true)}
-            className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-[400] flex items-center gap-1 px-2 py-1.5 sm:px-3 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-md border border-slate-200/60 dark:border-slate-800 rounded-xl text-[10px] font-bold text-slate-700 dark:text-slate-300 hover:scale-105 transition-all cursor-pointer font-mono select-none"
+            className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} left-2 sm:left-4 z-[400] flex items-center gap-1 px-2 py-1.5 sm:px-3 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-md border border-slate-200/60 dark:border-slate-800 rounded-xl text-[10px] font-bold text-slate-700 dark:text-slate-300 hover:scale-105 transition-all cursor-pointer font-mono select-none`}
             title="Legende anzeigen"
           >
             <span className="text-xs sm:text-sm">🗺️</span>

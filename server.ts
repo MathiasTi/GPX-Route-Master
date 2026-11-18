@@ -106,7 +106,11 @@ function ensureNginxIframeCompatibility() {
 async function startServer() {
   ensureNginxIframeCompatibility();
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(
+    process.env.NGINX_PORT
+      ? (process.env.DEFAULT_APP_PORT || 3000)
+      : (process.env.PORT || 3000)
+  );
 
   // Initialize the SQLite database and purge any legacy persisted Garmin API keys
   initDb();
@@ -127,23 +131,32 @@ async function startServer() {
 
     // Support sandboxed iframes safely with origin validation
     const origin = req.headers.origin;
+    res.setHeader("Vary", "Origin");
     if (origin && typeof origin === "string") {
       // Sanitize against CRLF injection in origin header
       const sanitizedOrigin = origin.replace(/[\r\n]/g, "").trim();
       if (sanitizedOrigin === "null") {
         res.setHeader("Access-Control-Allow-Origin", "null");
+        res.setHeader("Access-Control-Allow-Credentials", "true");
       } else {
         try {
           const parsedOrigin = new URL(sanitizedOrigin);
           const host = parsedOrigin.hostname.toLowerCase();
-          const reqHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(":")[0].toLowerCase();
+          const reqHost = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+            .split(",")[0]
+            .trim()
+            .split(":")[0]
+            .toLowerCase();
           const isTrustedOrigin =
             host === "localhost" ||
             host === "127.0.0.1" ||
-            host === reqHost ||
+            (reqHost && host === reqHost) ||
             host.endsWith(".run.app") ||
             host.endsWith(".google.com") ||
             host.endsWith(".googleusercontent.com") ||
+            host.endsWith(".usercontent.com") ||
+            host.endsWith(".web.app") ||
+            host.endsWith(".firebaseapp.com") ||
             host.endsWith(".aistudio.google.com");
 
           if (isTrustedOrigin) {
@@ -167,15 +180,21 @@ async function startServer() {
     next();
   });
 
-  // Auto-purge stale service workers and corrupted caches on initial document navigation
+  // Auto-purge stale service worker caches on initial document navigation without wiping localStorage auth tokens
   app.use((req, res, next) => {
     const rawCookies = req.headers.cookie || "";
     const isDocument = req.headers["sec-fetch-dest"] === "document" || req.path === "/" || req.path.endsWith(".html");
     const forceClean = req.query.clean_sw !== undefined || req.headers["x-clean-sw"] !== undefined;
 
     if (isDocument && (forceClean || !rawCookies.includes("__sw_purged=1"))) {
-      res.setHeader("Clear-Site-Data", '"cache", "storage"');
-      res.setHeader("Set-Cookie", "__sw_purged=1; Path=/; SameSite=Lax; Max-Age=31536000");
+      res.setHeader("Clear-Site-Data", '"cache"');
+      const isSecure =
+        req.secure ||
+        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+      const swCookieFlags = isSecure
+        ? "Path=/; SameSite=None; Secure; Max-Age=31536000"
+        : "Path=/; SameSite=Lax; Max-Age=31536000";
+      res.setHeader("Set-Cookie", `__sw_purged=1; ${swCookieFlags}`);
     }
     next();
   });
@@ -193,7 +212,9 @@ async function startServer() {
 
   // Explicit Service Worker endpoint with proper ServiceWorker-Allowed and MIME headers
   app.get("/sw.js", (req, res) => {
-    const swPath = path.join(process.cwd(), "public", "sw.js");
+    const publicSwPath = path.join(process.cwd(), "public", "sw.js");
+    const distSwPath = path.join(process.cwd(), "dist", "sw.js");
+    const swPath = fs.existsSync(publicSwPath) ? publicSwPath : distSwPath;
     if (fs.existsSync(swPath)) {
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("ServiceWorker-Allowed", "/");
@@ -206,7 +227,9 @@ async function startServer() {
 
   // Explicit Web App Manifest endpoint
   app.get("/manifest.json", (req, res) => {
-    const manifestPath = path.join(process.cwd(), "public", "manifest.json");
+    const publicManifestPath = path.join(process.cwd(), "public", "manifest.json");
+    const distManifestPath = path.join(process.cwd(), "dist", "manifest.json");
+    const manifestPath = fs.existsSync(publicManifestPath) ? publicManifestPath : distManifestPath;
     if (fs.existsSync(manifestPath)) {
       res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
       res.setHeader("Cache-Control", "public, max-age=3600");
@@ -249,41 +272,54 @@ async function startServer() {
 
   // Check current password unlock session status
   app.get("/api/auth/me", (req, res) => {
-    const token = extractSessionTokenFromRequest(req);
-    const verification = verifyAuthSessionToken(token);
-    if (!verification.valid) {
-      return res.json({ authenticated: false });
+    try {
+      const token = extractSessionTokenFromRequest(req);
+      const verification = verifyAuthSessionToken(token);
+      if (!verification.valid) {
+        return res.json({ authenticated: false });
+      }
+      return res.json({
+        authenticated: true,
+        expiresAt: verification.expiresAt
+      });
+    } catch (err: any) {
+      console.error("[Auth] Error verifying session:", err);
+      return res.status(500).json({ authenticated: false, error: "Interner Serverfehler bei der Sitzungsprüfung." });
     }
-    return res.json({
-      authenticated: true,
-      expiresAt: verification.expiresAt
-    });
   });
 
   // Unlock app with password ("mathias" or APP_PASSWORD) and create a 30-day session
   const handleUnlock = (req: express.Request, res: express.Response) => {
-    const { password } = req.body || {};
-    if (!verifyAppPassword(password)) {
-      return res.status(401).json({
+    try {
+      const { password } = req.body || {};
+      if (!verifyAppPassword(password)) {
+        return res.status(401).json({
+          authenticated: false,
+          error: "Falsches Passwort. Bitte versuche es erneut."
+        });
+      }
+
+      const session = createAuthSession("default", THIRTY_DAYS_MS);
+      const isSecure =
+        req.secure ||
+        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+      const cookieFlags = isSecure
+        ? `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; Secure; SameSite=None`
+        : `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; SameSite=Lax`;
+
+      res.setHeader("Set-Cookie", `velo_session=${encodeURIComponent(session.token)}; ${cookieFlags}`);
+      return res.json({
+        authenticated: true,
+        token: session.token,
+        expiresAt: session.expiresAt
+      });
+    } catch (err: any) {
+      console.error("[Auth] Error unlocking workspace:", err);
+      return res.status(500).json({
         authenticated: false,
-        error: "Falsches Passwort. Bitte versuche es erneut."
+        error: "Serverfehler beim Erstellen der Sitzung. Bitte versuche es erneut."
       });
     }
-
-    const session = createAuthSession("default", THIRTY_DAYS_MS);
-    const isSecure =
-      req.secure ||
-      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
-    const cookieFlags = isSecure
-      ? `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; Secure; SameSite=None`
-      : `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; SameSite=Lax`;
-
-    res.setHeader("Set-Cookie", `velo_session=${encodeURIComponent(session.token)}; ${cookieFlags}`);
-    return res.json({
-      authenticated: true,
-      token: session.token,
-      expiresAt: session.expiresAt
-    });
   };
 
   app.post("/api/auth/unlock", handleUnlock);
@@ -291,18 +327,23 @@ async function startServer() {
 
   // Lock app and invalidate session
   app.post("/api/auth/logout", (req, res) => {
-    const token = extractSessionTokenFromRequest(req);
-    if (token) {
-      deleteAuthSession(token);
+    try {
+      const token = extractSessionTokenFromRequest(req);
+      if (token) {
+        deleteAuthSession(token);
+      }
+      const isSecure =
+        req.secure ||
+        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+      const clearFlags = isSecure
+        ? "Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None"
+        : "Path=/; Max-Age=0; HttpOnly; SameSite=Lax";
+      res.setHeader("Set-Cookie", `velo_session=; ${clearFlags}`);
+      return res.json({ success: true, authenticated: false });
+    } catch (err: any) {
+      console.error("[Auth] Error logging out:", err);
+      return res.status(500).json({ success: false, authenticated: false });
     }
-    const isSecure =
-      req.secure ||
-      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
-    const clearFlags = isSecure
-      ? "Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None"
-      : "Path=/; Max-Age=0; HttpOnly; SameSite=Lax";
-    res.setHeader("Set-Cookie", `velo_session=; ${clearFlags}`);
-    return res.json({ success: true, authenticated: false });
   });
 
   // Protect all other /api/* routes with password session verification
@@ -3394,8 +3435,17 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware for development; static dist serving for production (including bundled dist/server.cjs)
+  const distPath = path.join(process.cwd(), "dist");
+  const distIndexPath = path.join(distPath, "index.html");
+  const isBundledProduction =
+    process.env.NODE_ENV !== "development" &&
+    fs.existsSync(distIndexPath) &&
+    typeof __filename === "string" &&
+    __filename.endsWith(".cjs");
+  const isProductionMode = process.env.NODE_ENV === "production" || isBundledProduction;
+
+  if (!isProductionMode) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: true },
@@ -3403,30 +3453,35 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath, { index: false }));
-    app.get('*all', (req, res) => {
-      const indexPath = path.join(distPath, 'index.html');
-      if (fs.existsSync(indexPath)) {
-        const rawProto = String(req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')).split(',')[0].trim().toLowerCase();
-        const safeProto = rawProto === 'https' ? 'https' : 'http';
-        const rawHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
-        const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : '';
-        const origin = safeHost && !safeHost.includes('0.0.0.0') && !safeHost.includes('localhost')
+    app.get("*all", (req, res) => {
+      if (fs.existsSync(distIndexPath)) {
+        const rawProto = String(req.headers["x-forwarded-proto"] || (req.secure ? "https" : "http")).split(",")[0].trim().toLowerCase();
+        const safeProto = rawProto === "https" ? "https" : "http";
+        const rawHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+        const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : "";
+        const envAppUrl = process.env.APP_URL && !process.env.APP_URL.includes("ais-dev-") ? process.env.APP_URL : "";
+        const origin = safeHost && !safeHost.includes("0.0.0.0") && !safeHost.includes("localhost")
           ? `${safeProto}://${safeHost}`
-          : (process.env.APP_URL || '');
-        let html = fs.readFileSync(indexPath, 'utf-8');
-        if (origin && !origin.includes('google.com') && !origin.includes('ai.studio')) {
-          const serializedOrigin = JSON.stringify(origin).replace(/</g, '\\u003c');
+          : envAppUrl;
+        let html = fs.readFileSync(distIndexPath, "utf-8");
+        if (
+          origin &&
+          !origin.includes("google.com") &&
+          !origin.includes("ai.studio") &&
+          !origin.includes("usercontent.com")
+        ) {
+          const serializedOrigin = JSON.stringify(origin).replace(/</g, "\\u003c");
           html = html.replace(
-            '<head>',
+            "<head>",
             `<head>\n    <script>window.__APP_ORIGIN__ = ${serializedOrigin};</script>`
           );
         }
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         return res.send(html);
       }
-      res.status(404).send('Index not found');
+      res.status(404).send("Index not found");
     });
   }
 

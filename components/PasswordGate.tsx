@@ -7,6 +7,35 @@ interface PasswordGateProps {
   onUnlocked: (token?: string) => void;
 }
 
+async function unlockViaXhr(url: string, password: string): Promise<{ ok: boolean; status: number; data: any }> {
+  return new Promise((resolve, reject) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.timeout = 15000;
+      xhr.onload = () => {
+        let data: any = null;
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch {
+          data = null;
+        }
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          data
+        });
+      };
+      xhr.onerror = () => reject(new Error(`XHR network error (status ${xhr.status || 0})`));
+      xhr.ontimeout = () => reject(new Error('XHR timeout after 15s'));
+      xhr.send(JSON.stringify({ password }));
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 export const PasswordGate: React.FC<PasswordGateProps> = ({ onUnlocked }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -21,22 +50,48 @@ export const PasswordGate: React.FC<PasswordGateProps> = ({ onUnlocked }) => {
     setIsSubmitting(true);
     setError(null);
 
+    const targetUrl = getApiUrl('/api/auth/unlock');
     try {
-      const res = await apiFetch(getApiUrl('/api/auth/unlock'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: trimmed })
-      });
+      let ok = false;
+      let status = 0;
+      let data: any = null;
 
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && data?.authenticated) {
-        onUnlocked(data.token);
-      } else {
-        setError(data?.error || 'Falsches Passwort. Bitte versuche es erneut.');
+      try {
+        const res = await apiFetch(targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: trimmed })
+        });
+        ok = res.ok;
+        status = res.status;
+        data = await res.json().catch(() => null);
+      } catch (fetchErr: any) {
+        // Fallback via XMLHttpRequest in case window.fetch shim in an iframe/proxy interfered
+        try {
+          const xhrRes = await unlockViaXhr(targetUrl, trimmed);
+          ok = xhrRes.ok;
+          status = xhrRes.status;
+          data = xhrRes.data;
+        } catch (xhrErr: any) {
+          const fetchMsg = fetchErr?.message || String(fetchErr || 'Fetch error');
+          const xhrMsg = xhrErr?.message || String(xhrErr || 'XHR error');
+          throw new Error(`${fetchMsg} | ${xhrMsg}`);
+        }
       }
-    } catch {
-      setError('Verbindungsfehler zum Server. Bitte versuche es erneut.');
+
+      if (ok && data?.authenticated) {
+        onUnlocked(data.token);
+      } else if (status === 401 || status === 403) {
+        setError(data?.error || 'Falsches Passwort. Bitte versuche es erneut.');
+      } else if (!ok) {
+        setError(data?.error || `Serverfehler (HTTP ${status}). Bitte versuche es erneut.`);
+      } else {
+        setError(data?.error || 'Unerwartete Serverantwort beim Entsperren.');
+      }
+    } catch (err: any) {
+      console.error('[PasswordGate] Unlock request failed:', err);
+      const detail = err?.message ? ` (${err.message} · ${targetUrl})` : ` (${targetUrl})`;
+      setError(`Verbindungsfehler zum Server. Bitte versuche es erneut.${detail}`);
     } finally {
       setIsSubmitting(false);
     }

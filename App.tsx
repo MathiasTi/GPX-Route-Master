@@ -8,7 +8,7 @@ import ElevationProfile from './components/ElevationProfile';
 import { ActivitiesManagerView } from './components/ActivitiesManagerView';
 import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
 import { PlannedToursView } from './components/PlannedToursView';
-import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Video, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
 import {
   AppPreferences,
   DEFAULT_APP_PREFERENCES,
@@ -2143,7 +2143,7 @@ const App: React.FC = () => {
       />
 
       {/* Clean Responsive Top Navigation Bar (Single compact mobile row + full desktop bar) */}
-      <header className="h-[52px] lg:h-auto lg:min-h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-1 lg:py-1.5 flex items-center justify-between gap-2 shrink-0 z-[75] relative">
+      <header className="h-[52px] lg:h-auto lg:min-h-12 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-1 lg:py-1.5 flex items-center justify-between gap-2 shrink-0 z-[90] relative">
         {/* Brand + Mobile Sidebar Toggle */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {activeWorkspaceView === 'map' && (
@@ -2873,90 +2873,63 @@ const App: React.FC = () => {
             />
 
         <div className="flex-1 relative">
-          <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
-            {is3D ? (
-              <Map3D 
-                tracks={tracks} 
-                activeLayer={activeLayer}
-                markedTrackId={markedTrackId}
-                onMarkTrack={setMarkedTrackId}
-                hoveredPoint={hoveredPoint}
-                onHoverPoint={setHoveredPoint}
-                selectionBounds={selectionBounds}
-                onSelection={setSelectionBounds}
-                mapView={mapView}
-                onMapViewChange={setMapView}
-                estimatedSpeed={estimatedSpeed}
-              />
-            ) : (
-              <Map 
-                tracks={tracks} 
-                activeLayer={activeLayer}
-                markedTrackId={markedTrackId}
-                compareTrackId={compareTrackId}
-                onStartMapComparison={handleStartMapComparison}
-                onExitMapComparison={handleExitMapComparison}
-                onOpenComparisonModal={() => setComparisonOpen(true)}
-                onMarkTrack={setMarkedTrackId}
-                hoveredPoint={hoveredPoint}
-                onHoverPoint={setHoveredPoint}
-                selectionBounds={selectionBounds}
-                onSelection={setSelectionBounds}
-                mapView={mapView}
-                onMapViewChange={setMapView}
-                estimatedSpeed={estimatedSpeed}
-                ftp={ftp}
-                textMarkers={textMarkers}
-                onAddTextMarker={handleAddTextMarker}
-                onDeleteTextMarker={handleDeleteTextMarker}
-                hideLegend={weatherOpen || comparisonOpen || intensiveAnalysisOpen}
-                isDark={theme === 'dark'}
-                onAnalyzeSurface={analyzeTrackSurface}
-                onOpenIntensiveAnalysis={(id) => {
-                  handleOpenTrackAnalysis(id, 'overview');
-                }}
-                onOpenVideoExport={tracks.length > 0 ? () => {
-                  triggerHaptic('medium');
-                  if (!markedTrackId && tracks.length > 0) {
-                    const firstVisible = tracks.find(t => t.visible) || tracks[0];
-                    setMarkedTrackId(firstVisible.id);
-                  }
-                  setIsExportModalOpen(true);
-                } : undefined}
-                analyzingSurfaces={analyzingSurfaces}
-                surfaceAnalysisStatuses={surfaceAnalysisStatuses}
-                timeGaps={activeTimeGaps}
-                selectedGapId={selectedGapId}
-                onSelectGap={handleFocusGapOnMap}
-                onSplitGap={handleSplitTrack}
-                onCloseGap={handleCloseGap}
-                onOpenShortcuts={() => setShortcutsModalOpen(true)}
-              />
-            )}
-          </ErrorBoundary>
-
-          {/* Direct Floating 3D Flyover Launch Button in 3D Map Mode */}
-          {is3D && tracks.length > 0 && !weatherOpen && !comparisonOpen && !intensiveAnalysisOpen && !isExportModalOpen && (
-            <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[400] pointer-events-auto">
-              <button
-                type="button"
-                id="btn-map-3d-flyover"
-                onClick={() => {
-                  triggerHaptic('medium');
-                  if (!markedTrackId && tracks.length > 0) {
-                    const firstVisible = tracks.find(t => t.visible) || tracks[0];
-                    setMarkedTrackId(firstVisible.id);
-                  }
-                  setIsExportModalOpen(true);
-                }}
-                className="flex items-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg border border-emerald-400/40 cursor-pointer transition-all active:scale-95"
-                title="3D-Überflug Video Studio starten"
-              >
-                <Video className="w-4 h-4 text-emerald-100" />
-                <span>3D-Überflug</span>
-              </button>
-            </div>
-          )}
+          <div className="w-full h-full relative isolate z-10">
+            <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
+              {is3D ? (
+                <Map3D 
+                  tracks={tracks} 
+                  activeLayer={activeLayer}
+                  markedTrackId={markedTrackId}
+                  onMarkTrack={setMarkedTrackId}
+                  hoveredPoint={hoveredPoint}
+                  onHoverPoint={setHoveredPoint}
+                  selectionBounds={selectionBounds}
+                  onSelection={setSelectionBounds}
+                  mapView={mapView}
+                  onMapViewChange={setMapView}
+                  estimatedSpeed={estimatedSpeed}
+                />
+              ) : (
+                <Map 
+                  tracks={tracks} 
+                  activeLayer={activeLayer}
+                  markedTrackId={markedTrackId}
+                  compareTrackId={compareTrackId}
+                  onStartMapComparison={handleStartMapComparison}
+                  onExitMapComparison={handleExitMapComparison}
+                  onOpenComparisonModal={() => setComparisonOpen(true)}
+                  onMarkTrack={setMarkedTrackId}
+                  hoveredPoint={hoveredPoint}
+                  onHoverPoint={setHoveredPoint}
+                  selectionBounds={selectionBounds}
+                  onSelection={setSelectionBounds}
+                  mapView={mapView}
+                  onMapViewChange={setMapView}
+                  estimatedSpeed={estimatedSpeed}
+                  ftp={ftp}
+                  textMarkers={textMarkers}
+                  onAddTextMarker={handleAddTextMarker}
+                  onDeleteTextMarker={handleDeleteTextMarker}
+                  hideLegend={weatherOpen || comparisonOpen || intensiveAnalysisOpen}
+                  isDark={theme === 'dark'}
+                  onAnalyzeSurface={analyzeTrackSurface}
+                  onOpenIntensiveAnalysis={(id) => {
+                    handleOpenTrackAnalysis(id, 'overview');
+                  }}
+                  analyzingSurfaces={analyzingSurfaces}
+                  surfaceAnalysisStatuses={surfaceAnalysisStatuses}
+                  timeGaps={activeTimeGaps}
+                  selectedGapId={selectedGapId}
+                  onSelectGap={handleFocusGapOnMap}
+                  onSplitGap={handleSplitTrack}
+                  onCloseGap={handleCloseGap}
+                  onOpenShortcuts={() => setShortcutsModalOpen(true)}
+                  isSidebarOpen={isMobileMenuOpen}
+                  isBottomBarObscuring={!markedTrack || isProfileCollapsed}
+                />
+              )}
+            </ErrorBoundary>
+          </div>
 
           <AnimatePresence>
             {timeGapModalOpen && (
@@ -3149,11 +3122,11 @@ const App: React.FC = () => {
             isProfileCollapsed
               ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none'
               : mobileProfileSnap === 'mini'
-              ? 'h-40 sm:h-52 md:h-60 pb-[4.25rem] sm:pb-2'
+              ? 'h-[214px] sm:h-52 md:h-60 pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
               : mobileProfileSnap === 'expanded'
-              ? 'h-[58vh] min-h-[340px] sm:h-72 md:h-80 pb-[4.25rem] sm:pb-2'
-              : 'h-[38vh] min-h-[250px] max-h-[340px] sm:h-60 md:h-68 md:max-h-none pb-[4.25rem] sm:pb-2'
-          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 py-1 sm:py-2 md:py-2.5 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+              ? 'h-[58vh] min-h-[340px] sm:h-72 md:h-80 pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
+              : 'h-[38vh] min-h-[260px] max-h-[360px] sm:h-60 md:h-68 md:max-h-none pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
+          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 pt-1 sm:py-2 md:py-2.5 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
             <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
               <ElevationProfile 
                 track={markedTrack} 

@@ -604,8 +604,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const width = dimensions.width;
   const height = dimensions.height;
   const padding = {
-    top: height < 145 ? 14 : 20,
-    bottom: height < 145 ? 18 : 22,
+    top: height < 105 ? 10 : height < 145 ? 14 : 20,
+    bottom: height < 105 ? 16 : height < 145 ? 18 : 22,
     left: width < 520 ? 38 : 48,
     right: width < 520 ? 10 : 14,
   };
@@ -1879,7 +1879,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         </>
       )}
-          <div className="flex items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full">
+          <div className={`${mobileProfileSnap === 'mini' && !(selectionBounds && selectedRegions.length > 0) ? 'hidden sm:flex' : 'flex'} items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full`}>
             {selectionBounds && selectedRegions.length > 0 ? (
               <>
                 <button 

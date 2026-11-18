@@ -7,8 +7,11 @@ import tailwindcss from '@tailwindcss/vite';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
     const env = loadEnv(mode, '.', '');
+    const rawAppUrl = process.env.APP_URL || env.APP_URL || '';
+    const safeBuildAppUrl = command === 'build' && rawAppUrl.includes('ais-dev-') ? '' : rawAppUrl;
+
     return {
       server: {
         port: 3000,
@@ -21,6 +24,10 @@ export default defineConfig(({ mode }) => {
         {
           name: 'html-transform-origin',
           transformIndexHtml(html, ctx: any) {
+            // Only inject during live dev server HTTP requests, never statically during vite build
+            if (!ctx?.req) {
+              return html;
+            }
             const rawHost = String(ctx.req?.headers?.['x-forwarded-host'] || ctx.req?.headers?.host || '').split(',')[0].trim();
             const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : '';
             const rawProto = String(ctx.req?.headers?.['x-forwarded-proto'] || (ctx.req?.socket?.encrypted ? 'https' : 'http')).split(',')[0].trim().toLowerCase();
@@ -28,7 +35,7 @@ export default defineConfig(({ mode }) => {
             const origin = safeHost && !safeHost.includes('0.0.0.0') && !safeHost.includes('localhost')
               ? `${safeProto}://${safeHost}`
               : (process.env.APP_URL || env.APP_URL || '');
-            if (origin && !origin.includes('google.com') && !origin.includes('ai.studio')) {
+            if (origin && !origin.includes('google.com') && !origin.includes('ai.studio') && !origin.includes('usercontent.com')) {
               const serializedOrigin = JSON.stringify(origin).replace(/</g, '\\u003c');
               return html.replace(
                 '<head>',
@@ -63,8 +70,8 @@ export default defineConfig(({ mode }) => {
         }
       },
       define: {
-        '__APP_URL__': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
-        'process.env.APP_URL': JSON.stringify(process.env.APP_URL || env.APP_URL || 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app'),
+        '__APP_URL__': JSON.stringify(safeBuildAppUrl),
+        'process.env.APP_URL': JSON.stringify(safeBuildAppUrl),
         'process.env.VITE_BUILD_DATE': JSON.stringify(new Date().toLocaleString('de-DE', {
           year: 'numeric',
           month: '2-digit',

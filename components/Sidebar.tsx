@@ -1211,13 +1211,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setIsMobileMenuOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] md:hidden"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1050] md:hidden"
           />
         )}
       </AnimatePresence>
 
       <div className={`
-        fixed inset-y-0 left-0 z-[80] transition-all duration-300 transform
+        fixed inset-y-0 left-0 z-[1060] md:z-[80] transition-all duration-300 transform
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
         w-[88vw] max-w-[340px] md:w-auto bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-2xl md:shadow-none
@@ -1241,12 +1241,12 @@ const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             aria-label="Menü schließen"
             onClick={() => setIsMobileMenuOpen(false)}
-            className="md:hidden absolute right-4 top-4 min-h-[44px] min-w-[44px] flex items-center justify-center p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl z-50 touch-manipulation active:scale-95 shadow-xs"
+            className="md:hidden absolute right-3 top-3 min-h-[44px] min-w-[44px] flex items-center justify-center p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl z-50 touch-manipulation active:scale-95 shadow-xs"
           >
             <X size={20} />
           </button>
 
-          <div className="relative z-10 px-5 py-4 bg-slate-900 text-white flex justify-between items-center border-b border-slate-800/80">
+          <div className="relative z-10 pl-5 pr-16 md:px-5 py-4 bg-slate-900 text-white flex justify-between items-center border-b border-slate-800/80">
             <div className="flex items-center gap-2.5">
               <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
                 <Layers className="w-5 h-5 text-blue-400 shrink-0" />

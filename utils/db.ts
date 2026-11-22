@@ -812,7 +812,7 @@ function runInitDbStatements() {
     const checkPurge = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
     const hasPurge = (checkPurge.get('2.9.8-purge-synthetic-health-metrics') as { count: number }).count > 0;
     if (!hasPurge) {
-      const purgeRes = purgeSyntheticHealthMetricRows('default');
+      const purgeRes = purgeSyntheticHealthMetricRows();
       if (purgeRes.stepsRemoved > 0) {
         console.log(
           `[DB Migration 2.9.8] Purged ${purgeRes.stepsRemoved} synthetic fake steps/calories row(s).`
@@ -826,6 +826,27 @@ function runInitDbStatements() {
     }
   } catch (e) {
     console.error('Failed to run 2.9.8 synthetic health cleanup migration:', e);
+  }
+
+  // Follow-up cleanup migration (2.9.9-purge-synthetic-steps-v2): Catch legacy synthetic step/calorie rows regardless of distance factor or later activities
+  try {
+    const checkPurgeV2 = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasPurgeV2 = (checkPurgeV2.get('2.9.9-purge-synthetic-steps-v2') as { count: number }).count > 0;
+    if (!hasPurgeV2) {
+      const purgeRes = purgeSyntheticHealthMetricRows();
+      if (purgeRes.stepsRemoved > 0) {
+        console.log(
+          `[DB Migration 2.9.9] Purged ${purgeRes.stepsRemoved} remaining synthetic fake steps/calories row(s).`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.9-purge-synthetic-steps-v2',
+        new Date().toISOString(),
+        'Purged remaining legacy synthetic steps/calories rows across all distance factors and user scopes.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.9 synthetic health cleanup migration:', e);
   }
 
   try {
@@ -2227,70 +2248,113 @@ export function getGarminActivityById(id: string, userId: string = 'default'): D
 /**
  * Removes legacy auto-synthesized fake `garmin_steps` (and matching fake calories) rows
  * created by an earlier backfill routine, while strictly preserving all real Garmin measurements.
+ * When `userId` is omitted, scans and cleans all users in `garmin_steps`.
  */
-export function purgeSyntheticHealthMetricRows(userId: string = 'default'): { stepsRemoved: number } {
-  const uid = normalizeUserId(userId);
-  const stepRows = db
-    .prepare('SELECT date, steps, calories, distance FROM garmin_steps WHERE user_id = ?')
-    .all(uid) as Array<{ date?: string; steps?: number; calories?: number; distance?: number }>;
+export function purgeSyntheticHealthMetricRows(userId?: string): { stepsRemoved: number } {
+  const targetUserIds: string[] = userId
+    ? [normalizeUserId(userId)]
+    : (
+        db
+          .prepare('SELECT DISTINCT user_id FROM garmin_steps')
+          .all() as Array<{ user_id?: string }>
+      )
+        .map((r) => normalizeUserId(r.user_id))
+        .filter((v, idx, arr) => arr.indexOf(v) === idx);
 
-  if (stepRows.length === 0) {
+  if (targetUserIds.length === 0) {
     return { stepsRemoved: 0 };
   }
 
-  const actRows = (db.prepare('SELECT date, type, distance, duration, calories FROM garmin_activities WHERE user_id = ?').all(uid) as DbGarminActivityRecord[]).map((a) => ({
-    ...a,
-    datePrefix: String(a.date || '').trim().slice(0, 10)
-  }));
-
-  const actsByDate = new Map<string, DbGarminActivityRecord[]>();
-  for (const a of actRows) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(a.datePrefix)) {
-      const list = actsByDate.get(a.datePrefix) || [];
-      list.push(a);
-      actsByDate.set(a.datePrefix, list);
-    }
-  }
+  const isSyntheticDistance = (steps: number, dist: number): boolean => {
+    if (!Number.isFinite(dist) || dist <= 0) return true;
+    const candidateFactors = [0.00075, 0.000762, 0.00078];
+    return candidateFactors.some((f) => Math.abs(dist - Number((steps * f).toFixed(2))) <= 0.03);
+  };
 
   const deleteStepStmt = db.prepare('DELETE FROM garmin_steps WHERE date = ? AND user_id = ?');
   let stepsRemoved = 0;
 
   const tx = db.transaction(() => {
-    for (const row of stepRows) {
-      const rawDate = String(row.date || '');
-      const dateStr = stripScopedKey(rawDate, uid).slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
+    for (const uid of targetUserIds) {
+      const stepRows = db
+        .prepare('SELECT date, steps, calories, distance FROM garmin_steps WHERE user_id = ?')
+        .all(uid) as Array<{ date?: string; steps?: number; calories?: number; distance?: number }>;
 
-      const dayActs = (actsByDate.get(dateStr) || []).filter((a) => {
-        const t = String(a.type || '').toLowerCase();
-        return !t.includes('stop_watch') && !t.includes('stopwatch');
-      });
+      if (stepRows.length === 0) continue;
 
-      const daySeed = dateStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-      const dayCalories = Math.round(dayActs.reduce((sum, a) => sum + Number(a.calories || 0), 0));
-      const dayRunSteps = dayActs.reduce((sum, a) => {
-        const t = String(a.type || '').toLowerCase();
-        if (t.includes('run') || t.includes('walk') || t.includes('hik') || t.includes('soccer')) {
-          return sum + Math.round(Number(a.distance || 0) * 1280);
+      const actRows = (
+        db
+          .prepare('SELECT date, type, distance, duration, calories FROM garmin_activities WHERE user_id = ?')
+          .all(uid) as DbGarminActivityRecord[]
+      ).map((a) => ({
+        ...a,
+        datePrefix: String(a.date || '').trim().slice(0, 10)
+      }));
+
+      const actsByDate = new Map<string, DbGarminActivityRecord[]>();
+      for (const a of actRows) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(a.datePrefix)) {
+          const list = actsByDate.get(a.datePrefix) || [];
+          list.push(a);
+          actsByDate.set(a.datePrefix, list);
         }
-        return sum + Math.round(Number(a.duration || 0) * 0.15);
-      }, 0);
+      }
 
-      const expectedFakeSteps = 6200 + (daySeed % 9) * 420 + dayRunSteps;
-      const expectedFakeCalories = 1850 + dayCalories + Math.round((expectedFakeSteps - 6000) * 0.04);
-      const expectedFakeDist = Number((expectedFakeSteps * 0.000762).toFixed(2));
+      for (const row of stepRows) {
+        const rawDate = String(row.date || '');
+        const dateStr = stripScopedKey(rawDate, uid).slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
-      const actualSteps = Number(row.steps || 0);
-      const actualCalories = Number(row.calories || 0);
-      const actualDist = Number(row.distance || 0);
+        const actualSteps = Number(row.steps || 0);
+        const actualCalories = Number(row.calories || 0);
+        const actualDist = Number(row.distance || 0);
+        if (!Number.isFinite(actualSteps) || actualSteps <= 0) continue;
 
-      if (
-        actualSteps === expectedFakeSteps &&
-        Math.abs(actualCalories - expectedFakeCalories) <= 1 &&
-        Math.abs(actualDist - expectedFakeDist) <= 0.02
-      ) {
-        const info = deleteStepStmt.run(rawDate, uid);
-        stepsRemoved += info.changes;
+        const daySeed = dateStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+        const baseFakeSteps = 6200 + (daySeed % 9) * 420;
+        const baseFakeCalories = 1850 + Math.round((baseFakeSteps - 6000) * 0.04);
+
+        const dayActs = (actsByDate.get(dateStr) || []).filter((a) => {
+          const t = String(a.type || '').toLowerCase();
+          return !t.includes('stop_watch') && !t.includes('stopwatch');
+        });
+        const dayCalories = Math.round(dayActs.reduce((sum, a) => sum + Number(a.calories || 0), 0));
+        const dayRunSteps = dayActs.reduce((sum, a) => {
+          const t = String(a.type || '').toLowerCase();
+          if (t.includes('run') || t.includes('walk') || t.includes('hik') || t.includes('soccer')) {
+            return sum + Math.round(Number(a.distance || 0) * 1280);
+          }
+          return sum + Math.round(Number(a.duration || 0) * 0.15);
+        }, 0);
+
+        const actFakeSteps = baseFakeSteps + dayRunSteps;
+        const actFakeCalories = 1850 + dayCalories + Math.round((actFakeSteps - 6000) * 0.04);
+
+        // 1. Exact no-activity synthetic fingerprint (e.g. 2026-11-21 => 7460 steps & 1908 kcal)
+        const matchesBaseFormula =
+          actualSteps === baseFakeSteps &&
+          actualCalories > 0 &&
+          Math.abs(actualCalories - baseFakeCalories) <= 2;
+
+        // 2. Exact activity-adjusted synthetic fingerprint
+        const matchesActFormula =
+          actualSteps === actFakeSteps &&
+          actualCalories > 0 &&
+          Math.abs(actualCalories - actFakeCalories) <= 2;
+
+        // 3. Synthetic calorie formula with synthetic distance factor (catches rows whose activity list changed later)
+        const expectedCalFromSteps = 1850 + Math.round((actualSteps - 6000) * 0.04);
+        const matchesCalAndSyntheticDist =
+          actualSteps >= baseFakeSteps &&
+          actualCalories > 0 &&
+          (Math.abs(actualCalories - expectedCalFromSteps) <= 1 ||
+            (dayCalories > 0 && Math.abs(actualCalories - (expectedCalFromSteps + dayCalories)) <= 2)) &&
+          isSyntheticDistance(actualSteps, actualDist);
+
+        if (matchesBaseFormula || matchesActFormula || matchesCalAndSyntheticDist) {
+          const info = deleteStepStmt.run(rawDate, uid);
+          stepsRemoved += info.changes;
+        }
       }
     }
   });

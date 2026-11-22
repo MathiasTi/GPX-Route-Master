@@ -1591,7 +1591,7 @@ export async function syncGarminPersonalHealth(options: {
           if (entry?.value !== undefined && entry?.value !== null) {
             prev[fieldName] = entry.value;
           }
-          byDate.set(dStr, { ...prev, ...entry });
+          byDate.set(dStr, prev);
         }
       };
       mergeMetricArray(metricsMap.WELLNESS_TOTAL_STEPS, 'totalSteps');
@@ -1613,8 +1613,9 @@ export async function syncGarminPersonalHealth(options: {
     return [];
   };
 
-  const ingestDailiesList = (list: any[], metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto') => {
-    if (list.length === 0) return;
+  const ingestDailiesList = (list: any[], metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto'): number => {
+    if (list.length === 0) return 0;
+    let ingestedSteps = 0;
     runInTransaction(() => {
       for (const raw of list) {
         if (!raw || typeof raw !== 'object') continue;
@@ -1629,19 +1630,37 @@ export async function syncGarminPersonalHealth(options: {
         const steps = Number(
           d.totalSteps ??
           d.steps ??
+          d.dailySteps ??
+          d.stepCount ??
           (metricHint === 'steps' ? d.value : undefined) ??
           (metricHint === 'auto' && d.restingHeartRate === undefined && d.rhr === undefined && d.averageStressLevel === undefined && d.overallStressLevel === undefined
             ? d.value
             : undefined) ??
           0
         );
-        const calories = Number(d.totalKilocalories ?? d.activeKilocalories ?? d.calories ?? 0) || undefined;
-        const distMeters = Number(d.totalDistanceMeters ?? d.distanceInMeters ?? d.distance ?? 0);
-        const distKm = distMeters > 100 ? Number((distMeters / 1000).toFixed(2)) : distMeters || undefined;
+        const totalKcalRaw = Number(d.totalKilocalories ?? d.totalCalories ?? 0);
+        const activeKcalRaw = Number(d.activeKilocalories ?? 0);
+        const bmrKcalRaw = Number(d.bmrKilocalories ?? 0);
+        const fallbackCalories = Number(d.calories ?? 0);
+        const calories =
+          totalKcalRaw > 0
+            ? totalKcalRaw
+            : activeKcalRaw > 0 && bmrKcalRaw > 0
+            ? activeKcalRaw + bmrKcalRaw
+            : activeKcalRaw > 0
+            ? activeKcalRaw
+            : fallbackCalories > 0
+            ? fallbackCalories
+            : undefined;
+        const distMeters = Number(
+          d.totalDistanceMeters ?? d.distanceInMeters ?? d.totalDistance ?? d.distance ?? 0
+        );
+        const distKm = distMeters > 100 ? Number((distMeters / 1000).toFixed(2)) : distMeters > 0 ? distMeters : undefined;
 
         if (!isNaN(steps) && steps > 0) {
           saveSteps(dateStr, Math.round(steps), calories ? Math.round(calories) : undefined, distKm);
           stepsCount++;
+          ingestedSteps++;
         }
 
         const rhr = Number(
@@ -1693,6 +1712,7 @@ export async function syncGarminPersonalHealth(options: {
         }
       }
     });
+    return ingestedSteps;
   };
 
   const toMinutesFromGarminSleepField = (rawVal: unknown, isSecondsField: boolean): number | undefined => {
@@ -1726,17 +1746,34 @@ export async function syncGarminPersonalHealth(options: {
         `${baseUrl}/personal-api/dailies?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`
       ];
       const { data: dailiesPayload } = await fetchGarminJsonWithFallback(dailiesUrls, accessToken, { allowNotFoundAsEmpty: true });
-      ingestDailiesList(extractDailiesList(dailiesPayload), 'auto');
-    }
+      const chunkSteps = ingestDailiesList(extractDailiesList(dailiesPayload), 'auto');
 
-    if (stepsCount === 0) {
-      for (const { chunkStart, chunkEnd } of chunks) {
+      // If this chunk yielded no step rows from generic dailies, explicitly query the dedicated daily steps endpoint
+      if (chunkSteps === 0) {
         const stepsFallbackUrls = [
           `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
           `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`
         ];
         const { data: stepsPayload } = await fetchGarminJsonWithFallback(stepsFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
         ingestDailiesList(extractDailiesList(stepsPayload), 'steps');
+      }
+    }
+
+    // Fallback to per-day Garmin Connect user summary endpoint for the most recent 14 days if range endpoints returned no steps
+    if (stepsCount === 0) {
+      const endDateObj = new Date(`${end}T00:00:00Z`);
+      const startDateObj = new Date(`${start}T00:00:00Z`);
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(endDateObj);
+        d.setUTCDate(endDateObj.getUTCDate() - i);
+        if (d < startDateObj) break;
+        const dStr = d.toISOString().slice(0, 10);
+        const singleDayUrls = [
+          `${baseUrl}/usersummary-service/usersummary/daily?calendarDate=${encodeURIComponent(dStr)}`,
+          `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(dStr)}/${encodeURIComponent(dStr)}`
+        ];
+        const { data: dayPayload } = await fetchGarminJsonWithFallback(singleDayUrls, accessToken, { allowNotFoundAsEmpty: true });
+        ingestDailiesList(extractDailiesList(dayPayload), 'auto');
       }
     }
 

@@ -10,6 +10,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Empfohlen für den Internetbetrieb: starkes Zugangspasswort (mind. 10 Zeichen) setzen
+      # oder leer lassen, um es beim ersten Aufruf im Browser einzurichten:
+      # - APP_PASSWORD=dein_langes_sicheres_passwort
+      # Optional, falls die App über zusätzliche eigene Domains aufgerufen wird:
+      # - CORS_ALLOWED_ORIGINS=https://routen.deine-domain.de
       # Falls du den Gemini API-Key in deinem Docker-Container nutzen möchtest,
       # kannst du ihn hier eintragen oder eine .env-Datei im selben Verzeichnis erstellen:
       # - GEMINI_API_KEY=dein_api_key_hier

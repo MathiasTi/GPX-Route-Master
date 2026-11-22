@@ -1,13 +1,13 @@
-# Build-Stage: Verwende ein vollständiges Node-Image zum Bauen (unterstützt native Module wie better-sqlite3)
-FROM node:20 AS builder
+# Build-Stage: Verwende ein vollständiges Node 22 LTS-Image zum Bauen (unterstützt native Module wie better-sqlite3)
+FROM node:22-bookworm AS builder
 
 WORKDIR /app
 
 # Abhängigkeiten kopieren
-COPY package.json ./
+COPY package*.json ./
 
 # Alle Abhängigkeiten installieren (inkl. devDependencies wie esbuild, typescript, vite)
-RUN npm install
+RUN npm install --no-fund
 
 # Quellcode kopieren und die Anwendung bauen
 COPY . .
@@ -16,13 +16,13 @@ RUN npm run build
 # Prune devDependencies, um nur produktive Module zu behalten (better-sqlite3 bleibt erhalten und fertig kompiliert)
 RUN npm prune --omit=dev
 
-# Runner-Stage: Kleines, optimiertes Image für die Ausführung
-FROM node:20-slim AS runner
+# Runner-Stage: Kleines, optimiertes Node 22 LTS-Image für die Ausführung (gleiche Debian-Bookworm-Basis für native Module)
+FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app
 
-# Installiere Python 3
-RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+# Installiere Python 3 (falls lokale Hilfsskripte genutzt werden)
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 
 # Produktions-Umgebungsvariablen setzen
 ENV NODE_ENV=production

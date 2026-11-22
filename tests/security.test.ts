@@ -348,24 +348,27 @@ export function runSecurityTests(): boolean {
       const emptyMetrics = getHealthMetrics(testUser);
       assert(emptyMetrics.steps.length === 0, 'Empty user must return 0 steps (no synthetic backfill)');
 
-      // Insert one genuine Garmin row and one legacy synthetic-formula row
-      // Legacy formula: daySeed = sum(charCodeAt); steps = 6200 + (daySeed % 9) * 420;
-      // distance = Number((steps * 0.000762).toFixed(2)); calories = 1850 + Math.round((steps - 6000) * 0.04)
-      const fakeDate = '2025-01-15';
-      const fakeSeed = fakeDate.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-      const fakeSteps = 6200 + (fakeSeed % 9) * 420;
-      const fakeDist = Number((fakeSteps * 0.000762).toFixed(2));
-      const fakeCal = 1850 + Math.round((fakeSteps - 6000) * 0.04);
+      // Insert genuine Garmin rows AND legacy synthetic-formula rows (including exact 2026-11-21 => 7460 steps / 1908 kcal with varying distance factors)
+      const fakeDate1 = '2025-01-15';
+      const fakeSeed1 = fakeDate1.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+      const fakeSteps1 = 6200 + (fakeSeed1 % 9) * 420;
+      const fakeDist1 = Number((fakeSteps1 * 0.000762).toFixed(2));
+      const fakeCal1 = 1850 + Math.round((fakeSteps1 - 6000) * 0.04);
 
-      saveSteps(fakeDate, fakeSteps, fakeCal, fakeDist, testUser);
-      saveSteps('2025-01-16', 11432, 2310, 8.45, testUser);
+      saveSteps(fakeDate1, fakeSteps1, fakeCal1, fakeDist1, testUser);
+      // 2026-11-21 legacy fake row with 0.00078 distance factor (previously missed by strict 0.000762 check!)
+      saveSteps('2026-11-21', 7460, 1908, 5.82, testUser);
+      // 2026-11-20 legacy fake row with NULL distance
+      saveSteps('2026-11-20', 7040, 1892, undefined, testUser);
+      // Genuine Garmin Connect day (e.g. 16,946 steps)
+      saveSteps('2026-11-22', 16946, 2540, 13.1, testUser);
 
       const purged = purgeSyntheticHealthMetricRows(testUser);
-      assert(purged.stepsRemoved === 1, `Expected 1 synthetic row purged, got ${purged.stepsRemoved}`);
+      assert(purged.stepsRemoved === 3, `Expected 3 synthetic rows purged, got ${purged.stepsRemoved}`);
 
       const afterMetrics = getHealthMetrics(testUser);
       assert(afterMetrics.steps.length === 1, 'Genuine Garmin step row must be preserved');
-      assert(afterMetrics.steps[0].date === '2025-01-16' && afterMetrics.steps[0].steps === 11432, 'Preserved row matches genuine Garmin data');
+      assert(afterMetrics.steps[0].date === '2026-11-22' && afterMetrics.steps[0].steps === 16946, 'Preserved row matches genuine Garmin data');
     } finally {
       inspectDb.prepare('DELETE FROM garmin_steps WHERE user_id = ?').run(testUser);
       inspectDb.close();

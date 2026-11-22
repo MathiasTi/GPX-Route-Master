@@ -20,6 +20,9 @@ import { runCleanArchitecturePortsAdaptersTests } from '../tests/cleanArchitectu
 import { runPowerZonesTests } from '../tests/powerZones.test';
 import { runGarminSessionKeyTests } from '../tests/garminSessionKey.test';
 import { runActivitiesCatalogTests } from '../tests/activitiesCatalog.test';
+import { runUrlGpxImporterTests } from '../tests/urlGpxImporter.test';
+import { runKomootVersioningTests } from '../tests/komootVersioning.test';
+import { runMapZoomTests } from '../tests/mapZoom.test';
 
 async function main() {
   try {
@@ -47,8 +50,11 @@ async function main() {
     const powerZonesSuccess = runPowerZonesTests();
     const garminSessionKeySuccess = await runGarminSessionKeyTests();
     const activitiesCatalogSuccess = await runActivitiesCatalogTests();
+    const urlImporterSuccess = await runUrlGpxImporterTests();
+    const komootVersioningSuccess = runKomootVersioningTests();
+    const mapZoomSuccess = runMapZoomTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

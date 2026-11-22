@@ -97,11 +97,10 @@ export function calculateWorkspaceSummary(
     totalAscentM += asc;
     totalDescentM += desc;
 
-    // Caloric expenditure estimation per activity
+    // Use strictly real recorded calories when available; never fabricate estimates
     const isRunning = track.activityType === 'running';
-    const baseMetabolicFactor = isRunning ? 0.95 : 0.42; // kcal per kg per km
-    const climbingFactor = 0.021; // kcal per kg per 10m ascent
-    const trackKcal = (dist * userWeight * baseMetabolicFactor) + ((asc / 10) * userWeight * climbingFactor);
+    const rawTrackCal = Number((track as any).calories || 0);
+    const trackKcal = Number.isFinite(rawTrackCal) && rawTrackCal > 0 ? rawTrackCal : 0;
     totalCalories += trackKcal;
 
     if (isRunning) {
@@ -451,14 +450,16 @@ export const WorkspaceSummaryDashboard: React.FC<WorkspaceSummaryDashboardProps>
                   </span>
                 </div>
 
-                <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 flex items-center justify-between font-mono">
-                  <span className="text-slate-400 flex items-center gap-1 font-sans">
-                    <Flame className="w-3 h-3 text-orange-500" /> Energie
-                  </span>
-                  <span className="font-bold text-slate-700 dark:text-slate-200">
-                    ~{stats.estimatedCaloriesKcal.toLocaleString('de-DE')} kcal
-                  </span>
-                </div>
+                {stats.estimatedCaloriesKcal > 0 && (
+                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 flex items-center justify-between font-mono">
+                    <span className="text-slate-400 flex items-center gap-1 font-sans">
+                      <Flame className="w-3 h-3 text-orange-500" /> Energie
+                    </span>
+                    <span className="font-bold text-slate-700 dark:text-slate-200">
+                      {stats.estimatedCaloriesKcal.toLocaleString('de-DE')} kcal
+                    </span>
+                  </div>
+                )}
 
                 {stats.maxElevationM !== null && (
                   <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 flex items-center justify-between font-mono">

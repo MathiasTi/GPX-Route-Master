@@ -15,7 +15,16 @@ import {
   putCachedTileBlob,
   getConfiguredTileCachePolicy
 } from '../utils/tileCacheDb';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Plus, Minus, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
+import { MapZoomControls } from './MapZoomControls';
+import {
+  computeNextZoom,
+  FINE_ZOOM_STEP,
+  MAP_MAX_ZOOM,
+  MAP_MIN_ZOOM,
+  ZoomStep
+} from '../utils/mapZoom';
+import { sanitizeHexColor } from '../utils/securityMiddleware';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -578,73 +587,38 @@ const MapResizer = ({ markedTrackId, compareTrackId, tracksLength, tracks }: { m
   return null;
 };
 
-const MobileZoomControls = () => {
+const LeafletZoomBridge = ({
+  mapRef,
+  pendingZoomRef,
+  onZoomChange
+}: {
+  mapRef: React.MutableRefObject<L.Map | null>;
+  pendingZoomRef: React.MutableRefObject<number | null>;
+  onZoomChange: (zoom: number) => void;
+}) => {
   const map = useMap();
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (containerRef.current) {
-      L.DomEvent.disableClickPropagation(containerRef.current);
-      L.DomEvent.disableScrollPropagation(containerRef.current);
+    mapRef.current = map;
+    onZoomChange(map.getZoom());
+    return () => {
+      if (mapRef.current === map) {
+        mapRef.current = null;
+      }
+    };
+  }, [map, mapRef, onZoomChange]);
+
+  useMapEvents({
+    zoom: () => {
+      onZoomChange(map.getZoom());
+    },
+    zoomend: () => {
+      pendingZoomRef.current = null;
+      onZoomChange(map.getZoom());
     }
-  }, []);
+  });
 
-  const stopEvent = (e: React.SyntheticEvent) => {
-    e.stopPropagation();
-  };
-
-  const handleZoomIn = (e: React.SyntheticEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    triggerHaptic('light');
-    map.zoomIn();
-  };
-
-  const handleZoomOut = (e: React.SyntheticEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    triggerHaptic('light');
-    map.zoomOut();
-  };
-
-  return (
-    <div 
-      ref={containerRef}
-      className="absolute bottom-36 right-2.5 sm:bottom-28 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto select-none"
-      onClick={stopEvent}
-      onDoubleClick={stopEvent}
-      onMouseDown={stopEvent}
-      onTouchStart={stopEvent}
-      onPointerDown={stopEvent}
-    >
-      <div className="flex flex-col rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl backdrop-blur-md overflow-hidden">
-        <button
-          type="button"
-          onClick={handleZoomIn}
-          onMouseDown={stopEvent}
-          onTouchStart={stopEvent}
-          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer border-b border-slate-200/80 dark:border-slate-800 active:scale-95 touch-manipulation"
-          title="Karte vergrößern (+)"
-          aria-label="Karte vergrößern"
-          id="btn-zoom-in"
-        >
-          <Plus className="w-6.5 h-6.5 stroke-[3]" />
-        </button>
-        <button
-          type="button"
-          onClick={handleZoomOut}
-          onMouseDown={stopEvent}
-          onTouchStart={stopEvent}
-          className="w-13 h-13 sm:w-12 sm:h-12 flex items-center justify-center text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-blue-500 active:text-white dark:active:bg-blue-600 transition-all cursor-pointer active:scale-95 touch-manipulation"
-          title="Karte verkleinern (-)"
-          aria-label="Karte verkleinern"
-          id="btn-zoom-out"
-        >
-          <Minus className="w-6.5 h-6.5 stroke-[3]" />
-        </button>
-      </div>
-    </div>
-  );
+  return null;
 };
 
 const SyncView = ({ mapView, onMapViewChange }: { mapView: any, onMapViewChange: any }) => {
@@ -667,10 +641,12 @@ const SyncView = ({ mapView, onMapViewChange }: { mapView: any, onMapViewChange:
     const currentCenter = map.getCenter();
     const currentZoom = map.getZoom();
 
-    const isDifferentFromMap =
+    const centerChanged =
       Math.abs(currentCenter.lat - mapView.lat) > 0.0001 ||
-      Math.abs(currentCenter.lng - mapView.lng) > 0.0001 ||
-      Math.abs(currentZoom - mapView.zoom) > 0.05;
+      Math.abs(currentCenter.lng - mapView.lng) > 0.0001;
+    const zoomChanged = Math.abs(currentZoom - mapView.zoom) > 0.05;
+
+    const isDifferentFromMap = centerChanged || zoomChanged;
 
     // Guard against echo loops where the prop is merely reflecting the map's own emitted view
     const isReflectionOfEmission = lastEmittedView.current &&
@@ -679,7 +655,11 @@ const SyncView = ({ mapView, onMapViewChange }: { mapView: any, onMapViewChange:
       Math.abs(lastEmittedView.current.zoom - mapView.zoom) < 0.05;
 
     if (isDifferentFromMap && !isReflectionOfEmission) {
-      map.setView([mapView.lat, mapView.lng], mapView.zoom, { animate: false });
+      if (!centerChanged && zoomChanged) {
+        map.setZoom(mapView.zoom, { animate: true });
+      } else {
+        map.setView([mapView.lat, mapView.lng], mapView.zoom, { animate: false });
+      }
     }
   }, [mapView.lat, mapView.lng, mapView.zoom, map]);
 
@@ -987,6 +967,39 @@ const Map: React.FC<MapProps> = ({
   const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+  const leafletMapRef = useRef<L.Map | null>(null);
+  const pendingZoomRef = useRef<number | null>(null);
+  const [liveZoom, setLiveZoom] = useState<number>(mapView.zoom);
+
+  useEffect(() => {
+    if (Number.isFinite(mapView.zoom)) {
+      setLiveZoom(mapView.zoom);
+    }
+  }, [mapView.zoom]);
+
+  const handleZoomStep = useCallback(
+    (direction: 'in' | 'out', step: ZoomStep) => {
+      const map = leafletMapRef.current;
+      const baseZoom =
+        pendingZoomRef.current ??
+        (map ? map.getZoom() : liveZoom);
+      const nextZoom = computeNextZoom(baseZoom, direction, step, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
+      pendingZoomRef.current = nextZoom;
+      setLiveZoom(nextZoom);
+      if (map) {
+        map.setZoom(nextZoom, { animate: true });
+      } else {
+        onMapViewChange({
+          lat: mapView.lat,
+          lng: mapView.lng,
+          zoom: nextZoom,
+          pitch: mapView.pitch ?? 0,
+          bearing: mapView.bearing ?? 0
+        });
+      }
+    },
+    [liveZoom, mapView, onMapViewChange]
+  );
 
   // Auto-close Karten-Optionen when sidebar opens or Escape is pressed
   useEffect(() => {
@@ -1670,8 +1683,10 @@ const Map: React.FC<MapProps> = ({
       <LeafletMapContainer 
         center={[mapView.lat, mapView.lng]} 
         zoom={mapView.zoom} 
-        zoomSnap={0.25}
-        zoomDelta={0.5}
+        minZoom={MAP_MIN_ZOOM}
+        maxZoom={MAP_MAX_ZOOM}
+        zoomSnap={FINE_ZOOM_STEP}
+        zoomDelta={FINE_ZOOM_STEP}
         scrollWheelZoom={true}
         boxZoom={false}
         zoomControl={false}
@@ -1930,7 +1945,7 @@ const Map: React.FC<MapProps> = ({
                       <div style="transform: rotate(${arrow.angle}deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">
                         <svg viewBox="0 0 24 24" width="22" height="22" style="filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.65));">
                           <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" />
-                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${isComparisonMode ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : (track.color || '#3b82f6')) : (track.color || '#3b82f6')}" />
+                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${sanitizeHexColor(isComparisonMode ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : track.color) : track.color, '#3b82f6')}" />
                         </svg>
                       </div>
                     `,
@@ -2248,7 +2263,7 @@ const Map: React.FC<MapProps> = ({
               icon={new L.DivIcon({
                 className: 'custom-poi-marker',
                 html: `
-                  <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -50%);" title="${poi.name.replace(/"/g, '&quot;')}">
+                  <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -50%);" title="${escapeHtml(poi.name || '')}">
                     <div class="w-7 h-7 rounded-full flex items-center justify-center text-sm shadow-md border-2 border-white text-white transition-transform duration-150 hover:scale-110" style="background-color: ${bgColor}; box-shadow: 0 0 0 3px ${ringColor}, 0 4px 6px -1px rgb(0 0 0 / 0.1);">
                       <span style="line-height: 1; font-size: 13px;">${emoji}</span>
                     </div>
@@ -2413,18 +2428,28 @@ const Map: React.FC<MapProps> = ({
           </LeafletMarker>
         )}
 
-        <MobileZoomControls />
+        <LeafletZoomBridge
+          mapRef={leafletMapRef}
+          pendingZoomRef={pendingZoomRef}
+          onZoomChange={setLiveZoom}
+        />
       </LeafletMapContainer>
 
-      {/* Mobile & Touch Floating Action Toolbar */}
-      <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} right-2 sm:right-4 z-[400] flex flex-col gap-2 pointer-events-auto`}>
+      {/* Mobile & Touch Floating Action Toolbar + Fine-Grained Zoom Controls */}
+      <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} right-2 sm:right-4 z-[400] flex flex-col items-end gap-2 pointer-events-none`}>
+        <MapZoomControls
+          currentZoom={liveZoom}
+          minZoom={MAP_MIN_ZOOM}
+          maxZoom={MAP_MAX_ZOOM}
+          onZoomStep={handleZoomStep}
+        />
         {activeTrack && (
           <button
             onClick={() => {
               triggerHaptic('medium');
               setRecenterTrigger(prev => prev + 1);
             }}
-            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
+            className="pointer-events-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
             title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten`}
             id="btn-toolbar-center-route"
           >
@@ -2439,7 +2464,7 @@ const Map: React.FC<MapProps> = ({
               triggerHaptic('light');
               onOpenShortcuts();
             }}
-            className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
+            className="pointer-events-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
             title="Tastaturkürzel-Hilfe anzeigen (Taste ? oder Shift+/)"
             id="btn-toolbar-shortcuts"
           >

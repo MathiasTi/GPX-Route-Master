@@ -32,6 +32,8 @@ import {
   saveSetting,
   getAllSettings,
   verifyAppPassword,
+  isAppPasswordConfigured,
+  claimInitialAppPassword,
   createAuthSession,
   verifyAuthSessionToken,
   deleteAuthSession,
@@ -76,12 +78,22 @@ import { SqliteTrackRepository } from "./infrastructure/repositories/sqliteTrack
 import { GetTrackByIdUseCase } from "./application/usecases/track/getTrackById.usecase.js";
 import { SaveTrackUseCase } from "./application/usecases/track/saveTrack.usecase.js";
 import { SearchTracksUseCase } from "./application/usecases/track/searchTracks.usecase.js";
+import { resolveUrlImport, UrlImportError } from "./utils/urlGpxImporter.js";
+import {
+  createRateLimiter,
+  resolveAllowedCorsOrigin,
+  isCsrfSafeRequest,
+  getClientIp
+} from "./utils/securityMiddleware.js";
 import fs from "fs";
 import os from "os";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 
-// Self-healing check: Ensure Nginx Lua auth bridge does not block iframe preview
+// Self-healing check: Ensure Nginx Lua auth bridge does not block iframe preview (only inside AI Studio nginx wrapper)
 function ensureNginxIframeCompatibility() {
+  if (!process.env.NGINX_PORT) {
+    return;
+  }
   try {
     const luaPath = "/etc/nginx/user_auth_verification.lua";
     if (fs.existsSync(luaPath)) {
@@ -93,7 +105,7 @@ function ensureNginxIframeCompatibility() {
           // ignore
         }
         fs.writeFileSync(luaPath, "-- Bypass auth bridge for iframe compatibility\nreturn\n", "utf-8");
-        exec("nginx -s reload", (err) => {
+        execFile("nginx", ["-s", "reload"], (err) => {
           if (err) console.warn("Nginx reload notification:", err.message);
         });
       }
@@ -106,6 +118,8 @@ function ensureNginxIframeCompatibility() {
 async function startServer() {
   ensureNginxIframeCompatibility();
   const app = express();
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
   const PORT = Number(
     process.env.NGINX_PORT
       ? (process.env.DEFAULT_APP_PORT || 3000)
@@ -122,59 +136,44 @@ async function startServer() {
   const saveTrackUseCase = new SaveTrackUseCase(trackRepository);
   const searchTracksUseCase = new SearchTracksUseCase(trackRepository);
 
-  // Set security headers to follow best security practices safely (without breaking AI Studio iframe bounds)
+  // Set hardened security headers and strict allowlist CORS
   app.use((req, res, next) => {
+    const isSecure =
+      req.secure ||
+      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-XSS-Protection", "1; mode=block");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader("Permissions-Policy", "camera=(), microphone=()");
-
-    // Support sandboxed iframes safely with origin validation
-    const origin = req.headers.origin;
-    res.setHeader("Vary", "Origin");
-    if (origin && typeof origin === "string") {
-      // Sanitize against CRLF injection in origin header
-      const sanitizedOrigin = origin.replace(/[\r\n]/g, "").trim();
-      if (sanitizedOrigin === "null") {
-        res.setHeader("Access-Control-Allow-Origin", "null");
-        res.setHeader("Access-Control-Allow-Credentials", "true");
-      } else {
-        try {
-          const parsedOrigin = new URL(sanitizedOrigin);
-          const host = parsedOrigin.hostname.toLowerCase();
-          const reqHost = String(req.headers["x-forwarded-host"] || req.headers.host || "")
-            .split(",")[0]
-            .trim()
-            .split(":")[0]
-            .toLowerCase();
-          const isTrustedOrigin =
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            (reqHost && host === reqHost) ||
-            host.endsWith(".run.app") ||
-            host.endsWith(".google.com") ||
-            host.endsWith(".googleusercontent.com") ||
-            host.endsWith(".usercontent.com") ||
-            host.endsWith(".web.app") ||
-            host.endsWith(".firebaseapp.com") ||
-            host.endsWith(".aistudio.google.com");
-
-          if (isTrustedOrigin) {
-            res.setHeader("Access-Control-Allow-Origin", parsedOrigin.origin);
-            res.setHeader("Access-Control-Allow-Credentials", "true");
-          }
-        } catch {
-          // Ignore malformed Origin header
-        }
-      }
-    } else {
-      res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
+    res.setHeader(
+      "Content-Security-Policy",
+      "base-uri 'self'; object-src 'none'; form-action 'self'"
+    );
+    if (isSecure) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     }
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-requested-with, X-Garmin-Personal-Key");
+
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+    const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+    const allowedOrigin = resolveAllowedCorsOrigin(origin, reqHostHeader);
+    res.setHeader("Vary", "Origin");
+
+    if (allowedOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Garmin-Personal-Key"
+      );
+    }
 
     if (req.method === "OPTIONS") {
-      res.sendStatus(200);
+      if (origin && !allowedOrigin) {
+        res.sendStatus(403);
+        return;
+      }
+      res.sendStatus(204);
       return;
     }
     next();
@@ -241,31 +240,99 @@ async function startServer() {
   // Serve static assets from public directory
   app.use(express.static(path.join(process.cwd(), "public")));
 
-  // Serve static GPX tour files from gpx directory
-  app.use("/gpx", express.static(path.join(process.cwd(), "gpx")));
-
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: Date.now() });
   });
 
-  // Helper to extract session token from Authorization Bearer header or velo_session cookie
-  const extractSessionTokenFromRequest = (req: express.Request): string | null => {
+  // Helper to extract session token and auth source from Authorization Bearer header or velo_session cookie
+  const extractSessionAuthFromRequest = (
+    req: express.Request
+  ): { token: string | null; hasBearer: boolean; hasCookie: boolean } => {
+    let bearerToken: string | null = null;
     const authHeader = req.headers.authorization;
     if (typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")) {
       const token = authHeader.slice(7).trim();
-      if (token.length >= 16) return token;
+      if (token.length >= 16) bearerToken = token;
     }
+
+    let cookieToken: string | null = null;
     const rawCookie = req.headers.cookie;
     if (typeof rawCookie === "string" && rawCookie.includes("velo_session=")) {
       const match = rawCookie.match(/(?:^|;\s*)velo_session=([^;]+)/);
       if (match && match[1]) {
-        const token = decodeURIComponent(match[1].trim());
-        if (token.length >= 16) return token;
+        try {
+          const token = decodeURIComponent(match[1].trim());
+          if (token.length >= 16) cookieToken = token;
+        } catch {
+          // ignore malformed percent-encoding
+        }
       }
     }
-    return null;
+
+    return {
+      token: bearerToken || cookieToken,
+      hasBearer: Boolean(bearerToken),
+      hasCookie: Boolean(cookieToken)
+    };
   };
+
+  const extractSessionTokenFromRequest = (req: express.Request): string | null =>
+    extractSessionAuthFromRequest(req).token;
+
+  const isSecureRequest = (req: express.Request): boolean =>
+    req.secure ||
+    String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+
+  const buildSessionCookieHeader = (req: express.Request, value: string, maxAgeSec: number): string => {
+    const secure = isSecureRequest(req);
+    const flags = secure
+      ? `Path=/; Max-Age=${maxAgeSec}; HttpOnly; Secure; SameSite=None; Partitioned`
+      : `Path=/; Max-Age=${maxAgeSec}; HttpOnly; SameSite=Lax`;
+    return `velo_session=${encodeURIComponent(value)}; ${flags}`;
+  };
+
+  // Serve GPX tour files ONLY to authenticated sessions and restrict to .gpx files
+  const gpxStaticMiddleware = express.static(path.join(process.cwd(), "gpx"), {
+    dotfiles: "deny",
+    index: false
+  });
+  app.use("/gpx", (req, res, next) => {
+    const token = extractSessionTokenFromRequest(req);
+    const verification = verifyAuthSessionToken(token);
+    if (!verification.valid) {
+      return res.status(401).json({
+        success: false,
+        error: "Nicht autorisiert. Bitte entsperre die App mit dem Passwort."
+      });
+    }
+    if (!req.path.toLowerCase().endsWith(".gpx")) {
+      return res.status(404).end();
+    }
+    return gpxStaticMiddleware(req, res, next);
+  });
+
+  // Rate limiters for internet-facing deployment
+  const authLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    maxRequests: 8,
+    keyPrefix: "auth",
+    message: "Zu viele fehlgeschlagene Anmeldeversuche. Bitte warte einige Minuten und versuche es erneut."
+  });
+
+  const outboundProxyLimiter = createRateLimiter({
+    windowMs: 5 * 60 * 1000,
+    maxRequests: 30,
+    keyPrefix: "proxy",
+    message: "Zu viele externe Abfragen in kurzer Zeit. Bitte versuche es in Kürze erneut."
+  });
+
+  const apiLimiter = createRateLimiter({
+    windowMs: 60 * 1000,
+    maxRequests: 300,
+    keyPrefix: "api",
+    message: "Zu viele Anfragen. Bitte warte einen Moment."
+  });
 
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
   const THIRTY_DAYS_SEC = 30 * 24 * 60 * 60;
@@ -273,13 +340,18 @@ async function startServer() {
   // Check current password unlock session status
   app.get("/api/auth/me", (req, res) => {
     try {
+      const configured = isAppPasswordConfigured();
       const token = extractSessionTokenFromRequest(req);
       const verification = verifyAuthSessionToken(token);
       if (!verification.valid) {
-        return res.json({ authenticated: false });
+        return res.json({
+          authenticated: false,
+          setupRequired: !configured
+        });
       }
       return res.json({
         authenticated: true,
+        setupRequired: false,
         expiresAt: verification.expiresAt
       });
     } catch (err: any) {
@@ -288,9 +360,49 @@ async function startServer() {
     }
   });
 
-  // Unlock app with password ("mathias" or APP_PASSWORD) and create a 30-day session
+  // One-time initial admin password setup when APP_PASSWORD env var is not configured
+  app.post("/api/auth/setup", authLimiter.middleware, (req, res) => {
+    try {
+      const { password } = req.body || {};
+      const claim = claimInitialAppPassword(password);
+      if (!claim.ok) {
+        const status = claim.alreadyConfigured ? 409 : 400;
+        return res.status(status).json({
+          authenticated: false,
+          alreadyConfigured: Boolean(claim.alreadyConfigured),
+          error: claim.error || "Passwort konnte nicht eingerichtet werden."
+        });
+      }
+
+      authLimiter.reset(getClientIp(req));
+      const session = createAuthSession("default", THIRTY_DAYS_MS);
+      res.setHeader("Set-Cookie", buildSessionCookieHeader(req, session.token, THIRTY_DAYS_SEC));
+      return res.json({
+        authenticated: true,
+        setupRequired: false,
+        token: session.token,
+        expiresAt: session.expiresAt
+      });
+    } catch (err: any) {
+      console.error("[Auth] Error during initial setup:", err);
+      return res.status(500).json({
+        authenticated: false,
+        error: "Serverfehler bei der Passworteinrichtung."
+      });
+    }
+  });
+
+  // Unlock app with configured APP_PASSWORD or first-run claimed password and create a 30-day session
   const handleUnlock = (req: express.Request, res: express.Response) => {
     try {
+      if (!isAppPasswordConfigured()) {
+        return res.status(409).json({
+          authenticated: false,
+          setupRequired: true,
+          error: "Bitte lege zuerst ein Zugangspasswort fest."
+        });
+      }
+
       const { password } = req.body || {};
       if (!verifyAppPassword(password)) {
         return res.status(401).json({
@@ -299,17 +411,12 @@ async function startServer() {
         });
       }
 
+      authLimiter.reset(getClientIp(req));
       const session = createAuthSession("default", THIRTY_DAYS_MS);
-      const isSecure =
-        req.secure ||
-        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
-      const cookieFlags = isSecure
-        ? `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; Secure; SameSite=None`
-        : `Path=/; Max-Age=${THIRTY_DAYS_SEC}; HttpOnly; SameSite=Lax`;
-
-      res.setHeader("Set-Cookie", `velo_session=${encodeURIComponent(session.token)}; ${cookieFlags}`);
+      res.setHeader("Set-Cookie", buildSessionCookieHeader(req, session.token, THIRTY_DAYS_SEC));
       return res.json({
         authenticated: true,
+        setupRequired: false,
         token: session.token,
         expiresAt: session.expiresAt
       });
@@ -322,23 +429,30 @@ async function startServer() {
     }
   };
 
-  app.post("/api/auth/unlock", handleUnlock);
-  app.post("/api/auth/login", handleUnlock);
+  app.post("/api/auth/unlock", authLimiter.middleware, handleUnlock);
+  app.post("/api/auth/login", authLimiter.middleware, handleUnlock);
 
   // Lock app and invalidate session
   app.post("/api/auth/logout", (req, res) => {
     try {
-      const token = extractSessionTokenFromRequest(req);
-      if (token) {
-        deleteAuthSession(token);
+      const authInfo = extractSessionAuthFromRequest(req);
+      const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const csrfOk = isCsrfSafeRequest({
+        method: req.method,
+        hasBearerAuth: authInfo.hasBearer,
+        hasCookieAuth: authInfo.hasCookie,
+        origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+        requestHost: reqHostHeader,
+        xRequestedWith: typeof req.headers["x-requested-with"] === "string" ? req.headers["x-requested-with"] : undefined
+      });
+      if (!csrfOk) {
+        return res.status(403).json({ success: false, error: "Ungültige Anfrageherkunft (CSRF-Schutz)." });
       }
-      const isSecure =
-        req.secure ||
-        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
-      const clearFlags = isSecure
-        ? "Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None"
-        : "Path=/; Max-Age=0; HttpOnly; SameSite=Lax";
-      res.setHeader("Set-Cookie", `velo_session=; ${clearFlags}`);
+
+      if (authInfo.token) {
+        deleteAuthSession(authInfo.token);
+      }
+      res.setHeader("Set-Cookie", buildSessionCookieHeader(req, "", 0));
       return res.json({ success: true, authenticated: false });
     } catch (err: any) {
       console.error("[Auth] Error logging out:", err);
@@ -346,27 +460,59 @@ async function startServer() {
     }
   });
 
-  // Protect all other /api/* routes with password session verification
+  // Protect all other /api/* routes with rate limiting, session verification, and CSRF validation
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/health") {
+      return next();
+    }
+    return apiLimiter.middleware(req, res, next);
+  });
+
   app.use("/api", (req, res, next) => {
     if (
       req.path === "/health" ||
       req.path === "/auth/me" ||
+      req.path === "/auth/setup" ||
       req.path === "/auth/unlock" ||
       req.path === "/auth/login" ||
       req.path === "/auth/logout"
     ) {
       return next();
     }
-    const token = extractSessionTokenFromRequest(req);
-    const verification = verifyAuthSessionToken(token);
+
+    const authInfo = extractSessionAuthFromRequest(req);
+    const verification = verifyAuthSessionToken(authInfo.token);
     if (!verification.valid) {
       return res.status(401).json({
         success: false,
         error: "Nicht autorisiert. Bitte entsperre die App mit dem Passwort."
       });
     }
+
+    const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+    const csrfOk = isCsrfSafeRequest({
+      method: req.method,
+      hasBearerAuth: authInfo.hasBearer,
+      hasCookieAuth: authInfo.hasCookie,
+      origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+      requestHost: reqHostHeader,
+      xRequestedWith: typeof req.headers["x-requested-with"] === "string" ? req.headers["x-requested-with"] : undefined
+    });
+    if (!csrfOk) {
+      return res.status(403).json({
+        success: false,
+        error: "Ungültige Anfrageherkunft (CSRF-Schutz)."
+      });
+    }
+
     next();
   });
+
+  // Apply stricter rate limits to outbound proxy / external fetch endpoints
+  app.use(
+    ["/api/import-url", "/api/weather", "/api/analyze-surface"],
+    outboundProxyLimiter.middleware
+  );
 
   // API route to resolve weather using Open-Meteo and OpenStreetMap Nominatim (High limits - completely free, no API key required)
   app.post("/api/weather", async (req, res) => {
@@ -2894,20 +3040,10 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         : 'undertraining'
     };
 
-    // 5. Sport Efficiency & Training Distribution
-    const sportMetFallback: Record<string, number> = {
-      cycling: 8.0,
-      running: 9.5,
-      trail_running: 10.5,
-      swimming: 8.5,
-      hiking: 6.0,
-      walking: 4.0,
-      strength: 5.0,
-      soccer: 7.5
-    };
-
+    // 5. Sport Efficiency & Training Distribution (strictly real recorded calories only — never estimated)
     const sportStats = new Map<string, {
       totalDuration: number;
+      durationWithCalories: number;
       totalDistance: number;
       totalAscent: number;
       totalCalories: number;
@@ -2940,12 +3076,12 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       const durSec = Number(act.duration || 0);
       const distKm = Number(act.distance || 0);
       const ascM = Number(act.ascent || 0);
-      const hoursAct = durSec / 3600;
       const rawCal = Number(act.calories || 0);
-      const estCal = rawCal > 0 ? rawCal : Math.round((sportMetFallback[sType] || 5.5) * 75 * hoursAct);
+      const realCal = Number.isFinite(rawCal) && rawCal > 0 ? rawCal : 0;
 
       const existing = sportStats.get(sType) || {
         totalDuration: 0,
+        durationWithCalories: 0,
         totalDistance: 0,
         totalAscent: 0,
         totalCalories: 0,
@@ -2956,7 +3092,10 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       existing.totalDuration += durSec;
       existing.totalDistance += distKm;
       existing.totalAscent += ascM;
-      existing.totalCalories += estCal;
+      if (realCal > 0) {
+        existing.totalCalories += realCal;
+        existing.durationWithCalories += durSec;
+      }
       existing.count += 1;
       if (act.avg_hr && Number(act.avg_hr) > 40) {
         existing.countWithHr += 1;
@@ -3020,7 +3159,10 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
     for (const [sType, stats] of sportStats.entries()) {
       const hours = stats.totalDuration / 3600;
-      const calPerHour = hours > 0 ? Math.round(stats.totalCalories / hours) : 0;
+      const hoursWithCal = stats.durationWithCalories / 3600;
+      const calPerHour = stats.totalCalories > 0 && hoursWithCal > 0
+        ? Math.round(stats.totalCalories / hoursWithCal)
+        : 0;
       const avgHr = stats.countWithHr > 0 ? Math.round(stats.sumAvgHr / stats.countWithHr) : null;
       const avgSpeedKmh = hours > 0 && stats.totalDistance > 0 ? parseFloat((stats.totalDistance / hours).toFixed(1)) : 0;
       const vam = hours > 0 && stats.totalAscent > 0 ? Math.round(stats.totalAscent / hours) : 0;
@@ -3396,6 +3538,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         "__proto__",
         "constructor",
         "prototype",
+        "app_password_hash",
         "garmin_personal_api_key",
         "garmin_personal_api_key_enc",
         "garmin_personal_api_base_url",
@@ -3423,16 +3566,41 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
-  // Global API error handler
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error("Unhandled API error:", err);
-    if (res.headersSent) {
-      return next(err);
+  // POST /api/import-url: Fetch and extract GPX from Komoot tour URLs or direct GPX links (SSRF-protected)
+  app.post("/api/import-url", async (req, res) => {
+    try {
+      const { url } = req.body || {};
+      if (typeof url !== "string" || !url.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: "Bitte gib eine gültige Komoot-Tour-URL oder GPX-URL ein."
+        });
+      }
+      if (url.length > 2048) {
+        return res.status(400).json({
+          success: false,
+          error: "Die URL überschreitet die maximale Länge von 2048 Zeichen."
+        });
+      }
+
+      const imported = await resolveUrlImport(url);
+      return res.json({
+        success: true,
+        ...imported
+      });
+    } catch (err: any) {
+      if (err instanceof UrlImportError) {
+        return res.status(err.statusCode).json({
+          success: false,
+          error: err.message
+        });
+      }
+      console.error("[URL Import] Unexpected error:", err);
+      return res.status(502).json({
+        success: false,
+        error: err?.message || "Fehler beim Importieren der URL."
+      });
     }
-    res.status(500).json({
-      success: false,
-      error: err.message || "Interner Serverfehler aufgetreten."
-    });
   });
 
   // Vite middleware for development; static dist serving for production (including bundled dist/server.cjs)
@@ -3444,6 +3612,20 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     typeof __filename === "string" &&
     __filename.endsWith(".cjs");
   const isProductionMode = process.env.NODE_ENV === "production" || isBundledProduction;
+
+  // Global API error handler (masks internal stack/error details in production)
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Unhandled API error:", err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(500).json({
+      success: false,
+      error: isProductionMode
+        ? "Interner Serverfehler aufgetreten."
+        : (err?.message || "Interner Serverfehler aufgetreten.")
+    });
+  });
 
   if (!isProductionMode) {
     const { createServer: createViteServer } = await import("vite");

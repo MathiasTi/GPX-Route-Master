@@ -4,8 +4,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight } from 'lucide-react';
-import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats } from '../utils/gpxUtils';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight, CopyCheck } from 'lucide-react';
+import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats, findDuplicateTracksByIdenticalGPS } from '../utils/gpxUtils';
+import { getKomootSourceMeta } from '../utils/komootVersioning';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
 import { computePauseAwareRunningMetrics } from '../utils/runningMetricsEngine';
@@ -14,7 +15,7 @@ import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
 import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
 import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
-import { BatchGpxUploader, UploadProgressInfo } from './BatchGpxUploader';
+import { BatchGpxUploader, UploadProgressInfo, UrlImportSubmitResult } from './BatchGpxUploader';
 import { 
   DndContext, 
   closestCenter, 
@@ -69,6 +70,8 @@ interface TrackItemProps {
   onReverseTrack?: (id: string) => void;
   onSanitizeTrack?: (id: string) => void;
   onOpenValidation?: (id: string) => void;
+  onRefreshKomootTrack?: (id: string) => void;
+  isRefreshingKomoot?: boolean;
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
@@ -102,6 +105,8 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   onReverseTrack,
   onSanitizeTrack,
   onOpenValidation,
+  onRefreshKomootTrack,
+  isRefreshingKomoot = false,
   onSelection
 }) => {
   const [localExpanded, setLocalExpanded] = useState(false);
@@ -162,6 +167,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   }, [track.climbs, track.points]);
 
   const startValidation = useMemo(() => validateTrackStartPoint(track), [track]);
+  const komootMeta = useMemo(() => getKomootSourceMeta(track), [track]);
 
   return (
     <div 
@@ -204,6 +210,14 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
               <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : isCompared ? 'text-orange-700 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
                 {track.name}
               </span>
+              {komootMeta && (
+                <span
+                  className="shrink-0 text-[9px] font-mono font-extrabold tabular-nums px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/70 leading-none"
+                  title={`${komootMeta.sourceType === 'komoot' ? 'Komoot-Quelle' : 'GPX-URL-Quelle'} · Version v${komootMeta.version} · Zuletzt geprüft: ${new Date(komootMeta.lastCheckedAt).toLocaleString('de-DE')}`}
+                >
+                  v{komootMeta.version}
+                </span>
+              )}
               {startValidation.issue && (
                 <span
                   onClick={(e) => {
@@ -231,6 +245,23 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
               >
                 {track.activityType === 'running' ? '🏃' : '🚴'}
               </span>
+
+              {/* Refresh from Komoot / URL source */}
+              {komootMeta && onRefreshKomootTrack && (
+                <button
+                  type="button"
+                  disabled={isRefreshingKomoot}
+                  onClick={() => {
+                    triggerHaptic('light');
+                    onRefreshKomootTrack(track.id);
+                  }}
+                  className="p-1.5 rounded-md border bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 dark:text-emerald-300 dark:border-emerald-800/70 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center"
+                  title={`Komoot-Track / URL-Quelle aktualisieren (aktuell v${komootMeta.version})`}
+                  aria-label={`"${track.name}" aktualisieren`}
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingKomoot ? 'animate-spin' : ''}`} />
+                </button>
+              )}
 
               {/* Quick Intensive Analysis Cockpit button */}
               {onOpenIntensiveAnalysis && (
@@ -946,12 +977,14 @@ interface SidebarProps {
   onMarkTrack: (id: string) => void;
   onChangeActivityType?: (id: string, type: 'cycling' | 'running') => void;
   onUpload: (files: FileList | File[] | React.ChangeEvent<HTMLInputElement>) => Promise<void> | void;
+  onImportUrl?: (url: string, options: { saveAsPlannedTour: boolean }) => Promise<UrlImportSubmitResult>;
   uploadProgress?: UploadProgressInfo | null;
   onToggleVisibility: (id: string) => void;
   onRemoveTrack: (id: string) => void;
   onClearAllTracks?: () => void;
   onKeepOnlyTrack?: (id: string) => void;
   onRemoveHiddenTracks?: () => void;
+  onRemoveDuplicateTracks?: () => void;
   onMergeSelected: () => void;
   onUndo: () => void;
   canUndo: boolean;
@@ -1019,6 +1052,8 @@ interface SidebarProps {
   onLockApp?: () => void;
   onOpenFullActivitiesView?: () => void;
   onOpenPlannedToursView?: () => void;
+  onRefreshKomootTrack?: (id: string) => void;
+  refreshingKomootTracks?: Record<string, boolean>;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -1029,13 +1064,15 @@ const Sidebar: React.FC<SidebarProps> = ({
   onExitMapComparison,
   onMarkTrack,
   onChangeActivityType,
-  onUpload, 
+  onUpload,
+  onImportUrl,
   uploadProgress,
   onToggleVisibility, 
   onRemoveTrack, 
   onClearAllTracks,
   onKeepOnlyTrack,
   onRemoveHiddenTracks,
+  onRemoveDuplicateTracks,
   onMergeSelected,
   onUndo,
   canUndo,
@@ -1102,7 +1139,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   onFitVisibleTracks,
   onLockApp,
   onOpenFullActivitiesView,
-  onOpenPlannedToursView
+  onOpenPlannedToursView,
+  onRefreshKomootTrack,
+  refreshingKomootTracks
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
@@ -1116,6 +1155,12 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const cyclingCount = useMemo(() => tracks.filter(t => t.activityType === 'cycling').length, [tracks]);
   const runningCount = useMemo(() => tracks.filter(t => t.activityType === 'running').length, [tracks]);
+
+  const duplicateAnalysis = useMemo(
+    () => findDuplicateTracksByIdenticalGPS(tracks, markedTrackId),
+    [tracks, markedTrackId]
+  );
+  const duplicateTrackCount = duplicateAnalysis.duplicateIds.length;
 
   const allTracksExpanded = useMemo(() => {
     if (tracks.length === 0) return false;
@@ -1290,6 +1335,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <section id="section-batch-upload">
               <BatchGpxUploader
                 onUpload={onUpload}
+                onImportUrl={onImportUrl}
                 uploadProgress={uploadProgress}
                 isDark={isDark}
               />
@@ -1371,6 +1417,34 @@ const Sidebar: React.FC<SidebarProps> = ({
                             >
                               <Target size={10} />
                               <span>Nur Aktive</span>
+                            </button>
+                          )}
+                          {tracks.length > 1 && onRemoveDuplicateTracks && (
+                            <button
+                              type="button"
+                              id="btn-sidebar-remove-duplicates"
+                              onClick={() => {
+                                triggerHaptic('medium');
+                                onRemoveDuplicateTracks();
+                              }}
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none ${
+                                duplicateTrackCount > 0
+                                  ? 'bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
+                                  : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700'
+                              }`}
+                              title={
+                                duplicateTrackCount > 0
+                                  ? `${duplicateTrackCount} doppelte Strecke(n) mit identischen GPS-Koordinaten entfernen (${duplicateAnalysis.duplicateGroups.map(g => g.duplicateNames.join(', ')).join('; ')})`
+                                  : 'Auf Strecken mit identischen GPS-Koordinaten prüfen und Duplikate entfernen'
+                              }
+                            >
+                              <CopyCheck size={10} className={duplicateTrackCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'} />
+                              <span>Duplikate entfernen</span>
+                              {duplicateTrackCount > 0 && (
+                                <span className="px-1 py-0.2 rounded bg-amber-600 text-white text-[9px] font-mono leading-none">
+                                  {duplicateTrackCount}
+                                </span>
+                              )}
                             </button>
                           )}
                           {onClearAllTracks && (
@@ -1523,6 +1597,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onReverseTrack={onReverseTrack}
                             onSanitizeTrack={onSanitizeTrack}
                             onOpenValidation={onOpenValidation}
+                            onRefreshKomootTrack={onRefreshKomootTrack}
+                            isRefreshingKomoot={Boolean(refreshingKomootTracks?.[track.id])}
                             onSelection={onSelection}
                           />
                         ))}

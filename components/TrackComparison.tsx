@@ -88,21 +88,8 @@ function computeComparisonTrackStats(
   const avgSpeed = durationSecs > 0 ? (effectiveDistance / (durationSecs / 3600)) : estimatedSpeed;
   const maxSpeed = speedPoints.length > 0 ? Math.max(...speedPoints) : Math.max(avgSpeed * 1.5, 25);
 
-  const isRunning = track.activityType === 'running';
-  let met = 4;
-  if (isRunning) {
-    if (avgSpeed > 12) met = 12.5;
-    else if (avgSpeed > 10) met = 11;
-    else if (avgSpeed > 8) met = 9;
-    else met = 8;
-  } else {
-    if (avgSpeed > 30) met = 12;
-    else if (avgSpeed > 25) met = 10;
-    else if (avgSpeed > 20) met = 8;
-    else if (avgSpeed > 15) met = 6;
-  }
-
-  const calories = Math.round(met * userWeight * (durationSecs / 3600));
+  const rawTrackCalories = Number((track as any).calories || 0);
+  const calories = Number.isFinite(rawTrackCalories) && rawTrackCalories > 0 ? Math.round(rawTrackCalories) : null;
   return { hasElevation, maxEle, minEle, avgEle, maxHr, avgHr, avgCadence, avgSpeed, maxSpeed, calories, durationSecs };
 }
 
@@ -541,20 +528,30 @@ export const TrackComparison: React.FC<TrackComparisonProps> = ({
                     </div>
                   )}
 
-                  {/* Calories */}
-                  <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">Energieverbrauch (geschätzt)</span>
-                    <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                      <div className="p-1 flex items-center gap-1">
-                        <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                        <span>{stats1?.calories} kcal</span>
-                      </div>
-                      <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2 flex items-center gap-1">
-                        <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                        <span>{stats2?.calories} kcal</span>
+                  {/* Calories (only when real recorded calorie data exist) */}
+                  {(stats1?.calories || stats2?.calories) && (
+                    <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-900/40 border border-slate-100 dark:border-slate-900 rounded-xl">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase">Energieverbrauch</span>
+                      <div className="grid grid-cols-2 text-xs font-extrabold text-slate-700 dark:text-slate-200">
+                        <div className="p-1 flex items-center gap-1">
+                          {stats1?.calories ? (
+                            <>
+                              <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                              <span>{stats1.calories} kcal</span>
+                            </>
+                          ) : null}
+                        </div>
+                        <div className="p-1 border-l border-slate-100 dark:border-slate-800 pl-2 flex items-center gap-1">
+                          {stats2?.calories ? (
+                            <>
+                              <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                              <span>{stats2.calories} kcal</span>
+                            </>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
 

@@ -49,6 +49,33 @@ export interface ClimbSegment {
   maxGradient: number; // percent
 }
 
+export interface TrackSourceVersionEntry {
+  version: number;
+  contentHash: string;
+  importedAt: string;
+  remoteUpdatedAt?: string;
+  pointCount: number;
+  distanceKm: number;
+  ascentM: number;
+  note?: string;
+}
+
+export interface KomootSourceMeta {
+  sourceType: 'komoot' | 'gpx';
+  sourceUrl: string;
+  komootTourId?: string;
+  komootShareToken?: string | null;
+  komootCollectionId?: string;
+  komootCollectionTitle?: string;
+  komootCollectionUrl?: string;
+  version: number;
+  contentHash: string;
+  importedAt: string;
+  lastCheckedAt: string;
+  remoteUpdatedAt?: string;
+  versionHistory: TrackSourceVersionEntry[];
+}
+
 export interface RawFileDetails {
   fileType: 'fit' | 'gpx';
   fileName: string;
@@ -65,6 +92,7 @@ export interface RawFileDetails {
     sessionDistance?: number;
     lapCount?: number;
     isVirtual?: boolean;
+    komootSource?: KomootSourceMeta;
     rawRecords?: { type: string; data: Record<string, unknown> }[];
   };
 }
@@ -89,6 +117,7 @@ export interface GPXTrack {
   rawFileDetails?: RawFileDetails;
   isVirtual?: boolean;
   tags?: string[];
+  tourGroup?: string;
   dateCreated?: string;
   originalFilename?: string;
   hasPower?: boolean;

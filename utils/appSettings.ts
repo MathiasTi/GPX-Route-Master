@@ -550,7 +550,37 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Unbekannt / Keine Daten': 'Unknown / No Data',
   'Unbekannt zurücksetzen': 'Reset to Unknown',
   'Oberflächen analysieren (Valhalla & OSM)': 'Analyze Surfaces (Valhalla & OSM)',
-  'Valhalla & OSM läuft...': 'Analyzing Valhalla & OSM...'
+  'Valhalla & OSM läuft...': 'Analyzing Valhalla & OSM...',
+  'Duplikate entfernen': 'Remove Duplicate Tracks',
+
+  // URL & Komoot Importer
+  'Dropzone oder URL': 'Dropzone or URL',
+  'URL / Komoot importieren': 'Import URL / Komoot',
+  'Route laden': 'Load Route',
+  'Importiere...': 'Importing...',
+  'Auf Karte öffnen': 'Open on Map',
+  'Als Geplante Tour speichern': 'Save as Planned Tour',
+  'Route geladen': 'Route Loaded',
+  'Komoot-Tour-Link oder GPX-URL importieren': 'Import Komoot tour link or GPX URL',
+  'Komoot-Tour, Collection oder GPX-URL importieren': 'Import Komoot tour, collection, or GPX URL',
+  'Komoot Tour / Collection oder GPX-URL': 'Komoot Tour / Collection or GPX URL',
+  'Komoot-Touren, Collections & .gpx-Links': 'Komoot Tours, Collections & .gpx Links',
+  'Collection aktualisieren': 'Refresh Collection',
+  'Als Tourengruppe organisieren:': 'Organize as Tour Group:',
+  'Gruppenname...': 'Group name...',
+  'Touren in dieser Collection filtern...': 'Filter tours in this collection...',
+  'Alle auswählen': 'Select All',
+  'Keine auswählen': 'Select None',
+  'Importiere ausgewählte Komoot-Touren...': 'Importing selected Komoot tours...',
+  'Lädt...': 'Loading...',
+  'Bereit': 'Ready',
+
+  // Map Zoom Controls
+  'Karten-Zoom-Steuerung': 'Map Zoom Controls',
+  'Karte vergrößern': 'Zoom In',
+  'Karte verkleinern': 'Zoom Out',
+  'Fein': 'Fine',
+  'Mittel': 'Medium'
 };
 
 const SORTED_PHRASE_ENTRIES = Object.entries(DE_TO_EN_EXACT).sort(

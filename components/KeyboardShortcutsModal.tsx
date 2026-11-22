@@ -77,7 +77,7 @@ export const SHORTCUTS_DATA: ShortcutItem[] = [
     category: 'navigation',
     keys: ['+', '-'],
     title: 'Zoom vergrößern / verkleinern',
-    description: 'Zoomt stufenweise in die Karte hinein oder heraus (+ / = zum Vergrößern, - zum Verkleinern).',
+    description: 'Zoomt stufenweise (±1) in die Karte hinein oder heraus (+ / = und -). Mit Alt + +/- oder den +/- Kartenbuttons ist feinstufiges Zoomen (±0.25) möglich.',
     badge: 'Zoom',
     icon: <Plus className="w-4 h-4 text-indigo-500" />
   },

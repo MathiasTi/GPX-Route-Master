@@ -1469,15 +1469,17 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                 </div>
               </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
-                <div className="text-xs font-sans font-semibold text-slate-700 dark:text-slate-300">Ø Schritte / Tag</div>
-                <div className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
-                  {healthSummaryStats.avgSteps ? healthSummaryStats.avgSteps.toLocaleString('de-DE') : '—'}
+              {searchedHealth.steps.length > 0 && (
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
+                  <div className="text-xs font-sans font-semibold text-slate-700 dark:text-slate-300">Ø Schritte / Tag</div>
+                  <div className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                    {healthSummaryStats.avgSteps ? healthSummaryStats.avgSteps.toLocaleString('de-DE') : ''}
+                  </div>
+                  <div className="text-[11px] font-sans text-slate-600 dark:text-slate-400">
+                    {searchedHealth.steps.length} Tage erfasst
+                  </div>
                 </div>
-                <div className="text-[11px] font-sans text-slate-600 dark:text-slate-400">
-                  {searchedHealth.steps.length} Tage erfasst
-                </div>
-              </div>
+              )}
             </div>
 
             {/* Category Selector */}
@@ -1486,7 +1488,9 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                 { id: 'sleep', label: `Schlaf (${searchedHealth.sleep.length})` },
                 { id: 'rhr', label: `Ruhepuls (${searchedHealth.rhr.length})` },
                 { id: 'stress', label: `Stress (${searchedHealth.stress.length})` },
-                { id: 'steps', label: `Schritte (${searchedHealth.steps.length})` }
+                ...(searchedHealth.steps.length > 0
+                  ? [{ id: 'steps', label: `Schritte (${searchedHealth.steps.length})` }]
+                  : [])
               ].map((cat) => (
                 <button
                   key={cat.id}

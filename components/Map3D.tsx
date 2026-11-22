@@ -1,10 +1,17 @@
 import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import Map, { Source, Layer, MapRef, NavigationControl, Marker, Popup } from 'react-map-gl/maplibre';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint } from '../types';
 import { calculateBearing, hasRealGpsData } from '../utils/gpxUtils';
 import { Maximize2 } from 'lucide-react';
+import { MapZoomControls } from './MapZoomControls';
+import {
+  computeNextZoom,
+  MAP_MAX_ZOOM,
+  MAP_MIN_ZOOM,
+  ZoomStep
+} from '../utils/mapZoom';
 
 interface Map3DProps {
   tracks: GPXTrack[];
@@ -25,16 +32,41 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
   const layerConfig = MAP_LAYERS[activeLayer];
   const [pitch, setPitch] = useState(mapView.pitch);
   const [bearing, setBearing] = useState(mapView.bearing);
+  const [zoom, setZoom] = useState(mapView.zoom);
+  const pendingZoomRef = useRef<number | null>(null);
   const lastTargetRef = useRef<{lat: number, lng: number, bearing: number} | null>(null);
   const isInternalUpdateRef = useRef(false);
 
-  // Sync internal state when external mapView changes significantly
+  // Sync internal state when external mapView changes significantly (e.g. keyboard zoom shortcuts)
   useEffect(() => {
     if (!isInternalUpdateRef.current) {
       if (Math.abs(pitch - mapView.pitch) > 0.1) setPitch(mapView.pitch);
       if (Math.abs(bearing - mapView.bearing) > 0.1) setBearing(mapView.bearing);
+      if (Math.abs(zoom - mapView.zoom) > 0.02) {
+        setZoom(mapView.zoom);
+        const map = mapRef.current?.getMap();
+        if (map && Math.abs(map.getZoom() - mapView.zoom) > 0.05) {
+          map.easeTo({ zoom: mapView.zoom, duration: 160 });
+        }
+      }
     }
-  }, [mapView.pitch, mapView.bearing]);
+  }, [mapView.pitch, mapView.bearing, mapView.zoom]);
+
+  const handleZoomStep = useCallback(
+    (direction: 'in' | 'out', step: ZoomStep) => {
+      const map = mapRef.current?.getMap();
+      const baseZoom = pendingZoomRef.current ?? (map ? map.getZoom() : zoom);
+      const nextZoom = computeNextZoom(baseZoom, direction, step, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
+      pendingZoomRef.current = nextZoom;
+      setZoom(nextZoom);
+      if (map) {
+        map.easeTo({ zoom: nextZoom, duration: 150 });
+      } else {
+        onMapViewChange({ ...mapView, zoom: nextZoom });
+      }
+    },
+    [zoom, mapView, onMapViewChange]
+  );
 
   const mapStyle = useMemo(() => {
     const tileUrls = ['a', 'b', 'c'].map(s => layerConfig.url.replace('{s}', s));
@@ -277,7 +309,8 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         ref={mapRef}
         mapLib={maplibregl}
         style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
-        minZoom={3}
+        minZoom={MAP_MIN_ZOOM}
+        maxZoom={MAP_MAX_ZOOM}
         initialViewState={{
           longitude: mapView.lng,
           latitude: mapView.lat,
@@ -292,8 +325,11 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
         onMove={(e) => {
           setPitch(e.viewState.pitch);
           setBearing(e.viewState.bearing);
+          setZoom(e.viewState.zoom);
         }}
         onMoveEnd={(e) => {
+          pendingZoomRef.current = null;
+          setZoom(e.viewState.zoom);
           if (isInternalUpdateRef.current) {
             isInternalUpdateRef.current = false;
             return;
@@ -311,7 +347,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           const isSignificant = 
             Math.abs(newView.lat - mapView.lat) > 0.001 ||
             Math.abs(newView.lng - mapView.lng) > 0.001 ||
-            Math.abs(newView.zoom - mapView.zoom) > 0.2 ||
+            Math.abs(newView.zoom - mapView.zoom) > 0.05 ||
             Math.abs(newView.pitch - mapView.pitch) > 1.0 ||
             Math.abs(newView.bearing - mapView.bearing) > 1.0;
 
@@ -331,7 +367,7 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
           }
         }}
       >
-        <NavigationControl position="top-right" visualizePitch={true} />
+        <NavigationControl position="top-right" showZoom={false} showCompass={true} visualizePitch={true} />
         {trackSources.map(({ track, geojson, selectedGeojson }) => {
           const isMarked = track.id === markedTrackId;
           
@@ -606,6 +642,15 @@ const Map3D: React.FC<Map3DProps> = ({ tracks, activeLayer, markedTrackId, onMar
             className="w-full accent-blue-600 h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
           />
         </div>
+      </div>
+      <div className="absolute bottom-6 right-4 sm:right-6 z-10 pointer-events-none">
+        <MapZoomControls
+          currentZoom={zoom}
+          minZoom={MAP_MIN_ZOOM}
+          maxZoom={MAP_MAX_ZOOM}
+          onZoomStep={handleZoomStep}
+          idPrefix="3d-"
+        />
       </div>
     </div>
   );

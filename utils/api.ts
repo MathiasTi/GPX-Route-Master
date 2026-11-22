@@ -1,4 +1,4 @@
-import { safeGetItem, safeSetItem, safeRemoveItem } from './storage';
+import { safeRemoveItem } from './storage';
 
 declare const __APP_URL__: string | undefined;
 
@@ -137,24 +137,26 @@ export function getApiUrl(path: string): string {
 const AUTH_SESSION_TOKEN_KEY = 'velo_auth_session_token';
 let inMemorySessionToken: string | null = null;
 
-export function getSessionToken(): string | null {
-  if (inMemorySessionToken) return inMemorySessionToken;
-  const stored = safeGetItem(AUTH_SESSION_TOKEN_KEY, null);
-  if (stored && stored.trim()) {
-    inMemorySessionToken = stored.trim();
-    return inMemorySessionToken;
+// Purge any legacy localStorage session token so session credentials stay out of Web Storage
+if (typeof window !== 'undefined') {
+  try {
+    safeRemoveItem(AUTH_SESSION_TOKEN_KEY);
+  } catch {
+    // ignore storage access errors in restricted frames
   }
-  return null;
+}
+
+export function getSessionToken(): string | null {
+  return inMemorySessionToken;
 }
 
 export function setSessionToken(token: string | null): void {
   if (token && token.trim()) {
-    const clean = token.trim();
-    inMemorySessionToken = clean;
-    safeSetItem(AUTH_SESSION_TOKEN_KEY, clean);
+    inMemorySessionToken = token.trim();
   } else {
     clearSessionToken();
   }
+  safeRemoveItem(AUTH_SESSION_TOKEN_KEY);
 }
 
 export function clearSessionToken(): void {
@@ -167,6 +169,9 @@ export function getAuthHeaders(extraHeaders?: Record<string, string>): Record<st
   const token = getSessionToken();
   if (token && !headers['Authorization'] && !headers['authorization']) {
     headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (!headers['X-Requested-With'] && !headers['x-requested-with']) {
+    headers['X-Requested-With'] = 'XMLHttpRequest';
   }
   return headers;
 }
@@ -215,6 +220,9 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     const token = getSessionToken();
     if (token && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${token}`);
+    }
+    if (!headers.has('X-Requested-With')) {
+      headers.set('X-Requested-With', 'XMLHttpRequest');
     }
     nextInit.headers = headers;
 
@@ -273,7 +281,8 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
         !reqUrl.includes('/api/auth/me') &&
         !reqUrl.includes('/api/auth/logout') &&
         !reqUrl.includes('/api/auth/unlock') &&
-        !reqUrl.includes('/api/auth/login')
+        !reqUrl.includes('/api/auth/login') &&
+        !reqUrl.includes('/api/auth/setup')
       ) {
         window.dispatchEvent(new CustomEvent('velo:auth-unauthorized'));
       }

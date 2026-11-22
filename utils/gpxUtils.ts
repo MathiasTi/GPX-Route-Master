@@ -2,6 +2,7 @@
 import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationReport, ValidationIssue, TextMarker } from '../types';
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { validateTrackStartPoint } from './startPointValidator';
+import { getKomootSourceMeta, getVersionedGpxFilename } from './komootVersioning';
 export { validateTrackStartPoint };
 
 export const toDate = (timeVal: any): Date | undefined => {
@@ -2269,9 +2270,11 @@ export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string
     minLat = 0; maxLat = 0; minLng = 0; maxLng = 0;
   }
 
+  const komootMeta = getKomootSourceMeta(track);
   const creator = options?.creator || track.rawFileDetails?.metadata?.creator || 'GPX Route Master (https://ai.studio)';
   const authorName = track.rawFileDetails?.metadata?.deviceManufacturer || 'GPX Route Master';
   const creationTime = firstTime || new Date().toISOString();
+  const versionLabel = komootMeta ? ` (v${komootMeta.version})` : '';
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="${escapeXml(creator)}" 
@@ -2282,7 +2285,7 @@ export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string
   xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3">
   <metadata>
     <name>${escapeXml(track.name)}</name>
-    <desc>${escapeXml(track.description || `GPX Route Master Export: ${track.name} - ${track.distance.toFixed(2)} km, +${Math.round(track.ascent)} m`)}</desc>
+    <desc>${escapeXml(track.description || `GPX Route Master Export: ${track.name}${versionLabel} - ${track.distance.toFixed(2)} km, +${Math.round(track.ascent)} m`)}</desc>
     <author>
       <name>${escapeXml(authorName)}</name>
     </author>
@@ -2296,6 +2299,26 @@ export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string
         <gpxx:MaxSlopePercent>${track.maxSlope?.toFixed(1) || '0.0'}</gpxx:MaxSlopePercent>
         <gpxx:ActivityType>${escapeXml(track.activityType || 'cycling')}</gpxx:ActivityType>
       </gpxx:TrackStatsExtension>`;
+
+  if (komootMeta) {
+    xml += `\n      <gpxx:SourceVersionExtension>`;
+    xml += `\n        <gpxx:SourceType>${escapeXml(komootMeta.sourceType)}</gpxx:SourceType>`;
+    xml += `\n        <gpxx:Version>v${komootMeta.version}</gpxx:Version>`;
+    if (komootMeta.contentHash) {
+      xml += `\n        <gpxx:ContentHash>${escapeXml(komootMeta.contentHash)}</gpxx:ContentHash>`;
+    }
+    if (komootMeta.sourceUrl) {
+      xml += `\n        <gpxx:SourceUrl>${escapeXml(komootMeta.sourceUrl)}</gpxx:SourceUrl>`;
+    }
+    if (komootMeta.komootTourId) {
+      xml += `\n        <gpxx:KomootTourId>${escapeXml(komootMeta.komootTourId)}</gpxx:KomootTourId>`;
+    }
+    if (komootMeta.komootCollectionId) {
+      xml += `\n        <gpxx:KomootCollectionId>${escapeXml(komootMeta.komootCollectionId)}</gpxx:KomootCollectionId>`;
+    }
+    xml += `\n        <gpxx:ImportedAt>${escapeXml(komootMeta.importedAt)}</gpxx:ImportedAt>`;
+    xml += `\n      </gpxx:SourceVersionExtension>`;
+  }
 
   if (track.surfaceStats && track.surfaceStats.length > 0) {
     xml += `\n      <surfaceStats>`;
@@ -2432,12 +2455,7 @@ export const downloadTrackAsGPX = (
     const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    const safeName = (track.name || 'track')
-      .trim()
-      .replace(/[/\\?%*:|"<>]/g, '_')
-      .replace(/\s+/g, '_')
-      .replace(/^_+|_+$/g, '');
-    const fileName = `${options?.filenamePrefix || ''}${safeName || 'track'}.gpx`;
+    const fileName = getVersionedGpxFilename(track, options?.filenamePrefix || '');
     link.href = url;
     link.setAttribute('download', fileName);
     document.body.appendChild(link);
@@ -2865,6 +2883,169 @@ export interface DuplicateCheckResult {
   reason?: string;
   matchType?: 'exact_coords' | 'pattern_overlap' | 'timestamp_and_start' | 'name_and_distance';
 }
+
+export interface DuplicateTrackGroup {
+  keptTrackId: string;
+  keptTrackName: string;
+  duplicateIds: string[];
+  duplicateNames: string[];
+}
+
+export interface DuplicateTracksAnalysis {
+  duplicateIds: string[];
+  duplicateGroups: DuplicateTrackGroup[];
+  uniqueTracks: GPXTrack[];
+}
+
+function extractValidGpsCoords(track: GPXTrack): Array<{ lat: number; lng: number }> {
+  const pts = track?.points;
+  if (!Array.isArray(pts) || pts.length < 2) return [];
+  const coords: Array<{ lat: number; lng: number }> = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (!p) continue;
+    const lat = typeof p.lat === 'number' ? p.lat : Number(p.lat);
+    const lng = typeof p.lng === 'number' ? p.lng : Number(p.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+    if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) continue;
+    coords.push({ lat, lng });
+  }
+  return coords;
+}
+
+function computeGpsCoordHash(coords: ReadonlyArray<{ lat: number; lng: number }>): string {
+  // Dual 32-bit FNV-1a over 1e-5 degree quantized coords (~1.1m precision) for fast O(N) bucketing
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < coords.length; i++) {
+    const qLat = Math.round(coords[i].lat * 100000);
+    const qLng = Math.round(coords[i].lng * 100000);
+    h1 ^= qLat & 0xffffffff;
+    h1 = Math.imul(h1, 0x01000193);
+    h1 ^= qLng & 0xffffffff;
+    h1 = Math.imul(h1, 0x01000193);
+
+    h2 ^= (qLat ^ (i * 31)) & 0xffffffff;
+    h2 = Math.imul(h2, 0x85ebca6b);
+    h2 ^= (qLng ^ (i * 17)) & 0xffffffff;
+    h2 = Math.imul(h2, 0xc2b2ae35);
+  }
+  return `${coords.length}:${(h1 >>> 0).toString(16)}:${(h2 >>> 0).toString(16)}`;
+}
+
+function areGpsCoordinateSequencesIdentical(
+  a: ReadonlyArray<{ lat: number; lng: number }>,
+  b: ReadonlyArray<{ lat: number; lng: number }>
+): boolean {
+  if (a.length !== b.length || a.length < 2) return false;
+  const EPS = 1e-5; // ~1.1m max difference to absorb GPX/JSON/FIT coordinate rounding
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs(a[i].lat - b[i].lat) > EPS || Math.abs(a[i].lng - b[i].lng) > EPS) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Identifies duplicate tracks in a list that share identical GPS coordinates.
+ * Virtual tracks or tracks with fewer than 2 valid GPS points are excluded from matching.
+ * Within each duplicate group, prefers keeping `preferredKeepId`, then the first visible track, then earliest order.
+ */
+export const findDuplicateTracksByIdenticalGPS = (
+  tracks: GPXTrack[],
+  preferredKeepId?: string | null
+): DuplicateTracksAnalysis => {
+  if (!Array.isArray(tracks) || tracks.length < 2) {
+    return {
+      duplicateIds: [],
+      duplicateGroups: [],
+      uniqueTracks: Array.isArray(tracks) ? [...tracks] : []
+    };
+  }
+
+  interface IndexedTrackCoords {
+    track: GPXTrack;
+    coords: Array<{ lat: number; lng: number }>;
+  }
+
+  const buckets = new Map<string, IndexedTrackCoords[]>();
+  const clusterGroups: IndexedTrackCoords[][] = [];
+
+  for (const track of tracks) {
+    const coords = extractValidGpsCoords(track);
+    if (coords.length < 2) continue;
+    const hashKey = computeGpsCoordHash(coords);
+    const list = buckets.get(hashKey);
+    if (list) {
+      list.push({ track, coords });
+    } else {
+      buckets.set(hashKey, [{ track, coords }]);
+    }
+  }
+
+  for (const bucketItems of buckets.values()) {
+    if (bucketItems.length < 2) continue;
+    // Verify exact point-by-point coordinates inside the hash bucket to avoid any collision false positives
+    const visited = new Array<boolean>(bucketItems.length).fill(false);
+    for (let i = 0; i < bucketItems.length; i++) {
+      if (visited[i]) continue;
+      visited[i] = true;
+      const group: IndexedTrackCoords[] = [bucketItems[i]];
+      for (let j = i + 1; j < bucketItems.length; j++) {
+        if (visited[j]) continue;
+        if (areGpsCoordinateSequencesIdentical(bucketItems[i].coords, bucketItems[j].coords)) {
+          visited[j] = true;
+          group.push(bucketItems[j]);
+        }
+      }
+      if (group.length >= 2) {
+        clusterGroups.push(group);
+      }
+    }
+  }
+
+  const duplicateIdSet = new Set<string>();
+  const duplicateIds: string[] = [];
+  const duplicateGroups: DuplicateTrackGroup[] = [];
+
+  for (const group of clusterGroups) {
+    // Keeper priority: preferredKeepId -> visible track -> earliest track in workspace
+    let keeper = group.find(item => preferredKeepId && item.track.id === preferredKeepId);
+    if (!keeper) {
+      keeper = group.find(item => item.track.visible) || group[0];
+    }
+
+    const dupIdsInGroup: string[] = [];
+    const dupNamesInGroup: string[] = [];
+    for (const item of group) {
+      if (item.track.id !== keeper.track.id) {
+        duplicateIdSet.add(item.track.id);
+        duplicateIds.push(item.track.id);
+        dupIdsInGroup.push(item.track.id);
+        dupNamesInGroup.push(item.track.name);
+      }
+    }
+
+    if (dupIdsInGroup.length > 0) {
+      duplicateGroups.push({
+        keptTrackId: keeper.track.id,
+        keptTrackName: keeper.track.name,
+        duplicateIds: dupIdsInGroup,
+        duplicateNames: dupNamesInGroup
+      });
+    }
+  }
+
+  const uniqueTracks = tracks.filter(t => !duplicateIdSet.has(t.id));
+
+  return {
+    duplicateIds,
+    duplicateGroups,
+    uniqueTracks
+  };
+};
 
 /**
  * Checks if a track (candidate) is a duplicate of any existing track by comparing

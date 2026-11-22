@@ -97,8 +97,11 @@ export function runWorkspaceSummaryDashboardTests(): boolean {
   // Duration: 7200 + 5400 = 12600 seconds
   assert(combinedSummary.totalDurationSeconds === 12600, `Total duration is 12600 s (got ${combinedSummary.totalDurationSeconds})`);
 
-  // Estimated Calories > 0
-  assert(combinedSummary.estimatedCaloriesKcal > 0, `Estimated calories is positive (${combinedSummary.estimatedCaloriesKcal} kcal)`);
+  // Calories: Strictly real recorded values only (0 when tracks have no recorded calories)
+  assert(combinedSummary.estimatedCaloriesKcal === 0, `Calories must be 0 when no real calorie data exist (got ${combinedSummary.estimatedCaloriesKcal})`);
+  const trackWithRealCal = { ...track1, calories: 1450 } as any;
+  const realCalSummary = calculateWorkspaceSummary([trackWithRealCal, track2], 75, 25);
+  assert(realCalSummary.estimatedCaloriesKcal === 1450, `Sums real recorded calories accurately (got ${realCalSummary.estimatedCaloriesKcal})`);
 
   // Test 4: Duration estimation fallback when track.duration is missing
   const trackNoDuration = createMockTrack('t4', 'Ohne Zeitstempel', 50.0, 500, 500, true);

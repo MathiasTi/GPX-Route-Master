@@ -16,8 +16,7 @@ import {
   saveSteps,
   runInTransaction,
   getGarminActivityById,
-  findExistingActivityDuplicate,
-  backfillMissingHealthMetricsFromExistingData
+  findExistingActivityDuplicate
 } from './db';
 import { parseFIT } from './fitUtils';
 import { parseGPX, calculateElevationStats, calculatePowerStats, findClimbs, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
@@ -1916,9 +1915,7 @@ export async function syncGarminPersonalHealth(options: {
     }
   }
 
-    if (rhrCount === 0 || stressCount === 0 || stepsCount === 0) {
-      backfillMissingHealthMetricsFromExistingData();
-    }
+    // Only store genuine measurements returned by Garmin Connect (no synthetic backfill)
 
     saveSetting('garmin_personal_last_sync_at', new Date().toISOString());
     const healthDays = Math.max(sleepCount, rhrCount, stressCount, stepsCount, weightCount);

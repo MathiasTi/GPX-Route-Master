@@ -896,15 +896,22 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
       const climbPerKm = climbDist > 0 ? totalAscent / climbDist : 0;
       const climbScore = clampScore((climbPerKm / 20) * 100);
 
-      const meanRhr = rhrSlice.length > 0 ? rhrSlice.reduce((s, r) => s + r.rhr, 0) / rhrSlice.length : 60;
-      const cardioScore = clampScore(125 - meanRhr * 1.15);
+      const meanRhr = rhrSlice.length > 0 ? rhrSlice.reduce((s, r) => s + r.rhr, 0) / rhrSlice.length : null;
+      const cardioScore = meanRhr !== null ? clampScore(125 - meanRhr * 1.15) : null;
 
-      const meanSleep = sleepSlice.length > 0 ? sleepSlice.reduce((s, d) => s + d.duration, 0) / sleepSlice.length : 420;
-      const sleepScore = clampScore((meanSleep / 480) * 90);
+      const meanSleep = sleepSlice.length > 0 ? sleepSlice.reduce((s, d) => s + d.duration, 0) / sleepSlice.length : null;
+      const sleepScore = meanSleep !== null ? clampScore((meanSleep / 480) * 90) : null;
 
-      const meanSteps = stepsSlice.length > 0 ? stepsSlice.reduce((s, d) => s + d.steps, 0) / stepsSlice.length : 6000;
-      const meanStress = stressSlice.length > 0 ? stressSlice.reduce((s, d) => s + d.avg_stress, 0) / stressSlice.length : 35;
-      const resilienceScore = clampScore((Math.min(1, meanSteps / 10000) * 55) + ((100 - meanStress) * 0.45));
+      const meanSteps = stepsSlice.length > 0 ? stepsSlice.reduce((s, d) => s + d.steps, 0) / stepsSlice.length : null;
+      const meanStress = stressSlice.length > 0 ? stressSlice.reduce((s, d) => s + d.avg_stress, 0) / stressSlice.length : null;
+      let resilienceScore: number | null = null;
+      if (meanSteps !== null && meanStress !== null) {
+        resilienceScore = clampScore((Math.min(1, meanSteps / 10000) * 55) + ((100 - meanStress) * 0.45));
+      } else if (meanSteps !== null) {
+        resilienceScore = clampScore(Math.min(1, meanSteps / 10000) * 100);
+      } else if (meanStress !== null) {
+        resilienceScore = clampScore(100 - meanStress);
+      }
 
       return { volumeScore, climbScore, cardioScore, sleepScore, resilienceScore };
     };
@@ -947,13 +954,20 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     );
     const baseline = computeAxes(acts, sleepData, rhrData, stepsData, stressData, baselineSpanDays);
 
-    return [
+    const axes: { axis: string; recent: number; baseline: number }[] = [
       { axis: 'Umfang', recent: recent.volumeScore, baseline: baseline.volumeScore },
-      { axis: 'Bergfestigkeit', recent: recent.climbScore, baseline: baseline.climbScore },
-      { axis: 'Kardio-Effizienz', recent: recent.cardioScore, baseline: baseline.cardioScore },
-      { axis: 'Schlaf-Qualität', recent: recent.sleepScore, baseline: baseline.sleepScore },
-      { axis: 'Resilienz', recent: recent.resilienceScore, baseline: baseline.resilienceScore }
+      { axis: 'Bergfestigkeit', recent: recent.climbScore, baseline: baseline.climbScore }
     ];
+    if (recent.cardioScore !== null && baseline.cardioScore !== null) {
+      axes.push({ axis: 'Kardio-Effizienz', recent: recent.cardioScore, baseline: baseline.cardioScore });
+    }
+    if (recent.sleepScore !== null && baseline.sleepScore !== null) {
+      axes.push({ axis: 'Schlaf-Qualität', recent: recent.sleepScore, baseline: baseline.sleepScore });
+    }
+    if (recent.resilienceScore !== null && baseline.resilienceScore !== null) {
+      axes.push({ axis: 'Resilienz', recent: recent.resilienceScore, baseline: baseline.resilienceScore });
+    }
+    return axes;
   }, [data?.activities, sleepData, rhrData, stepsData, stressData]);
 
   const getCorrBadgeColor = (r: number) => {
@@ -1558,40 +1572,42 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               {activeTab === 'overview' && (
               <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {/* Steps KPI */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectTab('steps')}
-                  className="text-left bg-emerald-50/40 dark:bg-emerald-950/15 hover:bg-emerald-50/80 dark:hover:bg-emerald-950/25 p-4 rounded-2xl border border-emerald-100/60 dark:border-emerald-900/30 transition-all cursor-pointer flex flex-col justify-between gap-2.5 group"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-xl group-hover:scale-105 transition-transform">
-                        <Footprints className="w-4 h-4" />
+                {/* Steps KPI (nur anzeigen, wenn echte Schrittdaten vorliegen) */}
+                {stepsData.length > 0 && avgSteps !== null && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTab('steps')}
+                    className="text-left bg-emerald-50/40 dark:bg-emerald-950/15 hover:bg-emerald-50/80 dark:hover:bg-emerald-950/25 p-4 rounded-2xl border border-emerald-100/60 dark:border-emerald-900/30 transition-all cursor-pointer flex flex-col justify-between gap-2.5 group"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-xl group-hover:scale-105 transition-transform">
+                          <Footprints className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider block">Ø Schritte / Tag</span>
+                          <span className="text-lg font-black text-slate-800 dark:text-slate-100 font-mono tabular-nums">
+                            {avgSteps.toLocaleString('de-DE')}
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider block">Ø Schritte / Tag</span>
-                        <span className="text-lg font-black text-slate-800 dark:text-slate-100 font-mono tabular-nums">
-                          {avgSteps !== null ? avgSteps.toLocaleString('de-DE') : '-'}
+                      {kpiDeltas.stepsDelta !== null && (
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${kpiDeltas.stepsDelta >= 0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                          {kpiDeltas.stepsDelta >= 0 ? '↑' : '↓'} {Math.abs(kpiDeltas.stepsDelta).toLocaleString('de-DE')} (7T)
                         </span>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                        <span>Tagesziel: 10.000</span>
+                        <span className="font-mono font-bold">{Math.min(100, Math.round((avgSteps / 10000) * 100))}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-emerald-100 dark:bg-emerald-950/60 rounded-full overflow-hidden">
+                        <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${Math.min(100, Math.round((avgSteps / 10000) * 100))}%` }} />
                       </div>
                     </div>
-                    {kpiDeltas.stepsDelta !== null && (
-                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${kpiDeltas.stepsDelta >= 0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
-                        {kpiDeltas.stepsDelta >= 0 ? '↑' : '↓'} {Math.abs(kpiDeltas.stepsDelta).toLocaleString('de-DE')} (7T)
-                      </span>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                      <span>Tagesziel: 10.000</span>
-                      <span className="font-mono font-bold">{avgSteps ? Math.min(100, Math.round((avgSteps / 10000) * 100)) : 0}%</span>
-                    </div>
-                    <div className="w-full h-1.5 bg-emerald-100 dark:bg-emerald-950/60 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${avgSteps ? Math.min(100, Math.round((avgSteps / 10000) * 100)) : 0}%` }} />
-                    </div>
-                  </div>
-                </button>
+                  </button>
+                )}
 
                 {/* RHR KPI */}
                 <button
@@ -1873,7 +1889,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     tabs: [
                       { id: 'sleep', label: 'Schlaf & Phasen' },
                       { id: 'rhr', label: 'Ruhepuls' },
-                      { id: 'steps', label: 'Schritte & Kalorien' },
+                      ...(stepsData.length > 0 ? [{ id: 'steps' as const, label: 'Schritte & Kalorien' }] : []),
                       { id: 'stress', label: 'Stressbelastung' }
                     ]
                   },
@@ -2226,13 +2242,11 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 'bg-teal-50/50 dark:bg-teal-950/20 border-teal-200/60 dark:border-teal-900/40',
                                 <TrendingUp className="w-4 h-4 text-teal-600 dark:text-teal-400" />
                               )}
-                              {renderHeroCard(
+                              {recordsData.cycling.maxCalories && renderHeroCard(
                                 'Höchster Kalorienverbrauch',
-                                recordsData.cycling.maxCalories ? `${Math.round(recordsData.cycling.maxCalories.calories || 0).toLocaleString('de-DE')} kcal` : '-',
+                                `${Math.round(recordsData.cycling.maxCalories.calories || 0).toLocaleString('de-DE')} kcal`,
                                 recordsData.cycling.maxCalories,
-                                recordsData.cycling.maxCalories
-                                  ? `${recordsData.cycling.maxCalories.distance.toFixed(1)} km · ${formatDurationHhMm(recordsData.cycling.maxCalories.duration)}`
-                                  : '',
+                                `${recordsData.cycling.maxCalories.distance.toFixed(1)} km · ${formatDurationHhMm(recordsData.cycling.maxCalories.duration)}`,
                                 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-200/60 dark:border-rose-900/40',
                                 <Flame className="w-4 h-4 text-rose-600 dark:text-rose-400" />
                               )}
@@ -2548,7 +2562,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               { id: 'distance' as const, label: 'Distanz' },
                               { id: 'duration' as const, label: 'Dauer' },
                               { id: 'ascent' as const, label: 'Höhenmeter' },
-                              { id: 'steps' as const, label: 'Schritte' }
+                              ...(stepsData.length > 0 ? [{ id: 'steps' as const, label: 'Schritte' }] : [])
                             ]).map((m) => (
                               <button
                                 key={m.id}
@@ -2770,34 +2784,23 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           </div>
                         </div>
 
-                        {/* Schritte Verlauf */}
-                        <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
-                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5">
-                              <Footprints className="w-3.5 h-3.5 text-emerald-500" />
-                              Tägliche Schritte &amp; 10k-Ziel
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleSelectTab('steps')}
-                              className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
-                            >
-                              Details →
-                            </button>
-                          </h4>
-                          <div className="h-48 w-full min-w-0">
-                            {visibleStepsData.length === 0 ? (
-                              <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
-                                <span>Keine Schrittdaten vorhanden.</span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleSelectTab('personal-api')}
-                                  className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
-                                >
-                                  Über Garmin Personal API synchronisieren
-                                </button>
-                              </div>
-                            ) : (
+                        {/* Schritte Verlauf (nur anzeigen, wenn echte Schrittdaten vorliegen) */}
+                        {visibleStepsData.length > 0 && (
+                          <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
+                            <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between gap-2">
+                              <span className="flex items-center gap-1.5">
+                                <Footprints className="w-3.5 h-3.5 text-emerald-500" />
+                                Tägliche Schritte &amp; 10k-Ziel
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectTab('steps')}
+                                className="text-[11px] font-bold normal-case tracking-normal text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                              >
+                                Details →
+                              </button>
+                            </h4>
+                            <div className="h-48 w-full min-w-0">
                               <ResponsiveContainer width="100%" height={192} minWidth={0}>
                                 <ComposedChart data={visibleStepsData}>
                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
@@ -2809,9 +2812,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                   <Line type="monotone" dataKey="steps7dAvg" name="7T-Schnitt" stroke="#047857" strokeWidth={2.5} dot={false} />
                                 </ComposedChart>
                               </ResponsiveContainer>
-                            )}
+                            </div>
                           </div>
-                        </div>
+                        )}
 
                         {/* Schlafdauer, Phasen & 8h-Ziel */}
                         <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800/60 shadow-xs">
@@ -3252,18 +3255,25 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </motion.div>
                   )}
 
-                  {/* Tab 5: STEPS */}
-                  {activeTab === 'steps' && (
-                    <motion.div 
-                      key="steps"
-                      initial={{ opacity: 0, y: 5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="space-y-4 w-full min-w-0"
-                    >
-                      <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">Schritte, 10k-Ziel &amp; Kalorienverbrauch</h4>
-                      <p className="text-xs text-slate-500">Überwache deine tägliche Aktivität im Alltag, den 7-Tage-Durchschnitt und verbrannte Kalorien.</p>
-                      {visibleStepsData.length > 0 && (
+                  {/* Tab 5: STEPS (nur anzeigen, wenn echte Schrittdaten vorliegen) */}
+                  {activeTab === 'steps' && visibleStepsData.length > 0 && (() => {
+                    const hasRealCalories = visibleStepsData.some((d) => d.calories !== undefined && d.calories > 0);
+                    return (
+                      <motion.div
+                        key="steps"
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -5 }}
+                        className="space-y-4 w-full min-w-0"
+                      >
+                        <h4 className="text-sm font-black text-slate-800 dark:text-slate-200">
+                          {hasRealCalories ? 'Schritte, 10k-Ziel & Kalorienverbrauch' : 'Schritte & 10k-Ziel'}
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          {hasRealCalories
+                            ? 'Überwache deine tägliche Aktivität im Alltag, den 7-Tage-Durchschnitt und gemessene Kalorien.'
+                            : 'Überwache deine tägliche Aktivität im Alltag und den 7-Tage-Durchschnitt.'}
+                        </p>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                           <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schritte / Tag</p>
@@ -3277,47 +3287,50 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rekordtag</p>
                             <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{stepsStatsSummary.maxSteps.toLocaleString()}</p>
                           </div>
-                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Distanz &amp; Ø kcal</p>
-                            <p className="text-lg font-black text-orange-600 dark:text-orange-400 mt-0.5 font-mono">{stepsStatsSummary.totalDistanceKm.toFixed(0)} km <span className="text-xs font-bold text-slate-400">· {stepsStatsSummary.avgCalories || '-'} kcal</span></p>
-                          </div>
+                          {(stepsStatsSummary.totalDistanceKm > 0 || stepsStatsSummary.avgCalories > 0) && (
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0
+                                  ? 'Distanz & Ø kcal'
+                                  : stepsStatsSummary.avgCalories > 0
+                                  ? 'Ø Kalorien / Tag'
+                                  : 'Distanz'}
+                              </p>
+                              <p className="text-lg font-black text-orange-600 dark:text-orange-400 mt-0.5 font-mono">
+                                {stepsStatsSummary.totalDistanceKm > 0 ? `${stepsStatsSummary.totalDistanceKm.toFixed(0)} km` : ''}
+                                {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0 ? ' ' : ''}
+                                {stepsStatsSummary.avgCalories > 0 && (
+                                  <span className={stepsStatsSummary.totalDistanceKm > 0 ? 'text-xs font-bold text-slate-400' : ''}>
+                                    {stepsStatsSummary.totalDistanceKm > 0 ? `· ${stepsStatsSummary.avgCalories} kcal` : `${stepsStatsSummary.avgCalories} kcal`}
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+                          )}
                         </div>
-                      )}
-                      <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                        {visibleStepsData.length === 0 ? (
-                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
-                            <span>Keine Schrittdaten vorhanden.</span>
-                            <button
-                              type="button"
-                              onClick={() => handleSelectTab('personal-api')}
-                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
-                            >
-                              Über Garmin Personal API synchronisieren
-                            </button>
-                          </div>
-                        ) : (
+                        <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                           <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
                             <ComposedChart data={visibleStepsData}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
                               <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
                               <YAxis yAxisId="left" stroke="#10b981" fontSize={9} />
-                              {visibleStepsData.some((d) => d.calories !== undefined && d.calories > 0) && (
+                              {hasRealCalories && (
                                 <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={9} unit=" kcal" />
                               )}
                               <Tooltip contentStyle={{ borderRadius: '12px' }} />
                               <Legend wrapperStyle={{ fontSize: '10px' }} />
                               <ReferenceLine yAxisId="left" y={10000} stroke="#059669" strokeDasharray="4 4" label={{ value: '10.000 Ziel', position: 'insideTopRight', fill: '#059669', fontSize: 10 }} />
                               <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                              {visibleStepsData.some((d) => d.calories !== undefined && d.calories > 0) && (
+                              {hasRealCalories && (
                                 <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" fillOpacity={0.7} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                               )}
                               <Line yAxisId="left" type="monotone" dataKey="steps7dAvg" name="7T-Schnitt Schritte" stroke="#047857" strokeWidth={2.5} dot={false} isAnimationActive={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
-                        )}
-                      </div>
-                    </motion.div>
-                  )}
+                        </div>
+                      </motion.div>
+                    );
+                  })()}
 
                   {/* Tab 6: STRESS */}
                   {activeTab === 'stress' && (
@@ -3772,32 +3785,48 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
                           {/* Bottom Row: Weekday Trends & Monthly Sleep Trends */}
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            {/* Weekday Trends */}
-                            <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
-                              <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                                Wochentags-Muster (Schritte, Stress &amp; Schlaf)
-                              </h5>
-                              <div className="h-48 w-full min-w-0">
-                                <ResponsiveContainer width="100%" height={192} minWidth={0}>
-                                  <ComposedChart data={analyticsData.weekdayTrends || analyticsData.weekdayAverages || []}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
-                                    <XAxis dataKey="dayName" tickFormatter={(d) => String(d).slice(0, 2)} stroke="#94a3b8" fontSize={10} />
-                                    <YAxis yAxisId="left" stroke="#10b981" fontSize={8} width={38} />
-                                    <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={8} domain={[0, 100]} width={28} />
-                                    <Tooltip
-                                      contentStyle={{ borderRadius: '12px', fontSize: '10px' }}
-                                      formatter={(value: any, name: any) => {
-                                        if (String(name).includes('Schlaf')) return [formatMinutes(Number(value)), name];
-                                        return [value, name];
-                                      }}
-                                    />
-                                    <Legend wrapperStyle={{ fontSize: '10px' }} />
-                                    <Bar yAxisId="left" dataKey="avgSteps" name="Ø Schritte" fill="#10b981" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                                    <Line yAxisId="right" type="monotone" dataKey="avgStress" name="Ø Stress" stroke="#f59e0b" strokeWidth={2.5} isAnimationActive={false} />
-                                  </ComposedChart>
-                                </ResponsiveContainer>
-                              </div>
-                            </div>
+                            {/* Weekday Trends (nur echte gemessene Reihen anzeigen) */}
+                            {(() => {
+                              const weekdayRows = analyticsData.weekdayTrends || analyticsData.weekdayAverages || [];
+                              const hasWeekdaySteps = weekdayRows.some((r: any) => Number(r.avgSteps || 0) > 0);
+                              const hasWeekdayStress = weekdayRows.some((r: any) => Number(r.avgStress || 0) > 0);
+                              if (!hasWeekdaySteps && !hasWeekdayStress) return null;
+                              return (
+                                <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
+                                  <h5 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                                    {hasWeekdaySteps && hasWeekdayStress
+                                      ? 'Wochentags-Muster (Schritte & Stress)'
+                                      : hasWeekdaySteps
+                                      ? 'Wochentags-Muster (Schritte)'
+                                      : 'Wochentags-Muster (Stress)'}
+                                  </h5>
+                                  <div className="h-48 w-full min-w-0">
+                                    <ResponsiveContainer width="100%" height={192} minWidth={0}>
+                                      <ComposedChart data={weekdayRows}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                        <XAxis dataKey="dayName" tickFormatter={(d) => String(d).slice(0, 2)} stroke="#94a3b8" fontSize={10} />
+                                        {hasWeekdaySteps && <YAxis yAxisId="left" stroke="#10b981" fontSize={8} width={38} />}
+                                        {hasWeekdayStress && <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={8} domain={[0, 100]} width={28} />}
+                                        <Tooltip
+                                          contentStyle={{ borderRadius: '12px', fontSize: '10px' }}
+                                          formatter={(value: any, name: any) => {
+                                            if (String(name).includes('Schlaf')) return [formatMinutes(Number(value)), name];
+                                            return [value, name];
+                                          }}
+                                        />
+                                        <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                        {hasWeekdaySteps && (
+                                          <Bar yAxisId="left" dataKey="avgSteps" name="Ø Schritte" fill="#10b981" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                        )}
+                                        {hasWeekdayStress && (
+                                          <Line yAxisId="right" type="monotone" dataKey="avgStress" name="Ø Stress" stroke="#f59e0b" strokeWidth={2.5} isAnimationActive={false} />
+                                        )}
+                                      </ComposedChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {/* Monthly Sleep Quality Trends */}
                             <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4 min-w-0">
@@ -3944,12 +3973,14 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                         </span>
                                       </div>
                                       <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                        <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
-                                          <p className="text-slate-400">Verbrennung</p>
-                                          <p className="font-extrabold text-orange-600 dark:text-orange-400 text-xs font-mono">
-                                            {Math.round(burnRate)} kcal/h
-                                          </p>
-                                        </div>
+                                        {burnRate > 0 && (
+                                          <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
+                                            <p className="text-slate-400">Verbrennung</p>
+                                            <p className="font-extrabold text-orange-600 dark:text-orange-400 text-xs font-mono">
+                                              {Math.round(burnRate)} kcal/h
+                                            </p>
+                                          </div>
+                                        )}
                                         <div className="p-2 bg-white dark:bg-slate-950/40 rounded-lg">
                                           <p className="text-slate-400">Ø Puls</p>
                                           <p className="font-extrabold text-rose-600 dark:text-rose-400 text-xs font-mono">

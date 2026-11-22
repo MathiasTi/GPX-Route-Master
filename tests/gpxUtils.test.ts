@@ -17,7 +17,8 @@ import {
   getCachedSimplifiedPoints,
   hasRealGpsData,
   sanitizeGPXPoints,
-  detectActivityType
+  detectActivityType,
+  findDuplicateTracksByIdenticalGPS
 } from '../utils/gpxUtils';
 import { isTwoPointSeedStub } from '../utils/activityHydration';
 import { computeRealTrackSplits } from '../utils/intensiveAnalysis';
@@ -389,6 +390,92 @@ export function runGpxUtilsTests() {
   assert(
     detectActivityType(slowClimbPts, '02.09.2026, 08:13 (46.62, 10.59)', '24209581585.fit', 'Radfahren (cycling)') === 'cycling',
     'detectActivityType honors explicit FIT cycling sport on slow alpine climbs'
+  );
+
+  // --- Identical GPS Coordinates Duplicate Detection Tests ---
+  const baseCoords: GPXPoint[] = [
+    { lat: 47.123456, lng: 11.654321, ele: 700, time: new Date(startEpoch) },
+    { lat: 47.124001, lng: 11.655002, ele: 712, time: new Date(startEpoch + 10000) },
+    { lat: 47.124891, lng: 11.656112, ele: 725, time: new Date(startEpoch + 20000) }
+  ];
+  const trackOrig: GPXTrack = {
+    id: 'dup-orig',
+    name: 'Original Tour',
+    points: baseCoords,
+    color: '#2563eb',
+    distance: 0.25,
+    ascent: 25,
+    descent: 0,
+    maxSlope: 6,
+    visible: true,
+    activityType: 'cycling'
+  };
+  const trackExactDup: GPXTrack = {
+    ...trackOrig,
+    id: 'dup-copy-1',
+    name: 'Imported Copy (Same Coords)',
+    points: baseCoords.map(p => ({
+      lat: Number(p.lat.toFixed(6)),
+      lng: Number(p.lng.toFixed(6)),
+      ele: p.ele
+    }))
+  };
+  const trackRoundedDup: GPXTrack = {
+    ...trackOrig,
+    id: 'dup-copy-2',
+    name: '5-Decimal Re-Export',
+    points: baseCoords.map(p => ({
+      lat: Number(p.lat.toFixed(5)),
+      lng: Number(p.lng.toFixed(5)),
+      ele: p.ele
+    }))
+  };
+  const trackDifferent: GPXTrack = {
+    ...trackOrig,
+    id: 'distinct-1',
+    name: 'Different Route',
+    points: baseCoords.map((p, idx) => ({
+      lat: p.lat + (idx === 1 ? 0.002 : 0),
+      lng: p.lng,
+      ele: p.ele
+    }))
+  };
+  const trackReversed: GPXTrack = {
+    ...trackOrig,
+    id: 'reversed-1',
+    name: 'Reversed Route',
+    points: [...baseCoords].reverse()
+  };
+  const virtualA: GPXTrack = {
+    ...trackOrig,
+    id: 'virtual-a',
+    name: 'Indoor Cycling A',
+    points: [{ lat: 0, lng: 0, ele: 0 }, { lat: 0, lng: 0, ele: 0 }]
+  };
+  const virtualB: GPXTrack = {
+    ...trackOrig,
+    id: 'virtual-b',
+    name: 'Indoor Cycling B',
+    points: [{ lat: 0, lng: 0, ele: 0 }, { lat: 0, lng: 0, ele: 0 }]
+  };
+
+  const dupAnalysis = findDuplicateTracksByIdenticalGPS(
+    [trackOrig, trackExactDup, trackRoundedDup, trackDifferent, trackReversed, virtualA, virtualB],
+    'dup-copy-1'
+  );
+  assert(
+    dupAnalysis.duplicateIds.length === 2 &&
+      dupAnalysis.duplicateIds.includes('dup-orig') &&
+      dupAnalysis.duplicateIds.includes('dup-copy-2'),
+    'findDuplicateTracksByIdenticalGPS identifies exact and 5-decimal duplicates while keeping preferredKeepId'
+  );
+  assert(
+    dupAnalysis.uniqueTracks.some(t => t.id === 'dup-copy-1') &&
+      dupAnalysis.uniqueTracks.some(t => t.id === 'distinct-1') &&
+      dupAnalysis.uniqueTracks.some(t => t.id === 'reversed-1') &&
+      dupAnalysis.uniqueTracks.some(t => t.id === 'virtual-a') &&
+      dupAnalysis.uniqueTracks.some(t => t.id === 'virtual-b'),
+    'findDuplicateTracksByIdenticalGPS preserves distinct, reversed, and GPS-less virtual tracks'
   );
 
   console.log(`\n📊 Test Summary: ${passed} passed, ${failed} failed.\n`);

@@ -21,7 +21,7 @@ import {
   useDomLanguageSync
 } from './utils/appSettings';
 import { AppSettingsModal, AppSettingsTab } from './components/AppSettingsModal';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, findDuplicateTracksByIdenticalGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -42,6 +42,23 @@ import { getApiUrl, apiFetch, setSessionToken, clearSessionToken } from './utils
 import { triggerHaptic } from './utils/haptics';
 import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem, safeRemoveItem, isDefaultCuratedTrack } from './utils/storage';
 import { safeStringifyOrFallback } from './domain/serialization/safeJson';
+import {
+  KomootCollectionImportModal,
+  KomootCollectionPreviewData,
+  KomootCollectionImportCompletion
+} from './components/KomootCollectionImportModal';
+import {
+  attachKomootSourceToTrack,
+  applyKomootRefreshToTrack,
+  findMatchingExistingKomootTrack,
+  getKomootSourceMeta
+} from './utils/komootVersioning';
+import {
+  computeNextZoom,
+  MAP_MAX_ZOOM,
+  MAP_MIN_ZOOM,
+  resolveKeyboardZoomAction
+} from './utils/mapZoom';
 
 const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'overview',
@@ -111,6 +128,7 @@ function computeTightTrackBounds(targetTracks: GPXTrack[]): { minLat: number; ma
 const App: React.FC = () => {
   // --- Password Lock State ---
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [authSetupRequired, setAuthSetupRequired] = useState<boolean>(false);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
 
   // --- Core State Declarations ---
@@ -449,6 +467,7 @@ const App: React.FC = () => {
         if (res.ok) {
           const data = await res.json();
           if (mounted) {
+            setAuthSetupRequired(Boolean(data?.setupRequired));
             if (data?.authenticated) {
               setIsUnlocked(true);
             } else {
@@ -488,6 +507,7 @@ const App: React.FC = () => {
     if (token) {
       setSessionToken(token);
     }
+    setAuthSetupRequired(false);
     setSettingsLoaded(false);
     setIsUnlocked(true);
   }, []);
@@ -550,6 +570,11 @@ const App: React.FC = () => {
       })
       .catch(() => {});
   }, [isUnlocked]);
+
+  const [pendingKomootCollection, setPendingKomootCollection] =
+    useState<KomootCollectionPreviewData | null>(null);
+  const [refreshingKomootTracks, setRefreshingKomootTracks] =
+    useState<Record<string, boolean>>({});
 
   // Fetch initial catalog total count once unlocked so TopNavBar shows accurate DB count
   useEffect(() => {
@@ -1496,6 +1521,32 @@ const App: React.FC = () => {
     setTracks(prev => prev.filter(t => t.visible));
   }, [tracks, saveToHistory]);
 
+  const removeDuplicateTracks = useCallback(() => {
+    const analysis = findDuplicateTracksByIdenticalGPS(tracks, markedTrackId);
+    if (analysis.duplicateIds.length === 0) {
+      triggerHaptic('light');
+      setSuccessMessage('Keine doppelten Strecken mit identischen GPS-Koordinaten gefunden.');
+      return;
+    }
+
+    saveToHistory();
+    const removeSet = new Set(analysis.duplicateIds);
+    setTracks(analysis.uniqueTracks);
+
+    if (markedTrackId && removeSet.has(markedTrackId)) {
+      setMarkedTrackId(analysis.uniqueTracks[0]?.id ?? null);
+    }
+    if (compareTrackId && removeSet.has(compareTrackId)) {
+      setCompareTrackId(null);
+    }
+
+    triggerHaptic('medium');
+    const count = analysis.duplicateIds.length;
+    setSuccessMessage(
+      `${count} doppelte ${count === 1 ? 'Strecke' : 'Strecken'} mit identischen GPS-Koordinaten entfernt (Strg+Z für Rückgängig).`
+    );
+  }, [tracks, markedTrackId, compareTrackId, saveToHistory]);
+
   const hydrateTrackSurface = useCallback((tr: GPXTrack): GPXTrack => {
     if (tr.points && tr.points.length > 0) {
       const calcStats = calculateSurfaceStatsFromPoints(tr.points);
@@ -1628,7 +1679,14 @@ const App: React.FC = () => {
       for (const incoming of hydratedPrepared) {
         const byIdIdx = next.findIndex((t) => t.id === incoming.id);
         if (byIdIdx !== -1) {
-          next[byIdIdx] = { ...next[byIdIdx], visible: true };
+          const prevTrack = next[byIdIdx];
+          const incomingMeta = getKomootSourceMeta(incoming);
+          const prevMeta = getKomootSourceMeta(prevTrack);
+          if (incomingMeta && (!prevMeta || incomingMeta.version >= prevMeta.version)) {
+            next[byIdIdx] = { ...incoming, visible: true };
+          } else {
+            next[byIdIdx] = { ...prevTrack, visible: true };
+          }
           if (!primaryTrackId) primaryTrackId = next[byIdIdx].id;
           continue;
         }
@@ -1723,6 +1781,359 @@ const App: React.FC = () => {
       setErrorMessage('Speichern in der Bibliothek fehlgeschlagen.');
     }
   }, [tracks, refreshCatalogTotalCount]);
+
+  const handleImportFromUrl = useCallback(async (
+    url: string,
+    options?: { saveAsPlannedTour?: boolean }
+  ): Promise<{ success: boolean; error?: string; message?: string }> => {
+    const trimmedUrl = String(url || '').trim();
+    if (!trimmedUrl) {
+      return { success: false, error: 'Bitte gib eine gültige URL ein.' };
+    }
+
+    try {
+      const response = await apiFetch(getApiUrl('/api/import-url'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: trimmedUrl })
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || `URL-Import fehlgeschlagen (HTTP ${response.status}).`
+        };
+      }
+
+      if (data.kind === 'collection' && Array.isArray(data.tours)) {
+        setPendingKomootCollection({
+          collectionId: String(data.collectionId || ''),
+          title: String(data.title || 'Komoot Collection'),
+          sourceUrl: String(data.sourceUrl || trimmedUrl),
+          tours: data.tours
+        });
+        setIsMobileMenuOpen(false);
+        triggerHaptic('light');
+        return {
+          success: true,
+          message: `${data.tours.length} Touren gefunden`
+        };
+      }
+
+      if (!data.gpxContent) {
+        return {
+          success: false,
+          error: 'Die abgerufene URL enthielt keine GPX-Daten.'
+        };
+      }
+
+      const validation = validateGPX(data.gpxContent);
+      if (!validation.isValid) {
+        return {
+          success: false,
+          error: validation.error || 'Die abgerufene Datei enthält keine gültigen GPX-Daten.'
+        };
+      }
+
+      const fallbackFileName = `${data.suggestedName || 'URL-Route'}.gpx`;
+      const parsed = await parseGPX(data.gpxContent, fallbackFileName);
+      if (!parsed || !parsed.points || parsed.points.length < 2) {
+        return {
+          success: false,
+          error: 'Es konnten keine gültigen GPS-Trackpunkte aus dieser URL geladen werden.'
+        };
+      }
+
+      if (data.suggestedName && (!parsed.name || parsed.name === fallbackFileName.replace(/\.gpx$/i, ''))) {
+        parsed.name = String(data.suggestedName).trim();
+      }
+      if (data.activityType === 'running') {
+        parsed.activityType = 'running';
+      }
+
+      parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed, parsed.activityType);
+      const surfStats = calculateSurfaceStatsFromPoints(parsed.points);
+      if (surfStats.length > 0) {
+        parsed.surfaceStats = surfStats;
+        hydratePointsWithSurface(parsed.points, surfStats, parsed.distance);
+      }
+
+      const baseTags = Array.isArray(parsed.tags) ? [...parsed.tags] : [];
+      if (data.sourceType === 'komoot' && !baseTags.includes('Komoot')) {
+        baseTags.push('Komoot');
+      }
+      if (options?.saveAsPlannedTour && !baseTags.includes('Geplante Tour')) {
+        baseTags.push('Geplante Tour');
+      }
+      parsed.tags = baseTags;
+
+      const sourceAttachParams = {
+        sourceType: (data.sourceType === 'komoot' ? 'komoot' : 'gpx') as 'komoot' | 'gpx',
+        sourceUrl: String(data.sourceUrl || trimmedUrl),
+        komootTourId: typeof data.komootTourId === 'string' ? data.komootTourId : undefined,
+        komootShareToken: data.komootShareToken ?? null,
+        remoteUpdatedAt: typeof data.remoteUpdatedAt === 'string' ? data.remoteUpdatedAt : undefined
+      };
+
+      const currentTracks = tracksRef.current;
+      const sourceMatch = findMatchingExistingKomootTrack(currentTracks, {
+        komootTourId: sourceAttachParams.komootTourId,
+        sourceUrl: sourceAttachParams.sourceUrl
+      });
+
+      let activeTargetTrack: GPXTrack;
+      let statusSummary = '';
+
+      if (sourceMatch) {
+        const refreshRes = applyKomootRefreshToTrack(sourceMatch, parsed, sourceAttachParams);
+        activeTargetTrack = { ...refreshRes.track, visible: true };
+        if (refreshRes.updated) {
+          saveToHistory();
+          statusSummary = `"${activeTargetTrack.name}" auf v${refreshRes.newVersion} aktualisiert!`;
+        } else {
+          statusSummary = `"${activeTargetTrack.name}" ist bereits aktuell (v${refreshRes.newVersion}).`;
+        }
+        setTracks((prev) =>
+          prev.map((t) => (t.id === sourceMatch.id ? activeTargetTrack : t))
+        );
+        setMarkedTrackId(sourceMatch.id);
+      } else {
+        activeTargetTrack = attachKomootSourceToTrack(parsed, sourceAttachParams);
+        const dupCheck = checkTrackDuplicateGPS(activeTargetTrack, currentTracks);
+        if (dupCheck.isDuplicate && dupCheck.matchedTrackId) {
+          const existing = currentTracks.find((t) => t.id === dupCheck.matchedTrackId);
+          if (existing) {
+            const refreshRes = applyKomootRefreshToTrack(existing, activeTargetTrack, sourceAttachParams);
+            activeTargetTrack = { ...refreshRes.track, visible: true };
+            setTracks((prev) =>
+              prev.map((t) => (t.id === existing.id ? activeTargetTrack : t))
+            );
+            setMarkedTrackId(existing.id);
+            statusSummary = refreshRes.updated
+              ? `"${activeTargetTrack.name}" auf v${refreshRes.newVersion} aktualisiert!`
+              : `"${activeTargetTrack.name}" bereits geladen (v${refreshRes.newVersion}).`;
+          }
+        } else {
+          commitApprovedTracks([activeTargetTrack]);
+          setMarkedTrackId(activeTargetTrack.id);
+          statusSummary = `"${activeTargetTrack.name}" per URL (v1) auf Karte geladen!`;
+        }
+      }
+
+      if (options?.saveAsPlannedTour) {
+        try {
+          const libRes = await apiFetch(getApiUrl('/api/library'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: safeStringifyOrFallback(activeTargetTrack, '{}')
+          });
+          const libData = await libRes.json();
+          if (libData?.success) {
+            refreshCatalogTotalCount();
+          }
+        } catch (saveErr) {
+          console.warn('Saving URL-imported track as Planned Tour failed:', saveErr);
+        }
+      }
+
+      setCompareTrackId(null);
+      setIsMobileMenuOpen(false);
+      setIsProfileCollapsed(!appPrefs.showElevationProfile);
+      navigateWorkspace('map');
+
+      if (appPrefs.autoFitOnLoad && hasRealGpsData(activeTargetTrack)) {
+        const tightBounds = computeTightTrackBounds([activeTargetTrack]);
+        if (tightBounds) {
+          if (is3D) {
+            handleFitVisibleTracks(tightBounds);
+          } else {
+            setTimeout(() => {
+              window.dispatchEvent(new Event('resize'));
+              window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+            }, 50);
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+            }, 260);
+          }
+        }
+      }
+
+      triggerHaptic('success');
+      setSuccessMessage(statusSummary);
+      setTimeout(() => setSuccessMessage(null), 4500);
+
+      return { success: true };
+    } catch (err: any) {
+      console.error('URL import error:', err);
+      return {
+        success: false,
+        error: err?.message || 'Netzwerkfehler beim Importieren der URL.'
+      };
+    }
+  }, [
+    ftp,
+    userWeight,
+    estimatedSpeed,
+    commitApprovedTracks,
+    saveToHistory,
+    refreshCatalogTotalCount,
+    appPrefs.showElevationProfile,
+    appPrefs.autoFitOnLoad,
+    navigateWorkspace,
+    is3D,
+    handleFitVisibleTracks
+  ]);
+
+  const handleRefreshTrackFromKomoot = useCallback(async (trackId: string) => {
+    const existing = tracksRef.current.find((t) => t.id === trackId);
+    if (!existing) return;
+
+    const komootMeta = getKomootSourceMeta(existing);
+    if (!komootMeta?.sourceUrl) {
+      setErrorMessage('Dieser Track besitzt keine verknüpfte Komoot- oder URL-Quelle.');
+      setTimeout(() => setErrorMessage(null), 4000);
+      return;
+    }
+
+    setRefreshingKomootTracks((prev) => ({ ...prev, [trackId]: true }));
+    try {
+      const response = await apiFetch(getApiUrl('/api/import-url'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: komootMeta.sourceUrl })
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.success || !data.gpxContent) {
+        throw new Error(data?.error || `Aktualisierung fehlgeschlagen (HTTP ${response.status}).`);
+      }
+
+      const validation = validateGPX(data.gpxContent);
+      if (!validation.isValid) {
+        throw new Error(validation.error || 'Die abgerufenen GPX-Daten sind ungültig.');
+      }
+
+      const fallbackFileName = `${data.suggestedName || existing.name || 'Komoot-Tour'}.gpx`;
+      const parsed = await parseGPX(data.gpxContent, fallbackFileName);
+      if (!parsed || !parsed.points || parsed.points.length < 2) {
+        throw new Error('Es konnten keine gültigen GPS-Koordinaten geladen werden.');
+      }
+
+      if (data.suggestedName && (!parsed.name || parsed.name === fallbackFileName.replace(/\.gpx$/i, ''))) {
+        parsed.name = String(data.suggestedName).trim();
+      }
+      if (data.activityType === 'running') {
+        parsed.activityType = 'running';
+      }
+
+      parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed, parsed.activityType);
+      const surfStats = calculateSurfaceStatsFromPoints(parsed.points);
+      if (surfStats.length > 0) {
+        parsed.surfaceStats = surfStats;
+        hydratePointsWithSurface(parsed.points, surfStats, parsed.distance);
+      }
+
+      const refreshRes = applyKomootRefreshToTrack(existing, parsed, {
+        sourceType: (data.sourceType === 'gpx' ? 'gpx' : 'komoot'),
+        sourceUrl: String(data.sourceUrl || komootMeta.sourceUrl),
+        komootTourId: typeof data.komootTourId === 'string' ? data.komootTourId : komootMeta.komootTourId,
+        komootShareToken: data.komootShareToken ?? komootMeta.komootShareToken ?? null,
+        komootCollectionId: komootMeta.komootCollectionId,
+        komootCollectionTitle: komootMeta.komootCollectionTitle,
+        komootCollectionUrl: komootMeta.komootCollectionUrl,
+        remoteUpdatedAt: typeof data.remoteUpdatedAt === 'string' ? data.remoteUpdatedAt : undefined
+      });
+
+      if (refreshRes.updated) {
+        saveToHistory();
+      }
+
+      setTracks((prev) =>
+        prev.map((t) => (t.id === trackId ? refreshRes.track : t))
+      );
+
+      // Keep Planned Tours DB copy synchronized if this track is already stored in the library
+      try {
+        const existsRes = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(existing.id)}`));
+        if (existsRes.ok) {
+          await apiFetch(getApiUrl('/api/library'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: safeStringifyOrFallback(refreshRes.track, '{}')
+          });
+          refreshCatalogTotalCount();
+        }
+      } catch {
+        // Non-fatal: workspace track is still updated
+      }
+
+      triggerHaptic('success');
+      setSuccessMessage(
+        refreshRes.updated
+          ? `"${refreshRes.track.name}" auf v${refreshRes.newVersion} aktualisiert!`
+          : `"${refreshRes.track.name}" ist bereits auf dem neuesten Stand (v${refreshRes.newVersion}).`
+      );
+      setTimeout(() => setSuccessMessage(null), 4500);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Komoot-Aktualisierung fehlgeschlagen.');
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setRefreshingKomootTracks((prev) => {
+        const next = { ...prev };
+        delete next[trackId];
+        return next;
+      });
+    }
+  }, [ftp, userWeight, estimatedSpeed, saveToHistory, refreshCatalogTotalCount]);
+
+  const handleSyncRefreshedTracksToWorkspace = useCallback((refreshedTracks: GPXTrack[]) => {
+    if (!refreshedTracks || refreshedTracks.length === 0) return;
+    const byId = new globalThis.Map(refreshedTracks.map((tr) => [tr.id, tr]));
+    setTracks((prev) => {
+      let changed = false;
+      const next = prev.map((existing) => {
+        const updated = byId.get(existing.id);
+        if (!updated) return existing;
+        changed = true;
+        return {
+          ...updated,
+          visible: existing.visible,
+          color: existing.color || updated.color
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const handleKomootCollectionComplete = useCallback((result: KomootCollectionImportCompletion) => {
+    setPendingKomootCollection(null);
+
+    if (result.savedToPlanned) {
+      refreshCatalogTotalCount();
+    }
+
+    if (result.openOnMap && result.importedTracks.length > 0) {
+      handleLoadCatalogTracksToMap(result.importedTracks, {
+        jumpToMap: true,
+        fitToTracks: true
+      });
+    }
+
+    const count = result.importedTracks.length;
+    const parts: string[] = [
+      `${count} ${count === 1 ? 'Tour' : 'Touren'} aus „${result.collectionTitle}“ importiert`
+    ];
+    if (result.updatedCount && result.updatedCount > 0) {
+      parts.push(`${result.updatedCount} aktualisiert`);
+    }
+    if (result.savedToPlanned) parts.push('in Geplante Touren gruppiert');
+    if (result.openOnMap) parts.push('auf Karte geöffnet');
+    if (result.failedCount > 0) {
+      parts.push(`${result.failedCount} übersprungen`);
+    }
+
+    setSuccessMessage(`${parts.join(' · ')}!`);
+    setTimeout(() => setSuccessMessage(null), 5000);
+  }, [refreshCatalogTotalCount, handleLoadCatalogTracksToMap]);
 
   const handleStartMapComparison = useCallback((track1Id?: string, track2Id?: string) => {
     const currentTracks = tracksRef.current;
@@ -1842,6 +2253,7 @@ const App: React.FC = () => {
 
       // Escape key: close any open modal or clear active selection/flight
       if (e.key === 'Escape') {
+        if (pendingKomootCollection) { setPendingKomootCollection(null); return; }
         if (settingsModalOpen) { setSettingsModalOpen(false); return; }
         if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
         if (glossaryOpen) { setGlossaryOpen(false); return; }
@@ -1996,20 +2408,13 @@ const App: React.FC = () => {
         return;
       }
 
-      // Zoom shortcuts: + / = to zoom in, - to zoom out (when not typing in inputs)
-      if (e.key === '+' || e.key === '=' || e.key === 'Add') {
+      // Zoom shortcuts: + / = to zoom in, - to zoom out (hold Alt for fine-grained ±0.25 steps)
+      const zoomAction = resolveKeyboardZoomAction(e);
+      if (zoomAction) {
         e.preventDefault();
         setMapView(prev => ({
           ...prev,
-          zoom: Math.min(19, prev.zoom + 1)
-        }));
-        return;
-      }
-      if (e.key === '-' || e.key === '_' || e.key === 'Subtract') {
-        e.preventDefault();
-        setMapView(prev => ({
-          ...prev,
-          zoom: Math.max(3, prev.zoom - 1)
+          zoom: computeNextZoom(prev.zoom, zoomAction.direction, zoomAction.step, MAP_MIN_ZOOM, MAP_MAX_ZOOM)
         }));
         return;
       }
@@ -2124,7 +2529,7 @@ const App: React.FC = () => {
   }
 
   if (!isUnlocked) {
-    return <PasswordGate onUnlocked={handleUnlocked} />;
+    return <PasswordGate onUnlocked={handleUnlocked} setupRequired={authSetupRequired} />;
   }
 
   return (
@@ -2642,6 +3047,7 @@ const App: React.FC = () => {
             }}
             onAddTourToWorkspace={handleLoadLibraryTrack}
             onRemoveTourFromWorkspace={removeTrack}
+            onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
             onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
             onNavigateToMap={() => navigateWorkspace('map')}
             onLibraryCountChange={setPlannedToursCount}
@@ -2728,12 +3134,14 @@ const App: React.FC = () => {
             }}
             onChangeActivityType={handleChangeActivityType}
             onUpload={handleFileUpload}
+            onImportUrl={handleImportFromUrl}
             uploadProgress={trackUploadProgress}
             onToggleVisibility={toggleVisibility} 
             onRemoveTrack={removeTrack} 
             onClearAllTracks={clearWorkspaceTracks}
             onKeepOnlyTrack={keepOnlyTrack}
             onRemoveHiddenTracks={removeHiddenTracks}
+            onRemoveDuplicateTracks={removeDuplicateTracks}
             onMergeSelected={handleMerge} 
             onUndo={handleUndo} 
             canUndo={history.length > 0}
@@ -2852,6 +3260,8 @@ const App: React.FC = () => {
             onLockApp={handleLockApp}
             onOpenFullActivitiesView={() => navigateWorkspace('activities')}
             onOpenPlannedToursView={() => navigateWorkspace('planned')}
+            onRefreshKomootTrack={handleRefreshTrackFromKomoot}
+            refreshingKomootTracks={refreshingKomootTracks}
           />
           <main className="flex-1 flex flex-col relative overflow-hidden">
             {!isOnline && (
@@ -3096,6 +3506,18 @@ const App: React.FC = () => {
               />
             )}
           </AnimatePresence>
+
+          <KomootCollectionImportModal
+            collection={pendingKomootCollection}
+            ftp={ftp}
+            userWeight={userWeight}
+            estimatedSpeed={estimatedSpeed}
+            existingWorkspaceTracks={tracks}
+            defaultSaveAsPlanned={true}
+            defaultOpenOnMap={true}
+            onComplete={handleKomootCollectionComplete}
+            onClose={() => setPendingKomootCollection(null)}
+          />
           
           {errorMessage && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1001] bg-red-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-xl text-sm font-medium animate-bounce-in max-w-md whitespace-pre-line text-center">

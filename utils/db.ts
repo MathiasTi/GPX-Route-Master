@@ -807,6 +807,27 @@ function runInitDbStatements() {
     console.error('Failed to run 2.9.7 health & activity metric healing migration:', e);
   }
 
+  // One-time data cleanup migration (2.9.8-purge-synthetic-health-metrics): Remove previously auto-synthesized fake steps/calories/health rows
+  try {
+    const checkPurge = db.prepare('SELECT COUNT(*) as count FROM app_version WHERE version = ?');
+    const hasPurge = (checkPurge.get('2.9.8-purge-synthetic-health-metrics') as { count: number }).count > 0;
+    if (!hasPurge) {
+      const purgeRes = purgeSyntheticHealthMetricRows('default');
+      if (purgeRes.stepsRemoved > 0) {
+        console.log(
+          `[DB Migration 2.9.8] Purged ${purgeRes.stepsRemoved} synthetic fake steps/calories row(s).`
+        );
+      }
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.9.8-purge-synthetic-health-metrics',
+        new Date().toISOString(),
+        'Purged legacy auto-synthesized fake steps/calories rows and disabled synthetic health metric generation.'
+      );
+    }
+  } catch (e) {
+    console.error('Failed to run 2.9.8 synthetic health cleanup migration:', e);
+  }
+
   try {
     db.pragma('optimize');
   } catch {}
@@ -1091,12 +1112,124 @@ export function upsertOAuthUser(profile: {
   });
 }
 
+const APP_PASSWORD_HASH_SETTING_KEY = 'app_password_hash';
+export const MIN_APP_PASSWORD_LENGTH = 10;
+
+function hashPasswordScrypt(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+}
+
+function verifyPasswordScrypt(candidate: string, storedHash: string): boolean {
+  const parts = storedHash.split('$');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+  const [, salt, expectedHex] = parts;
+  if (!salt || !expectedHex || expectedHex.length !== 128) return false;
+  try {
+    const derived = crypto.scryptSync(candidate, salt, 64);
+    const expectedBuf = Buffer.from(expectedHex, 'hex');
+    if (derived.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(derived, expectedBuf);
+  } catch {
+    return false;
+  }
+}
+
+function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function getStoredAppPasswordHash(): string | null {
+  try {
+    const row = db
+      .prepare('SELECT value FROM user_settings WHERE key = ?')
+      .get(APP_PASSWORD_HASH_SETTING_KEY) as { value?: string } | undefined;
+    if (row?.value && row.value.startsWith('scrypt$')) {
+      return row.value;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function isAppPasswordConfigured(): boolean {
+  const envPassword = (process.env.APP_PASSWORD || '').trim();
+  if (envPassword.length > 0) return true;
+  return getStoredAppPasswordHash() !== null;
+}
+
+export function claimInitialAppPassword(candidate: unknown): {
+  ok: boolean;
+  alreadyConfigured?: boolean;
+  error?: string;
+} {
+  if (typeof candidate !== 'string') {
+    return { ok: false, error: 'Bitte gib ein gültiges Passwort ein.' };
+  }
+  const trimmed = candidate.trim();
+  if (trimmed.length < MIN_APP_PASSWORD_LENGTH) {
+    return {
+      ok: false,
+      error: `Das Passwort muss mindestens ${MIN_APP_PASSWORD_LENGTH} Zeichen lang sein.`
+    };
+  }
+  if (trimmed.length > 128) {
+    return { ok: false, error: 'Das Passwort darf maximal 128 Zeichen lang sein.' };
+  }
+
+  return executeWithCorruptionRecovery(() => {
+    if ((process.env.APP_PASSWORD || '').trim().length > 0) {
+      return {
+        ok: false,
+        alreadyConfigured: true,
+        error: 'Zugangspasswort ist bereits über die Server-Konfiguration festgelegt.'
+      };
+    }
+
+    const tx = db.transaction(() => {
+      const existing = db
+        .prepare('SELECT value FROM user_settings WHERE key = ?')
+        .get(APP_PASSWORD_HASH_SETTING_KEY) as { value?: string } | undefined;
+      if (existing?.value && existing.value.startsWith('scrypt$')) {
+        return {
+          ok: false,
+          alreadyConfigured: true,
+          error: 'Zugangspasswort wurde bereits eingerichtet.'
+        };
+      }
+
+      const hashed = hashPasswordScrypt(trimmed);
+      db.prepare('INSERT OR REPLACE INTO user_settings (key, value) VALUES (?, ?)').run(
+        APP_PASSWORD_HASH_SETTING_KEY,
+        hashed
+      );
+      return { ok: true };
+    });
+
+    return tx();
+  });
+}
+
 export function verifyAppPassword(candidate: unknown): boolean {
-  if (typeof candidate !== 'string' || !candidate) return false;
-  const expected = (process.env.APP_PASSWORD || 'mathias').trim() || 'mathias';
-  const candidateHash = crypto.createHash('sha256').update(candidate.trim(), 'utf8').digest();
-  const expectedHash = crypto.createHash('sha256').update(expected, 'utf8').digest();
-  return crypto.timingSafeEqual(candidateHash, expectedHash);
+  if (typeof candidate !== 'string') return false;
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed.length > 128) return false;
+
+  // Configured APP_PASSWORD environment variable always overrides any claimed fallback hash
+  const envPassword = (process.env.APP_PASSWORD || '').trim();
+  if (envPassword.length > 0) {
+    const candidateHash = crypto.createHash('sha256').update(trimmed, 'utf8').digest();
+    const expectedHash = crypto.createHash('sha256').update(envPassword, 'utf8').digest();
+    return crypto.timingSafeEqual(candidateHash, expectedHash);
+  }
+
+  const storedHash = getStoredAppPasswordHash();
+  if (!storedHash) {
+    return false;
+  }
+  return verifyPasswordScrypt(trimmed, storedHash);
 }
 
 export function createAuthSession(userId: string = 'default', ttlMs: number = 30 * 24 * 60 * 60 * 1000): {
@@ -1105,6 +1238,7 @@ export function createAuthSession(userId: string = 'default', ttlMs: number = 30
 } {
   return executeWithCorruptionRecovery(() => {
     const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashSessionToken(token);
     const expiresAt = Date.now() + ttlMs;
     const uid = normalizeUserId(userId);
 
@@ -1114,13 +1248,13 @@ export function createAuthSession(userId: string = 'default', ttlMs: number = 30
 
     db.prepare(`
       INSERT OR IGNORE INTO users (id, provider, provider_id, email, name)
-      VALUES (?, 'password', ?, 'mathias@local', 'Mathias')
+      VALUES (?, 'password', ?, 'admin@local', 'Workspace Admin')
     `).run(uid, uid);
 
     db.prepare(`
       INSERT INTO auth_sessions (token, user_id, expires_at)
       VALUES (?, ?, ?)
-    `).run(token, uid, expiresAt);
+    `).run(tokenHash, uid, expiresAt);
 
     return { token, expiresAt };
   });
@@ -1132,11 +1266,12 @@ export function verifyAuthSessionToken(token?: string | null): { valid: boolean;
   }
   return executeWithCorruptionRecovery(() => {
     const cleanToken = token.trim();
+    const tokenHash = hashSessionToken(cleanToken);
     const row = db.prepare(`
       SELECT token, expires_at
       FROM auth_sessions
-      WHERE token = ? AND expires_at > ?
-    `).get(cleanToken, Date.now()) as { token: string; expires_at: number } | undefined;
+      WHERE (token = ? OR token = ?) AND expires_at > ?
+    `).get(tokenHash, cleanToken, Date.now()) as { token: string; expires_at: number } | undefined;
 
     if (!row) {
       return { valid: false };
@@ -1151,22 +1286,29 @@ export function getUserBySessionToken(token?: string | null): DbUserRecord | nul
   }
   return executeWithCorruptionRecovery(() => {
     const cleanToken = token.trim();
+    const tokenHash = hashSessionToken(cleanToken);
     const row = db.prepare(`
       SELECT u.*
       FROM auth_sessions s
       JOIN users u ON u.id = s.user_id
-      WHERE s.token = ? AND s.expires_at > ?
-    `).get(cleanToken, Date.now()) as DbUserRecord | undefined;
+      WHERE (s.token = ? OR s.token = ?) AND s.expires_at > ?
+    `).get(tokenHash, cleanToken, Date.now()) as DbUserRecord | undefined;
 
     return row || null;
   });
 }
 
 export function deleteAuthSession(token?: string | null): boolean {
-  if (!token || typeof token !== 'string') return false;
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    return false;
+  }
   return executeWithCorruptionRecovery(() => {
-    const info = db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token.trim());
-    return info.changes > 0;
+    const cleanToken = token.trim();
+    const tokenHash = hashSessionToken(cleanToken);
+    const res = db
+      .prepare('DELETE FROM auth_sessions WHERE token = ? OR token = ?')
+      .run(tokenHash, cleanToken);
+    return res.changes > 0;
   });
 }
 
@@ -1627,14 +1769,25 @@ export function saveRhr(date: string, rhr: number, userId: string = 'default') {
 }
 
 export function saveSteps(date: string, steps: number, calories?: number, distance?: number, userId: string = 'default') {
+  if (typeof date !== 'string' || !date.trim()) return;
+  const numericSteps = Number(steps);
+  if (!Number.isFinite(numericSteps) || numericSteps <= 0) return;
+  const numericCalories = calories !== undefined && calories !== null && Number.isFinite(Number(calories)) && Number(calories) > 0
+    ? Math.round(Number(calories))
+    : null;
+  const numericDistance = distance !== undefined && distance !== null && Number.isFinite(Number(distance)) && Number(distance) > 0
+    ? Number(distance)
+    : null;
+
   const uid = normalizeUserId(userId);
-  const cleanDate = stripScopedKey(date, uid);
+  const cleanDate = stripScopedKey(date.trim(), uid);
+  if (!cleanDate) return;
   const scopedDate = toScopedKey(cleanDate, uid);
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO garmin_steps (date, steps, calories, distance, user_id)
     VALUES (?, ?, ?, ?, ?)
   `);
-  stmt.run(scopedDate, steps, calories || null, distance || null, uid);
+  stmt.run(scopedDate, Math.round(numericSteps), numericCalories, numericDistance, uid);
 }
 
 export function saveGarminActivity(
@@ -2071,73 +2224,21 @@ export function getGarminActivityById(id: string, userId: string = 'default'): D
   }
 }
 
-export function backfillMissingHealthMetricsFromExistingData(userId: string = 'default') {
+/**
+ * Removes legacy auto-synthesized fake `garmin_steps` (and matching fake calories) rows
+ * created by an earlier backfill routine, while strictly preserving all real Garmin measurements.
+ */
+export function purgeSyntheticHealthMetricRows(userId: string = 'default'): { stepsRemoved: number } {
   const uid = normalizeUserId(userId);
+  const stepRows = db
+    .prepare('SELECT date, steps, calories, distance FROM garmin_steps WHERE user_id = ?')
+    .all(uid) as Array<{ date?: string; steps?: number; calories?: number; distance?: number }>;
 
-  const sleepRows = (db.prepare('SELECT * FROM garmin_sleep WHERE user_id = ?').all(uid) as any[]).map((r) => ({
-    ...r,
-    rawDate: String(r.date || ''),
-    date: stripScopedKey(String(r.date || ''), uid).slice(0, 10)
-  }));
-
-  const extractDateSet = (tableName: string) => {
-    const rows = db.prepare(`SELECT date FROM ${tableName} WHERE user_id = ?`).all(uid) as Array<{ date?: string }>;
-    const set = new Set<string>();
-    for (const row of rows) {
-      const clean = stripScopedKey(String(row?.date || ''), uid).slice(0, 10);
-      if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) set.add(clean);
-    }
-    return set;
-  };
-
-  const rhrDates = extractDateSet('garmin_rhr');
-  const stressDates = extractDateSet('garmin_stress');
-  const stepsDates = extractDateSet('garmin_steps');
-  const sleepDates = new Set<string>();
-  const sleepByDate = new Map<string, any>();
-
-  const sleepHealingUpdates: Array<{ deep: number; light: number; rem: number; awake: number; rawDate: string }> = [];
-
-  for (const s of sleepRows) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s.date)) continue;
-    sleepDates.add(s.date);
-
-    const duration = Math.max(0, Math.round(Number(s.duration || 0)));
-    let deep = Math.max(0, Math.round(Number(s.deep || 0)));
-    let light = Math.max(0, Math.round(Number(s.light || 0)));
-    let rem = Math.max(0, Math.round(Number(s.rem || 0)));
-    let awake = Math.max(0, Math.round(Number(s.awake || 0)));
-    let changed = false;
-
-    // Heal awake values mistakenly stored in seconds (e.g. 60..600 seconds saved as minutes)
-    if (duration > 0 && awake >= 60 && awake <= 600 && awake % 60 === 0) {
-      awake = Math.max(1, Math.round(awake / 60));
-      changed = true;
-    }
-
-    // Derive missing sleep phase splits when total sleep duration exists without phase breakdown
-    if (duration > 0 && deep + light + rem === 0) {
-      deep = Math.round(duration * 0.17);
-      rem = Math.round(duration * 0.22);
-      light = Math.max(0, duration - deep - rem);
-      if (awake === 0) {
-        awake = Math.max(5, Math.min(25, Math.round(duration * 0.04)));
-      }
-      changed = true;
-    }
-
-    if (changed) {
-      sleepHealingUpdates.push({ deep, light, rem, awake, rawDate: s.rawDate });
-      s.deep = deep;
-      s.light = light;
-      s.rem = rem;
-      s.awake = awake;
-    }
-
-    sleepByDate.set(s.date, s);
+  if (stepRows.length === 0) {
+    return { stepsRemoved: 0 };
   }
 
-  const actRows = (db.prepare('SELECT * FROM garmin_activities WHERE user_id = ?').all(uid) as DbGarminActivityRecord[]).map((a) => ({
+  const actRows = (db.prepare('SELECT date, type, distance, duration, calories FROM garmin_activities WHERE user_id = ?').all(uid) as DbGarminActivityRecord[]).map((a) => ({
     ...a,
     datePrefix: String(a.date || '').trim().slice(0, 10)
   }));
@@ -2151,77 +2252,21 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
     }
   }
 
-  const dateCandidates = new Set<string>([
-    ...sleepByDate.keys(),
-    ...actsByDate.keys(),
-    ...rhrDates,
-    ...stressDates,
-    ...stepsDates
-  ]);
-
-  if (dateCandidates.size === 0) {
-    const today = new Date();
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(today);
-      d.setUTCDate(today.getUTCDate() - i);
-      dateCandidates.add(d.toISOString().slice(0, 10));
-    }
-  }
-
-  const allDates = Array.from(dateCandidates).sort();
-  const missingAny = allDates.some(
-    (d) => !sleepDates.has(d) || !rhrDates.has(d) || !stressDates.has(d) || !stepsDates.has(d)
-  );
-  if (sleepHealingUpdates.length === 0 && !missingAny) return;
-
-  const updateSleepStmt = db.prepare(
-    'UPDATE garmin_sleep SET deep = ?, light = ?, rem = ?, awake = ? WHERE date = ? AND user_id = ?'
-  );
-  const insertSleep = db.prepare(
-    'INSERT OR IGNORE INTO garmin_sleep (date, duration, deep, light, rem, awake, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  );
-  const insertRhr = db.prepare('INSERT OR IGNORE INTO garmin_rhr (date, rhr, user_id) VALUES (?, ?, ?)');
-  const insertStress = db.prepare('INSERT OR IGNORE INTO garmin_stress (date, avg_stress, user_id) VALUES (?, ?, ?)');
-  const insertSteps = db.prepare('INSERT OR IGNORE INTO garmin_steps (date, steps, calories, distance, user_id) VALUES (?, ?, ?, ?, ?)');
+  const deleteStepStmt = db.prepare('DELETE FROM garmin_steps WHERE date = ? AND user_id = ?');
+  let stepsRemoved = 0;
 
   const tx = db.transaction(() => {
-    for (const h of sleepHealingUpdates) {
-      updateSleepStmt.run(h.deep, h.light, h.rem, h.awake, h.rawDate, uid);
-    }
+    for (const row of stepRows) {
+      const rawDate = String(row.date || '');
+      const dateStr = stripScopedKey(rawDate, uid).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
-    for (const dateStr of allDates) {
-      const needSleep = !sleepDates.has(dateStr);
-      const needRhr = !rhrDates.has(dateStr);
-      const needStress = !stressDates.has(dateStr);
-      const needSteps = !stepsDates.has(dateStr);
-      if (!needSleep && !needRhr && !needStress && !needSteps) continue;
-
-      const scopedDate = toScopedKey(dateStr, uid);
-      let sleep = sleepByDate.get(dateStr);
       const dayActs = (actsByDate.get(dateStr) || []).filter((a) => {
         const t = String(a.type || '').toLowerCase();
         return !t.includes('stop_watch') && !t.includes('stopwatch');
       });
+
       const daySeed = dateStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-
-      const actDurationSec = dayActs.reduce((s, a) => s + Number(a.duration || 0), 0);
-      const loadAdj = Math.min(18, Math.round(actDurationSec / 360));
-
-      if (needSleep) {
-        const sleepDur = Math.max(345, Math.min(520, 425 + ((daySeed % 9) - 4) * 9 - Math.round(loadAdj * 0.4)));
-        const deep = Math.round(sleepDur * (0.15 + (daySeed % 5) * 0.01));
-        const rem = Math.round(sleepDur * (0.20 + ((daySeed >> 1) % 4) * 0.01));
-        const light = Math.max(60, sleepDur - deep - rem);
-        const awake = Math.max(5, Math.min(28, 10 + (daySeed % 12)));
-        insertSleep.run(scopedDate, sleepDur, deep, light, rem, awake, uid);
-        sleep = { date: dateStr, duration: sleepDur, deep, light, rem, awake };
-      }
-
-      const sleepMin = Number(sleep?.duration || 420);
-      const deepMin = Number(sleep?.deep || Math.round(sleepMin * 0.16));
-      const remMin = Number(sleep?.rem || Math.round(sleepMin * 0.22));
-      const recoveryRatio = Math.min(1, Math.max(0.2, (deepMin + remMin) / Math.max(240, sleepMin)));
-
       const dayCalories = Math.round(dayActs.reduce((sum, a) => sum + Number(a.calories || 0), 0));
       const dayRunSteps = dayActs.reduce((sum, a) => {
         const t = String(a.type || '').toLowerCase();
@@ -2231,36 +2276,66 @@ export function backfillMissingHealthMetricsFromExistingData(userId: string = 'd
         return sum + Math.round(Number(a.duration || 0) * 0.15);
       }, 0);
 
-      if (needRhr) {
-        const avgHrAct = dayActs.find((a) => Number(a.avg_hr || 0) > 80);
-        const hrAdj = avgHrAct ? Math.round((Number(avgHrAct.avg_hr) - 140) * 0.12) : 0;
-        const rhrVal = Math.max(46, Math.min(68, Math.round(56 - (recoveryRatio - 0.35) * 14 + hrAdj + ((daySeed % 5) - 2))));
-        insertRhr.run(scopedDate, rhrVal, uid);
-      }
+      const expectedFakeSteps = 6200 + (daySeed % 9) * 420 + dayRunSteps;
+      const expectedFakeCalories = 1850 + dayCalories + Math.round((expectedFakeSteps - 6000) * 0.04);
+      const expectedFakeDist = Number((expectedFakeSteps * 0.000762).toFixed(2));
 
-      if (needStress) {
-        const sleepPenalty = sleepMin < 360 ? 10 : sleepMin > 460 ? -5 : 0;
-        const stressVal = Math.max(16, Math.min(62, Math.round(31 - (recoveryRatio - 0.35) * 20 + loadAdj + sleepPenalty + ((daySeed % 7) - 3))));
-        insertStress.run(scopedDate, stressVal, uid);
-      }
+      const actualSteps = Number(row.steps || 0);
+      const actualCalories = Number(row.calories || 0);
+      const actualDist = Number(row.distance || 0);
 
-      if (needSteps) {
-        const baselineSteps = 6200 + (daySeed % 9) * 420;
-        const totalSteps = baselineSteps + dayRunSteps;
-        const totalCalories = 1850 + dayCalories + Math.round((totalSteps - 6000) * 0.04);
-        const totalDistKm = Number((totalSteps * 0.000762).toFixed(2));
-        insertSteps.run(scopedDate, totalSteps, totalCalories, totalDistKm, uid);
+      if (
+        actualSteps === expectedFakeSteps &&
+        Math.abs(actualCalories - expectedFakeCalories) <= 1 &&
+        Math.abs(actualDist - expectedFakeDist) <= 0.02
+      ) {
+        const info = deleteStepStmt.run(rawDate, uid);
+        stepsRemoved += info.changes;
       }
     }
   });
 
+  tx();
+  return { stepsRemoved };
+}
+
+/**
+ * Only repairs unit anomalies on existing real sleep records (awake values saved in seconds instead of minutes).
+ * Never synthesizes fake steps, calories, sleep, RHR, or stress rows.
+ */
+export function backfillMissingHealthMetricsFromExistingData(userId: string = 'default') {
+  const uid = normalizeUserId(userId);
+
+  const sleepRows = db
+    .prepare('SELECT date, duration, awake FROM garmin_sleep WHERE user_id = ?')
+    .all(uid) as Array<{ date?: string; duration?: number; awake?: number }>;
+
+  const updates: Array<{ awake: number; rawDate: string }> = [];
+  for (const s of sleepRows) {
+    const rawDate = String(s.date || '');
+    const duration = Math.max(0, Math.round(Number(s.duration || 0)));
+    const awake = Math.max(0, Math.round(Number(s.awake || 0)));
+    if (duration > 0 && awake >= 60 && awake <= 600 && awake % 60 === 0) {
+      updates.push({ awake: Math.max(1, Math.round(awake / 60)), rawDate });
+    }
+  }
+
+  if (updates.length === 0) return;
+
+  const updateSleepStmt = db.prepare(
+    'UPDATE garmin_sleep SET awake = ? WHERE date = ? AND user_id = ?'
+  );
+  const tx = db.transaction(() => {
+    for (const h of updates) {
+      updateSleepStmt.run(h.awake, h.rawDate, uid);
+    }
+  });
   tx();
 }
 
 export function getHealthMetrics(userId: string = 'default', options?: { includePoints?: boolean }) {
   const uid = normalizeUserId(userId);
   const includePoints = options?.includePoints !== false;
-  backfillMissingHealthMetricsFromExistingData(uid);
   const normalizeDateRows = (tableName: string) => {
     const rows = db.prepare(`SELECT * FROM ${tableName} WHERE user_id = ?`).all(uid) as any[];
     return rows
@@ -2334,6 +2409,7 @@ export function addAppVersion(version: string, changelog: string): boolean {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SENSITIVE_SETTINGS_KEYS = new Set([
+  'app_password_hash',
   'garmin_personal_api_key',
   'garmin_personal_api_key_enc',
   'garmin_personal_api_base_url',

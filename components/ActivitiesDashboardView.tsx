@@ -1581,10 +1581,11 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                 );
               })()}
 
-              {/* 7. Kalorien & Herzfrequenz */}
-              {(() => {
+              {/* 7. Kalorien & Herzfrequenz (nur echte gemessene Werte anzeigen) */}
+              {(periodStats.caloriesKcal > 0 || Boolean(periodStats.avgHr)) && (() => {
+                const hasRealCalories = periodStats.caloriesKcal > 0;
                 const kcalPerHour =
-                  periodStats.durationSec > 0 && periodStats.caloriesKcal > 0
+                  hasRealCalories && periodStats.durationSec > 0
                     ? Math.round(periodStats.caloriesKcal / (periodStats.durationSec / 3600))
                     : null;
                 return (
@@ -1592,28 +1593,32 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2.5">
                         <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400">
-                          <Flame className="w-4 h-4" />
+                          {hasRealCalories ? <Flame className="w-4 h-4" /> : <Heart className="w-4 h-4" />}
                         </div>
                         <div>
                           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                            Energie &amp; Herzfrequenz
+                            {hasRealCalories && periodStats.avgHr
+                              ? 'Energie & Herzfrequenz'
+                              : hasRealCalories
+                              ? 'Energieverbrauch'
+                              : 'Ø Herzfrequenz'}
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-slate-900 dark:text-white">
-                            {periodStats.caloriesKcal > 0
+                            {hasRealCalories
                               ? `${periodStats.caloriesKcal.toLocaleString('de-DE')} kcal`
-                              : '— kcal'}
+                              : `${periodStats.avgHr} bpm`}
                           </span>
                         </div>
                       </div>
-                      {periodStats.avgHr && (
+                      {hasRealCalories && periodStats.avgHr && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 font-mono">
                           <Heart className="w-3 h-3" /> {periodStats.avgHr} bpm
                         </span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
-                      <span>{kcalPerHour ? `${kcalPerHour} kcal/h` : 'Keine Kaloriendaten'}</span>
-                      <span>{periodStats.hrCount}x mit HF</span>
+                      {kcalPerHour ? <span>{kcalPerHour} kcal/h</span> : <span />}
+                      {periodStats.hrCount > 0 ? <span>{periodStats.hrCount}x mit HF</span> : <span />}
                     </div>
                   </div>
                 );

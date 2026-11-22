@@ -5,6 +5,9 @@ import {
   parseKomootCollectionUrl,
   extractKomootTourFromPayload,
   extractKomootCollectionFromPayload,
+  extractKomootTourTitleFromHtml,
+  cleanKomootTourTitle,
+  isGenericKomootTourName,
   buildGpxFromKomootTour,
   validateDirectGpxText,
   mapKomootSportToActivityType,
@@ -233,6 +236,60 @@ export async function runUrlGpxImporterTests(): Promise<boolean> {
     rejectedHtml = err instanceof UrlImportError && err.statusCode === 422;
   }
   assert(rejectedHtml, 'validateDirectGpxText rejects HTML pages');
+
+  // 8. Komoot Share-Link Title Cleaning, Entity Decoding & Coordinates-Without-Name Fallback
+  const kSmart = parseKomootTourUrl('https://www.komoot.de/de-de/smarttour/44332211?share_token=tok_Smart1');
+  assert(
+    kSmart !== null && kSmart.tourId === '44332211' && kSmart.shareToken === 'tok_Smart1',
+    'parseKomootTourUrl parses /smarttour/ share link'
+  );
+  const kInvite = parseKomootTourUrl('https://www.komoot.com/invite-tour/88776655?share_token=tok_Inv2');
+  assert(
+    kInvite !== null && kInvite.tourId === '88776655' && kInvite.shareToken === 'tok_Inv2',
+    'parseKomootTourUrl parses /invite-tour/ share link'
+  );
+
+  assert(
+    cleanKomootTourTitle('Sauerland &amp; M&ouml;hnesee Runde | Rennrad-Tour | Komoot') === 'Sauerland & Möhnesee Runde',
+    'cleanKomootTourTitle strips Komoot sport suffix and decodes HTML entities'
+  );
+  assert(
+    isGenericKomootTourName('Komoot Tour 987654321', '987654321') === true &&
+      isGenericKomootTourName('Sauerland & Möhnesee Runde', '987654321') === false,
+    'isGenericKomootTourName distinguishes fallback ID titles from real tour titles'
+  );
+
+  // Reversed <meta content="..." property="og:title"> + embedded coordinates JSON lacking a tour name
+  const shareHtmlWithoutJsonName = `<!doctype html>
+    <html>
+      <head>
+        <meta content="Alpen&uuml;berquerung &amp; K&ouml;nigssee | Mountainbike-Tour | Komoot" property="og:title" />
+      </head>
+      <body>
+        <script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+          props: {
+            creator: { username: 'max_muster', name: 'Max Mustermann' },
+            coordinates: {
+              items: [
+                { lat: 47.5901, lng: 12.9892, alt: 610 },
+                { lat: 47.6105, lng: 13.0014, alt: 890 }
+              ]
+            }
+          }
+        })}</script>
+      </body>
+    </html>`;
+  assert(
+    extractKomootTourTitleFromHtml(shareHtmlWithoutJsonName, '112233') === 'Alpenüberquerung & Königssee',
+    'extractKomootTourTitleFromHtml handles reversed meta attribute order and decodes entities'
+  );
+  const shareExtracted = extractKomootTourFromPayload(shareHtmlWithoutJsonName, '112233');
+  assert(
+    shareExtracted !== null &&
+      shareExtracted.name === 'Alpenüberquerung & Königssee' &&
+      shareExtracted.coordinates.length === 2,
+    'extractKomootTourFromPayload keeps real og:title instead of generic fallback or creator username'
+  );
 
   console.log(`\nURL GPX Importer Tests: ${passed} passed, ${failed} failed\n`);
   return failed === 0;

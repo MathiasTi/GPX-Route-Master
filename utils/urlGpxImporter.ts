@@ -257,7 +257,9 @@ export function parseKomootTourUrl(rawUrl: string): KomootTourRef | null {
     return null;
   }
 
-  const tourMatch = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?tour\/(\d+)(?:\/.*)?$/i);
+  const tourMatch = parsed.pathname.match(
+    /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:tour|smarttour|invite-tour)\/(\d+)(?:\/.*)?$/i
+  );
   if (!tourMatch || !tourMatch[1]) {
     return null;
   }
@@ -406,24 +408,110 @@ function findCoordinatesDeep(node: unknown, depth = 0): { items: unknown[]; pare
   return null;
 }
 
+export function decodeHtmlEntities(input: string): string {
+  const named: Record<string, string> = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&apos;': "'",
+    '&#39;': "'",
+    '&nbsp;': ' ',
+    '&auml;': 'ä',
+    '&ouml;': 'ö',
+    '&uuml;': 'ü',
+    '&Auml;': 'Ä',
+    '&Ouml;': 'Ö',
+    '&Uuml;': 'Ü',
+    '&szlig;': 'ß',
+    '&ndash;': '–',
+    '&mdash;': '—'
+  };
+
+  return input
+    .replace(/&(amp|lt|gt|quot|apos|nbsp|auml|ouml|uuml|Auml|Ouml|Uuml|szlig|ndash|mdash|#39);/g, (m) => named[m] ?? m)
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const cp = parseInt(hex, 16);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const cp = parseInt(dec, 10);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+    });
+}
+
+export function isGenericKomootTourName(name?: string | null, tourId?: string): boolean {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return true;
+  if (/^komoot(?:\s+tour(?:\s+\d+)?)?$/i.test(trimmed)) return true;
+  if (tourId && trimmed.toLowerCase() === `komoot tour ${tourId}`.toLowerCase()) return true;
+  if (/^tour\s+#?\d+$/i.test(trimmed)) return true;
+  return false;
+}
+
+export function cleanKomootTourTitle(rawTitle: string): string {
+  const decoded = decodeHtmlEntities(String(rawTitle || '')).replace(/\s+/g, ' ').trim();
+  if (!decoded) return '';
+
+  const stripped = decoded
+    .replace(/\s*\|\s*komoot\b.*$/i, '')
+    .replace(/\s*[–—-]\s*komoot\b.*$/i, '')
+    .replace(
+      /\s*[|–—]\s*(?:rennrad|fahrrad|rad|mountainbike|mtb|gravel|e-bike|wander|berg|lauf|jogging|trail|bike|cycling|road|hiking|hike|running|tour|route)(?:[\s-][^|–—]*)?$/i,
+      ''
+    )
+    .replace(/\s*\|\s*komoot\b.*$/i, '')
+    .trim();
+
+  if (!stripped || /^komoot$/i.test(stripped)) return '';
+  return stripped;
+}
+
+function isLikelyUserOrCreatorObject(obj: Record<string, unknown>): boolean {
+  return (
+    'username' in obj ||
+    'display_name' in obj ||
+    'avatar' in obj ||
+    obj.content_type === 'user' ||
+    obj.type === 'user'
+  );
+}
+
 function findTourMetadataDeep(
   node: unknown,
   depth = 0
 ): { name?: string; sport?: string; date?: string; changedAt?: string } {
-  if (!node || typeof node !== 'object' || depth > 6) return {};
+  if (!node || typeof node !== 'object' || depth > 7) return {};
   const obj = node as Record<string, unknown>;
 
-  if (typeof obj.name === 'string' && typeof obj.sport === 'string') {
-    const changedAtRaw = obj.changed_at ?? obj.updated_at ?? obj.date;
-    return {
-      name: obj.name,
-      sport: obj.sport,
-      date: typeof obj.date === 'string' ? obj.date : undefined,
-      changedAt: typeof changedAtRaw === 'string' ? changedAtRaw : undefined
-    };
+  if (!isLikelyUserOrCreatorObject(obj)) {
+    const rawName = typeof obj.name === 'string' && obj.name.trim()
+      ? obj.name.trim()
+      : typeof obj.title === 'string' && obj.title.trim()
+      ? obj.title.trim()
+      : undefined;
+
+    const hasTourMarker =
+      typeof obj.sport === 'string' ||
+      typeof obj.distance === 'number' ||
+      typeof obj.elevation_up === 'number' ||
+      typeof obj.duration === 'number' ||
+      (typeof obj.type === 'string' && /tour|route/i.test(obj.type)) ||
+      Array.isArray(obj.coordinates) ||
+      Boolean((obj._embedded as Record<string, unknown> | undefined)?.coordinates);
+
+    if (rawName && hasTourMarker) {
+      const changedAtRaw = obj.changed_at ?? obj.updated_at ?? obj.date;
+      return {
+        name: cleanKomootTourTitle(rawName) || rawName,
+        sport: typeof obj.sport === 'string' ? obj.sport : undefined,
+        date: typeof obj.date === 'string' ? obj.date : undefined,
+        changedAt: typeof changedAtRaw === 'string' ? changedAtRaw : undefined
+      };
+    }
   }
 
-  for (const key of ['tour', 'pageProps', '_embedded']) {
+  for (const key of ['tour', 'pageProps', 'props', '_embedded', 'data', 'entity', 'route', 'smartTour', 'initialState']) {
     if (obj[key] && typeof obj[key] === 'object') {
       const res = findTourMetadataDeep(obj[key], depth + 1);
       if (res.name || res.sport) return res;
@@ -431,6 +519,69 @@ function findTourMetadataDeep(
   }
 
   return {};
+}
+
+function extractMetaTagContent(html: string, attrName: 'property' | 'name', attrValue: string): string | null {
+  const escapedVal = attrValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patternA = new RegExp(
+    `<meta[^>]+${attrName}=["']${escapedVal}["'][^>]+content=["']([^"']+)["']`,
+    'i'
+  );
+  const patternB = new RegExp(
+    `<meta[^>]+content=["']([^"']+)["'][^>]+${attrName}=["']${escapedVal}["']`,
+    'i'
+  );
+  return html.match(patternA)?.[1] || html.match(patternB)?.[1] || null;
+}
+
+export function extractKomootTourTitleFromHtml(html: string, fallbackTourId?: string): string | null {
+  const trimmed = String(html || '').trim();
+  if (!trimmed) return null;
+
+  // 1. kmtBoot.setProps JSON
+  const kmtBootRegex = /kmtBoot\.setProps\(\s*("(?:[^"\\]|\\.)*"|\{[\s\S]*?\})\s*\)\s*;?/g;
+  let bootMatch: RegExpExecArray | null;
+  while ((bootMatch = kmtBootRegex.exec(trimmed)) !== null) {
+    const candidate = tryParseJsonCandidate(bootMatch[1]);
+    if (!candidate) continue;
+    const meta = findTourMetadataDeep(candidate);
+    if (meta.name && !isGenericKomootTourName(meta.name, fallbackTourId)) {
+      return meta.name;
+    }
+  }
+
+  // 2. JSON-LD structured data (<script type="application/ld+json">)
+  const ldJsonRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let ldMatch: RegExpExecArray | null;
+  while ((ldMatch = ldJsonRegex.exec(trimmed)) !== null) {
+    const parsed = tryParseJsonCandidate(ldMatch[1].trim());
+    const nodes = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    for (const item of nodes) {
+      if (!item || typeof item !== 'object') continue;
+      const candidateName = cleanKomootTourTitle(String((item as any).name || (item as any).headline || ''));
+      if (candidateName && !isGenericKomootTourName(candidateName, fallbackTourId)) {
+        return candidateName;
+      }
+    }
+  }
+
+  // 3. OpenGraph / Twitter / <title> / <h1>
+  const rawCandidates = [
+    extractMetaTagContent(trimmed, 'property', 'og:title'),
+    extractMetaTagContent(trimmed, 'name', 'twitter:title'),
+    trimmed.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || null,
+    trimmed.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]?.replace(/<[^>]+>/g, ' ') || null
+  ];
+
+  for (const raw of rawCandidates) {
+    if (!raw) continue;
+    const cleaned = cleanKomootTourTitle(raw);
+    if (cleaned && !isGenericKomootTourName(cleaned, fallbackTourId)) {
+      return cleaned;
+    }
+  }
+
+  return null;
 }
 
 function tryParseJsonCandidate(raw: string): any | null {
@@ -481,16 +632,22 @@ export function extractKomootTourFromPayload(
   }
 
   // HTML page extraction strategies
-  let bestMeta: { name?: string; sport?: string; date?: string; changedAt?: string } = {};
+  const bestMeta: { name?: string; sport?: string; date?: string; changedAt?: string } = {};
 
-  const titleMatch = trimmed.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
-    || trimmed.match(/<title>([^<]+)<\/title>/i);
-  if (titleMatch && titleMatch[1]) {
-    bestMeta.name = titleMatch[1]
-      .replace(/\s*\|\s*Komoot.*$/i, '')
-      .replace(/\s*-\s*Komoot.*$/i, '')
-      .trim();
+  const htmlTitle = extractKomootTourTitleFromHtml(trimmed, fallbackTourId);
+  if (htmlTitle) {
+    bestMeta.name = htmlTitle;
   }
+
+  const pickBestName = (candidateName?: string): string => {
+    if (candidateName && !isGenericKomootTourName(candidateName, fallbackTourId)) {
+      return candidateName;
+    }
+    if (bestMeta.name && !isGenericKomootTourName(bestMeta.name, fallbackTourId)) {
+      return bestMeta.name;
+    }
+    return `Komoot Tour ${fallbackTourId}`;
+  };
 
   // Strategy 1: kmtBoot.setProps("...") or kmtBoot.setProps({...})
   const kmtBootRegex = /kmtBoot\.setProps\(\s*("(?:[^"\\]|\\.)*"|\{[\s\S]*?\})\s*\)\s*;?/g;
@@ -499,7 +656,7 @@ export function extractKomootTourFromPayload(
     const candidate = tryParseJsonCandidate(bootMatch[1]);
     if (!candidate) continue;
     const meta = findTourMetadataDeep(candidate);
-    if (meta.name) bestMeta.name = meta.name;
+    if (meta.name && !isGenericKomootTourName(meta.name, fallbackTourId)) bestMeta.name = meta.name;
     if (meta.sport) bestMeta.sport = meta.sport;
     if (meta.date) bestMeta.date = meta.date;
     if (meta.changedAt) bestMeta.changedAt = meta.changedAt;
@@ -509,7 +666,7 @@ export function extractKomootTourFromPayload(
       const coordinates = normalizeKomootCoordinates(coordMatch.items);
       if (coordinates.length >= 2) {
         return {
-          name: bestMeta.name || `Komoot Tour ${fallbackTourId}`,
+          name: pickBestName(meta.name),
           sport: bestMeta.sport,
           date: bestMeta.date,
           changedAt: bestMeta.changedAt,
@@ -532,7 +689,7 @@ export function extractKomootTourFromPayload(
         const res = extractKomootTourFromPayload(parsed, fallbackTourId);
         if (res) {
           return {
-            name: res.name || bestMeta.name || `Komoot Tour ${fallbackTourId}`,
+            name: pickBestName(res.name),
             sport: res.sport || bestMeta.sport,
             date: res.date || bestMeta.date,
             changedAt: res.changedAt || bestMeta.changedAt,
@@ -549,7 +706,7 @@ export function extractKomootTourFromPayload(
       const coordinates = normalizeKomootCoordinates(items);
       if (coordinates.length >= 2) {
         return {
-          name: bestMeta.name || `Komoot Tour ${fallbackTourId}`,
+          name: pickBestName(),
           sport: bestMeta.sport,
           date: bestMeta.date,
           coordinates
@@ -1021,13 +1178,14 @@ function extractGpxPointsForHash(gpxXml: string): Array<{ lat: number; lng: numb
   return points;
 }
 
-export async function importGpxFromUrl(rawUrl: string): Promise<ImportedUrlGpxResult> {
+export async function importGpxFromUrl(rawUrl: string, allowRedirectToKomoot = true): Promise<ImportedUrlGpxResult> {
   await assertSafeExternalUrl(rawUrl);
   const komootRef = parseKomootTourUrl(rawUrl);
 
   if (komootRef) {
-    // Strategy 1: Try Komoot JSON tour metadata + embedded coordinates endpoint
+    // Strategy 1: Fetch official tour metadata (apiTourUrl + onlyprops) & coordinates endpoint
     const jsonCandidateUrls = [
+      { url: komootRef.apiTourUrl, headers: { Accept: 'application/json' } },
       { url: komootRef.canonicalUrl, headers: { onlyprops: 'true', Accept: 'application/json, text/plain, */*' } },
       { url: komootRef.apiCoordinatesUrl, headers: { Accept: 'application/json' } }
     ];
@@ -1036,6 +1194,29 @@ export async function importGpxFromUrl(rawUrl: string): Promise<ImportedUrlGpxRe
     let extractedMetaSport: string | undefined;
     let extractedMetaDate: string | undefined;
     let extractedMetaChangedAt: string | undefined;
+    let extractedCoords: KomootCoordinatePoint[] | null = null;
+
+    const finalizeKomootTourResult = (tour: ExtractedKomootTour): ImportedUrlGpxResult => {
+      const activityType = mapKomootSportToActivityType(tour.sport);
+      const gpxContent = buildGpxFromKomootTour(tour);
+      const contentHash = computeCanonicalTrackContentHash({
+        name: tour.name,
+        activityType,
+        points: tour.coordinates.map((c) => ({ lat: c.lat, lng: c.lng, ele: c.alt }))
+      });
+      return {
+        gpxContent,
+        suggestedName: tour.name,
+        activityType,
+        sourceType: 'komoot',
+        sourceUrl: komootRef.canonicalUrl,
+        pointCount: tour.coordinates.length,
+        komootTourId: komootRef.tourId,
+        komootShareToken: komootRef.shareToken,
+        contentHash,
+        remoteUpdatedAt: tour.changedAt || tour.date
+      };
+    };
 
     for (const candidate of jsonCandidateUrls) {
       try {
@@ -1045,53 +1226,80 @@ export async function importGpxFromUrl(rawUrl: string): Promise<ImportedUrlGpxRe
         const parsedJson = tryParseJsonCandidate(res.text);
         if (parsedJson) {
           const meta = findTourMetadataDeep(parsedJson);
-          if (meta.name) extractedMetaName = meta.name;
-          if (meta.sport) extractedMetaSport = meta.sport;
-          if (meta.date) extractedMetaDate = meta.date;
-          if (meta.changedAt) extractedMetaChangedAt = meta.changedAt;
+          if (meta.name && !isGenericKomootTourName(meta.name, komootRef.tourId)) {
+            extractedMetaName = meta.name;
+          }
+          if (meta.sport && !extractedMetaSport) extractedMetaSport = meta.sport;
+          if (meta.date && !extractedMetaDate) extractedMetaDate = meta.date;
+          if (meta.changedAt && !extractedMetaChangedAt) extractedMetaChangedAt = meta.changedAt;
 
           const extracted = extractKomootTourFromPayload(parsedJson, komootRef.tourId);
           if (extracted && extracted.coordinates.length >= 2) {
-            const fullTour: ExtractedKomootTour = {
-              name: extracted.name || extractedMetaName || `Komoot Tour ${komootRef.tourId}`,
-              sport: extracted.sport || extractedMetaSport,
-              date: extracted.date || extractedMetaDate,
-              changedAt: extracted.changedAt || extractedMetaChangedAt,
-              coordinates: extracted.coordinates
-            };
-            const activityType = mapKomootSportToActivityType(fullTour.sport);
-            const gpxContent = buildGpxFromKomootTour(fullTour);
-            const contentHash = computeCanonicalTrackContentHash({
-              name: fullTour.name,
-              activityType,
-              points: fullTour.coordinates.map((c) => ({ lat: c.lat, lng: c.lng, ele: c.alt }))
-            });
-            return {
-              gpxContent,
-              suggestedName: fullTour.name,
-              activityType,
-              sourceType: 'komoot',
-              sourceUrl: komootRef.canonicalUrl,
-              pointCount: fullTour.coordinates.length,
-              komootTourId: komootRef.tourId,
-              komootShareToken: komootRef.shareToken,
-              contentHash,
-              remoteUpdatedAt: fullTour.changedAt || fullTour.date
-            };
+            if (!isGenericKomootTourName(extracted.name, komootRef.tourId)) {
+              extractedMetaName = extracted.name;
+            }
+            if (extracted.sport && !extractedMetaSport) extractedMetaSport = extracted.sport;
+            if (extracted.date && !extractedMetaDate) extractedMetaDate = extracted.date;
+            if (extracted.changedAt && !extractedMetaChangedAt) extractedMetaChangedAt = extracted.changedAt;
+            extractedCoords = extracted.coordinates;
+            // Stop early only once we have BOTH coordinates AND a real tour name
+            if (!isGenericKomootTourName(extractedMetaName, komootRef.tourId)) {
+              return finalizeKomootTourResult({
+                name: extractedMetaName!,
+                sport: extractedMetaSport,
+                date: extractedMetaDate,
+                changedAt: extractedMetaChangedAt,
+                coordinates: extractedCoords
+              });
+            }
           }
         }
       } catch (err) {
         if (err instanceof UrlImportError && err.statusCode === 403) {
           throw err;
         }
-        // continue to HTML fallback
+        // continue to next candidate / HTML fallback
       }
     }
 
-    // Strategy 2: Fetch public HTML tour page and extract kmtBoot / embedded JSON
+    // Strategy 2: Fetch public HTML tour page (needed either for coordinates OR to resolve the real tour title)
     const htmlRes = await fetchWithSsrfGuard(komootRef.canonicalUrl, {
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     });
+
+    if (htmlRes.response.ok) {
+      const htmlTitle = extractKomootTourTitleFromHtml(htmlRes.text, komootRef.tourId);
+      if (htmlTitle && !isGenericKomootTourName(htmlTitle, komootRef.tourId)) {
+        extractedMetaName = htmlTitle;
+      }
+
+      const extractedFromHtml = extractKomootTourFromPayload(htmlRes.text, komootRef.tourId);
+      if (extractedFromHtml && extractedFromHtml.coordinates.length >= 2) {
+        const bestName = !isGenericKomootTourName(extractedFromHtml.name, komootRef.tourId)
+          ? extractedFromHtml.name
+          : !isGenericKomootTourName(extractedMetaName, komootRef.tourId)
+          ? extractedMetaName!
+          : `Komoot Tour ${komootRef.tourId}`;
+        return finalizeKomootTourResult({
+          name: bestName,
+          sport: extractedFromHtml.sport || extractedMetaSport,
+          date: extractedFromHtml.date || extractedMetaDate,
+          changedAt: extractedFromHtml.changedAt || extractedMetaChangedAt,
+          coordinates: extractedFromHtml.coordinates
+        });
+      }
+    }
+
+    // If Strategy 1 already obtained valid coordinates (e.g. from apiCoordinatesUrl), return with best resolved name
+    if (extractedCoords && extractedCoords.length >= 2) {
+      return finalizeKomootTourResult({
+        name: extractedMetaName || `Komoot Tour ${komootRef.tourId}`,
+        sport: extractedMetaSport,
+        date: extractedMetaDate,
+        changedAt: extractedMetaChangedAt,
+        coordinates: extractedCoords
+      });
+    }
 
     if (htmlRes.response.status === 401 || htmlRes.response.status === 403) {
       throw new UrlImportError(
@@ -1109,36 +1317,6 @@ export async function importGpxFromUrl(rawUrl: string): Promise<ImportedUrlGpxRe
         `Komoot hat mit Status ${htmlRes.response.status} geantwortet.`,
         htmlRes.response.status >= 400 && htmlRes.response.status < 500 ? htmlRes.response.status : 502
       );
-    }
-
-    const extractedFromHtml = extractKomootTourFromPayload(htmlRes.text, komootRef.tourId);
-    if (extractedFromHtml && extractedFromHtml.coordinates.length >= 2) {
-      const fullTour: ExtractedKomootTour = {
-        name: extractedFromHtml.name || extractedMetaName || `Komoot Tour ${komootRef.tourId}`,
-        sport: extractedFromHtml.sport || extractedMetaSport,
-        date: extractedFromHtml.date || extractedMetaDate,
-        changedAt: extractedFromHtml.changedAt || extractedMetaChangedAt,
-        coordinates: extractedFromHtml.coordinates
-      };
-      const activityType = mapKomootSportToActivityType(fullTour.sport);
-      const gpxContent = buildGpxFromKomootTour(fullTour);
-      const contentHash = computeCanonicalTrackContentHash({
-        name: fullTour.name,
-        activityType,
-        points: fullTour.coordinates.map((c) => ({ lat: c.lat, lng: c.lng, ele: c.alt }))
-      });
-      return {
-        gpxContent,
-        suggestedName: fullTour.name,
-        activityType,
-        sourceType: 'komoot',
-        sourceUrl: komootRef.canonicalUrl,
-        pointCount: fullTour.coordinates.length,
-        komootTourId: komootRef.tourId,
-        komootShareToken: komootRef.shareToken,
-        contentHash,
-        remoteUpdatedAt: fullTour.changedAt || fullTour.date
-      };
     }
 
     const lowerHtml = htmlRes.text.toLowerCase();
@@ -1160,10 +1338,14 @@ export async function importGpxFromUrl(rawUrl: string): Promise<ImportedUrlGpxRe
     );
   }
 
-  // Direct GPX URL flow
+  // Direct GPX URL flow (also detects Komoot share shortlinks that redirect to /tour/<id>)
   const directRes = await fetchWithSsrfGuard(rawUrl, {
     Accept: 'application/gpx+xml, application/xml, text/xml, text/plain, */*'
   });
+
+  if (allowRedirectToKomoot && directRes.finalUrl !== rawUrl && parseKomootTourUrl(directRes.finalUrl)) {
+    return importGpxFromUrl(directRes.finalUrl, false);
+  }
 
   if (!directRes.response.ok) {
     throw new UrlImportError(

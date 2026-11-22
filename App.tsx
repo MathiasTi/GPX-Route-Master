@@ -1844,8 +1844,18 @@ const App: React.FC = () => {
         };
       }
 
-      if (data.suggestedName && (!parsed.name || parsed.name === fallbackFileName.replace(/\.gpx$/i, ''))) {
-        parsed.name = String(data.suggestedName).trim();
+      const shouldSaveToLibrary = options?.saveAsPlannedTour !== false;
+      const suggestedName = typeof data.suggestedName === 'string' ? data.suggestedName.trim() : '';
+
+      if (
+        suggestedName &&
+        (data.sourceType === 'komoot' ||
+          !parsed.name ||
+          parsed.name === fallbackFileName.replace(/\.gpx$/i, '') ||
+          /^Komoot Tour\b/i.test(parsed.name))
+      ) {
+        parsed.name = suggestedName;
+        parsed.originalFilename = `${suggestedName}.gpx`;
       }
       if (data.activityType === 'running') {
         parsed.activityType = 'running';
@@ -1862,7 +1872,7 @@ const App: React.FC = () => {
       if (data.sourceType === 'komoot' && !baseTags.includes('Komoot')) {
         baseTags.push('Komoot');
       }
-      if (options?.saveAsPlannedTour && !baseTags.includes('Geplante Tour')) {
+      if (shouldSaveToLibrary && !baseTags.includes('Geplante Tour')) {
         baseTags.push('Geplante Tour');
       }
       parsed.tags = baseTags;
@@ -1916,24 +1926,56 @@ const App: React.FC = () => {
         } else {
           commitApprovedTracks([activeTargetTrack]);
           setMarkedTrackId(activeTargetTrack.id);
-          statusSummary = `"${activeTargetTrack.name}" per URL (v1) auf Karte geladen!`;
+          statusSummary = `"${activeTargetTrack.name}" (v1) geladen`;
         }
       }
 
-      if (options?.saveAsPlannedTour) {
+      let savedToLibrary = false;
+      if (shouldSaveToLibrary) {
         try {
+          let trackToSave: GPXTrack = activeTargetTrack;
+
+          // Match against existing SQLite library entry so re-importing the same Komoot tour versions it cleanly
+          const existingLibRes = await apiFetch(getApiUrl('/api/library')).catch(() => null);
+          const existingLibData = existingLibRes && existingLibRes.ok ? await existingLibRes.json().catch(() => null) : null;
+          if (existingLibData?.success && Array.isArray(existingLibData.tracks)) {
+            const matchedLibMeta = findMatchingExistingKomootTrack(existingLibData.tracks, {
+              komootTourId: sourceAttachParams.komootTourId,
+              sourceUrl: sourceAttachParams.sourceUrl
+            });
+            if (matchedLibMeta && matchedLibMeta.id !== activeTargetTrack.id) {
+              const fullRes = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(matchedLibMeta.id)}`)).catch(() => null);
+              const fullData = fullRes && fullRes.ok ? await fullRes.json().catch(() => null) : null;
+              if (fullData?.success && fullData.track) {
+                const libRefresh = applyKomootRefreshToTrack(fullData.track, parsed, sourceAttachParams);
+                trackToSave = { ...libRefresh.track, visible: true };
+                activeTargetTrack = trackToSave;
+                setTracks((prev) =>
+                  prev.map((t) => (t.id === parsed.id || t.id === matchedLibMeta.id ? trackToSave : t))
+                );
+                setMarkedTrackId(trackToSave.id);
+              }
+            }
+          }
+
           const libRes = await apiFetch(getApiUrl('/api/library'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: safeStringifyOrFallback(activeTargetTrack, '{}')
+            body: safeStringifyOrFallback(trackToSave, '{}')
           });
           const libData = await libRes.json();
-          if (libData?.success) {
+          if (libRes.ok && libData?.success) {
+            savedToLibrary = true;
             refreshCatalogTotalCount();
+            window.dispatchEvent(new CustomEvent('library-updated'));
           }
         } catch (saveErr) {
-          console.warn('Saving URL-imported track as Planned Tour failed:', saveErr);
+          console.warn('Saving URL-imported track to library failed:', saveErr);
         }
+      }
+
+      if (savedToLibrary && !statusSummary.includes('Bibliothek')) {
+        statusSummary = `${statusSummary} & in Bibliothek gespeichert!`;
       }
 
       setCompareTrackId(null);
@@ -1962,7 +2004,12 @@ const App: React.FC = () => {
       setSuccessMessage(statusSummary);
       setTimeout(() => setSuccessMessage(null), 4500);
 
-      return { success: true };
+      return {
+        success: true,
+        message: savedToLibrary
+          ? `"${activeTargetTrack.name}" in Bibliothek gespeichert`
+          : `"${activeTargetTrack.name}" geladen`
+      };
     } catch (err: any) {
       console.error('URL import error:', err);
       return {

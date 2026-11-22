@@ -229,6 +229,14 @@ export const TrackLibrary: React.FC<TrackLibraryProps> = ({
     return () => clearTimeout(timer);
   }, [searchQuery, activityFilter, fetchUnifiedLibrary]);
 
+  useEffect(() => {
+    const handleLibraryUpdated = () => {
+      fetchUnifiedLibrary();
+    };
+    window.addEventListener('library-updated', handleLibraryUpdated);
+    return () => window.removeEventListener('library-updated', handleLibraryUpdated);
+  }, [fetchUnifiedLibrary]);
+
   // Load track into current workspace
   const handleLoadTrack = async (id: string) => {
     try {

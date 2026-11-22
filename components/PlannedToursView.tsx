@@ -1046,8 +1046,16 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
         return;
       }
 
-      if (data.suggestedName && (!parsed.name || parsed.name === fallbackFileName.replace(/\.gpx$/i, ''))) {
-        parsed.name = String(data.suggestedName).trim();
+      const suggestedName = typeof data.suggestedName === 'string' ? data.suggestedName.trim() : '';
+      if (
+        suggestedName &&
+        (data.sourceType === 'komoot' ||
+          !parsed.name ||
+          parsed.name === fallbackFileName.replace(/\.gpx$/i, '') ||
+          /^Komoot Tour\b/i.test(parsed.name))
+      ) {
+        parsed.name = suggestedName;
+        parsed.originalFilename = `${suggestedName}.gpx`;
       }
       if (data.activityType === 'running') {
         parsed.activityType = 'running';
@@ -1116,6 +1124,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
         }
         setHydratedTracks((prev) => ({ ...prev, [finalTrack.id]: finalTrack }));
         onSyncRefreshedTracksToWorkspace?.([finalTrack]);
+        window.dispatchEvent(new CustomEvent('library-updated'));
         await fetchPlannedTours();
       }
 

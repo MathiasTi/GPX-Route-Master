@@ -1889,7 +1889,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     tabs: [
                       { id: 'sleep', label: 'Schlaf & Phasen' },
                       { id: 'rhr', label: 'Ruhepuls' },
-                      ...(stepsData.length > 0 ? [{ id: 'steps' as const, label: 'Schritte & Kalorien' }] : []),
+                      { id: 'steps', label: 'Schritte & Kalorien' },
                       { id: 'stress', label: 'Stressbelastung' }
                     ]
                   },
@@ -3255,8 +3255,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </motion.div>
                   )}
 
-                  {/* Tab 5: STEPS (nur anzeigen, wenn echte Schrittdaten vorliegen) */}
-                  {activeTab === 'steps' && visibleStepsData.length > 0 && (() => {
+                  {/* Tab 5: STEPS (Tab immer sichtbar; KPIs & Diagramme nur bei echten Schrittdaten) */}
+                  {activeTab === 'steps' && (() => {
                     const hasRealCalories = visibleStepsData.some((d) => d.calories !== undefined && d.calories > 0);
                     return (
                       <motion.div
@@ -3272,61 +3272,96 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         <p className="text-xs text-slate-500">
                           {hasRealCalories
                             ? 'Überwache deine tägliche Aktivität im Alltag, den 7-Tage-Durchschnitt und gemessene Kalorien.'
-                            : 'Überwache deine tägliche Aktivität im Alltag und den 7-Tage-Durchschnitt.'}
+                            : 'Überwache deine tägliche Aktivität im Alltag und den 7-Tage-Durchschnitt aus echten Garmin-Messwerten.'}
                         </p>
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schritte / Tag</p>
-                            <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5 font-mono">{stepsStatsSummary.avg.toLocaleString()}</p>
-                          </div>
-                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">10k-Zieltage</p>
-                            <p className="text-lg font-black text-slate-900 dark:text-white mt-0.5 font-mono">{stepsStatsSummary.goalDays}/{visibleStepsData.length} <span className="text-xs font-bold text-emerald-500">({stepsStatsSummary.goalPct}%)</span></p>
-                          </div>
-                          <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rekordtag</p>
-                            <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{stepsStatsSummary.maxSteps.toLocaleString()}</p>
-                          </div>
-                          {(stepsStatsSummary.totalDistanceKm > 0 || stepsStatsSummary.avgCalories > 0) && (
+                        {visibleStepsData.length > 0 && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
-                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0
-                                  ? 'Distanz & Ø kcal'
-                                  : stepsStatsSummary.avgCalories > 0
-                                  ? 'Ø Kalorien / Tag'
-                                  : 'Distanz'}
-                              </p>
-                              <p className="text-lg font-black text-orange-600 dark:text-orange-400 mt-0.5 font-mono">
-                                {stepsStatsSummary.totalDistanceKm > 0 ? `${stepsStatsSummary.totalDistanceKm.toFixed(0)} km` : ''}
-                                {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0 ? ' ' : ''}
-                                {stepsStatsSummary.avgCalories > 0 && (
-                                  <span className={stepsStatsSummary.totalDistanceKm > 0 ? 'text-xs font-bold text-slate-400' : ''}>
-                                    {stepsStatsSummary.totalDistanceKm > 0 ? `· ${stepsStatsSummary.avgCalories} kcal` : `${stepsStatsSummary.avgCalories} kcal`}
-                                  </span>
-                                )}
-                              </p>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ø Schritte / Tag</p>
+                              <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5 font-mono">{stepsStatsSummary.avg.toLocaleString()}</p>
                             </div>
-                          )}
-                        </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">10k-Zieltage</p>
+                              <p className="text-lg font-black text-slate-900 dark:text-white mt-0.5 font-mono">{stepsStatsSummary.goalDays}/{visibleStepsData.length} <span className="text-xs font-bold text-emerald-500">({stepsStatsSummary.goalPct}%)</span></p>
+                            </div>
+                            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rekordtag</p>
+                              <p className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 font-mono">{stepsStatsSummary.maxSteps.toLocaleString()}</p>
+                            </div>
+                            {(stepsStatsSummary.totalDistanceKm > 0 || stepsStatsSummary.avgCalories > 0) && (
+                              <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-850 border border-slate-100 dark:border-slate-800 shadow-xs">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                  {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0
+                                    ? 'Distanz & Ø kcal'
+                                    : stepsStatsSummary.avgCalories > 0
+                                    ? 'Ø Kalorien / Tag'
+                                    : 'Distanz'}
+                                </p>
+                                <p className="text-lg font-black text-orange-600 dark:text-orange-400 mt-0.5 font-mono">
+                                  {stepsStatsSummary.totalDistanceKm > 0 ? `${stepsStatsSummary.totalDistanceKm.toFixed(0)} km` : ''}
+                                  {stepsStatsSummary.totalDistanceKm > 0 && stepsStatsSummary.avgCalories > 0 ? ' ' : ''}
+                                  {stepsStatsSummary.avgCalories > 0 && (
+                                    <span className={stepsStatsSummary.totalDistanceKm > 0 ? 'text-xs font-bold text-slate-400' : ''}>
+                                      {stepsStatsSummary.totalDistanceKm > 0 ? `· ${stepsStatsSummary.avgCalories} kcal` : `${stepsStatsSummary.avgCalories} kcal`}
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
-                          <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
-                            <ComposedChart data={visibleStepsData}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
-                              <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
-                              <YAxis yAxisId="left" stroke="#10b981" fontSize={9} />
-                              {hasRealCalories && (
-                                <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={9} unit=" kcal" />
-                              )}
-                              <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                              <Legend wrapperStyle={{ fontSize: '10px' }} />
-                              <ReferenceLine yAxisId="left" y={10000} stroke="#059669" strokeDasharray="4 4" label={{ value: '10.000 Ziel', position: 'insideTopRight', fill: '#059669', fontSize: 10 }} />
-                              <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                              {hasRealCalories && (
-                                <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" fillOpacity={0.7} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                              )}
-                              <Line yAxisId="left" type="monotone" dataKey="steps7dAvg" name="7T-Schnitt Schritte" stroke="#047857" strokeWidth={2.5} dot={false} isAnimationActive={false} />
-                            </ComposedChart>
-                          </ResponsiveContainer>
+                          {visibleStepsData.length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2.5">
+                              <span className="font-semibold text-slate-600 dark:text-slate-300">
+                                {stepsData.length > 0
+                                  ? 'Keine echten Schrittdaten im gewählten Zeitraum.'
+                                  : 'Keine echten Schrittdaten vorhanden.'}
+                              </span>
+                              <span className="max-w-md text-[11px] text-slate-400">
+                                {stepsData.length > 0
+                                  ? 'Wähle einen größeren Zeitraum oder synchronisiere aktuelle Tageswerte über die Garmin Personal API.'
+                                  : 'Synchronisiere deine Tageswerte über die Garmin Personal API, um echte Schritte und Kalorien aus Garmin Connect zu laden.'}
+                              </span>
+                              <div className="flex flex-wrap items-center justify-center gap-3 mt-1">
+                                {stepsData.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setHealthRangeDays('all')}
+                                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                                  >
+                                    Gesamten Zeitraum anzeigen
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectTab('personal-api')}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer"
+                                >
+                                  Über Garmin Personal API synchronisieren
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
+                              <ComposedChart data={visibleStepsData}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} vertical={false} />
+                                <XAxis dataKey="date" stroke="#94a3b8" fontSize={9} />
+                                <YAxis yAxisId="left" stroke="#10b981" fontSize={9} />
+                                {hasRealCalories && (
+                                  <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={9} unit=" kcal" />
+                                )}
+                                <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                                <Legend wrapperStyle={{ fontSize: '10px' }} />
+                                <ReferenceLine yAxisId="left" y={10000} stroke="#059669" strokeDasharray="4 4" label={{ value: '10.000 Ziel', position: 'insideTopRight', fill: '#059669', fontSize: 10 }} />
+                                <Bar yAxisId="left" dataKey="steps" name="Schritte" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                {hasRealCalories && (
+                                  <Bar yAxisId="right" dataKey="calories" name="Kalorien" fill="#ef4444" fillOpacity={0.7} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                                )}
+                                <Line yAxisId="left" type="monotone" dataKey="steps7dAvg" name="7T-Schnitt Schritte" stroke="#047857" strokeWidth={2.5} dot={false} isAnimationActive={false} />
+                              </ComposedChart>
+                            </ResponsiveContainer>
+                          )}
                         </div>
                       </motion.div>
                     );

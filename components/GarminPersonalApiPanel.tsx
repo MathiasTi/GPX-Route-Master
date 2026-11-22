@@ -559,9 +559,13 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
       });
       const json = await res.json();
       if (json.success) {
+        const zeroStepsNote =
+          (json.stepsCount ?? 0) === 0
+            ? ` ${json.diagnostics?.stepsDiagnostic || 'Hinweis: Garmin hat für diesen Zeitraum 0 Schritte geliefert.'}`
+            : '';
         setFeedback({
-          type: 'success',
-          message: `Gesundheitsdaten synchronisiert: ${json.sleepCount} Schlaf, ${json.rhrCount} Ruhepuls, ${json.stressCount} Stress, ${json.stepsCount} Schritte.`
+          type: (json.stepsCount ?? 0) === 0 ? 'warning' : 'success',
+          message: `Gesundheitsdaten synchronisiert: ${json.sleepCount} Schlaf, ${json.rhrCount} Ruhepuls, ${json.stressCount} Stress, ${json.stepsCount} Schritte.${zeroStepsNote}`
         });
         await fetchStatus();
         await executeSearch();
@@ -618,9 +622,13 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
           if (healthJson.success) {
             parts.push(`${healthJson.sleepCount} Schlaf · ${healthJson.rhrCount} RHR · ${healthJson.stepsCount} Schritte`);
           }
+          const hasZeroSteps = healthJson.success && (healthJson.stepsCount ?? 0) === 0;
+          const zeroStepsNote = hasZeroSteps
+            ? ` ${healthJson.diagnostics?.stepsDiagnostic || 'Hinweis: Garmin hat für diesen Zeitraum 0 Schritte geliefert.'}`
+            : '';
           setFeedback({
-            type: 'success',
-            message: `Komplett-Synchronisation abgeschlossen: ${parts.join(' | ')}`
+            type: hasZeroSteps ? 'warning' : 'success',
+            message: `Komplett-Synchronisation abgeschlossen: ${parts.join(' | ')}.${zeroStepsNote}`
           });
         }
         await fetchStatus();
@@ -1488,9 +1496,7 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                 { id: 'sleep', label: `Schlaf (${searchedHealth.sleep.length})` },
                 { id: 'rhr', label: `Ruhepuls (${searchedHealth.rhr.length})` },
                 { id: 'stress', label: `Stress (${searchedHealth.stress.length})` },
-                ...(searchedHealth.steps.length > 0
-                  ? [{ id: 'steps', label: `Schritte (${searchedHealth.steps.length})` }]
-                  : [])
+                { id: 'steps', label: `Schritte (${searchedHealth.steps.length})` }
               ].map((cat) => (
                 <button
                   key={cat.id}
@@ -1575,15 +1581,23 @@ export const GarminPersonalApiPanel: React.FC<GarminPersonalApiPanelProps> = ({
                       </tr>
                     ))}
                   {healthCategory === 'steps' &&
-                    searchedHealth.steps.map((row: any, i: number) => (
-                      <tr key={`${row.date}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-2 px-3">{row.date}</td>
-                        <td className="py-2 px-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">
-                          {Number(row.steps || 0).toLocaleString('de-DE')}
+                    (searchedHealth.steps.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-6 px-3 text-center font-sans text-xs text-slate-400">
+                          Keine echten Schrittdaten für den gewählten Zeitraum gespeichert.
                         </td>
-                        <td className="py-2 px-3 text-right">{row.calories ? `${Math.round(row.calories)} kcal` : '—'}</td>
-                        <td className="py-2 px-3 text-right">{row.distance ? `${Number(row.distance).toFixed(2)} km` : '—'}</td>
                       </tr>
+                    ) : (
+                      searchedHealth.steps.map((row: any, i: number) => (
+                        <tr key={`${row.date}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                          <td className="py-2 px-3">{row.date}</td>
+                          <td className="py-2 px-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">
+                            {Number(row.steps || 0).toLocaleString('de-DE')}
+                          </td>
+                          <td className="py-2 px-3 text-right">{row.calories ? `${Math.round(row.calories)} kcal` : '—'}</td>
+                          <td className="py-2 px-3 text-right">{row.distance ? `${Number(row.distance).toFixed(2)} km` : '—'}</td>
+                        </tr>
+                      ))
                     ))}
                 </tbody>
               </table>

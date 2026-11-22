@@ -552,7 +552,7 @@ function isEmptyGarminPayload(parsed: any): boolean {
   if (typeof parsed === 'object') {
     const keys = Object.keys(parsed);
     if (keys.length === 0) return true;
-    const arrayKeys = ['dailies', 'stressDetails', 'userMetrics', 'data', 'sleeps', 'dateWeightList', 'bodyComps'];
+    const arrayKeys = ['dailies', 'dailySummaries', 'steps', 'stressDetails', 'userMetrics', 'data', 'sleeps', 'dateWeightList', 'bodyComps'];
     const hasKnownArray = arrayKeys.some((k) => Array.isArray(parsed[k]));
     if (hasKnownArray && arrayKeys.every((k) => !Array.isArray(parsed[k]) || parsed[k].length === 0)) {
       return true;
@@ -561,14 +561,34 @@ function isEmptyGarminPayload(parsed: any): boolean {
   return false;
 }
 
-async function fetchGarminJsonWithFallback(
+export interface GarminEndpointAttempt {
+  path: string;
+  status: number | 'empty' | 'error';
+}
+
+export async function fetchGarminJsonWithFallback(
   urls: string[],
   accessToken: string,
-  options?: { allowNotFoundAsEmpty?: boolean; signal?: AbortSignal }
-): Promise<{ data: any; usedUrl: string }> {
+  options?: {
+    allowNotFoundAsEmpty?: boolean;
+    allowErrorsAsEmpty?: boolean;
+    signal?: AbortSignal;
+    fetchImpl?: typeof fetch;
+  }
+): Promise<{ data: any; usedUrl: string; attempts: GarminEndpointAttempt[] }> {
   const errors: string[] = [];
+  const attempts: GarminEndpointAttempt[] = [];
   let allNotFound = true;
   let lastEmptyResult: { data: any; usedUrl: string } | null = null;
+  const doFetch = options?.fetchImpl ?? fetch;
+
+  const safePath = (rawUrl: string): string => {
+    try {
+      return new URL(rawUrl).pathname;
+    } catch {
+      return rawUrl.split('?')[0] || rawUrl;
+    }
+  };
 
   for (const url of urls) {
     if (options?.signal?.aborted) {
@@ -578,8 +598,9 @@ async function fetchGarminJsonWithFallback(
     const onExternalAbort = () => controller.abort();
     options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
     const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const pathname = safePath(url);
     try {
-      const res = await fetch(url, {
+      const res = await doFetch(url, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
@@ -593,26 +614,31 @@ async function fetchGarminJsonWithFallback(
       if (res.ok) {
         const text = await res.text();
         if (!text || !text.trim()) {
+          attempts.push({ path: pathname, status: 'empty' });
           lastEmptyResult = { data: [], usedUrl: url };
           continue;
         }
         try {
           const parsed = JSON.parse(text);
           if (isEmptyGarminPayload(parsed)) {
+            attempts.push({ path: pathname, status: 'empty' });
             lastEmptyResult = { data: parsed, usedUrl: url };
             continue;
           }
-          return { data: parsed, usedUrl: url };
+          attempts.push({ path: pathname, status: res.status });
+          return { data: parsed, usedUrl: url, attempts };
         } catch {
+          attempts.push({ path: pathname, status: 'empty' });
           lastEmptyResult = { data: [], usedUrl: url };
           continue;
         }
       } else {
+        attempts.push({ path: pathname, status: res.status });
         if (res.status !== 404 && res.status !== 204) {
           allNotFound = false;
         }
         const bodyPreview = (await res.text().catch(() => '')).slice(0, 140);
-        errors.push(`${res.status} (${new URL(url).pathname}): ${bodyPreview}`);
+        errors.push(`${res.status} (${pathname}): ${bodyPreview}`);
         // Stop immediately on 401 Unauthorized
         if (res.status === 401) {
           throw new Error(`OAuth2 Token abgelaufen oder unautorisiert (HTTP 401).`);
@@ -625,18 +651,19 @@ async function fetchGarminJsonWithFallback(
       }
       if (e?.message?.includes('HTTP 401')) throw e;
       allNotFound = false;
-      errors.push(`${url}: ${e?.message || 'Netzwerkfehler'}`);
+      attempts.push({ path: pathname, status: 'error' });
+      errors.push(`${pathname}: ${e?.message || 'Netzwerkfehler'}`);
     } finally {
       options?.signal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
   if (lastEmptyResult) {
-    return lastEmptyResult;
+    return { ...lastEmptyResult, attempts };
   }
 
-  if (options?.allowNotFoundAsEmpty && allNotFound) {
-    return { data: [], usedUrl: urls[0] || '' };
+  if (options?.allowErrorsAsEmpty || (options?.allowNotFoundAsEmpty && allNotFound)) {
+    return { data: [], usedUrl: urls[0] || '', attempts };
   }
 
   throw new Error(`Garmin Personal API Abfrage fehlgeschlagen. Geprüfte Endpunkte: ${errors.join(' | ')}`);
@@ -1512,6 +1539,240 @@ export async function syncGarminPersonalActivities(options: {
 /**
  * Synchronizes daily Health Metrics (Sleep, RHR, Stress, Steps, Weight) from the Garmin Connect Personal API.
  */
+export function extractGarminDailiesList(payload: any): any[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.dailies)) return payload.dailies;
+  if (Array.isArray(payload?.dailySummaries)) return payload.dailySummaries;
+  if (Array.isArray(payload?.steps)) return payload.steps;
+  if (Array.isArray(payload?.stressDetails)) return payload.stressDetails;
+  if (Array.isArray(payload?.userMetrics)) return payload.userMetrics;
+  const metricsMap = payload?.allMetrics?.metricsMap;
+  if (metricsMap && typeof metricsMap === 'object') {
+    const byDate = new Map<string, any>();
+    const mergeMetricArray = (arr: any[], fieldName: string) => {
+      if (!Array.isArray(arr)) return;
+      for (const entry of arr) {
+        const dStr = String(entry?.calendarDate || entry?.date || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) continue;
+        const prev = byDate.get(dStr) || { calendarDate: dStr };
+        if (entry?.value !== undefined && entry?.value !== null) {
+          prev[fieldName] = entry.value;
+        }
+        byDate.set(dStr, prev);
+      }
+    };
+    mergeMetricArray(metricsMap.WELLNESS_TOTAL_STEPS, 'totalSteps');
+    mergeMetricArray(metricsMap.WELLNESS_RESTING_HEART_RATE, 'restingHeartRate');
+    mergeMetricArray(metricsMap.WELLNESS_AVERAGE_STRESS, 'averageStressLevel');
+    mergeMetricArray(metricsMap.WELLNESS_TOTAL_CALORIES, 'totalKilocalories');
+    mergeMetricArray(metricsMap.WELLNESS_TOTAL_DISTANCE, 'totalDistanceMeters');
+    mergeMetricArray(metricsMap.SLEEP_DURATION ?? metricsMap.WELLNESS_SLEEP_SECONDS ?? metricsMap.SLEEP_TIME_SECONDS, 'sleepingSeconds');
+    mergeMetricArray(metricsMap.SLEEP_DEEP ?? metricsMap.WELLNESS_DEEP_SLEEP_SECONDS, 'deepSleepSeconds');
+    mergeMetricArray(metricsMap.SLEEP_LIGHT ?? metricsMap.WELLNESS_LIGHT_SLEEP_SECONDS, 'lightSleepSeconds');
+    mergeMetricArray(metricsMap.SLEEP_REM ?? metricsMap.WELLNESS_REM_SLEEP_SECONDS, 'remSleepSeconds');
+    mergeMetricArray(metricsMap.SLEEP_AWAKE ?? metricsMap.WELLNESS_AWAKE_SLEEP_SECONDS, 'awakeSleepSeconds');
+    if (byDate.size > 0) return Array.from(byDate.values());
+  }
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (payload && typeof payload === 'object' && (payload.calendarDate || payload.date || payload.startTimeInSeconds)) {
+    return [payload];
+  }
+  return [];
+}
+
+function toMinutesFromGarminSleepField(rawVal: unknown, isSecondsField: boolean): number | undefined {
+  const num = Number(rawVal);
+  if (!Number.isFinite(num) || num <= 0) return undefined;
+  if (isSecondsField) {
+    const mins = Math.round(num / 60);
+    return mins > 0 ? mins : undefined;
+  }
+  return num > 600 ? Math.round(num / 60) : Math.round(num);
+}
+
+function pickSleepMinutes(secondsVal: unknown, fallbackMinutesVal?: unknown): number | undefined {
+  if (secondsVal !== undefined && secondsVal !== null && secondsVal !== '') {
+    return toMinutesFromGarminSleepField(secondsVal, true);
+  }
+  if (fallbackMinutesVal !== undefined && fallbackMinutesVal !== null && fallbackMinutesVal !== '') {
+    return toMinutesFromGarminSleepField(fallbackMinutesVal, false);
+  }
+  return undefined;
+}
+
+export interface ParsedGarminDailyRecord {
+  date: string;
+  steps?: number;
+  calories?: number;
+  distanceKm?: number;
+  rhr?: number;
+  avgStress?: number;
+  sleep?: {
+    durationMin: number;
+    deepMin?: number;
+    lightMin?: number;
+    remMin?: number;
+    awakeMin?: number;
+  };
+}
+
+export function parseGarminDailyRecord(
+  raw: any,
+  metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto'
+): ParsedGarminDailyRecord | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw.values && typeof raw.values === 'object' ? { ...raw, ...raw.values } : raw;
+  const dateStr = String(
+    d.calendarDate ||
+    d.date ||
+    (d.startTimeInSeconds ? new Date(d.startTimeInSeconds * 1000).toISOString().slice(0, 10) : '')
+  ).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+
+  const flatSteps =
+    typeof d.steps === 'number' || typeof d.steps === 'string'
+      ? d.steps
+      : d.steps && typeof d.steps === 'object'
+      ? (d.steps.value ?? d.steps.total ?? d.steps.count)
+      : undefined;
+
+  const nestedMovementSteps =
+    typeof d.movement?.steps === 'number' || typeof d.movement?.steps === 'string'
+      ? d.movement.steps
+      : d.movement?.steps?.value ?? d.movement?.steps?.total ?? d.movement?.totalSteps;
+
+  const hasRhrOrStressField =
+    d.restingHeartRate !== undefined ||
+    d.rhr !== undefined ||
+    d.averageStressLevel !== undefined ||
+    d.overallStressLevel !== undefined;
+
+  const stepsNum = Number(
+    d.totalSteps ??
+    flatSteps ??
+    nestedMovementSteps ??
+    d.dailySteps ??
+    d.stepCount ??
+    (metricHint === 'steps' ? d.value : undefined) ??
+    (metricHint === 'auto' && !hasRhrOrStressField ? d.value : undefined) ??
+    0
+  );
+
+  const nestedCal = d.calories && typeof d.calories === 'object' ? d.calories : undefined;
+  const totalKcalRaw = Number(
+    d.totalKilocalories ??
+    d.totalCalories ??
+    nestedCal?.total ??
+    nestedCal?.totalKilocalories ??
+    nestedCal?.value ??
+    0
+  );
+  const activeKcalRaw = Number(
+    d.activeKilocalories ??
+    nestedCal?.active ??
+    nestedCal?.activeKilocalories ??
+    0
+  );
+  const bmrKcalRaw = Number(
+    d.bmrKilocalories ??
+    nestedCal?.bmr ??
+    nestedCal?.bmrKilocalories ??
+    0
+  );
+  const fallbackCalories = Number(typeof d.calories === 'number' || typeof d.calories === 'string' ? d.calories : 0);
+  const caloriesVal =
+    totalKcalRaw > 0
+      ? Math.round(totalKcalRaw)
+      : activeKcalRaw > 0 && bmrKcalRaw > 0
+      ? Math.round(activeKcalRaw + bmrKcalRaw)
+      : activeKcalRaw > 0
+      ? Math.round(activeKcalRaw)
+      : fallbackCalories > 0
+      ? Math.round(fallbackCalories)
+      : undefined;
+
+  const nestedMovementDist =
+    typeof d.movement?.distance === 'number' || typeof d.movement?.distance === 'string'
+      ? d.movement.distance
+      : d.movement?.distance?.value ?? d.movement?.totalDistance ?? d.movement?.distanceInMeters;
+  const distRaw = Number(
+    d.totalDistanceMeters ??
+    d.distanceInMeters ??
+    d.totalDistance ??
+    d.distance ??
+    nestedMovementDist ??
+    0
+  );
+  const distanceKm = Number.isFinite(distRaw) && distRaw > 0
+    ? distRaw > 100
+      ? Number((distRaw / 1000).toFixed(2))
+      : Number(distRaw.toFixed(2))
+    : undefined;
+
+  const rhrRaw = Number(
+    d.restingHeartRateInBeatsPerMinute ??
+    d.restingHeartRate ??
+    d.restingHeartRateValue ??
+    d.currentDayRestingHeartRate ??
+    d.rhr ??
+    d.heartRate?.restingValue ??
+    d.heartRate?.resting ??
+    d.heartRate?.restingHeartRate ??
+    (metricHint === 'rhr' ? d.value : undefined) ??
+    0
+  );
+
+  let avgStressRaw = Number(
+    d.averageStressLevel ??
+    d.overallStressLevel ??
+    d.avgStressLevel ??
+    d.avg_stress ??
+    d.stress?.avgLevel ??
+    d.stress?.averageLevel ??
+    d.stress?.avg ??
+    (metricHint === 'stress' ? d.value : undefined) ??
+    0
+  );
+  if ((!avgStressRaw || isNaN(avgStressRaw) || avgStressRaw <= 0) && d.timeOffsetStressLevelValues && typeof d.timeOffsetStressLevelValues === 'object') {
+    const validStressVals = Object.values(d.timeOffsetStressLevelValues)
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v >= 0 && v <= 100);
+    if (validStressVals.length > 0) {
+      avgStressRaw = validStressVals.reduce((sum, v) => sum + v, 0) / validStressVals.length;
+    }
+  }
+
+  const dailySleepMin = pickSleepMinutes(
+    d.sleepingSeconds ?? d.sleepTimeSeconds ?? d.sleepDurationInSeconds,
+    d.sleepingMinutes ?? d.sleepMinutes
+  );
+
+  return {
+    date: dateStr,
+    steps: Number.isFinite(stepsNum) && stepsNum > 0 ? Math.round(stepsNum) : undefined,
+    calories: caloriesVal,
+    distanceKm,
+    rhr: Number.isFinite(rhrRaw) && rhrRaw >= 30 && rhrRaw <= 140 ? Math.round(rhrRaw) : undefined,
+    avgStress: Number.isFinite(avgStressRaw) && avgStressRaw > 0 && avgStressRaw <= 100 ? Math.round(avgStressRaw) : undefined,
+    sleep: dailySleepMin && dailySleepMin > 0
+      ? {
+          durationMin: dailySleepMin,
+          deepMin: pickSleepMinutes(d.deepSleepSeconds ?? d.deepSleepDurationInSeconds, d.deepSleepMinutes),
+          lightMin: pickSleepMinutes(d.lightSleepSeconds ?? d.lightSleepDurationInSeconds, d.lightSleepMinutes),
+          remMin: pickSleepMinutes(d.remSleepSeconds ?? d.remSleepDurationInSeconds, d.remSleepMinutes),
+          awakeMin: pickSleepMinutes(d.awakeSleepSeconds ?? d.awakeDurationInSeconds, d.awakeSleepMinutes)
+        }
+      : undefined
+  };
+}
+
+function normalizeDiagnosticPath(rawPath: string): string {
+  return rawPath
+    .replace(/\/\d{4}-\d{2}-\d{2}/g, '')
+    .replace(/\/+$/, '') || rawPath;
+}
+
 export async function syncGarminPersonalHealth(options: {
   startDate?: string;
   endDate?: string;
@@ -1522,6 +1783,10 @@ export async function syncGarminPersonalHealth(options: {
   stressCount: number;
   stepsCount: number;
   weightCount: number;
+  diagnostics: {
+    stepsEndpoint?: string;
+    stepsDiagnostic?: string;
+  };
 }> {
   resetSyncProgressIfIdle();
   activeSyncJobs++;
@@ -1546,6 +1811,19 @@ export async function syncGarminPersonalHealth(options: {
   let stressCount = 0;
   let stepsCount = 0;
   let weightCount = 0;
+  let stepsEndpointUsed: string | undefined;
+  const stepEndpointStatusMap = new Map<string, string>();
+
+  const recordStepAttempts = (attempts: GarminEndpointAttempt[]) => {
+    for (const a of attempts) {
+      const key = normalizeDiagnosticPath(a.path);
+      const label = a.status === 'empty' ? '200 leer' : String(a.status);
+      // Prefer recording concrete HTTP codes or non-empty statuses cleanly
+      if (!stepEndpointStatusMap.has(key) || stepEndpointStatusMap.get(key) === '404') {
+        stepEndpointStatusMap.set(key, label);
+      }
+    }
+  };
 
   // 1. Fetch Dailies (Steps, RHR, Stress, Calories) in <= 20-day chunks (Garmin limits daily stats to 28 days)
   const buildDateChunks = (sStr: string, eStr: string, maxDays = 20): Array<{ chunkStart: string; chunkEnd: string; chunkStartSec: number; chunkEndSec: number }> => {
@@ -1574,140 +1852,50 @@ export async function syncGarminPersonalHealth(options: {
     return chunks;
   };
 
-  const extractDailiesList = (payload: any): any[] => {
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload?.dailies)) return payload.dailies;
-    if (Array.isArray(payload?.stressDetails)) return payload.stressDetails;
-    if (Array.isArray(payload?.userMetrics)) return payload.userMetrics;
-    const metricsMap = payload?.allMetrics?.metricsMap;
-    if (metricsMap && typeof metricsMap === 'object') {
-      const byDate = new Map<string, any>();
-      const mergeMetricArray = (arr: any[], fieldName: string) => {
-        if (!Array.isArray(arr)) return;
-        for (const entry of arr) {
-          const dStr = String(entry?.calendarDate || entry?.date || '').slice(0, 10);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) continue;
-          const prev = byDate.get(dStr) || { calendarDate: dStr };
-          if (entry?.value !== undefined && entry?.value !== null) {
-            prev[fieldName] = entry.value;
-          }
-          byDate.set(dStr, prev);
-        }
-      };
-      mergeMetricArray(metricsMap.WELLNESS_TOTAL_STEPS, 'totalSteps');
-      mergeMetricArray(metricsMap.WELLNESS_RESTING_HEART_RATE, 'restingHeartRate');
-      mergeMetricArray(metricsMap.WELLNESS_AVERAGE_STRESS, 'averageStressLevel');
-      mergeMetricArray(metricsMap.WELLNESS_TOTAL_CALORIES, 'totalKilocalories');
-      mergeMetricArray(metricsMap.WELLNESS_TOTAL_DISTANCE, 'totalDistanceMeters');
-      mergeMetricArray(metricsMap.SLEEP_DURATION ?? metricsMap.WELLNESS_SLEEP_SECONDS ?? metricsMap.SLEEP_TIME_SECONDS, 'sleepingSeconds');
-      mergeMetricArray(metricsMap.SLEEP_DEEP ?? metricsMap.WELLNESS_DEEP_SLEEP_SECONDS, 'deepSleepSeconds');
-      mergeMetricArray(metricsMap.SLEEP_LIGHT ?? metricsMap.WELLNESS_LIGHT_SLEEP_SECONDS, 'lightSleepSeconds');
-      mergeMetricArray(metricsMap.SLEEP_REM ?? metricsMap.WELLNESS_REM_SLEEP_SECONDS, 'remSleepSeconds');
-      mergeMetricArray(metricsMap.SLEEP_AWAKE ?? metricsMap.WELLNESS_AWAKE_SLEEP_SECONDS, 'awakeSleepSeconds');
-      if (byDate.size > 0) return Array.from(byDate.values());
-    }
-    if (Array.isArray(payload?.data)) return payload.data;
-    if (payload && typeof payload === 'object' && (payload.calendarDate || payload.date || payload.startTimeInSeconds)) {
-      return [payload];
-    }
-    return [];
-  };
-
-  const ingestDailiesList = (list: any[], metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto'): number => {
+  const ingestDailiesList = (
+    list: any[],
+    metricHint: 'auto' | 'steps' | 'rhr' | 'stress' = 'auto',
+    sourceUrl?: string
+  ): number => {
     if (list.length === 0) return 0;
     let ingestedSteps = 0;
     runInTransaction(() => {
       for (const raw of list) {
-        if (!raw || typeof raw !== 'object') continue;
-        const d = raw.values && typeof raw.values === 'object' ? { ...raw, ...raw.values } : raw;
-        const dateStr = String(
-          d.calendarDate ||
-          d.date ||
-          (d.startTimeInSeconds ? new Date(d.startTimeInSeconds * 1000).toISOString().slice(0, 10) : '')
-        ).slice(0, 10);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
+        const parsed = parseGarminDailyRecord(raw, metricHint);
+        if (!parsed) continue;
 
-        const steps = Number(
-          d.totalSteps ??
-          d.steps ??
-          d.dailySteps ??
-          d.stepCount ??
-          (metricHint === 'steps' ? d.value : undefined) ??
-          (metricHint === 'auto' && d.restingHeartRate === undefined && d.rhr === undefined && d.averageStressLevel === undefined && d.overallStressLevel === undefined
-            ? d.value
-            : undefined) ??
-          0
-        );
-        const totalKcalRaw = Number(d.totalKilocalories ?? d.totalCalories ?? 0);
-        const activeKcalRaw = Number(d.activeKilocalories ?? 0);
-        const bmrKcalRaw = Number(d.bmrKilocalories ?? 0);
-        const fallbackCalories = Number(d.calories ?? 0);
-        const calories =
-          totalKcalRaw > 0
-            ? totalKcalRaw
-            : activeKcalRaw > 0 && bmrKcalRaw > 0
-            ? activeKcalRaw + bmrKcalRaw
-            : activeKcalRaw > 0
-            ? activeKcalRaw
-            : fallbackCalories > 0
-            ? fallbackCalories
-            : undefined;
-        const distMeters = Number(
-          d.totalDistanceMeters ?? d.distanceInMeters ?? d.totalDistance ?? d.distance ?? 0
-        );
-        const distKm = distMeters > 100 ? Number((distMeters / 1000).toFixed(2)) : distMeters > 0 ? distMeters : undefined;
-
-        if (!isNaN(steps) && steps > 0) {
-          saveSteps(dateStr, Math.round(steps), calories ? Math.round(calories) : undefined, distKm);
+        if (parsed.steps !== undefined && parsed.steps > 0) {
+          saveSteps(parsed.date, parsed.steps, parsed.calories, parsed.distanceKm);
           stepsCount++;
           ingestedSteps++;
+          if (!stepsEndpointUsed && sourceUrl) {
+            try {
+              stepsEndpointUsed = normalizeDiagnosticPath(new URL(sourceUrl).pathname);
+            } catch {
+              stepsEndpointUsed = normalizeDiagnosticPath(sourceUrl);
+            }
+          }
         }
 
-        const rhr = Number(
-          d.restingHeartRateInBeatsPerMinute ??
-          d.restingHeartRate ??
-          d.restingHeartRateValue ??
-          d.currentDayRestingHeartRate ??
-          d.rhr ??
-          (metricHint === 'rhr' ? d.value : undefined) ??
-          0
-        );
-        if (!isNaN(rhr) && rhr >= 30 && rhr <= 140) {
-          saveRhr(dateStr, Math.round(rhr));
+        if (parsed.rhr !== undefined) {
+          saveRhr(parsed.date, parsed.rhr);
           rhrCount++;
         }
 
-        let avgStress = Number(
-          d.averageStressLevel ??
-          d.overallStressLevel ??
-          d.avgStressLevel ??
-          d.avg_stress ??
-          (metricHint === 'stress' ? d.value : undefined) ??
-          0
-        );
-        if ((!avgStress || isNaN(avgStress) || avgStress <= 0) && d.timeOffsetStressLevelValues && typeof d.timeOffsetStressLevelValues === 'object') {
-          const validStressVals = Object.values(d.timeOffsetStressLevelValues)
-            .map((v) => Number(v))
-            .filter((v) => Number.isFinite(v) && v >= 0 && v <= 100);
-          if (validStressVals.length > 0) {
-            avgStress = validStressVals.reduce((sum, v) => sum + v, 0) / validStressVals.length;
-          }
-        }
-        if (!isNaN(avgStress) && avgStress > 0 && avgStress <= 100) {
-          saveStress(dateStr, Math.round(avgStress));
+        if (parsed.avgStress !== undefined) {
+          saveStress(parsed.date, parsed.avgStress);
           stressCount++;
         }
 
-        const dailySleepMin = pickSleepMinutes(
-          d.sleepingSeconds ?? d.sleepTimeSeconds ?? d.sleepDurationInSeconds,
-          d.sleepingMinutes ?? d.sleepMinutes
-        );
-        if (dailySleepMin && dailySleepMin > 0) {
-          const dailyDeepMin = pickSleepMinutes(d.deepSleepSeconds ?? d.deepSleepDurationInSeconds, d.deepSleepMinutes);
-          const dailyLightMin = pickSleepMinutes(d.lightSleepSeconds ?? d.lightSleepDurationInSeconds, d.lightSleepMinutes);
-          const dailyRemMin = pickSleepMinutes(d.remSleepSeconds ?? d.remSleepDurationInSeconds, d.remSleepMinutes);
-          const dailyAwakeMin = pickSleepMinutes(d.awakeSleepSeconds ?? d.awakeDurationInSeconds, d.awakeSleepMinutes);
-          saveSleep(dateStr, dailySleepMin, dailyDeepMin, dailyLightMin, dailyRemMin, dailyAwakeMin);
+        if (parsed.sleep) {
+          saveSleep(
+            parsed.date,
+            parsed.sleep.durationMin,
+            parsed.sleep.deepMin,
+            parsed.sleep.lightMin,
+            parsed.sleep.remMin,
+            parsed.sleep.awakeMin
+          );
           sleepCount++;
         }
       }
@@ -1715,47 +1903,39 @@ export async function syncGarminPersonalHealth(options: {
     return ingestedSteps;
   };
 
-  const toMinutesFromGarminSleepField = (rawVal: unknown, isSecondsField: boolean): number | undefined => {
-    const num = Number(rawVal);
-    if (!Number.isFinite(num) || num <= 0) return undefined;
-    if (isSecondsField) {
-      const mins = Math.round(num / 60);
-      return mins > 0 ? mins : undefined;
-    }
-    return num > 600 ? Math.round(num / 60) : Math.round(num);
-  };
-
-  const pickSleepMinutes = (secondsVal: unknown, fallbackMinutesVal?: unknown): number | undefined => {
-    if (secondsVal !== undefined && secondsVal !== null && secondsVal !== '') {
-      return toMinutesFromGarminSleepField(secondsVal, true);
-    }
-    if (fallbackMinutesVal !== undefined && fallbackMinutesVal !== null && fallbackMinutesVal !== '') {
-      return toMinutesFromGarminSleepField(fallbackMinutesVal, false);
-    }
-    return undefined;
-  };
-
   try {
     const chunks = buildDateChunks(start, end, 20);
     for (const { chunkStart, chunkEnd, chunkStartSec, chunkEndSec } of chunks) {
+      // Official Personal API v2 daily summaries and steps stats endpoints first.
+      // allowErrorsAsEmpty ensures HTTP 400/403/404/405 from one candidate never aborts the rest (only 401 aborts).
       const dailiesUrls = [
-        `${baseUrl}/usersummary-service/usersummary/daily?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`,
-        `${baseUrl}/usersummary-service/usersummary/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/usersummary-service/v2/dailysummaries?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
         `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`,
-        `${baseUrl}/wellness-api/rest/dailies?uploadStartTimeInSeconds=${chunkStartSec}&uploadEndTimeInSeconds=${chunkEndSec}`,
-        `${baseUrl}/personal-api/dailies?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`
+        `${baseUrl}/usersummary-service/usersummary/daily?startDate=${encodeURIComponent(chunkStart)}&endDate=${encodeURIComponent(chunkEnd)}`,
+        `${baseUrl}/wellness-api/rest/dailies?uploadStartTimeInSeconds=${chunkStartSec}&uploadEndTimeInSeconds=${chunkEndSec}`
       ];
-      const { data: dailiesPayload } = await fetchGarminJsonWithFallback(dailiesUrls, accessToken, { allowNotFoundAsEmpty: true });
-      const chunkSteps = ingestDailiesList(extractDailiesList(dailiesPayload), 'auto');
+      const dailiesRes = await fetchGarminJsonWithFallback(dailiesUrls, accessToken, {
+        allowNotFoundAsEmpty: true,
+        allowErrorsAsEmpty: true
+      });
+      recordStepAttempts(dailiesRes.attempts);
+      const chunkSteps = ingestDailiesList(extractGarminDailiesList(dailiesRes.data), 'auto', dailiesRes.usedUrl);
 
-      // If this chunk yielded no step rows from generic dailies, explicitly query the dedicated daily steps endpoint
+      // If this chunk yielded no step rows from generic dailies (e.g. a non-step endpoint answered first),
+      // explicitly query the dedicated daily steps endpoints in isolation.
       if (chunkSteps === 0) {
         const stepsFallbackUrls = [
           `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
-          `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`
+          `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`,
+          `${baseUrl}/usersummary-service/usersummary/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`
         ];
-        const { data: stepsPayload } = await fetchGarminJsonWithFallback(stepsFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
-        ingestDailiesList(extractDailiesList(stepsPayload), 'steps');
+        const stepsRes = await fetchGarminJsonWithFallback(stepsFallbackUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        recordStepAttempts(stepsRes.attempts);
+        ingestDailiesList(extractGarminDailiesList(stepsRes.data), 'steps', stepsRes.usedUrl);
       }
     }
 
@@ -1772,8 +1952,12 @@ export async function syncGarminPersonalHealth(options: {
           `${baseUrl}/usersummary-service/usersummary/daily?calendarDate=${encodeURIComponent(dStr)}`,
           `${baseUrl}/usersummary-service/stats/steps/daily/${encodeURIComponent(dStr)}/${encodeURIComponent(dStr)}`
         ];
-        const { data: dayPayload } = await fetchGarminJsonWithFallback(singleDayUrls, accessToken, { allowNotFoundAsEmpty: true });
-        ingestDailiesList(extractDailiesList(dayPayload), 'auto');
+        const dayRes = await fetchGarminJsonWithFallback(singleDayUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        recordStepAttempts(dayRes.attempts);
+        ingestDailiesList(extractGarminDailiesList(dayRes.data), 'auto', dayRes.usedUrl);
       }
     }
 
@@ -1783,8 +1967,11 @@ export async function syncGarminPersonalHealth(options: {
           `${baseUrl}/usersummary-service/stats/rhr/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
           `${baseUrl}/userstats-service/wellness/daily/${encodeURIComponent(chunkStart)}?untilDate=${encodeURIComponent(chunkEnd)}`
         ];
-        const { data: rhrPayload } = await fetchGarminJsonWithFallback(rhrFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
-        ingestDailiesList(extractDailiesList(rhrPayload), 'rhr');
+        const { data: rhrPayload } = await fetchGarminJsonWithFallback(rhrFallbackUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        ingestDailiesList(extractGarminDailiesList(rhrPayload), 'rhr');
       }
     }
 
@@ -1794,11 +1981,17 @@ export async function syncGarminPersonalHealth(options: {
           `${baseUrl}/usersummary-service/stats/stress/daily/${encodeURIComponent(chunkStart)}/${encodeURIComponent(chunkEnd)}`,
           `${baseUrl}/wellness-api/rest/stressDetails?uploadStartTimeInSeconds=${chunkStartSec}&uploadEndTimeInSeconds=${chunkEndSec}`
         ];
-        const { data: stressPayload } = await fetchGarminJsonWithFallback(stressFallbackUrls, accessToken, { allowNotFoundAsEmpty: true });
-        ingestDailiesList(extractDailiesList(stressPayload), 'stress');
+        const { data: stressPayload } = await fetchGarminJsonWithFallback(stressFallbackUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        ingestDailiesList(extractGarminDailiesList(stressPayload), 'stress');
       }
     }
   } catch (e: any) {
+    if (e?.message?.includes('HTTP 401')) {
+      throw e;
+    }
     if (e?.message?.includes('404') || e?.message?.includes('NOT_FOUND')) {
       console.log('[Garmin Personal API] Keine Dailies-Einträge in Garmin Cloud für diesen Zeitraum.');
     } else {
@@ -1960,12 +2153,29 @@ export async function syncGarminPersonalHealth(options: {
       stats: { healthDays }
     });
 
+    const stepsDiagnostic =
+      stepsCount === 0
+        ? (() => {
+            const summaryEntries = Array.from(stepEndpointStatusMap.entries())
+              .slice(0, 4)
+              .map(([p, status]) => `${p} [${status}]`)
+              .join(', ');
+            return summaryEntries
+              ? `Hinweis: Garmin lieferte 0 Schritte für ${start} bis ${end} (geprüft: ${summaryEntries}).`
+              : `Hinweis: Garmin lieferte für ${start} bis ${end} keine Schrittdaten.`;
+          })()
+        : undefined;
+
     return {
       sleepCount,
       rhrCount,
       stressCount,
       stepsCount,
-      weightCount
+      weightCount,
+      diagnostics: {
+        stepsEndpoint: stepsEndpointUsed,
+        stepsDiagnostic
+      }
     };
   } catch (err: any) {
     updateSyncProgress({

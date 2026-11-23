@@ -677,14 +677,14 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
       colorMode: 'dark',
       unitSystem: 'imperial',
       defaultView: 'fitness',
-      bikeWeight: 999, // invalid > 40 -> falls back to default 8.5
+      bikeWeight: -5, // invalid negative value -> falls back to default 8.5
       rhrBaseline: 48
     });
     assert(sanitized.language === 'en', 'sanitizeAppPreferences keeps valid EN language');
     assert(sanitized.uiStyle === 'aero-glass', 'sanitizeAppPreferences keeps valid UI style');
     assert(sanitized.uiDensity === 'compact', 'sanitizeAppPreferences keeps compact density');
     assert(sanitized.uiRadius === 'pill', 'sanitizeAppPreferences keeps pill radius');
-    assert(sanitized.bikeWeight === DEFAULT_APP_PREFERENCES.bikeWeight, 'sanitizeAppPreferences clamps invalid bikeWeight');
+    assert(sanitized.bikeWeight === DEFAULT_APP_PREFERENCES.bikeWeight, 'sanitizeAppPreferences rejects negative bikeWeight');
     assert(sanitized.rhrBaseline === 48, 'sanitizeAppPreferences preserves valid rhrBaseline');
 
     saveAppPreferences({ language: 'en', uiStyle: 'peloton-pro', unitSystem: 'imperial' });

@@ -159,3 +159,38 @@ export function formatTrackQuickSummary(
 
   return lines.join('\n');
 }
+
+export interface FreeNumberParseOptions {
+  allowZero?: boolean;
+  allowDecimal?: boolean;
+  precision?: number;
+}
+
+/**
+ * Parses a user-entered numeric string freely (supports German comma or dot decimal separators)
+ * without imposing arbitrary min/max clamps. Returns null for empty, non-numeric, negative,
+ * or non-finite input.
+ */
+export function parseFreeNumberInput(
+  raw: string,
+  options: FreeNumberParseOptions = {}
+): number | null {
+  const { allowZero = false, allowDecimal = true, precision = 2 } = options;
+  const trimmed = String(raw ?? '').trim().replace(/\s+/g, '');
+  if (!trimmed) return null;
+
+  // Accept optional leading +; disallow minus or multiple decimal separators
+  const normalized = trimmed.replace(',', '.');
+  const pattern = allowDecimal ? /^\+?(?:\d+\.?\d*|\.\d+)$/ : /^\+?\d+$/;
+  if (!pattern.test(normalized)) return null;
+
+  const num = Number(normalized);
+  if (!Number.isFinite(num)) return null;
+  if (allowZero ? num < 0 : num <= 0) return null;
+
+  if (!allowDecimal) {
+    return Math.round(num);
+  }
+  const factor = Math.pow(10, Math.max(0, Math.min(6, precision)));
+  return Math.round(num * factor) / factor;
+}

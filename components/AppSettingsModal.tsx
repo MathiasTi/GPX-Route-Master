@@ -37,6 +37,7 @@ import {
 import { enforceTileCacheQuota } from '../utils/tileCacheDb';
 import { apiFetch, getApiUrl } from '../utils/api';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
+import { FreeMetricInput } from './FreeMetricInput';
 import {
   AppPreferences,
   AppLanguage,
@@ -167,9 +168,9 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const tanakaMaxHr = Math.round(208 - 0.7 * userAge);
-  const classicMaxHr = Math.max(120, Math.min(220, 220 - userAge));
-  const wattsPerKg = (ftp / Math.max(1, userWeight)).toFixed(2);
+  const tanakaMaxHr = Math.max(1, Math.round(208 - 0.7 * userAge));
+  const classicMaxHr = Math.max(1, Math.round(220 - userAge));
+  const wattsPerKg = (ftp / Math.max(0.1, userWeight)).toFixed(2);
   const systemWeight = (userWeight + preferences.bikeWeight).toFixed(1);
 
   const handleApplyTileCacheLimits = async (nextMb: number, nextCount: number) => {
@@ -720,8 +721,8 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     </span>
                   </div>
                 </div>
-                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
-                  HF-Reserve: {Math.max(40, userMaxHr - preferences.rhrBaseline)} bpm
+                <span className="text-xs font-mono tabular-nums font-bold px-2.5 py-1 rounded-lg bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
+                  HF-Reserve: {Math.max(0, Math.round(userMaxHr - preferences.rhrBaseline))} bpm
                 </span>
               </div>
 
@@ -730,13 +731,12 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('FTP-Schwelle (Watt)', 'FTP Threshold (Watts)')}
                   </span>
-                  <input
-                    type="number"
-                    min={50}
-                    max={600}
+                  <FreeMetricInput
                     value={ftp}
-                    onChange={(e) => onUpdateFtp(Math.max(50, Math.min(600, parseInt(e.target.value, 10) || 250)))}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-amber-600 dark:text-amber-400"
+                    allowDecimal={false}
+                    onCommit={onUpdateFtp}
+                    ariaLabel={t('FTP-Schwelle (Watt)', 'FTP Threshold (Watts)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-amber-600 dark:text-amber-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -744,16 +744,13 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Körpergewicht (kg)', 'Body Weight (kg)')}
                   </span>
-                  <input
-                    type="number"
-                    min={30}
-                    max={200}
-                    step={0.5}
+                  <FreeMetricInput
                     value={userWeight}
-                    onChange={(e) =>
-                      onUpdateWeight(Math.max(30, Math.min(200, parseFloat(e.target.value) || 75)))
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-slate-900 dark:text-slate-100"
+                    allowDecimal={true}
+                    precision={1}
+                    onCommit={onUpdateWeight}
+                    ariaLabel={t('Körpergewicht (kg)', 'Body Weight (kg)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -761,18 +758,14 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Rad & Gepäck (kg)', 'Bike & Gear Weight (kg)')}
                   </span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={40}
-                    step={0.5}
+                  <FreeMetricInput
                     value={preferences.bikeWeight}
-                    onChange={(e) =>
-                      onUpdatePreferences({
-                        bikeWeight: Math.max(0, Math.min(40, parseFloat(e.target.value) || 0))
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-slate-900 dark:text-slate-100"
+                    allowZero={true}
+                    allowDecimal={true}
+                    precision={1}
+                    onCommit={(val) => onUpdatePreferences({ bikeWeight: val })}
+                    ariaLabel={t('Rad & Gepäck (kg)', 'Bike & Gear Weight (kg)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -780,15 +773,12 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Alter (Jahre)', 'Age (Years)')}
                   </span>
-                  <input
-                    type="number"
-                    min={10}
-                    max={100}
+                  <FreeMetricInput
                     value={userAge}
-                    onChange={(e) =>
-                      onUpdateAge(Math.max(10, Math.min(100, parseInt(e.target.value, 10) || 35)))
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-slate-900 dark:text-slate-100"
+                    allowDecimal={false}
+                    onCommit={onUpdateAge}
+                    ariaLabel={t('Alter (Jahre)', 'Age (Years)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -797,15 +787,12 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     <Heart size={12} className="text-rose-500" />
                     <span>{t('Max. Herzfrequenz (bpm)', 'Max Heart Rate (bpm)')}</span>
                   </span>
-                  <input
-                    type="number"
-                    min={100}
-                    max={230}
+                  <FreeMetricInput
                     value={userMaxHr}
-                    onChange={(e) =>
-                      onUpdateMaxHr(Math.max(100, Math.min(230, parseInt(e.target.value, 10) || 185)))
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-rose-600 dark:text-rose-400"
+                    allowDecimal={false}
+                    onCommit={onUpdateMaxHr}
+                    ariaLabel={t('Max. Herzfrequenz (bpm)', 'Max Heart Rate (bpm)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-rose-600 dark:text-rose-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -813,17 +800,12 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Basis-Ruhepuls (bpm)', 'Resting HR Baseline (bpm)')}
                   </span>
-                  <input
-                    type="number"
-                    min={30}
-                    max={110}
+                  <FreeMetricInput
                     value={preferences.rhrBaseline}
-                    onChange={(e) =>
-                      onUpdatePreferences({
-                        rhrBaseline: Math.max(30, Math.min(110, parseInt(e.target.value, 10) || 55))
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-slate-900 dark:text-slate-100"
+                    allowDecimal={false}
+                    onCommit={(val) => onUpdatePreferences({ rhrBaseline: val })}
+                    ariaLabel={t('Basis-Ruhepuls (bpm)', 'Resting HR Baseline (bpm)')}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
 
@@ -831,21 +813,22 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Standard-Planungstempo (km/h)', 'Default Touring Speed (km/h)')}
                   </span>
-                  <input
-                    type="number"
-                    min={5}
-                    max={45}
-                    step={0.5}
+                  <FreeMetricInput
                     value={estimatedSpeed}
-                    onChange={(e) =>
-                      onUpdateEstimatedSpeed(
-                        Math.max(5, Math.min(45, parseFloat(e.target.value) || 15))
-                      )
-                    }
-                    className="w-full sm:w-56 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-sm font-bold text-slate-900 dark:text-slate-100"
+                    allowDecimal={true}
+                    precision={1}
+                    onCommit={onUpdateEstimatedSpeed}
+                    ariaLabel={t('Standard-Planungstempo (km/h)', 'Default Touring Speed (km/h)')}
+                    className="w-full sm:w-56 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono tabular-nums text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
                   />
                 </label>
               </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {t(
+                  'Alle Werte lassen sich frei eingeben (Punkt oder Komma) und werden mit Enter oder beim Verlassen des Feldes übernommen.',
+                  'All values can be typed freely and are applied on Enter or when leaving the field.'
+                )}
+              </p>
 
               {/* 1-Click Max HR Helpers */}
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">

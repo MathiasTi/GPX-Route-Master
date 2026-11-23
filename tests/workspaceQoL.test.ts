@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { GPXTrack } from '../types';
 import { attachKomootSourceToTrack, applyKomootRefreshToTrack } from '../utils/komootVersioning';
+import { sanitizeAppPreferences } from '../utils/appSettings';
 import {
   filterWorkspaceTracks,
   formatTrackQuickSummary,
+  parseFreeNumberInput,
   resolveRefreshedTrackName
 } from '../utils/workspaceQoL';
 
@@ -242,6 +244,71 @@ export async function runWorkspaceQoLTests(): Promise<boolean> {
   assert(
     urlImporterSrc.includes('const redirectedCollection = parseKomootCollectionUrl(directRes.finalUrl)'),
     'urlGpxImporter.ts detects Komoot collections after shortlink redirects'
+  );
+
+  // 6. Free numeric metric parsing without hard caps
+  assert(
+    parseFreeNumberInput('72,5', { allowDecimal: true, precision: 1 }) === 72.5,
+    'parseFreeNumberInput accepts German comma decimal separator'
+  );
+  assert(
+    parseFreeNumberInput('18.75', { allowDecimal: true, precision: 2 }) === 18.75,
+    'parseFreeNumberInput accepts dot decimal separator with precision'
+  );
+  assert(
+    parseFreeNumberInput('750', { allowDecimal: false }) === 750 &&
+      parseFreeNumberInput('5', { allowDecimal: false }) === 5,
+    'parseFreeNumberInput applies no artificial min/max caps'
+  );
+  assert(
+    parseFreeNumberInput('0', { allowZero: true, allowDecimal: true }) === 0 &&
+      parseFreeNumberInput('0', { allowZero: false, allowDecimal: false }) === null,
+    'parseFreeNumberInput respects allowZero option'
+  );
+  assert(
+    parseFreeNumberInput('') === null &&
+      parseFreeNumberInput('   ') === null &&
+      parseFreeNumberInput('-12') === null &&
+      parseFreeNumberInput('12abc') === null &&
+      parseFreeNumberInput('12..3') === null,
+    'parseFreeNumberInput rejects empty, negative, and malformed numeric strings'
+  );
+
+  // 7. sanitizeAppPreferences keeps freely entered bikeWeight and rhrBaseline
+  const customPrefs = sanitizeAppPreferences({ bikeWeight: 55.5, rhrBaseline: 125 });
+  assert(
+    customPrefs.bikeWeight === 55.5 && customPrefs.rhrBaseline === 125,
+    'sanitizeAppPreferences preserves unconstrained high bikeWeight and rhrBaseline'
+  );
+  const zeroBikePrefs = sanitizeAppPreferences({ bikeWeight: 0, rhrBaseline: 28 });
+  assert(
+    zeroBikePrefs.bikeWeight === 0 && zeroBikePrefs.rhrBaseline === 28,
+    'sanitizeAppPreferences preserves zero bikeWeight and low rhrBaseline'
+  );
+
+  // 8. UI streamlining regression checks (Zoom Controls, Settings Modal, Sidebar)
+  const zoomControlsSrc = fs.readFileSync(path.join(root, 'components/MapZoomControls.tsx'), 'utf8');
+  assert(
+    !zoomControlsSrc.includes('zoom-level-readout') &&
+      !zoomControlsSrc.includes('zoom-step-readout') &&
+      zoomControlsSrc.includes('e.shiftKey || e.altKey'),
+    'MapZoomControls.tsx removes numeric zoom readouts and supports Shift/Alt fine zoom'
+  );
+
+  const settingsModalSrc = fs.readFileSync(path.join(root, 'components/AppSettingsModal.tsx'), 'utf8');
+  assert(
+    settingsModalSrc.includes('<FreeMetricInput') &&
+      !settingsModalSrc.includes('Math.max(50, Math.min(600') &&
+      !settingsModalSrc.includes('Math.max(30, Math.min(200'),
+    'AppSettingsModal.tsx uses FreeMetricInput without mid-typing hard clamping'
+  );
+
+  const sidebarSrc = fs.readFileSync(path.join(root, 'components/Sidebar.tsx'), 'utf8');
+  assert(
+    sidebarSrc.includes('id="btn-toggle-workspace-summary"') &&
+      sidebarSrc.includes('id="btn-sidebar-workspace-menu"') &&
+      sidebarSrc.includes('<FreeMetricInput'),
+    'Sidebar.tsx uses expandable 1-line summary strip, unified bulk menu, and FreeMetricInput'
   );
 
   console.log(`\n📊 Workspace QoL & Bugfix Results: ${passed} passed, ${failed} failed\n`);

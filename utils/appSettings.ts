@@ -197,11 +197,11 @@ export function sanitizeAppPreferences(raw: unknown): AppPreferences {
       ? (input.defaultMapLayer as MapLayer)
       : DEFAULT_APP_PREFERENCES.defaultMapLayer,
     bikeWeight:
-      Number.isFinite(bikeWeightNum) && bikeWeightNum >= 0 && bikeWeightNum <= 40
+      Number.isFinite(bikeWeightNum) && bikeWeightNum >= 0
         ? Number(bikeWeightNum.toFixed(1))
         : DEFAULT_APP_PREFERENCES.bikeWeight,
     rhrBaseline:
-      Number.isFinite(rhrNum) && rhrNum >= 30 && rhrNum <= 110
+      Number.isFinite(rhrNum) && rhrNum > 0
         ? Math.round(rhrNum)
         : DEFAULT_APP_PREFERENCES.rhrBaseline,
     autoFitOnLoad:

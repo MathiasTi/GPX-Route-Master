@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight, CopyCheck, Search, Copy, Check } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight, CopyCheck, Search, Copy, Check, MoreHorizontal } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats, findDuplicateTracksByIdenticalGPS } from '../utils/gpxUtils';
 import { getKomootSourceMeta } from '../utils/komootVersioning';
 import { filterWorkspaceTracks, formatTrackQuickSummary, WorkspaceActivityFilter, WorkspaceSourceFilter } from '../utils/workspaceQoL';
@@ -17,6 +17,7 @@ import { WeatherOverlay } from './WeatherOverlay';
 import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
 import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
 import { BatchGpxUploader, UploadProgressInfo, UrlImportSubmitResult } from './BatchGpxUploader';
+import { FreeMetricInput } from './FreeMetricInput';
 import { 
   DndContext, 
   closestCenter, 
@@ -73,6 +74,9 @@ interface TrackItemProps {
   onOpenValidation?: (id: string) => void;
   onRefreshKomootTrack?: (id: string) => void;
   isRefreshingKomoot?: boolean;
+  isMenuOpen?: boolean;
+  onToggleMenu?: (id: string) => void;
+  onCloseMenu?: () => void;
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
@@ -108,6 +112,9 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   onOpenValidation,
   onRefreshKomootTrack,
   isRefreshingKomoot = false,
+  isMenuOpen = false,
+  onToggleMenu,
+  onCloseMenu,
   onSelection
 }) => {
   const [localExpanded, setLocalExpanded] = useState(false);
@@ -203,232 +210,266 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
         triggerHaptic('light');
         onMark(track.id);
       }}
-      className={`group cursor-pointer bg-white dark:bg-slate-900 border rounded-xl p-2.5 sm:p-3 hover:shadow-md transition-all ${
+      className={`group relative cursor-pointer bg-white dark:bg-slate-900 border rounded-xl px-2.5 py-2 transition-colors ${
         isDragging ? 'shadow-xl opacity-50 bg-slate-50 dark:bg-slate-800' : ''
       } ${
+        isMenuOpen ? 'z-30' : 'z-0'
+      } ${
         isMarked 
-          ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/10 shadow-sm bg-blue-50/10 dark:bg-blue-950/20' 
+          ? 'border-blue-500/80 dark:border-blue-400/80 bg-blue-50/20 dark:bg-blue-950/20' 
           : isCompared
-          ? 'border-orange-500 dark:border-orange-400 ring-2 ring-orange-500/15 shadow-sm bg-orange-50/15 dark:bg-orange-950/20'
-          : 'border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-50/40 dark:hover:bg-slate-850/10'
+          ? 'border-orange-500/80 dark:border-orange-400/80 bg-orange-50/20 dark:bg-orange-950/20'
+          : 'border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
       }`}
     >
-      <div className="flex items-start gap-2">
-        <div {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} className="drag-handle p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 dark:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing mt-0.5">
-          <GripVertical className="w-4 h-4" />
+      <div className="flex items-start gap-1.5">
+        <div
+          {...attributes}
+          {...listeners}
+          onClick={(e) => e.stopPropagation()}
+          className="drag-handle p-0.5 mt-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 group-hover:text-slate-500 dark:text-slate-600 dark:group-hover:text-slate-400 shrink-0 cursor-grab active:cursor-grabbing transition-colors"
+          title="Reihenfolge per Ziehen ändern"
+        >
+          <GripVertical className="w-3.5 h-3.5" />
         </div>
         
         <div className="flex-1 min-w-0">
-          {/* Header row: color dot, title, badges, visibility button, fold/unfold button */}
-          <div className="flex items-center justify-between gap-1.5 min-w-0">
-            <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
-              <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs border border-black/10" style={{ backgroundColor: isMapComparing && isMarked ? '#2563eb' : isMapComparing && isCompared ? '#f97316' : (track.color || '#3b82f6') }}></div>
+          {/* Row 1: Color indicator, full readable title, Visibility + Overflow menu */}
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span
+                className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10"
+                style={{ backgroundColor: isMapComparing && isMarked ? '#2563eb' : isMapComparing && isCompared ? '#f97316' : (track.color || '#3b82f6') }}
+              />
               {isMapComparing && isMarked && (
-                <span className="shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-600 text-white leading-none">
-                  A
+                <span className="shrink-0 text-[9px] font-mono font-bold text-blue-600 dark:text-blue-400">
+                  [A]
                 </span>
               )}
               {isMapComparing && isCompared && (
-                <span className="shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded bg-orange-500 text-white leading-none">
-                  B
+                <span className="shrink-0 text-[9px] font-mono font-bold text-orange-600 dark:text-orange-400">
+                  [B]
                 </span>
               )}
-              <span className={`text-xs block truncate leading-tight font-bold ${isMarked ? 'text-blue-700 dark:text-blue-400' : isCompared ? 'text-orange-700 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200'}`} title={track.name}>
+              <span
+                className={`text-xs block truncate leading-snug font-semibold ${
+                  !track.visible
+                    ? 'text-slate-400 dark:text-slate-500 line-through'
+                    : isMarked
+                    ? 'text-blue-700 dark:text-blue-300'
+                    : isCompared
+                    ? 'text-orange-700 dark:text-orange-300'
+                    : 'text-slate-800 dark:text-slate-100'
+                }`}
+                title={track.name}
+              >
                 {track.name}
               </span>
-              {komootMeta && (
-                <span
-                  className="shrink-0 text-[9px] font-mono font-extrabold tabular-nums px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/70 leading-none"
-                  title={`${komootMeta.sourceType === 'komoot' ? 'Komoot-Quelle' : 'GPX-URL-Quelle'} · Version v${komootMeta.version} · Zuletzt geprüft: ${new Date(komootMeta.lastCheckedAt).toLocaleString('de-DE')}`}
-                >
-                  v{komootMeta.version}
-                </span>
-              )}
-              {startValidation.issue && (
-                <span
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (onOpenValidation) onOpenValidation(track.id);
-                  }}
-                  className="shrink-0 text-[8.5px] bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900/80 text-amber-800 dark:text-amber-300 font-extrabold px-1.5 py-0.5 rounded border border-amber-300/80 dark:border-amber-800 flex items-center gap-0.5 cursor-pointer transition-colors"
-                  title={`Startpunkt-Abweichung: ${startValidation.issue.description} (Klicken für Prüfbericht & Autokorrektur)`}
-                >
-                  <AlertTriangle className="w-2.5 h-2.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                  <span>Start prüfen</span>
-                </span>
-              )}
-              {track.isVirtual && (
-                <span className="shrink-0 text-[8px] bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-extrabold px-1 py-0.5 rounded border border-orange-200/40 dark:border-orange-900/30 cursor-help" title="Diese Aktivität enthält keine echten GPS-Koordinaten (nur Leistungs-/Gesundheitsdaten)">
-                  ⚠️
-                </span>
-              )}
             </div>
             
-            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-              <span
-                className="text-xs select-none px-1"
-                title={track.activityType === 'running' ? 'Automatisch erkannt: Laufen' : 'Automatisch erkannt: Radsport'}
-              >
-                {track.activityType === 'running' ? '🏃' : '🚴'}
-              </span>
-
-              {/* Refresh from Komoot / URL source */}
-              {komootMeta && onRefreshKomootTrack && (
-                <button
-                  type="button"
-                  disabled={isRefreshingKomoot}
-                  onClick={() => {
-                    triggerHaptic('light');
-                    onRefreshKomootTrack(track.id);
-                  }}
-                  className="p-1.5 rounded-md border bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 dark:text-emerald-300 dark:border-emerald-800/70 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center"
-                  title={`Komoot-Track / URL-Quelle aktualisieren (aktuell v${komootMeta.version})`}
-                  aria-label={`"${track.name}" aktualisieren`}
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingKomoot ? 'animate-spin' : ''}`} />
-                </button>
-              )}
-
-              {/* Quick Copy GPX Summary to Clipboard */}
-              <button
-                type="button"
-                onClick={handleCopySummary}
-                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
-                  copiedSummary
-                    ? 'bg-emerald-50 text-emerald-600 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-700'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/70 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 dark:border-slate-700'
-                }`}
-                title={copiedSummary ? 'Kurzstatistik kopiert!' : 'GPX-Kurzstatistik in die Zwischenablage kopieren'}
-                aria-label={`Kurzstatistik für "${track.name}" kopieren`}
-              >
-                {copiedSummary ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
-
-              {/* Quick Intensive Analysis Cockpit button */}
-              {onOpenIntensiveAnalysis && (
-                <button
-                  type="button"
-                  onClick={() => onOpenIntensiveAnalysis(track.id)}
-                  className="p-1.5 rounded-md border bg-purple-50 hover:bg-purple-100 text-purple-600 border-purple-200/70 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 dark:text-purple-400 dark:border-purple-900/50 transition-colors cursor-pointer flex items-center justify-center"
-                  title="Analyse-Cockpit öffnen (Splits, Berge, Leistung, Zonen & Rohdaten)"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              {/* Quick eye visibility toggle */}
+            <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+              {/* Direct Visibility Toggle */}
               <button 
                 type="button"
                 onClick={() => onToggleVisibility(track.id)} 
-                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center ${
                   track.visible 
-                    ? 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/70 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 dark:border-slate-700' 
-                    : 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-200/70 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/50'
+                    ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-800' 
+                    : 'text-amber-600 bg-amber-50 hover:bg-amber-100 dark:text-amber-400 dark:bg-amber-950/40 dark:hover:bg-amber-900/50'
                 }`}
-                title={track.visible ? "Sichtbar (Klicken zum Ausblenden)" : "Ausgeblendet (Klicken zum Einblenden)"}
+                title={track.visible ? "Auf Karte ausblenden" : "Auf Karte einblenden"}
+                aria-label={track.visible ? `"${track.name}" ausblenden` : `"${track.name}" einblenden`}
               >
                 {track.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
               </button>
 
-              {/* Quick 1-click Reverse Direction button */}
-              {onReverseTrack && (
+              {/* Unified Overflow Actions Menu */}
+              <div className="relative" data-sidebar-menu="true">
                 <button
                   type="button"
                   onClick={() => {
-                    triggerHaptic('medium');
-                    onReverseTrack(track.id);
+                    triggerHaptic('light');
+                    onToggleMenu?.(track.id);
                   }}
-                  className="p-1.5 rounded-md border bg-violet-50/70 hover:bg-violet-100 text-violet-600 border-violet-200/70 dark:bg-violet-950/40 dark:hover:bg-violet-900/60 dark:text-violet-400 dark:border-violet-900/50 transition-colors cursor-pointer flex items-center justify-center"
-                  title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
-                  aria-label={`Richtung von "${track.name}" umkehren`}
-                >
-                  <ArrowLeftRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              {/* Quick Compare on Map button */}
-              {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
-                <button
-                  type="button"
-                  onClick={() => onCompareTrackOnMap(track.id)}
-                  className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
-                    isCompared
-                      ? 'bg-orange-500 hover:bg-orange-600 text-white border-orange-500 shadow-xs'
-                      : 'bg-slate-50 hover:bg-orange-50 text-slate-400 hover:text-orange-600 border-slate-200/70 hover:border-orange-200 dark:bg-slate-800 dark:hover:bg-orange-950/50 dark:text-slate-400 dark:hover:text-orange-400 dark:border-slate-700 dark:hover:border-orange-900/50'
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center ${
+                    isMenuOpen
+                      ? 'bg-slate-200/80 text-slate-900 dark:bg-slate-700 dark:text-white'
+                      : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-800'
                   }`}
-                  title={isCompared ? "Karten-Vergleich mit dieser Strecke beenden" : "Mit aktiver Strecke auf der Karte vergleichen"}
+                  title="Weitere Aktionen"
+                  aria-label={`Aktionen für "${track.name}"`}
+                  aria-expanded={isMenuOpen}
+                  aria-haspopup="menu"
                 >
-                  <GitCompare className="w-3.5 h-3.5" />
+                  {isRefreshingKomoot ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <MoreHorizontal className="w-3.5 h-3.5" />
+                  )}
                 </button>
-              )}
 
-              {/* Keep only this track (1-click isolate) */}
-              {totalTracks > 1 && onKeepOnlyTrack && (
-                <button
-                  type="button"
-                  onClick={() => onKeepOnlyTrack(track.id)}
-                  className="p-1.5 rounded-md border bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border-slate-200/70 hover:border-indigo-200 dark:bg-slate-800 dark:hover:bg-indigo-950/50 dark:text-slate-400 dark:hover:text-indigo-400 dark:border-slate-700 dark:hover:border-indigo-900/50 transition-colors cursor-pointer flex items-center justify-center"
-                  title="Nur diese Tour im Workspace behalten (andere entfernen)"
-                >
-                  <Target className="w-3.5 h-3.5" />
-                </button>
-              )}
+                {isMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-1 w-52 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 shadow-xl py-1 z-50 text-xs"
+                  >
+                    {onOpenIntensiveAnalysis && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenIntensiveAnalysis(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span>Analyse-Cockpit öffnen</span>
+                      </button>
+                    )}
 
-              {/* Direct 1-click remove button */}
-              <button
-                type="button"
-                onClick={() => onRemoveTrack(track.id)}
-                className="p-1.5 rounded-md border bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border-slate-200/70 hover:border-rose-200 dark:bg-slate-800 dark:hover:bg-rose-950/50 dark:text-slate-400 dark:hover:text-rose-400 dark:border-slate-700 dark:hover:border-rose-900/50 transition-colors cursor-pointer flex items-center justify-center"
-                title="Tour sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
-                aria-label={`"${track.name}" aus Workspace entfernen`}
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        onCloseMenu?.();
+                        handleToggleExpand(e);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      {expanded ? (
+                        <ChevronUp className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      )}
+                      <span>{expanded ? 'Details einklappen' : 'Details ausklappen'}</span>
+                    </button>
 
-              {/* Fold / Unfold chevron toggle button */}
-              <button
-                type="button"
-                onClick={handleToggleExpand}
-                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
-                  expanded 
-                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200/70 dark:border-blue-900/50' 
-                    : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-slate-700'
-                }`}
-                title={expanded ? "Details einklappen" : "Details ausklappen"}
-                aria-expanded={expanded}
-              >
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${expanded ? 'rotate-180 text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'}`} />
-              </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        handleCopySummary(e);
+                        window.setTimeout(() => onCloseMenu?.(), 350);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      {copiedSummary ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      )}
+                      <span>{copiedSummary ? 'Kurzstatistik kopiert' : 'Kurzstatistik kopieren'}</span>
+                    </button>
+
+                    {komootMeta && onRefreshKomootTrack && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={isRefreshingKomoot}
+                        onClick={() => {
+                          onCloseMenu?.();
+                          triggerHaptic('light');
+                          onRefreshKomootTrack(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isRefreshingKomoot ? 'animate-spin' : ''}`} />
+                        <span>Komoot aktualisieren (v{komootMeta.version})</span>
+                      </button>
+                    )}
+
+                    {onReverseTrack && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          triggerHaptic('medium');
+                          onReverseTrack(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <ArrowLeftRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span>Richtung umkehren</span>
+                      </button>
+                    )}
+
+                    {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onCompareTrackOnMap(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <GitCompare className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                        <span>{isCompared ? 'Vergleich beenden' : 'Auf Karte vergleichen'}</span>
+                      </button>
+                    )}
+
+                    {totalTracks > 1 && onKeepOnlyTrack && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onKeepOnlyTrack(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Target className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span>Nur diese Tour behalten</span>
+                      </button>
+                    )}
+
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onCloseMenu?.();
+                        onRemoveTrack(track.id);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Aus Workspace entfernen</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Compact summary bar (Always visible to provide immediate overview) */}
+          {/* Row 2: Clean unboxed tabular metadata line */}
           <div 
             onClick={handleToggleExpand}
-            className="flex items-center justify-between text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 pt-1.5 mt-1 border-t border-slate-100/60 dark:border-slate-800/60 cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+            className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-1 cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
             title={expanded ? "Klicken zum Einklappen" : "Klicken zum Ausklappen der Details"}
           >
-            <span className="font-bold text-slate-700 dark:text-slate-300">
+            <span className="font-semibold text-slate-700 dark:text-slate-300">
               {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
             </span>
             {capabilities.hasRealElevation && (
               <>
-                <span>·</span>
-                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                  +{Math.round(track.ascent)}m
-                </span>
+                <span aria-hidden="true">·</span>
+                <span>+{Math.round(track.ascent)} m</span>
               </>
             )}
-            <span>·</span>
+            <span aria-hidden="true">·</span>
             <span title={track.duration ? 'Aktive Bewegungszeit (ohne Pausen)' : 'Geschätzte Dauer basierend auf Vorgabetempo'}>
               {track.duration ? (
                 `${Math.floor(track.duration / 3600)}h ${Math.floor((track.duration % 3600) / 60)}m`
               ) : (
-                `~${Math.floor((track.distance / estimatedSpeed))}h ${Math.floor(((track.distance / estimatedSpeed) * 60) % 60)}m`
+                `~${Math.floor((track.distance / Math.max(0.1, estimatedSpeed)))}h ${Math.floor(((track.distance / Math.max(0.1, estimatedSpeed)) * 60) % 60)}m`
               )}
             </span>
-            <span>·</span>
-            <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+            <span aria-hidden="true">·</span>
+            <span>
               {track.duration && track.duration > 0 ? (
                 track.activityType === 'running'
                   ? formatPace(track.duration, track.distance)
@@ -439,10 +480,39 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   : `~${estimatedSpeed} km/h`
               )}
             </span>
-            {capabilities.hasRealElevation && trackClimbs && trackClimbs.length > 0 && (
+            {komootMeta && (
               <>
-                <span>·</span>
-                <span className="text-amber-600 dark:text-amber-400 font-semibold">{trackClimbs.length}⛰️</span>
+                <span aria-hidden="true">·</span>
+                <span
+                  className="text-emerald-600 dark:text-emerald-400 font-medium"
+                  title={`${komootMeta.sourceType === 'komoot' ? 'Komoot-Quelle' : 'GPX-URL-Quelle'} · Version v${komootMeta.version}`}
+                >
+                  v{komootMeta.version}
+                </span>
+              </>
+            )}
+            {startValidation.issue && (
+              <>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onOpenValidation) onOpenValidation(track.id);
+                  }}
+                  className="text-amber-600 dark:text-amber-400 hover:underline font-sans font-semibold cursor-pointer"
+                  title={`Startpunkt-Abweichung: ${startValidation.issue.description}`}
+                >
+                  Start prüfen
+                </button>
+              </>
+            )}
+            {track.isVirtual && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-sans text-orange-600 dark:text-orange-400" title="Keine echten GPS-Koordinaten">
+                  Ohne GPS
+                </span>
               </>
             )}
           </div>
@@ -1194,6 +1264,33 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [activityFilter, setActivityFilter] = useState<WorkspaceActivityFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<WorkspaceSourceFilter>('all');
   const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState('');
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openMenuId) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('[data-sidebar-menu="true"]')) return;
+      setOpenMenuId(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenuId(null);
+    };
+    window.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openMenuId]);
+
+  const workspaceTotals = useMemo(() => {
+    const totalDist = tracks.reduce((sum, t) => sum + (Number.isFinite(t.distance) ? t.distance : 0), 0);
+    const totalAscent = tracks.reduce((sum, t) => sum + (Number.isFinite(t.ascent) ? t.ascent : 0), 0);
+    const hiddenCount = tracks.filter((t) => !t.visible).length;
+    return { totalDist, totalAscent, hiddenCount };
+  }, [tracks]);
 
   const filteredTracks = useMemo(() => {
     return filterWorkspaceTracks(tracks, {
@@ -1423,132 +1520,216 @@ const Sidebar: React.FC<SidebarProps> = ({
               {activeTab === 'active' && (
                 <div className="space-y-3">
                   {tracks.length > 0 && (
-                    <WorkspaceSummaryDashboard
-                      tracks={tracks}
-                      userWeight={userWeight}
-                      estimatedSpeed={estimatedSpeed}
-                      variant="sidebar"
-                      isDark={isDark}
-                      markedTrackId={markedTrackId}
-                      compareTrackId={compareTrackId}
-                      onMarkTrack={onMarkTrack}
-                      onStartMapComparison={onStartMapComparison}
-                      onExitMapComparison={onExitMapComparison}
-                      onToggleTrackVisibility={onToggleVisibility}
-                      onToggleAllVisibility={onToggleAllVisibility}
-                      onFitVisibleTracks={onFitVisibleTracks}
-                      onClearAllTracks={onClearAllTracks}
-                      onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
-                    />
-                  )}
-
-                  {tracks.length > 0 && (
-                    <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center justify-between gap-1.5 px-2 py-1.5 bg-slate-100/70 dark:bg-slate-800/50 rounded-lg border border-slate-200/60 dark:border-slate-800">
-                        <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 font-mono uppercase tracking-wider">
-                          Strecken ({tracks.length})
-                        </span>
-                        <div className="flex items-center gap-1 flex-wrap justify-end">
-                          {tracks.some(t => !t.visible) && onRemoveHiddenTracks && (
-                            <button
-                              type="button"
-                              onClick={onRemoveHiddenTracks}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-700 dark:text-amber-300 rounded border border-amber-200/80 dark:border-amber-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
-                              title="Alle ausgeblendeten Strecken aus dem Workspace entfernen"
-                            >
-                              <EyeOff size={10} />
-                              <span>Ausgeblendete</span>
-                            </button>
-                          )}
-                          {tracks.length > 1 && markedTrackId && onKeepOnlyTrack && (
-                            <button
-                              type="button"
-                              onClick={() => onKeepOnlyTrack(markedTrackId)}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 rounded border border-indigo-200/80 dark:border-indigo-800/70 text-[9.5px] font-bold shadow-xs transition-all cursor-pointer select-none"
-                              title="Nur aktive Strecke behalten (alle anderen entfernen)"
-                            >
-                              <Target size={10} />
-                              <span>Nur Aktive</span>
-                            </button>
-                          )}
-                          {tracks.length > 1 && onRemoveDuplicateTracks && (
-                            <button
-                              type="button"
-                              id="btn-sidebar-remove-duplicates"
-                              onClick={() => {
-                                triggerHaptic('medium');
-                                onRemoveDuplicateTracks();
-                              }}
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none ${
-                                duplicateTrackCount > 0
-                                  ? 'bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
-                                  : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700'
-                              }`}
-                              title={
-                                duplicateTrackCount > 0
-                                  ? `${duplicateTrackCount} doppelte Strecke(n) mit identischen GPS-Koordinaten entfernen (${duplicateAnalysis.duplicateGroups.map(g => g.duplicateNames.join(', ')).join('; ')})`
-                                  : 'Auf Strecken mit identischen GPS-Koordinaten prüfen und Duplikate entfernen'
-                              }
-                            >
-                              <CopyCheck size={10} className={duplicateTrackCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'} />
-                              <span>Duplikate entfernen</span>
-                              {duplicateTrackCount > 0 && (
-                                <span className="px-1 py-0.2 rounded bg-amber-600 text-white text-[9px] font-mono leading-none">
-                                  {duplicateTrackCount}
+                    <div className="space-y-2">
+                      {/* Compact 1-Line Expandable Workspace Summary Strip */}
+                      <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setIsSummaryExpanded((prev) => !prev)}
+                          className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+                          aria-expanded={isSummaryExpanded}
+                          id="btn-toggle-workspace-summary"
+                        >
+                          <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300 min-w-0 truncate">
+                            <span className="font-semibold text-slate-800 dark:text-slate-100">
+                              {workspaceTotals.totalDist.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span>+{Math.round(workspaceTotals.totalAscent).toLocaleString('de-DE')} m</span>
+                            {workspaceTotals.hiddenCount > 0 && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="font-sans text-amber-600 dark:text-amber-400">
+                                  {workspaceTotals.hiddenCount} verborgen
                                 </span>
-                              )}
-                            </button>
-                          )}
-                          {onClearAllTracks && (
-                            <button
-                              type="button"
-                              onClick={onClearAllTracks}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded border border-rose-200/80 dark:border-rose-900/60 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
-                              title="Alle Strecken sofort aus Workspace entfernen (Strg+Z für Rückgängig)"
-                              id="btn-sidebar-clear-all-tracks"
-                            >
-                              <Trash2 size={10} />
-                              <span>Alle entfernen</span>
-                            </button>
-                          )}
-                          {komootTrackCount > 0 && onRefreshAllKomootTracks && (
-                            <button
-                              type="button"
-                              disabled={Boolean(bulkKomootRefreshProgress?.active)}
-                              onClick={() => {
-                                triggerHaptic('light');
-                                onRefreshAllKomootTracks();
-                              }}
-                              className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 rounded border border-emerald-200/80 dark:border-emerald-800/70 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none disabled:opacity-60"
-                              title={`Alle ${komootTrackCount} Komoot-verknüpften Touren im Workspace aktualisieren`}
-                              id="btn-sidebar-refresh-all-komoot"
-                            >
-                              <RefreshCw size={10} className={bulkKomootRefreshProgress?.active ? 'animate-spin' : ''} />
-                              <span>
-                                {bulkKomootRefreshProgress?.active
-                                  ? `Komoot ${bulkKomootRefreshProgress.current}/${bulkKomootRefreshProgress.total}`
-                                  : `Komoot Sync (${komootTrackCount})`}
-                              </span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={handleToggleExpandAll}
-                            className="flex items-center gap-1 px-1.5 py-0.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded border border-slate-200/80 dark:border-slate-700 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none"
-                            title={allTracksExpanded ? "Alle Aktivitäten einklappen" : "Alle Aktivitäten ausklappen"}
-                          >
-                            {allTracksExpanded ? (
-                              <>
-                                <ChevronUp size={11} className="text-blue-500 stroke-[3]" />
-                                <span>Einklappen</span>
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown size={11} className="text-blue-500 stroke-[3]" />
-                                <span>Ausklappen</span>
                               </>
                             )}
+                          </div>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400 shrink-0">
+                            <span>Übersicht</span>
+                            {isSummaryExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                          </span>
+                        </button>
+
+                        {isSummaryExpanded && (
+                          <div className="p-2 border-t border-slate-200/70 dark:border-slate-800">
+                            <WorkspaceSummaryDashboard
+                              tracks={tracks}
+                              userWeight={userWeight}
+                              estimatedSpeed={estimatedSpeed}
+                              variant="sidebar"
+                              isDark={isDark}
+                              markedTrackId={markedTrackId}
+                              compareTrackId={compareTrackId}
+                              onMarkTrack={onMarkTrack}
+                              onStartMapComparison={onStartMapComparison}
+                              onExitMapComparison={onExitMapComparison}
+                              onToggleTrackVisibility={onToggleVisibility}
+                              onToggleAllVisibility={onToggleAllVisibility}
+                              onFitVisibleTracks={onFitVisibleTracks}
+                              onClearAllTracks={onClearAllTracks}
+                              onOpenIntensiveAnalysis={onOpenIntensiveAnalysis}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Streamlined Workspace Header + Unified Bulk Actions Menu */}
+                      <div className="flex items-center justify-between gap-2 px-0.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                            Strecken <span className="font-mono tabular-nums text-slate-400">({tracks.length})</span>
+                          </span>
+                          {bulkKomootRefreshProgress?.active && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              <span>{bulkKomootRefreshProgress.current}/{bulkKomootRefreshProgress.total}</span>
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="relative" data-sidebar-menu="true">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerHaptic('light');
+                              setOpenMenuId((prev) => (prev === 'workspace-bulk' ? null : 'workspace-bulk'));
+                            }}
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                              openMenuId === 'workspace-bulk'
+                                ? 'bg-slate-200/80 text-slate-900 dark:bg-slate-700 dark:text-white'
+                                : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                            title="Workspace-Aktionen öffnen"
+                            aria-label="Workspace-Aktionen"
+                            aria-expanded={openMenuId === 'workspace-bulk'}
+                            aria-haspopup="menu"
+                            id="btn-sidebar-workspace-menu"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
                           </button>
+
+                          {openMenuId === 'workspace-bulk' && (
+                            <div
+                              role="menu"
+                              className="absolute right-0 top-full mt-1 w-56 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 shadow-xl py-1 z-50 text-xs"
+                            >
+                              {komootTrackCount > 0 && onRefreshAllKomootTracks && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={Boolean(bulkKomootRefreshProgress?.active)}
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    triggerHaptic('light');
+                                    onRefreshAllKomootTracks();
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left flex items-center justify-between gap-2 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer disabled:opacity-50"
+                                  id="btn-sidebar-refresh-all-komoot"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${bulkKomootRefreshProgress?.active ? 'animate-spin' : ''}`} />
+                                    <span>Komoot aktualisieren</span>
+                                  </span>
+                                  <span className="font-mono tabular-nums text-[11px] opacity-80">{komootTrackCount}</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  handleToggleExpandAll();
+                                }}
+                                className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                              >
+                                {allTracksExpanded ? (
+                                  <ChevronUp className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                ) : (
+                                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                )}
+                                <span>{allTracksExpanded ? 'Alle Details einklappen' : 'Alle Details ausklappen'}</span>
+                              </button>
+
+                              {(tracks.some(t => !t.visible) || tracks.length > 1) && (
+                                <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                              )}
+
+                              {tracks.some(t => !t.visible) && onRemoveHiddenTracks && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    onRemoveHiddenTracks();
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-colors cursor-pointer"
+                                >
+                                  <EyeOff className="w-3.5 h-3.5 shrink-0" />
+                                  <span>Ausgeblendete entfernen</span>
+                                </button>
+                              )}
+
+                              {tracks.length > 1 && markedTrackId && onKeepOnlyTrack && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    onKeepOnlyTrack(markedTrackId);
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                >
+                                  <Target className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  <span>Nur aktive Strecke behalten</span>
+                                </button>
+                              )}
+
+                              {tracks.length > 1 && onRemoveDuplicateTracks && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  id="btn-sidebar-remove-duplicates"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    triggerHaptic('medium');
+                                    onRemoveDuplicateTracks();
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <CopyCheck className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    <span>Duplikate entfernen</span>
+                                  </span>
+                                  {duplicateTrackCount > 0 && (
+                                    <span className="font-mono tabular-nums text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                                      {duplicateTrackCount}
+                                    </span>
+                                  )}
+                                </button>
+                              )}
+
+                              {onClearAllTracks && (
+                                <>
+                                  <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    id="btn-sidebar-clear-all-tracks"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      onClearAllTracks();
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Alle Strecken entfernen</span>
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1749,6 +1930,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                             onOpenValidation={onOpenValidation}
                             onRefreshKomootTrack={onRefreshKomootTrack}
                             isRefreshingKomoot={Boolean(refreshingKomootTracks?.[track.id])}
+                            isMenuOpen={openMenuId === track.id}
+                            onToggleMenu={(id) => setOpenMenuId((prev) => (prev === id ? null : id))}
+                            onCloseMenu={() => setOpenMenuId(null)}
                             onSelection={onSelection}
                           />
                         ))}
@@ -2201,48 +2385,46 @@ const Sidebar: React.FC<SidebarProps> = ({
               
               {showAdvancedSettings && (
                 <div className="space-y-3 p-3 bg-slate-50/50 dark:bg-slate-950/20 rounded-xl border border-slate-200/50 dark:border-slate-800/60 transition-all">
-                  <div className="space-y-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 rounded transition-all">
-                    <div className="flex justify-between items-center">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">FTP (Watt)</label>
-                      <span className="text-[11px] font-black text-amber-600 dark:text-amber-500">{ftp} W</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">FTP (Watt)</label>
+                      <FreeMetricInput
+                        value={ftp}
+                        allowDecimal={false}
+                        onCommit={setFtp}
+                        ariaLabel="FTP (Watt)"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-mono tabular-nums font-bold text-amber-600 dark:text-amber-400 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
                     </div>
-                    <input 
-                      type="range" 
-                      min="100" 
-                      max="500" 
-                      step="5" 
-                      value={ftp} 
-                      onChange={(e) => setFtp(Number(e.target.value))}
-                      className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Gewicht">Gewicht (kg)</label>
-                      <input 
-                        type="number"
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Gewicht (kg)</label>
+                      <FreeMetricInput
                         value={userWeight}
-                        onChange={(e) => setUserWeight(Number(e.target.value))}
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        allowDecimal={true}
+                        precision={1}
+                        onCommit={setUserWeight}
+                        ariaLabel="Gewicht (kg)"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-mono tabular-nums font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
                       />
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Alter">Alter</label>
-                      <input 
-                        type="number"
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Alter</label>
+                      <FreeMetricInput
                         value={userAge}
-                        onChange={(e) => setUserAge(Number(e.target.value))}
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        allowDecimal={false}
+                        onCommit={setUserAge}
+                        ariaLabel="Alter"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-mono tabular-nums font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500/20 outline-none"
                       />
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter truncate block" title="Max HR">Max. Puls</label>
-                      <input 
-                        type="number"
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Max. Puls</label>
+                      <FreeMetricInput
                         value={userMaxHr}
-                        onChange={(e) => setUserMaxHr(Number(e.target.value))}
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-bold text-rose-650 dark:text-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none"
+                        allowDecimal={false}
+                        onCommit={setUserMaxHr}
+                        ariaLabel="Max. Puls"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1.5 text-xs font-mono tabular-nums font-bold text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none"
                       />
                     </div>
                   </div>

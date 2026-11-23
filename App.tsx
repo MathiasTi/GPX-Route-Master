@@ -59,6 +59,7 @@ import {
   MAP_MIN_ZOOM,
   resolveKeyboardZoomAction
 } from './utils/mapZoom';
+import { resolveRefreshedTrackName } from './utils/workspaceQoL';
 
 const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'overview',
@@ -575,6 +576,8 @@ const App: React.FC = () => {
     useState<KomootCollectionPreviewData | null>(null);
   const [refreshingKomootTracks, setRefreshingKomootTracks] =
     useState<Record<string, boolean>>({});
+  const [bulkKomootRefreshProgress, setBulkKomootRefreshProgress] =
+    useState<{ active: boolean; current: number; total: number } | null>(null);
 
   // Fetch initial catalog total count once unlocked so TopNavBar shows accurate DB count
   useEffect(() => {
@@ -2031,15 +2034,27 @@ const App: React.FC = () => {
     handleFitVisibleTracks
   ]);
 
-  const handleRefreshTrackFromKomoot = useCallback(async (trackId: string) => {
+  const handleRefreshTrackFromKomoot = useCallback(async (
+    trackId: string,
+    options?: { silent?: boolean }
+  ): Promise<{
+    status: 'updated' | 'unchanged' | 'error' | 'skipped';
+    trackName: string;
+    version?: number;
+    error?: string;
+  }> => {
     const existing = tracksRef.current.find((t) => t.id === trackId);
-    if (!existing) return;
+    if (!existing) {
+      return { status: 'skipped', trackName: '' };
+    }
 
     const komootMeta = getKomootSourceMeta(existing);
     if (!komootMeta?.sourceUrl) {
-      setErrorMessage('Dieser Track besitzt keine verknüpfte Komoot- oder URL-Quelle.');
-      setTimeout(() => setErrorMessage(null), 4000);
-      return;
+      if (!options?.silent) {
+        setErrorMessage('Dieser Track besitzt keine verknüpfte Komoot- oder URL-Quelle.');
+        setTimeout(() => setErrorMessage(null), 4000);
+      }
+      return { status: 'skipped', trackName: existing.name };
     }
 
     setRefreshingKomootTracks((prev) => ({ ...prev, [trackId]: true }));
@@ -2065,8 +2080,14 @@ const App: React.FC = () => {
         throw new Error('Es konnten keine gültigen GPS-Koordinaten geladen werden.');
       }
 
-      if (data.suggestedName && (!parsed.name || parsed.name === fallbackFileName.replace(/\.gpx$/i, ''))) {
-        parsed.name = String(data.suggestedName).trim();
+      const resolvedName = resolveRefreshedTrackName(
+        parsed.name,
+        typeof data.suggestedName === 'string' ? data.suggestedName : undefined,
+        fallbackFileName.replace(/\.gpx$/i, '')
+      );
+      if (resolvedName) {
+        parsed.name = resolvedName;
+        parsed.originalFilename = `${resolvedName}.gpx`;
       }
       if (data.activityType === 'running') {
         parsed.activityType = 'running';
@@ -2079,8 +2100,8 @@ const App: React.FC = () => {
         hydratePointsWithSurface(parsed.points, surfStats, parsed.distance);
       }
 
-      const refreshRes = applyKomootRefreshToTrack(existing, parsed, {
-        sourceType: (data.sourceType === 'gpx' ? 'gpx' : 'komoot'),
+      const refreshAttachParams = {
+        sourceType: (data.sourceType === 'gpx' ? 'gpx' : 'komoot') as 'komoot' | 'gpx',
         sourceUrl: String(data.sourceUrl || komootMeta.sourceUrl),
         komootTourId: typeof data.komootTourId === 'string' ? data.komootTourId : komootMeta.komootTourId,
         komootShareToken: data.komootShareToken ?? komootMeta.komootShareToken ?? null,
@@ -2088,7 +2109,9 @@ const App: React.FC = () => {
         komootCollectionTitle: komootMeta.komootCollectionTitle,
         komootCollectionUrl: komootMeta.komootCollectionUrl,
         remoteUpdatedAt: typeof data.remoteUpdatedAt === 'string' ? data.remoteUpdatedAt : undefined
-      });
+      };
+
+      const refreshRes = applyKomootRefreshToTrack(existing, parsed, refreshAttachParams);
 
       if (refreshRes.updated) {
         saveToHistory();
@@ -2098,31 +2121,71 @@ const App: React.FC = () => {
         prev.map((t) => (t.id === trackId ? refreshRes.track : t))
       );
 
-      // Keep Planned Tours DB copy synchronized if this track is already stored in the library
+      // Keep SQLite library copy synchronized (match by track ID or komootTourId/sourceUrl)
       try {
-        const existsRes = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(existing.id)}`));
-        if (existsRes.ok) {
-          await apiFetch(getApiUrl('/api/library'), {
+        let libraryTargetId: string | null = null;
+        const existsRes = await apiFetch(getApiUrl(`/api/library/${encodeURIComponent(existing.id)}`)).catch(() => null);
+        if (existsRes && existsRes.ok) {
+          libraryTargetId = existing.id;
+        } else {
+          const listRes = await apiFetch(getApiUrl('/api/library')).catch(() => null);
+          const listData = listRes && listRes.ok ? await listRes.json().catch(() => null) : null;
+          if (listData?.success && Array.isArray(listData.tracks)) {
+            const matchedLib = findMatchingExistingKomootTrack(listData.tracks, {
+              komootTourId: refreshAttachParams.komootTourId,
+              sourceUrl: refreshAttachParams.sourceUrl
+            });
+            if (matchedLib) {
+              libraryTargetId = matchedLib.id;
+            }
+          }
+        }
+
+        if (libraryTargetId) {
+          const libTrackPayload: GPXTrack =
+            libraryTargetId === refreshRes.track.id
+              ? refreshRes.track
+              : { ...refreshRes.track, id: libraryTargetId };
+          const saveLibRes = await apiFetch(getApiUrl('/api/library'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: safeStringifyOrFallback(refreshRes.track, '{}')
+            body: safeStringifyOrFallback(libTrackPayload, '{}')
           });
-          refreshCatalogTotalCount();
+          if (saveLibRes.ok) {
+            refreshCatalogTotalCount();
+            window.dispatchEvent(new CustomEvent('library-updated'));
+          }
         }
       } catch {
         // Non-fatal: workspace track is still updated
       }
 
-      triggerHaptic('success');
-      setSuccessMessage(
-        refreshRes.updated
-          ? `"${refreshRes.track.name}" auf v${refreshRes.newVersion} aktualisiert!`
-          : `"${refreshRes.track.name}" ist bereits auf dem neuesten Stand (v${refreshRes.newVersion}).`
-      );
-      setTimeout(() => setSuccessMessage(null), 4500);
+      if (!options?.silent) {
+        triggerHaptic('success');
+        setSuccessMessage(
+          refreshRes.updated
+            ? `"${refreshRes.track.name}" auf v${refreshRes.newVersion} aktualisiert!`
+            : `"${refreshRes.track.name}" ist bereits auf dem neuesten Stand (v${refreshRes.newVersion}).`
+        );
+        setTimeout(() => setSuccessMessage(null), 4500);
+      }
+
+      return {
+        status: refreshRes.updated ? 'updated' : 'unchanged',
+        trackName: refreshRes.track.name,
+        version: refreshRes.newVersion
+      };
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Komoot-Aktualisierung fehlgeschlagen.');
-      setTimeout(() => setErrorMessage(null), 5000);
+      const msg = err?.message || 'Komoot-Aktualisierung fehlgeschlagen.';
+      if (!options?.silent) {
+        setErrorMessage(msg);
+        setTimeout(() => setErrorMessage(null), 5000);
+      }
+      return {
+        status: 'error',
+        trackName: existing.name,
+        error: msg
+      };
     } finally {
       setRefreshingKomootTracks((prev) => {
         const next = { ...prev };
@@ -2131,6 +2194,41 @@ const App: React.FC = () => {
       });
     }
   }, [ftp, userWeight, estimatedSpeed, saveToHistory, refreshCatalogTotalCount]);
+
+  const handleRefreshAllKomootTracks = useCallback(async () => {
+    const komootTracks = tracksRef.current.filter((t) => Boolean(getKomootSourceMeta(t)?.sourceUrl));
+    if (komootTracks.length === 0) return;
+
+    setBulkKomootRefreshProgress({ active: true, current: 0, total: komootTracks.length });
+    let updatedCount = 0;
+    let unchangedCount = 0;
+    let errorCount = 0;
+
+    try {
+      for (let i = 0; i < komootTracks.length; i++) {
+        setBulkKomootRefreshProgress({ active: true, current: i + 1, total: komootTracks.length });
+        const result = await handleRefreshTrackFromKomoot(komootTracks[i].id, { silent: true });
+        if (result.status === 'updated') updatedCount++;
+        else if (result.status === 'unchanged') unchangedCount++;
+        else if (result.status === 'error') errorCount++;
+      }
+
+      triggerHaptic(errorCount > 0 ? 'error' : 'success');
+      if (errorCount > 0 && updatedCount === 0 && unchangedCount === 0) {
+        setErrorMessage(`Komoot-Sync fehlgeschlagen (${errorCount} Fehler).`);
+        setTimeout(() => setErrorMessage(null), 5000);
+      } else {
+        const parts: string[] = [];
+        if (updatedCount > 0) parts.push(`${updatedCount} aktualisiert`);
+        if (unchangedCount > 0) parts.push(`${unchangedCount} bereits aktuell`);
+        if (errorCount > 0) parts.push(`${errorCount} Fehler`);
+        setSuccessMessage(`Komoot-Sync abgeschlossen: ${parts.join(', ')}.`);
+        setTimeout(() => setSuccessMessage(null), 5000);
+      }
+    } finally {
+      setBulkKomootRefreshProgress(null);
+    }
+  }, [handleRefreshTrackFromKomoot]);
 
   const handleSyncRefreshedTracksToWorkspace = useCallback((refreshedTracks: GPXTrack[]) => {
     if (!refreshedTracks || refreshedTracks.length === 0) return;
@@ -3309,6 +3407,8 @@ const App: React.FC = () => {
             onOpenPlannedToursView={() => navigateWorkspace('planned')}
             onRefreshKomootTrack={handleRefreshTrackFromKomoot}
             refreshingKomootTracks={refreshingKomootTracks}
+            onRefreshAllKomootTracks={handleRefreshAllKomootTracks}
+            bulkKomootRefreshProgress={bulkKomootRefreshProgress}
           />
           <main className="flex-1 flex flex-col relative overflow-hidden">
             {!isOnline && (

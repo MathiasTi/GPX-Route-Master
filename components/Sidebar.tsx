@@ -4,9 +4,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GPXTrack, MapLayer, TextMarker } from '../types';
 import { AboutModal } from './AboutModal';
 import { getApiUrl, apiFetch } from '../utils/api';
-import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight, CopyCheck } from 'lucide-react';
+import { Upload, Trash2, Combine, Eye, EyeOff, Ruler, Layers, GripVertical, Undo2, TrendingUp, TrendingDown, Box, ChevronLeft, ChevronRight, Menu, Zap, Clock, BarChart2, X, MapPin, Plus, Trophy, GitCompare, Settings, ChevronDown, ChevronUp, Heart, Database, Sun, Moon, FileCode, Download, Wifi, WifiOff, RefreshCw, Loader2, CheckCircle2, AlertTriangle, Info, Scissors, ExternalLink, ShieldCheck, Sparkles, BookOpen, Keyboard, Lock, Video, Target, Compass, ArrowLeftRight, CopyCheck, Search, Copy, Check } from 'lucide-react';
 import { calculateDistance, formatPace, getPaceString, findClimbs, exportToGPX, downloadTrackAsGPX, calculateElevationStats, findDuplicateTracksByIdenticalGPS } from '../utils/gpxUtils';
 import { getKomootSourceMeta } from '../utils/komootVersioning';
+import { filterWorkspaceTracks, formatTrackQuickSummary, WorkspaceActivityFilter, WorkspaceSourceFilter } from '../utils/workspaceQoL';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
 import { computePauseAwareRunningMetrics } from '../utils/runningMetricsEngine';
@@ -110,7 +111,32 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   onSelection
 }) => {
   const [localExpanded, setLocalExpanded] = useState(false);
+  const [copiedSummary, setCopiedSummary] = useState(false);
   const expanded = isExpanded !== undefined ? isExpanded : localExpanded;
+
+  const handleCopySummary = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const summaryText = formatTrackQuickSummary(track, estimatedSpeed);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(summaryText);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = summaryText;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      triggerHaptic('light');
+      setCopiedSummary(true);
+      window.setTimeout(() => setCopiedSummary(false), 1800);
+    } catch {
+      // Ignore clipboard permission denials gracefully
+    }
+  };
 
   const handleToggleExpand = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -262,6 +288,21 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingKomoot ? 'animate-spin' : ''}`} />
                 </button>
               )}
+
+              {/* Quick Copy GPX Summary to Clipboard */}
+              <button
+                type="button"
+                onClick={handleCopySummary}
+                className={`p-1.5 rounded-md border transition-colors cursor-pointer flex items-center justify-center ${
+                  copiedSummary
+                    ? 'bg-emerald-50 text-emerald-600 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-700'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-500 border-slate-200/70 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 dark:border-slate-700'
+                }`}
+                title={copiedSummary ? 'Kurzstatistik kopiert!' : 'GPX-Kurzstatistik in die Zwischenablage kopieren'}
+                aria-label={`Kurzstatistik für "${track.name}" kopieren`}
+              >
+                {copiedSummary ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
 
               {/* Quick Intensive Analysis Cockpit button */}
               {onOpenIntensiveAnalysis && (
@@ -1054,6 +1095,8 @@ interface SidebarProps {
   onOpenPlannedToursView?: () => void;
   onRefreshKomootTrack?: (id: string) => void;
   refreshingKomootTracks?: Record<string, boolean>;
+  onRefreshAllKomootTracks?: () => void;
+  bulkKomootRefreshProgress?: { active: boolean; current: number; total: number } | null;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -1141,20 +1184,29 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenFullActivitiesView,
   onOpenPlannedToursView,
   onRefreshKomootTrack,
-  refreshingKomootTracks
+  refreshingKomootTracks,
+  onRefreshAllKomootTracks,
+  bulkKomootRefreshProgress
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
   const [expandedTrackMap, setExpandedTrackMap] = useState<Record<string, boolean>>({});
-  const [activityFilter, setActivityFilter] = useState<'all' | 'cycling' | 'running'>('all');
+  const [activityFilter, setActivityFilter] = useState<WorkspaceActivityFilter>('all');
+  const [sourceFilter, setSourceFilter] = useState<WorkspaceSourceFilter>('all');
+  const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState('');
 
   const filteredTracks = useMemo(() => {
-    if (activityFilter === 'all') return tracks;
-    return tracks.filter(t => t.activityType === activityFilter);
-  }, [tracks, activityFilter]);
+    return filterWorkspaceTracks(tracks, {
+      query: workspaceSearchQuery,
+      activityFilter,
+      sourceFilter
+    });
+  }, [tracks, workspaceSearchQuery, activityFilter, sourceFilter]);
 
   const cyclingCount = useMemo(() => tracks.filter(t => t.activityType === 'cycling').length, [tracks]);
   const runningCount = useMemo(() => tracks.filter(t => t.activityType === 'running').length, [tracks]);
+  const komootTrackCount = useMemo(() => tracks.filter(t => Boolean(getKomootSourceMeta(t)?.sourceUrl)).length, [tracks]);
+  const hasActiveWorkspaceFilter = workspaceSearchQuery.trim().length > 0 || activityFilter !== 'all' || sourceFilter !== 'all';
 
   const duplicateAnalysis = useMemo(
     () => findDuplicateTracksByIdenticalGPS(tracks, markedTrackId),
@@ -1459,6 +1511,26 @@ const Sidebar: React.FC<SidebarProps> = ({
                               <span>Alle entfernen</span>
                             </button>
                           )}
+                          {komootTrackCount > 0 && onRefreshAllKomootTracks && (
+                            <button
+                              type="button"
+                              disabled={Boolean(bulkKomootRefreshProgress?.active)}
+                              onClick={() => {
+                                triggerHaptic('light');
+                                onRefreshAllKomootTracks();
+                              }}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 rounded border border-emerald-200/80 dark:border-emerald-800/70 text-[9.5px] font-extrabold shadow-xs transition-all cursor-pointer select-none disabled:opacity-60"
+                              title={`Alle ${komootTrackCount} Komoot-verknüpften Touren im Workspace aktualisieren`}
+                              id="btn-sidebar-refresh-all-komoot"
+                            >
+                              <RefreshCw size={10} className={bulkKomootRefreshProgress?.active ? 'animate-spin' : ''} />
+                              <span>
+                                {bulkKomootRefreshProgress?.active
+                                  ? `Komoot ${bulkKomootRefreshProgress.current}/${bulkKomootRefreshProgress.total}`
+                                  : `Komoot Sync (${komootTrackCount})`}
+                              </span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={handleToggleExpandAll}
@@ -1480,43 +1552,108 @@ const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                       </div>
 
-                      {/* Touch-Ergonomic Mobile Activity Filter Chips */}
-                      {(cyclingCount > 0 && runningCount > 0) && (
+                      {/* Workspace Search & Quick Filter Bar */}
+                      {tracks.length >= 2 && (
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={workspaceSearchQuery}
+                            onChange={(e) => setWorkspaceSearchQuery(e.target.value)}
+                            placeholder={`Workspace durchsuchen (${tracks.length} Tracks)...`}
+                            className="w-full pl-8 pr-7 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-lg text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400"
+                            aria-label="Workspace-Tracks durchsuchen"
+                            id="input-workspace-track-search"
+                          />
+                          {workspaceSearchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setWorkspaceSearchQuery('')}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                              title="Suche leeren"
+                              aria-label="Suche leeren"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Activity & Source Filter Chips */}
+                      {((cyclingCount > 0 && runningCount > 0) || komootTrackCount > 0) && tracks.length >= 2 && (
                         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar select-none">
                           <button
                             type="button"
-                            onClick={() => setActivityFilter('all')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 ${
-                              activityFilter === 'all'
+                            onClick={() => {
+                              setActivityFilter('all');
+                              setSourceFilter('all');
+                            }}
+                            className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 cursor-pointer ${
+                              activityFilter === 'all' && sourceFilter === 'all'
                                 ? 'bg-indigo-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
                             }`}
                           >
                             Alle ({tracks.length})
                           </button>
+                          {cyclingCount > 0 && runningCount > 0 && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setActivityFilter((prev) => (prev === 'cycling' ? 'all' : 'cycling'))}
+                                className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 cursor-pointer ${
+                                  activityFilter === 'cycling'
+                                    ? 'bg-blue-600 text-white shadow-xs'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                                }`}
+                              >
+                                <span>🚴 Rad</span>
+                                <span className="text-[9.5px] opacity-80">({cyclingCount})</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setActivityFilter((prev) => (prev === 'running' ? 'all' : 'running'))}
+                                className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 cursor-pointer ${
+                                  activityFilter === 'running'
+                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                                }`}
+                              >
+                                <span>🏃 Lauf</span>
+                                <span className="text-[9.5px] opacity-80">({runningCount})</span>
+                              </button>
+                            </>
+                          )}
+                          {komootTrackCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSourceFilter((prev) => (prev === 'komoot' ? 'all' : 'komoot'))}
+                              className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 cursor-pointer ${
+                                sourceFilter === 'komoot'
+                                  ? 'bg-emerald-600 text-white shadow-xs'
+                                  : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+                              }`}
+                            >
+                              <span>Komoot</span>
+                              <span className="text-[9.5px] opacity-80">({komootTrackCount})</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {hasActiveWorkspaceFilter && filteredTracks.length > 0 && (
+                        <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 px-0.5">
+                          <span>{filteredTracks.length} von {tracks.length} Tracks angezeigt</span>
                           <button
                             type="button"
-                            onClick={() => setActivityFilter('cycling')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
-                              activityFilter === 'cycling'
-                                ? 'bg-blue-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                            }`}
+                            onClick={() => {
+                              setWorkspaceSearchQuery('');
+                              setActivityFilter('all');
+                              setSourceFilter('all');
+                            }}
+                            className="text-indigo-600 dark:text-indigo-400 font-bold hover:underline cursor-pointer"
                           >
-                            <span>🚴 Rad</span>
-                            <span className="text-[9.5px] opacity-80">({cyclingCount})</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActivityFilter('running')}
-                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 touch-manipulation active:scale-95 flex items-center gap-1 ${
-                              activityFilter === 'running'
-                                ? 'bg-emerald-600 text-white shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                            }`}
-                          >
-                            <span>🏃 Lauf</span>
-                            <span className="text-[9.5px] opacity-80">({runningCount})</span>
+                            Filter zurücksetzen
                           </button>
                         </div>
                       )}
@@ -1547,7 +1684,20 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   )}
                   {tracks.length > 0 && filteredTracks.length === 0 && (
-                    <p className="text-xs text-slate-400 italic text-center py-6 bg-slate-50/50 dark:bg-slate-900/10 rounded-xl border border-dashed border-slate-200 dark:border-slate-850">Keine Aktivitäten für diese Kategorie vorhanden.</p>
+                    <div className="text-center py-5 px-3 bg-slate-50/50 dark:bg-slate-900/20 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Keine passenden Tracks für die aktuelle Suche/Filterung gefunden.</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWorkspaceSearchQuery('');
+                          setActivityFilter('all');
+                          setSourceFilter('all');
+                        }}
+                        className="px-3 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/70 transition-colors cursor-pointer"
+                      >
+                        Filter zurücksetzen
+                      </button>
+                    </div>
                   )}
                   <DndContext 
                     sensors={sensors}

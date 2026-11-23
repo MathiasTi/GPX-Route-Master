@@ -1384,116 +1384,182 @@ export async function importGpxFromUrl(rawUrl: string, allowRedirectToKomoot = t
   };
 }
 
+async function resolveKomootCollection(
+  collectionRef: KomootCollectionRef
+): Promise<ImportedUrlCollectionResult> {
+  // Strategy 1: Try onlyprops JSON & internal collection contents API
+  const jsonCandidates = [
+    {
+      url: collectionRef.canonicalUrl,
+      headers: { onlyprops: 'true', Accept: 'application/json, text/plain, */*' }
+    },
+    {
+      url: collectionRef.apiContentsUrl,
+      headers: { Accept: 'application/json' }
+    }
+  ];
+
+  for (const candidate of jsonCandidates) {
+    try {
+      const res = await fetchWithSsrfGuard(candidate.url, candidate.headers);
+      if (!res.response.ok) continue;
+      const parsedJson = tryParseJsonCandidate(res.text);
+      if (!parsedJson) continue;
+      const extracted = extractKomootCollectionFromPayload(
+        parsedJson,
+        collectionRef.collectionId,
+        collectionRef.shareToken
+      );
+      if (extracted && extracted.tours.length > 0) {
+        return {
+          kind: 'collection',
+          collectionId: collectionRef.collectionId,
+          title: extracted.title,
+          sourceUrl: collectionRef.canonicalUrl,
+          tours: extracted.tours
+        };
+      }
+    } catch (err) {
+      if (err instanceof UrlImportError && err.statusCode === 403) {
+        throw err;
+      }
+    }
+  }
+
+  // Strategy 2: Fetch public HTML collection page and parse kmtBoot / embedded JSON / tour links
+  const htmlRes = await fetchWithSsrfGuard(collectionRef.canonicalUrl, {
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+  });
+
+  if (htmlRes.response.status === 401 || htmlRes.response.status === 403) {
+    throw new UrlImportError(
+      'Diese Komoot-Collection ist privat. Bitte stelle sie auf „Öffentlich“ oder nutze den Freigabe-Link mit share_token.',
+      403
+    );
+  }
+
+  if (htmlRes.response.status === 404) {
+    throw new UrlImportError(
+      'Komoot-Collection wurde nicht gefunden (404). Bitte prüfe den Link.',
+      404
+    );
+  }
+
+  if (!htmlRes.response.ok) {
+    throw new UrlImportError(
+      `Komoot hat mit Status ${htmlRes.response.status} geantwortet.`,
+      htmlRes.response.status >= 400 && htmlRes.response.status < 500
+        ? htmlRes.response.status
+        : 502
+    );
+  }
+
+  const extractedFromHtml = extractKomootCollectionFromPayload(
+    htmlRes.text,
+    collectionRef.collectionId,
+    collectionRef.shareToken
+  );
+
+  if (extractedFromHtml && extractedFromHtml.tours.length > 0) {
+    return {
+      kind: 'collection',
+      collectionId: collectionRef.collectionId,
+      title: extractedFromHtml.title,
+      sourceUrl: collectionRef.canonicalUrl,
+      tours: extractedFromHtml.tours
+    };
+  }
+
+  const lowerHtml = htmlRes.text.toLowerCase();
+  if (
+    htmlRes.finalUrl.includes('/login') ||
+    htmlRes.finalUrl.includes('/signin') ||
+    lowerHtml.includes('private collection') ||
+    lowerHtml.includes('diese collection ist privat')
+  ) {
+    throw new UrlImportError(
+      'Diese Komoot-Collection ist privat oder erfordert eine Anmeldung. Bitte nutze eine öffentliche Collection oder einen Freigabe-Link mit share_token.',
+      403
+    );
+  }
+
+  throw new UrlImportError(
+    'In dieser Komoot-Collection wurden keine öffentlichen Touren gefunden.',
+    422
+  );
+}
+
 export async function resolveUrlImport(rawUrl: string): Promise<ImportedUrlResult> {
   await assertSafeExternalUrl(rawUrl);
   const collectionRef = parseKomootCollectionUrl(rawUrl);
 
   if (collectionRef) {
-    // Strategy 1: Try onlyprops JSON & internal collection contents API
-    const jsonCandidates = [
-      {
-        url: collectionRef.canonicalUrl,
-        headers: { onlyprops: 'true', Accept: 'application/json, text/plain, */*' }
-      },
-      {
-        url: collectionRef.apiContentsUrl,
-        headers: { Accept: 'application/json' }
-      }
-    ];
+    return resolveKomootCollection(collectionRef);
+  }
 
-    for (const candidate of jsonCandidates) {
-      try {
-        const res = await fetchWithSsrfGuard(candidate.url, candidate.headers);
-        if (!res.response.ok) continue;
-        const parsedJson = tryParseJsonCandidate(res.text);
-        if (!parsedJson) continue;
-        const extracted = extractKomootCollectionFromPayload(
-          parsedJson,
-          collectionRef.collectionId,
-          collectionRef.shareToken
-        );
-        if (extracted && extracted.tours.length > 0) {
-          return {
-            kind: 'collection',
-            collectionId: collectionRef.collectionId,
-            title: extracted.title,
-            sourceUrl: collectionRef.canonicalUrl,
-            tours: extracted.tours
-          };
-        }
-      } catch (err) {
-        if (err instanceof UrlImportError && err.statusCode === 403) {
-          throw err;
-        }
-      }
+  if (parseKomootTourUrl(rawUrl)) {
+    const singleTrack = await importGpxFromUrl(rawUrl);
+    return {
+      kind: 'track',
+      ...singleTrack
+    };
+  }
+
+  // Non-direct Komoot URL (direct GPX or shortlink that may redirect to a Komoot tour or collection)
+  const directRes = await fetchWithSsrfGuard(rawUrl, {
+    Accept: 'application/gpx+xml, application/xml, text/xml, text/plain, */*'
+  });
+
+  if (directRes.finalUrl !== rawUrl) {
+    const redirectedCollection = parseKomootCollectionUrl(directRes.finalUrl);
+    if (redirectedCollection) {
+      await assertSafeExternalUrl(redirectedCollection.canonicalUrl);
+      return resolveKomootCollection(redirectedCollection);
     }
 
-    // Strategy 2: Fetch public HTML collection page and parse kmtBoot / embedded JSON / tour links
-    const htmlRes = await fetchWithSsrfGuard(collectionRef.canonicalUrl, {
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    });
-
-    if (htmlRes.response.status === 401 || htmlRes.response.status === 403) {
-      throw new UrlImportError(
-        'Diese Komoot-Collection ist privat. Bitte stelle sie auf „Öffentlich“ oder nutze den Freigabe-Link mit share_token.',
-        403
-      );
-    }
-
-    if (htmlRes.response.status === 404) {
-      throw new UrlImportError(
-        'Komoot-Collection wurde nicht gefunden (404). Bitte prüfe den Link.',
-        404
-      );
-    }
-
-    if (!htmlRes.response.ok) {
-      throw new UrlImportError(
-        `Komoot hat mit Status ${htmlRes.response.status} geantwortet.`,
-        htmlRes.response.status >= 400 && htmlRes.response.status < 500
-          ? htmlRes.response.status
-          : 502
-      );
-    }
-
-    const extractedFromHtml = extractKomootCollectionFromPayload(
-      htmlRes.text,
-      collectionRef.collectionId,
-      collectionRef.shareToken
-    );
-
-    if (extractedFromHtml && extractedFromHtml.tours.length > 0) {
+    if (parseKomootTourUrl(directRes.finalUrl)) {
+      const redirectedTrack = await importGpxFromUrl(directRes.finalUrl, false);
       return {
-        kind: 'collection',
-        collectionId: collectionRef.collectionId,
-        title: extractedFromHtml.title,
-        sourceUrl: collectionRef.canonicalUrl,
-        tours: extractedFromHtml.tours
+        kind: 'track',
+        ...redirectedTrack
       };
     }
+  }
 
-    const lowerHtml = htmlRes.text.toLowerCase();
-    if (
-      htmlRes.finalUrl.includes('/login') ||
-      htmlRes.finalUrl.includes('/signin') ||
-      lowerHtml.includes('private collection') ||
-      lowerHtml.includes('diese collection ist privat')
-    ) {
-      throw new UrlImportError(
-        'Diese Komoot-Collection ist privat oder erfordert eine Anmeldung. Bitte nutze eine öffentliche Collection oder einen Freigabe-Link mit share_token.',
-        403
-      );
-    }
-
+  if (!directRes.response.ok) {
     throw new UrlImportError(
-      'In dieser Komoot-Collection wurden keine öffentlichen Touren gefunden.',
-      422
+      `GPX-URL konnte nicht abgerufen werden (HTTP ${directRes.response.status}).`,
+      directRes.response.status >= 400 && directRes.response.status < 500 ? directRes.response.status : 502
     );
   }
 
-  const singleTrack = await importGpxFromUrl(rawUrl);
+  validateDirectGpxText(directRes.text);
+
+  const nameMatch = directRes.text.match(/<trk>[\s\S]*?<name>([^<]+)<\/name>/i)
+    || directRes.text.match(/<metadata>[\s\S]*?<name>([^<]+)<\/name>/i);
+  const fallbackName = inferFilenameFromUrl(
+    directRes.finalUrl,
+    directRes.response.headers.get('content-disposition')
+  );
+  const suggestedName = (nameMatch?.[1] || fallbackName || 'URL-Import Route').trim();
+  const parsedPts = extractGpxPointsForHash(directRes.text);
+  const pointCount = parsedPts.length || (directRes.text.match(/<(?:trkpt|rtept)\b/gi) || []).length;
+  const contentHash = computeCanonicalTrackContentHash({
+    name: suggestedName,
+    activityType: 'cycling',
+    points: parsedPts
+  });
+  const lastModifiedHeader = directRes.response.headers.get('last-modified') || undefined;
+
   return {
     kind: 'track',
-    ...singleTrack
+    gpxContent: directRes.text,
+    suggestedName,
+    activityType: 'cycling',
+    sourceType: 'gpx',
+    sourceUrl: directRes.finalUrl,
+    pointCount,
+    contentHash,
+    remoteUpdatedAt: lastModifiedHeader
   };
 }

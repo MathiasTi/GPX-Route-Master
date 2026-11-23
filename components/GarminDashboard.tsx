@@ -1221,11 +1221,49 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     }
   }, [activeTab, fetchAnalytics]);
 
-  // Clear all data
-  const handleClearData = async () => {
-    if (!window.confirm('Möchtest du wirklich alle importierten Garmin-Gesundheitsdaten löschen?')) {
-      return;
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [isQuickSyncingHealth, setIsQuickSyncingHealth] = useState(false);
+
+  // Direct 30-day Garmin Personal API health sync from empty health tabs
+  const handleQuickSyncHealth30d = useCallback(async () => {
+    setIsQuickSyncingHealth(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const endDate = new Date().toISOString().slice(0, 10);
+      const startDate = new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+      const res = await apiFetch(getApiUrl('/api/garmin/personal/sync-health'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, endDate })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const zeroStepsNote =
+          (json.stepsCount ?? 0) === 0
+            ? ` ${json.diagnostics?.stepsDiagnostic || 'Hinweis: Garmin hat für die letzten 30 Tage 0 Schritte geliefert.'}`
+            : '';
+        setSuccessMsg(
+          `30-Tage-Sync abgeschlossen: ${json.sleepCount ?? 0} Schlaf, ${json.rhrCount ?? 0} Ruhepuls, ${json.stressCount ?? 0} Stress, ${json.stepsCount ?? 0} Schritte.${zeroStepsNote}`
+        );
+        await fetchHealthMetrics();
+        onDataSynced?.();
+      } else {
+        setError(
+          json.error ||
+            'Direkt-Sync nicht möglich. Bitte verbinde zuerst dein Garmin-Konto im Tab „Personal API“.'
+        );
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Netzwerkfehler beim 30-Tage-Gesundheits-Sync.');
+    } finally {
+      setIsQuickSyncingHealth(false);
     }
+  }, [fetchHealthMetrics, onDataSynced]);
+
+  // Clear all data (confirmed via inline UI)
+  const handleClearData = async () => {
+    setConfirmClearOpen(false);
     setIsLoading(true);
     try {
       const res = await apiFetch(getApiUrl('/api/health-metrics/clear'), { method: 'POST' });
@@ -2914,7 +2952,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           <Info className="w-4 h-4 text-slate-500 shrink-0" />
                           <span>Aktualisiere deine Aktivitäten und Gesundheitswerte jederzeit direkt über die Garmin Connect Personal API.</span>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
                             onClick={() => handleSelectTab('personal-api')}
@@ -2923,14 +2961,35 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                             <Key className="w-3.5 h-3.5" />
                             Über Personal API synchronisieren
                           </button>
-                          <button
-                            type="button"
-                            onClick={handleClearData}
-                            className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            Daten zurücksetzen
-                          </button>
+                          {confirmClearOpen ? (
+                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/80">
+                              <span className="text-[11px] font-bold text-red-700 dark:text-red-300">Alle Daten löschen?</span>
+                              <button
+                                type="button"
+                                onClick={handleClearData}
+                                disabled={isLoading}
+                                className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                Ja, löschen
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmClearOpen(false)}
+                                className="px-2 py-1 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                              >
+                                Abbrechen
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmClearOpen(true)}
+                              className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Daten zurücksetzen
+                            </button>
+                          )}
                         </div>
                       </div>
                     </motion.div>
@@ -2965,11 +3024,26 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       </div>
 
                       {visibleSleepData.length === 0 ? (
-                        <div className="h-64 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center text-center text-xs text-slate-400 gap-2">
-                          <span>Keine Schlafdaten vorhanden.</span>
-                          <button type="button" onClick={() => handleSelectTab('personal-api')} className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2">
-                            Über Garmin Personal API synchronisieren
-                          </button>
+                        <div className="h-64 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center text-center text-xs text-slate-400 gap-2.5">
+                          <span className="font-semibold text-slate-600 dark:text-slate-300">Keine Schlafdaten vorhanden.</span>
+                          <div className="flex flex-wrap items-center justify-center gap-2.5 mt-1">
+                            <button
+                              type="button"
+                              disabled={isQuickSyncingHealth}
+                              onClick={handleQuickSyncHealth30d}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer disabled:opacity-60"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isQuickSyncingHealth ? 'animate-spin' : ''}`} />
+                              {isQuickSyncingHealth ? 'Synchronisiere 30 Tage...' : 'Letzte 30 Tage direkt synchronisieren'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTab('personal-api')}
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                            >
+                              Cloud-Sync öffnen
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <>
@@ -3207,15 +3281,26 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       )}
                       <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         {visibleRhrData.length === 0 ? (
-                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
-                            <span>Keine Ruhepuls-Daten vorhanden.</span>
-                            <button
-                              type="button"
-                              onClick={() => handleSelectTab('personal-api')}
-                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
-                            >
-                              Über Garmin Personal API synchronisieren
-                            </button>
+                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2.5">
+                            <span className="font-semibold text-slate-600 dark:text-slate-300">Keine Ruhepuls-Daten vorhanden.</span>
+                            <div className="flex flex-wrap items-center justify-center gap-2.5 mt-1">
+                              <button
+                                type="button"
+                                disabled={isQuickSyncingHealth}
+                                onClick={handleQuickSyncHealth30d}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition-colors cursor-pointer disabled:opacity-60"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isQuickSyncingHealth ? 'animate-spin' : ''}`} />
+                                {isQuickSyncingHealth ? 'Synchronisiere 30 Tage...' : 'Letzte 30 Tage direkt synchronisieren'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectTab('personal-api')}
+                                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                              >
+                                Cloud-Sync öffnen
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>
@@ -3323,7 +3408,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                   ? 'Wähle einen größeren Zeitraum oder synchronisiere aktuelle Tageswerte über die Garmin Personal API.'
                                   : 'Synchronisiere deine Tageswerte über die Garmin Personal API, um echte Schritte und Kalorien aus Garmin Connect zu laden.'}
                               </span>
-                              <div className="flex flex-wrap items-center justify-center gap-3 mt-1">
+                              <div className="flex flex-wrap items-center justify-center gap-2.5 mt-1">
                                 {stepsData.length > 0 && (
                                   <button
                                     type="button"
@@ -3335,10 +3420,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                                 )}
                                 <button
                                   type="button"
-                                  onClick={() => handleSelectTab('personal-api')}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer"
+                                  disabled={isQuickSyncingHealth}
+                                  onClick={handleQuickSyncHealth30d}
+                                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer disabled:opacity-60"
                                 >
-                                  Über Garmin Personal API synchronisieren
+                                  <RefreshCw className={`w-3.5 h-3.5 ${isQuickSyncingHealth ? 'animate-spin' : ''}`} />
+                                  {isQuickSyncingHealth ? 'Synchronisiere 30 Tage...' : 'Letzte 30 Tage direkt synchronisieren'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectTab('personal-api')}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                                >
+                                  Cloud-Sync öffnen
                                 </button>
                               </div>
                             </div>
@@ -3400,15 +3494,26 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       )}
                       <div className={`${variant === 'page' ? 'h-80 sm:h-96' : 'h-64'} w-full min-w-0 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-100 dark:border-slate-800`}>
                         {visibleStressData.length === 0 ? (
-                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2">
-                            <span>Keine Stress-Daten vorhanden.</span>
-                            <button
-                              type="button"
-                              onClick={() => handleSelectTab('personal-api')}
-                              className="text-indigo-500 hover:text-indigo-600 font-semibold underline underline-offset-2"
-                            >
-                              Über Garmin Personal API synchronisieren
-                            </button>
+                          <div className="h-full flex flex-col items-center justify-center text-center px-4 text-xs text-slate-400 gap-2.5">
+                            <span className="font-semibold text-slate-600 dark:text-slate-300">Keine Stress-Daten vorhanden.</span>
+                            <div className="flex flex-wrap items-center justify-center gap-2.5 mt-1">
+                              <button
+                                type="button"
+                                disabled={isQuickSyncingHealth}
+                                onClick={handleQuickSyncHealth30d}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white transition-colors cursor-pointer disabled:opacity-60"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isQuickSyncingHealth ? 'animate-spin' : ''}`} />
+                                {isQuickSyncingHealth ? 'Synchronisiere 30 Tage...' : 'Letzte 30 Tage direkt synchronisieren'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectTab('personal-api')}
+                                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                              >
+                                Cloud-Sync öffnen
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <ResponsiveContainer width="100%" height={variant === 'page' ? 320 : 224} minWidth={0}>

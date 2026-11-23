@@ -967,6 +967,7 @@ const Map: React.FC<MapProps> = ({
   const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
+  const [isQuickShortcutsOpen, setIsQuickShortcutsOpen] = useState(false);
   const leafletMapRef = useRef<L.Map | null>(null);
   const pendingZoomRef = useRef<number | null>(null);
   const [liveZoom, setLiveZoom] = useState<number>(mapView.zoom);
@@ -1009,13 +1010,16 @@ const Map: React.FC<MapProps> = ({
   }, [isSidebarOpen]);
 
   useEffect(() => {
-    if (!isColorMenuOpen) return;
+    if (!isColorMenuOpen && !isQuickShortcutsOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsColorMenuOpen(false);
+      if (e.key === 'Escape') {
+        setIsColorMenuOpen(false);
+        setIsQuickShortcutsOpen(false);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isColorMenuOpen]);
+  }, [isColorMenuOpen, isQuickShortcutsOpen]);
 
   // Personal Lifetime Heatmap state (Veloviewer / Strava style)
   const [showLifetimeHeatmap, setShowLifetimeHeatmap] = useState(false);
@@ -1472,6 +1476,60 @@ const Map: React.FC<MapProps> = ({
     iconSize: [24, 24],
     iconAnchor: [12, 12]
   }), []);
+
+  const pendingMarkerIcon = useMemo(() => new L.DivIcon({
+    className: 'pending-marker',
+    html: `
+      <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -100%); margin-top: -12px;">
+        <div class="bg-blue-600 text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1">
+          <span>📍 Neue Notiz...</span>
+        </div>
+        <div class="w-2.5 h-2.5 bg-blue-600 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white"></div>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0]
+  }), []);
+
+  const hoverTooltipRender = useMemo(() => {
+    if (!hoveredPoint) return null;
+    const hoveredTrackId = (hoveredPoint as any).trackId;
+    const pointTrack = hoveredTrackId
+      ? tracks.find(t => t.id === hoveredTrackId)
+      : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
+      || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
+
+    if (!pointTrack || !hasRealGpsData(pointTrack)) return null;
+
+    const isFit = Boolean(
+      pointTrack?.rawFileDetails?.fileType === 'fit' ||
+      pointTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
+      pointTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
+      pointTrack?.name?.toLowerCase().endsWith('.fit') ||
+      pointTrack?.id?.startsWith('fit-')
+    );
+
+    const telemetryResult = computeHoverPointTelemetry(
+      hoveredPoint,
+      pointTrack?.points,
+      {
+        estimatedSpeedKmh: estimatedSpeed,
+        isFitFile: isFit,
+        activityType: pointTrack?.activityType
+      }
+    );
+    if (!telemetryResult.success) return null;
+
+    return {
+      position: [hoveredPoint.lat, hoveredPoint.lng] as [number, number],
+      icon: new L.DivIcon({
+        className: 'custom-hover-tooltip-marker',
+        html: buildMapHoverCardHtml(telemetryResult.data),
+        iconSize: [0, 0],
+        iconAnchor: [0, 0]
+      })
+    };
+  }, [hoveredPoint, tracks, markedTrackId, estimatedSpeed]);
 
   const preparedTracks = useMemo(() => {
     const items = tracks
@@ -2121,47 +2179,13 @@ const Map: React.FC<MapProps> = ({
         <SyncView mapView={mapView} onMapViewChange={onMapViewChange} />
         <SelectionTool active={true} onSelection={onSelection} currentBounds={selectionBounds} />
         
-        {hoveredPoint && (() => {
-          const hoveredTrackId = (hoveredPoint as any).trackId;
-          const pointTrack = hoveredTrackId
-            ? tracks.find(t => t.id === hoveredTrackId)
-            : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
-            || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
-
-          if (!pointTrack || !hasRealGpsData(pointTrack)) return null;
-
-          const isFit = Boolean(
-            pointTrack?.rawFileDetails?.fileType === 'fit' ||
-            pointTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
-            pointTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
-            pointTrack?.name?.toLowerCase().endsWith('.fit') ||
-            pointTrack?.id?.startsWith('fit-')
-          );
-
-          const telemetryResult = computeHoverPointTelemetry(
-            hoveredPoint,
-            pointTrack?.points,
-            { 
-              estimatedSpeedKmh: estimatedSpeed,
-              isFitFile: isFit,
-              activityType: pointTrack?.activityType
-            }
-          );
-          if (!telemetryResult.success) return null;
-
-          return (
-            <LeafletMarker 
-              position={[hoveredPoint.lat, hoveredPoint.lng]} 
-              interactive={false}
-              icon={new L.DivIcon({
-                className: 'custom-hover-tooltip-marker',
-                html: buildMapHoverCardHtml(telemetryResult.data),
-                iconSize: [0, 0],
-                iconAnchor: [0, 0]
-              })} 
-            />
-          );
-        })()}
+        {hoverTooltipRender && (
+          <LeafletMarker
+            position={hoverTooltipRender.position}
+            interactive={false}
+            icon={hoverTooltipRender.icon}
+          />
+        )}
 
 
 
@@ -2306,19 +2330,7 @@ const Map: React.FC<MapProps> = ({
         {pendingMarker && (
           <LeafletMarker
             position={[pendingMarker.lat, pendingMarker.lng]}
-            icon={new L.DivIcon({
-              className: 'pending-marker',
-              html: `
-                <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -100%); margin-top: -12px;">
-                  <div class="bg-blue-600 text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1">
-                    <span>📍 Neue Notiz...</span>
-                  </div>
-                  <div class="w-2.5 h-2.5 bg-blue-600 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white"></div>
-                </div>
-              `,
-              iconSize: [0, 0],
-              iconAnchor: [0, 0]
-            })}
+            icon={pendingMarkerIcon}
           >
             <Popup 
               position={[pendingMarker.lat, pendingMarker.lng]}
@@ -2445,33 +2457,89 @@ const Map: React.FC<MapProps> = ({
         />
         {activeTrack && (
           <button
+            type="button"
             onClick={() => {
               triggerHaptic('medium');
               setRecenterTrigger(prev => prev + 1);
             }}
             className="pointer-events-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
-            title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten`}
+            title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten (Taste F)`}
             id="btn-toolbar-center-route"
           >
             <Target className="w-4 h-4 text-amber-500" />
             <span className="hidden xs:inline">Route zentrieren</span>
+            <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">F</kbd>
           </button>
         )}
 
         {onOpenShortcuts && (
-          <button
-            onClick={() => {
-              triggerHaptic('light');
-              onOpenShortcuts();
-            }}
-            className="pointer-events-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
-            title="Tastaturkürzel-Hilfe anzeigen (Taste ? oder Shift+/)"
-            id="btn-toolbar-shortcuts"
-          >
-            <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
-            <span className="hidden xs:inline">Shortcuts</span>
-            <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">?</kbd>
-          </button>
+          <div className="relative flex flex-col items-end pointer-events-auto">
+            {isQuickShortcutsOpen && (
+              <div
+                className="mb-2 w-60 rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl backdrop-blur-md p-3 text-[11px] text-slate-700 dark:text-slate-200 space-y-2"
+                role="dialog"
+                aria-label="Schnellübersicht Tastenkürzel"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5">
+                  <span className="font-extrabold text-slate-800 dark:text-slate-100">Karten-Shortcuts</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsQuickShortcutsOpen(false)}
+                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    aria-label="Kurzübersicht schließen"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-1.5 font-medium">
+                  <div className="flex items-center justify-between">
+                    <span>Zoom rein / raus</span>
+                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">+ / -</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Feinzoom (±0,25)</span>
+                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">Shift + Klick</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Route zentrieren</span>
+                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">F</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Rückgängig</span>
+                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">Strg + Z</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsQuickShortcutsOpen(false);
+                    onOpenShortcuts();
+                  }}
+                  className="w-full py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-[11px] transition-colors cursor-pointer"
+                >
+                  Alle Tastenkürzel öffnen (?)
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('light');
+                setIsQuickShortcutsOpen((prev) => !prev);
+              }}
+              onDoubleClick={() => {
+                setIsQuickShortcutsOpen(false);
+                onOpenShortcuts();
+              }}
+              className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
+              title="Kompakte Tastenkürzel-Hilfe umschalten (Taste ? für Gesamtübersicht)"
+              id="btn-toolbar-shortcuts"
+            >
+              <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
+              <span className="hidden xs:inline">Shortcuts</span>
+              <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">?</kbd>
+            </button>
+          </div>
         )}
       </div>
 

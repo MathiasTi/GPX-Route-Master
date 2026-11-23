@@ -269,6 +269,14 @@ export const VideoExportModal: React.FC<VideoExportModalProps> = ({
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  useEffect(() => {
+    return () => {
+      if (downloadUrl) {
+        URL.revokeObjectURL(downloadUrl);
+      }
+    };
+  }, [downloadUrl]);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const livePreviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);

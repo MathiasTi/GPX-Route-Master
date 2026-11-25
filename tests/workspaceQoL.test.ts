@@ -9,6 +9,12 @@ import {
   parseFreeNumberInput,
   resolveRefreshedTrackName
 } from '../utils/workspaceQoL';
+import {
+  getPrimarySurfaceInfo,
+  getSurfaceTypeColor,
+  resolveSidebarTrackColor,
+  SURFACE_COLOR_PALETTE
+} from '../utils/trackSurfaceColor';
 
 function makeTrack(overrides: Partial<GPXTrack>): GPXTrack {
   return {
@@ -309,6 +315,122 @@ export async function runWorkspaceQoLTests(): Promise<boolean> {
       sidebarSrc.includes('id="btn-sidebar-workspace-menu"') &&
       sidebarSrc.includes('<FreeMetricInput'),
     'Sidebar.tsx uses expandable 1-line summary strip, unified bulk menu, and FreeMetricInput'
+  );
+
+  // 9. Automatic sidebar track coloring by primary surface type
+  const pavedTrack = makeTrack({
+    id: 'surf-paved',
+    color: '#ef4444',
+    surfaceStats: [
+      { type: 'Asphalt', distance: 32.4 },
+      { type: 'Schotter', distance: 8.1 },
+      { type: 'Unbekannt', distance: 2.0 }
+    ]
+  });
+  const pavedPrimary = getPrimarySurfaceInfo(pavedTrack);
+  assert(
+    pavedPrimary !== null &&
+      pavedPrimary.surfaceType === 'Asphalt' &&
+      pavedPrimary.color === SURFACE_COLOR_PALETTE.Asphalt &&
+      pavedPrimary.percentage === 80 &&
+      pavedPrimary.source === 'stats',
+    'getPrimarySurfaceInfo identifies paved (Asphalt) primary surface as green and ignores Unbekannt'
+  );
+
+  const gravelTrack = makeTrack({
+    id: 'surf-gravel',
+    color: '#3b82f6',
+    surfaceStats: [
+      { type: 'Unbekannt', distance: 40.0 },
+      { type: 'Gravel', distance: 15.0 },
+      { type: 'Asphalt', distance: 5.0 }
+    ]
+  });
+  const gravelPrimary = getPrimarySurfaceInfo(gravelTrack);
+  assert(
+    gravelPrimary !== null &&
+      gravelPrimary.surfaceType === 'Schotter' &&
+      gravelPrimary.color === SURFACE_COLOR_PALETTE.Schotter &&
+      gravelPrimary.percentage === 75,
+    'getPrimarySurfaceInfo normalizes Gravel to Schotter (orange) even when Unbekannt has larger share'
+  );
+
+  const pointAnnotatedTrack = makeTrack({
+    id: 'surf-points',
+    color: '#6366f1',
+    points: [
+      { lat: 47.5, lng: 11.1, ele: 700, surface: 'Schotter' },
+      { lat: 47.51, lng: 11.11, ele: 720, surface: 'Schotter' },
+      { lat: 47.52, lng: 11.12, ele: 740, surface: 'Asphalt' }
+    ]
+  });
+  const pointPrimary = getPrimarySurfaceInfo(pointAnnotatedTrack);
+  assert(
+    pointPrimary !== null &&
+      pointPrimary.surfaceType === 'Schotter' &&
+      pointPrimary.source === 'points' &&
+      pointPrimary.percentage === 67,
+    'getPrimarySurfaceInfo falls back to point-level surface tags when surfaceStats is absent'
+  );
+
+  const unknownOnlyTrack = makeTrack({
+    id: 'surf-unknown',
+    color: '#ec4899',
+    surfaceStats: [{ type: 'Unbekannt', distance: 25.0 }]
+  });
+  assert(
+    getPrimarySurfaceInfo(unknownOnlyTrack) === null,
+    'getPrimarySurfaceInfo returns null when only Unbekannt surface data is present'
+  );
+
+  const resolvedPavedOn = resolveSidebarTrackColor(pavedTrack, { autoColorBySurface: true });
+  const resolvedPavedOff = resolveSidebarTrackColor(pavedTrack, { autoColorBySurface: false });
+  const resolvedUnknownOn = resolveSidebarTrackColor(unknownOnlyTrack, { autoColorBySurface: true });
+  const resolvedCompareA = resolveSidebarTrackColor(pavedTrack, {
+    autoColorBySurface: true,
+    isMapComparing: true,
+    isMarked: true
+  });
+  const resolvedCompareB = resolveSidebarTrackColor(pavedTrack, {
+    autoColorBySurface: true,
+    isMapComparing: true,
+    isCompared: true
+  });
+  assert(
+    resolvedPavedOn.isSurfaceColored &&
+      resolvedPavedOn.color === SURFACE_COLOR_PALETTE.Asphalt &&
+      !resolvedPavedOff.isSurfaceColored &&
+      resolvedPavedOff.color === '#ef4444' &&
+      !resolvedUnknownOn.isSurfaceColored &&
+      resolvedUnknownOn.color === '#ec4899' &&
+      !resolvedCompareA.isSurfaceColored &&
+      resolvedCompareA.color === '#2563eb' &&
+      !resolvedCompareB.isSurfaceColored &&
+      resolvedCompareB.color === '#f97316',
+    'resolveSidebarTrackColor respects map-compare override, auto surface toggle, and unknown fallback'
+  );
+
+  assert(
+    getSurfaceTypeColor('paved') === SURFACE_COLOR_PALETTE.Asphalt &&
+      getSurfaceTypeColor('gravel') === SURFACE_COLOR_PALETTE.Schotter &&
+      getSurfaceTypeColor('trail') === SURFACE_COLOR_PALETTE.Waldweg &&
+      getSurfaceTypeColor('cobblestone') === SURFACE_COLOR_PALETTE.Kopfsteinpflaster,
+    'getSurfaceTypeColor maps paved, gravel, trail, and cobblestone to unified semantic colors'
+  );
+
+  const surfacePrefsDefault = sanitizeAppPreferences({});
+  const surfacePrefsDisabled = sanitizeAppPreferences({ autoColorTracksBySurface: false });
+  assert(
+    surfacePrefsDefault.autoColorTracksBySurface === true &&
+      surfacePrefsDisabled.autoColorTracksBySurface === false,
+    'sanitizeAppPreferences defaults autoColorTracksBySurface to true and preserves false'
+  );
+
+  assert(
+    sidebarSrc.includes('resolveSidebarTrackColor') &&
+      sidebarSrc.includes('id="btn-sidebar-toggle-surface-color"') &&
+      sidebarSrc.includes('id="sidebar-surface-color-legend"'),
+    'Sidebar.tsx integrates primary-surface auto-coloring, toggle menu item, and active legend'
   );
 
   console.log(`\n📊 Workspace QoL & Bugfix Results: ${passed} passed, ${failed} failed\n`);

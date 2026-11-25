@@ -18,8 +18,11 @@ import {
   createRateLimiter,
   resolveAllowedCorsOrigin,
   isCsrfSafeRequest,
-  sanitizeHexColor
+  sanitizeHexColor,
+  getSafeApiErrorMessage,
+  sanitizeGarminActivityId
 } from '../utils/securityMiddleware';
+import { buildMapHoverCardHtml } from '../components/map/MapHoverTooltipCard';
 import { analyzeTrackValidation, autoFixTrackValidation } from '../utils/gpxUtils';
 import { GPXTrack } from '../types';
 import Database from 'better-sqlite3';
@@ -384,6 +387,79 @@ export function runSecurityTests(): boolean {
     assert(!envExample.includes('GARMIN_KEY_ENCRYPTION_SECRET'), 'GARMIN_KEY_ENCRYPTION_SECRET must not be in .env.example');
     assert(!envExample.includes('APP_PASSWORD=mathias'), 'Hardcoded APP_PASSWORD=mathias must not exist in .env.example');
     assert(envExample.includes('APP_PASSWORD='), 'APP_PASSWORD variable documented cleanly in .env.example');
+  });
+
+  // 13. Production Error Masking
+  test('Error Masking: Masks raw internal exception messages in production mode', () => {
+    const internalErr = new Error('SQLITE_CANTOPEN: /var/app/data/gpx_library.db');
+    assert(
+      getSafeApiErrorMessage(internalErr, 'Interner Fehler', true) === 'Interner Fehler',
+      'Production mode must return fallback message instead of raw internal error'
+    );
+    assert(
+      getSafeApiErrorMessage(internalErr, 'Interner Fehler', false) === 'SQLITE_CANTOPEN: /var/app/data/gpx_library.db',
+      'Development mode retains diagnostic message'
+    );
+  });
+
+  // 14. Garmin Activity ID Sanitization
+  test('Garmin Activity ID: Accepts valid IDs and blocks path traversal or injection payloads', () => {
+    assert(sanitizeGarminActivityId('12345678901') === '12345678901', 'Numeric Garmin ID allowed');
+    assert(sanitizeGarminActivityId('garmin-act-998877') === '998877', 'Prefixed Garmin ID normalized');
+    assert(sanitizeGarminActivityId('../secret') === null, 'Relative traversal ID rejected');
+    assert(sanitizeGarminActivityId('123/../../etc/passwd') === null, 'Slash traversal ID rejected');
+    assert(sanitizeGarminActivityId('123?foo=bar') === null, 'Query-injection ID rejected');
+    assert(sanitizeGarminActivityId('a'.repeat(80)) === null, 'Oversized ID rejected');
+  });
+
+  // 15. Map Hover Card HTML Escaping Defense
+  test('Map Hover Card: Escapes injected HTML tags and untrusted color payloads', () => {
+    const html = buildMapHoverCardHtml({
+      elevationM: 500,
+      slope: {
+        slopePercent: 5,
+        formatted: '<script>alert(1)</script>',
+        label: 'Test',
+        arrow: '↗',
+        colorHex: '" onclick="alert(1)'
+      },
+      heartRate: {
+        bpm: 150,
+        zoneNumber: 3,
+        label: '<img src=x onerror=alert(1)>',
+        name: 'Tempo',
+        percentOfMax: 80,
+        colorHex: 'javascript:alert(1)'
+      },
+      powerWatts: 250,
+      speedKmh: 28,
+      paceFormatted: null,
+      isFitFile: false,
+      activityType: 'cycling',
+      timeFormatted: '<b>10:00</b>',
+      durationEstimate: null
+    } as any);
+    assert(!html.includes('<script>alert(1)</script>'), 'Script tags must be HTML-escaped');
+    assert(!html.includes('<img src=x'), 'Injected img tags must be HTML-escaped');
+    assert(!html.includes('onclick="alert(1)'), 'Injected event attributes in colors must be rejected');
+    assert(!html.includes('javascript:alert(1)'), 'Script URI colors must fall back to safe hex');
+  });
+
+  // 16. Client API Origin Hygiene
+  test('Client API Helper: No hardcoded external Cloud Run deployment URL fallback', () => {
+    const apiSrc = fs.readFileSync(path.join(process.cwd(), 'utils/api.ts'), 'utf-8');
+    assert(!apiSrc.includes('.europe-west2.run.app'), 'utils/api.ts must not contain hardcoded external Cloud Run fallback URLs');
+  });
+
+  // 17. Server Outbound Rate Limiting & Prompt Input Sanitization
+  test('Server Hardening: Rate limits Valhalla/intensive-analysis and uses sanitized prompt inputs', () => {
+    const serverSrc = fs.readFileSync(path.join(process.cwd(), 'server.ts'), 'utf-8');
+    assert(serverSrc.includes('"/api/routing/valhalla"') && serverSrc.includes('"/api/intensive-analysis"'), 'Outbound proxy limiter covers Valhalla routing and intensive analysis');
+    assert(
+      serverSrc.includes('für das Datum ${safeDate}:') &&
+        serverSrc.includes('zwischen ${safeStartLoc} und ${safeEndLoc}'),
+      'Gemini prompt interpolates sanitized safeDate, safeStartLoc, and safeEndLoc'
+    );
   });
 
   console.log(`\n🔒 Security Test Results: ${passed} passed, ${failed} failed.\n`);

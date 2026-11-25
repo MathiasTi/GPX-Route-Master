@@ -119,9 +119,9 @@ export function getApiUrl(path: string): string {
     }
   }
 
-  // Last-resort fallback inside completely opaque sandboxed iframe (origin === 'null' / 'about:blank')
+  // Opaque sandboxed frame (origin === 'null' / 'about:blank') without configured origin: stay relative
   if (!origin || origin === 'null' || origin === 'about:blank') {
-    origin = 'https://ais-pre-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app';
+    return cleanPath;
   }
 
   const fullUrl = `${origin}${cleanPath}`;

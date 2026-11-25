@@ -10,11 +10,17 @@ import { getKomootSourceMeta } from '../utils/komootVersioning';
 import { filterWorkspaceTracks, formatTrackQuickSummary, WorkspaceActivityFilter, WorkspaceSourceFilter } from '../utils/workspaceQoL';
 import { validateTrackStartPoint } from '../utils/startPointValidator';
 import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
+import {
+  getPrimarySurfaceInfo,
+  getSurfaceTypeColor,
+  resolveSidebarTrackColor,
+  SURFACE_COLOR_LEGEND
+} from '../utils/trackSurfaceColor';
 import { computePauseAwareRunningMetrics } from '../utils/runningMetricsEngine';
 import { triggerHaptic } from '../utils/haptics';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
-import { TerrainHoverPreview3D } from './TerrainHoverPreview3D';
+import { SidebarSportsMetricsCard } from './SidebarSportsMetricsCard';
 import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
 import { BatchGpxUploader, UploadProgressInfo, UrlImportSubmitResult } from './BatchGpxUploader';
 import { FreeMetricInput } from './FreeMetricInput';
@@ -77,6 +83,7 @@ interface TrackItemProps {
   isMenuOpen?: boolean;
   onToggleMenu?: (id: string) => void;
   onCloseMenu?: () => void;
+  autoColorBySurface?: boolean;
   onSelection?: (bounds: {minLat: number, maxLat: number, minLng: number, maxLng: number} | null) => void;
 }
 
@@ -115,6 +122,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   isMenuOpen = false,
   onToggleMenu,
   onCloseMenu,
+  autoColorBySurface = true,
   onSelection
 }) => {
   const [localExpanded, setLocalExpanded] = useState(false);
@@ -201,16 +209,42 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
 
   const startValidation = useMemo(() => validateTrackStartPoint(track), [track]);
   const komootMeta = useMemo(() => getKomootSourceMeta(track), [track]);
+  const colorResolution = useMemo(
+    () =>
+      resolveSidebarTrackColor(track, {
+        autoColorBySurface,
+        isMapComparing,
+        isMarked,
+        isCompared
+      }),
+    [
+      track.color,
+      track.surfaceStats,
+      track.points,
+      track.distance,
+      autoColorBySurface,
+      isMapComparing,
+      isMarked,
+      isCompared
+    ]
+  );
+
+  const cardStyle: React.CSSProperties = colorResolution.isSurfaceColored
+    ? { ...style, borderLeftColor: colorResolution.color }
+    : style;
 
   return (
     <div 
       ref={setNodeRef} 
-      style={style}
+      style={cardStyle}
+      data-primary-surface={colorResolution.primarySurface?.surfaceType ?? ''}
       onClick={() => {
         triggerHaptic('light');
         onMark(track.id);
       }}
       className={`group relative cursor-pointer bg-white dark:bg-slate-900 border rounded-xl px-2.5 py-2 transition-colors ${
+        colorResolution.isSurfaceColored ? 'border-l-[3px]' : ''
+      } ${
         isDragging ? 'shadow-xl opacity-50 bg-slate-50 dark:bg-slate-800' : ''
       } ${
         isMenuOpen ? 'z-30' : 'z-0'
@@ -239,7 +273,12 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <span
                 className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10"
-                style={{ backgroundColor: isMapComparing && isMarked ? '#2563eb' : isMapComparing && isCompared ? '#f97316' : (track.color || '#3b82f6') }}
+                style={{ backgroundColor: colorResolution.color }}
+                title={
+                  colorResolution.isSurfaceColored && colorResolution.primarySurface
+                    ? `Hauptbelag: ${colorResolution.primarySurface.surfaceType} (${colorResolution.primarySurface.percentage}%)`
+                    : undefined
+                }
               />
               {isMapComparing && isMarked && (
                 <span className="shrink-0 text-[9px] font-mono font-bold text-blue-600 dark:text-blue-400">
@@ -480,6 +519,18 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   : `~${estimatedSpeed} km/h`
               )}
             </span>
+            {colorResolution.isSurfaceColored && colorResolution.primarySurface && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span
+                  className="font-sans font-semibold"
+                  style={{ color: colorResolution.primarySurface.color }}
+                  title={`Hauptbelag: ${colorResolution.primarySurface.surfaceType} (${colorResolution.primarySurface.percentage}%)`}
+                >
+                  {colorResolution.primarySurface.surfaceType}
+                </span>
+              </>
+            )}
             {komootMeta && (
               <>
                 <span aria-hidden="true">·</span>
@@ -922,50 +973,22 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                       {track.surfaceStats.map((surface, idx) => {
                         const totalDist = track.surfaceStats!.reduce((sum, s) => sum + s.distance, 0) || 1;
                         const pct = (surface.distance / totalDist) * 100;
-                        const getSurfColor = (s: string) => {
-                          switch (s) {
-                            case "Asphalt": return "#2563eb"; // Royal Blue
-                            case "Schotter": return "#d97706"; // Amber
-                            case "Waldweg": return "#16a34a"; // Forest Green
-                            case "Fahrradweg": return "#0284c7"; // Sky Blue
-                            case "Kopfsteinpflaster": return "#805ad5"; // Purple
-                            case "Unbefestigt": return "#ca8a04"; // Gold-Brown
-                            case "Straße": return "#4f46e5"; // Indigo
-                            case "Unbekannt": return "#94a3b8"; // Neutral Slate
-                            default: return "#94a3b8";
-                          }
-                        };
                         return (
                           <div 
                             key={idx} 
-                            style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
+                            style={{ width: `${pct}%`, backgroundColor: getSurfaceTypeColor(surface.type) }} 
                             title={`${surface.type} (${pct.toFixed(1)}%)`} 
                           />
                         );
                       })}
                     </div>
                     <div className="text-[9.5px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-1 font-mono">
-                      {track.surfaceStats.map((surface, idx) => {
-                        const getSurfColor = (s: string) => {
-                          switch (s) {
-                            case "Asphalt": return "#2563eb";
-                            case "Schotter": return "#d97706";
-                            case "Waldweg": return "#16a34a";
-                            case "Fahrradweg": return "#0284c7";
-                            case "Kopfsteinpflaster": return "#805ad5";
-                            case "Unbefestigt": return "#ca8a04";
-                            case "Straße": return "#4f46e5";
-                            case "Unbekannt": return "#94a3b8";
-                            default: return "#94a3b8";
-                          }
-                        };
-                        return (
-                          <span key={idx} className="bg-slate-50 dark:bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 text-[9px] flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSurfColor(surface.type) }}></span>
-                            {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
-                          </span>
-                        );
-                      })}
+                      {track.surfaceStats.map((surface, idx) => (
+                        <span key={idx} className="bg-slate-50 dark:bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-800 text-[9px] flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSurfaceTypeColor(surface.type) }}></span>
+                          {surface.type}: {surface.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -1130,6 +1153,7 @@ interface SidebarProps {
   onOpenTrainingZones?: (id?: string) => void;
   onOpenSummaryReport?: (id?: string) => void;
   onOpenIntensiveAnalysis?: (id?: string) => void;
+  onOpenSportsMetrics?: (id?: string) => void;
   onOpenVideoExport?: (id?: string) => void;
   onOpenGlossary?: (metricId?: string) => void;
   onOpenAnalytics: (id: string) => void;
@@ -1167,6 +1191,8 @@ interface SidebarProps {
   refreshingKomootTracks?: Record<string, boolean>;
   onRefreshAllKomootTracks?: () => void;
   bulkKomootRefreshProgress?: { active: boolean; current: number; total: number } | null;
+  autoColorBySurface?: boolean;
+  onToggleAutoColorBySurface?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -1220,6 +1246,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenTrainingZones,
   onOpenSummaryReport,
   onOpenIntensiveAnalysis,
+  onOpenSportsMetrics,
   onOpenVideoExport,
   onOpenGlossary,
   onOpenShortcuts,
@@ -1256,7 +1283,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   onRefreshKomootTrack,
   refreshingKomootTracks,
   onRefreshAllKomootTracks,
-  bulkKomootRefreshProgress
+  bulkKomootRefreshProgress,
+  autoColorBySurface = true,
+  onToggleAutoColorBySurface
 }) => {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'library'>('active');
@@ -1291,6 +1320,17 @@ const Sidebar: React.FC<SidebarProps> = ({
     const hiddenCount = tracks.filter((t) => !t.visible).length;
     return { totalDist, totalAscent, hiddenCount };
   }, [tracks]);
+
+  const activeSurfaceLegend = useMemo(() => {
+    if (!autoColorBySurface) return [];
+    const present = new Set<string>();
+    for (const track of tracks) {
+      const info = getPrimarySurfaceInfo(track);
+      if (info) present.add(info.surfaceType);
+    }
+    if (present.size === 0) return [];
+    return SURFACE_COLOR_LEGEND.filter((item) => present.has(item.surfaceType));
+  }, [tracks, autoColorBySurface]);
 
   const filteredTracks = useMemo(() => {
     return filterWorkspaceTracks(tracks, {
@@ -1636,6 +1676,28 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 </button>
                               )}
 
+                              {onToggleAutoColorBySurface && (
+                                <button
+                                  type="button"
+                                  role="menuitemcheckbox"
+                                  aria-checked={autoColorBySurface}
+                                  id="btn-sidebar-toggle-surface-color"
+                                  onClick={() => {
+                                    triggerHaptic('light');
+                                    onToggleAutoColorBySurface();
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <Layers className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                    <span>Nach Untergrund färben</span>
+                                  </span>
+                                  {autoColorBySurface && (
+                                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  )}
+                                </button>
+                              )}
+
                               <button
                                 type="button"
                                 role="menuitem"
@@ -1733,6 +1795,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                           )}
                         </div>
                       </div>
+
+                      {activeSurfaceLegend.length > 0 && (
+                        <div
+                          className="flex items-center flex-wrap gap-x-2.5 gap-y-1 px-0.5 text-[10px] text-slate-500 dark:text-slate-400"
+                          aria-label="Belagsfarben"
+                          id="sidebar-surface-color-legend"
+                        >
+                          {activeSurfaceLegend.map((entry) => (
+                            <span key={entry.surfaceType} className="inline-flex items-center gap-1">
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: entry.color }}
+                              />
+                              <span>{entry.surfaceType}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
 
                       {/* Workspace Search & Quick Filter Bar */}
                       {tracks.length >= 2 && (
@@ -1934,6 +2014,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             isMenuOpen={openMenuId === track.id}
                             onToggleMenu={(id) => setOpenMenuId((prev) => (prev === id ? null : id))}
                             onCloseMenu={() => setOpenMenuId(null)}
+                            autoColorBySurface={autoColorBySurface}
                             onSelection={onSelection}
                           />
                         ))}
@@ -1970,16 +2051,15 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
             </section>
 
-            {/* 3D Terrain Hover Preview & Instantaneous Slope/Altitude HUD */}
+            {/* Lightweight Sport & Fitness Metrics Quick-Glance Card */}
             {tracks.length > 0 && (
-              <TerrainHoverPreview3D
-                hoveredPoint={hoveredPoint}
+              <SidebarSportsMetricsCard
                 track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                allTracks={tracks}
-                isDark={isDark}
-                onFocusCoordinates={(lat, lng) => {
-                  onMapViewChange({ lat, lng, zoom: 16, pitch: 65, bearing: 0 });
-                }}
+                ftp={ftp}
+                userWeight={userWeight}
+                userMaxHr={userMaxHr}
+                estimatedSpeed={estimatedSpeed}
+                onOpenFullMetrics={onOpenSportsMetrics || onOpenIntensiveAnalysis}
               />
             )}
 

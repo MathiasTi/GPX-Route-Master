@@ -21,6 +21,7 @@ import {
 import { parseFIT } from './fitUtils';
 import { parseGPX, calculateElevationStats, calculatePowerStats, findClimbs, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
 import { GPXPoint, GPXTrack } from '../types';
+import { sanitizeGarminActivityId } from './securityMiddleware';
 
 const DEFAULT_BASE_URL = 'https://personal.connectapi.garmin.com';
 const TOKEN_ENDPOINT_PATH = '/personalapitoken-service/personal-api/personal-api-key/token';
@@ -887,7 +888,10 @@ export async function downloadAndParseGarminActivityFit(
   if (options?.signal?.aborted) {
     throw new Error('Synchronisation abgebrochen.');
   }
-  const cleanId = String(activityId).trim().replace(/^garmin-act-/, '');
+  const cleanId = sanitizeGarminActivityId(activityId);
+  if (!cleanId) {
+    throw new Error('Ungültige Garmin-Aktivitäts-ID.');
+  }
   const { baseUrl } = getActiveGarminApiKey(options?.overrideApiKey);
   const accessToken = options?.accessToken
     ? options.accessToken
@@ -922,23 +926,39 @@ export async function downloadAndParseGarminActivityFit(
     // Check if buffer is a PK ZIP archive (0x50 0x4B 0x03 0x04)
     let fitBuffer: Uint8Array = new Uint8Array(buffer);
     if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
+      const MAX_ZIP_ENTRIES = 32;
       let totalUncompressedBytes = 0;
+      let entryCount = 0;
+      let selectedPrimaryEntry = false;
       const unzipped = unzipSync(new Uint8Array(buffer), {
         filter(file) {
+          entryCount += 1;
+          if (entryCount > MAX_ZIP_ENTRIES) {
+            throw new Error('ZIP-Archiv enthält zu viele Einträge.');
+          }
           totalUncompressedBytes += file.originalSize || 0;
           if (totalUncompressedBytes > MAX_UNZIPPED_FIT_BYTES) {
             throw new Error('Entpackte FIT-/ZIP-Datei überschreitet das Sicherheitslimit von 100 MB.');
           }
-          return true;
+          const lowerName = (file.name || '').toLowerCase();
+          const isCandidate = lowerName.endsWith('.fit') || lowerName.endsWith('.gpx');
+          if (isCandidate && !selectedPrimaryEntry) {
+            selectedPrimaryEntry = true;
+            return true;
+          }
+          return false;
         }
       });
-      const fitEntryName = Object.keys(unzipped).find(name => name.toLowerCase().endsWith('.fit')) || Object.keys(unzipped)[0];
-      if (fitEntryName && unzipped[fitEntryName]) {
-        if (unzipped[fitEntryName].byteLength > MAX_UNZIPPED_FIT_BYTES) {
-          throw new Error('Entpackte FIT-Datei überschreitet das Sicherheitslimit von 100 MB.');
-        }
-        fitBuffer = unzipped[fitEntryName];
+      const fitEntryName =
+        Object.keys(unzipped).find(name => name.toLowerCase().endsWith('.fit')) ||
+        Object.keys(unzipped).find(name => name.toLowerCase().endsWith('.gpx'));
+      if (!fitEntryName || !unzipped[fitEntryName]) {
+        throw new Error('ZIP-Archiv enthält keine gültige .FIT- oder .GPX-Datei.');
       }
+      if (unzipped[fitEntryName].byteLength > MAX_UNZIPPED_FIT_BYTES) {
+        throw new Error('Entpackte FIT-Datei überschreitet das Sicherheitslimit von 100 MB.');
+      }
+      fitBuffer = unzipped[fitEntryName];
     }
 
     // Check if XML/GPX text

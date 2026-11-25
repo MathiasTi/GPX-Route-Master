@@ -40,8 +40,19 @@ export async function runUrlGpxImporterTests(): Promise<boolean> {
   assert(isBlockedIpAddress('fe80::1') === true, 'Blocks IPv6 link-local fe80::1');
   assert(isBlockedIpAddress('fc00::1') === true, 'Blocks IPv6 unique local fc00::1');
   assert(isBlockedIpAddress('::ffff:127.0.0.1') === true, 'Blocks IPv4-mapped IPv6 ::ffff:127.0.0.1');
+  assert(isBlockedIpAddress('0:0:0:0:0:ffff:127.0.0.1') === true, 'Blocks expanded IPv4-mapped IPv6 0:0:0:0:0:ffff:127.0.0.1');
+  assert(isBlockedIpAddress('::ffff:0:127.0.0.1') === true, 'Blocks IPv4-translated IPv6 ::ffff:0:127.0.0.1');
+  assert(isBlockedIpAddress('::127.0.0.1') === true, 'Blocks IPv4-compatible IPv6 ::127.0.0.1');
+  assert(isBlockedIpAddress('64:ff9b::169.254.169.254') === true, 'Blocks NAT64 cloud metadata 64:ff9b::169.254.169.254');
+  assert(isBlockedIpAddress('64:ff9b:1::1') === true, 'Blocks NAT64 local-use 64:ff9b:1::1');
+  assert(isBlockedIpAddress('2002:7f00:0001::') === true, 'Blocks 6to4 loopback 2002:7f00:0001::');
+  assert(isBlockedIpAddress('2001:0000:4136:e378:8000:63bf:3fff:fdd2') === true, 'Blocks Teredo IPv6 range');
+  assert(isBlockedIpAddress('2001:db8::1') === true, 'Blocks IPv6 documentation range 2001:db8::/32');
+  assert(isBlockedIpAddress('100::1') === true, 'Blocks IPv6 discard range 100::/64');
+  assert(isBlockedIpAddress('fec0::1') === true, 'Blocks deprecated IPv6 site-local fec0::/10');
   assert(isBlockedIpAddress('93.184.216.34') === false, 'Allows public IPv4 93.184.216.34');
   assert(isBlockedIpAddress('2606:4700:4700::1111') === false, 'Allows public IPv6 2606:4700:4700::1111');
+  assert(isBlockedIpAddress('2002:0101:0101::') === false, 'Allows public 6to4 2002:0101:0101:: (1.1.1.1)');
 
   // 2. SSRF URL + DNS guard
   let blockedLocalhost = false;
@@ -51,6 +62,22 @@ export async function runUrlGpxImporterTests(): Promise<boolean> {
     blockedLocalhost = err instanceof UrlImportError && err.statusCode === 403;
   }
   assert(blockedLocalhost, 'assertSafeExternalUrl blocks localhost');
+
+  let blockedTrailingDotMetadata = false;
+  try {
+    await assertSafeExternalUrl('http://metadata.google.internal./computeMetadata/v1/');
+  } catch (err) {
+    blockedTrailingDotMetadata = err instanceof UrlImportError && err.statusCode === 403;
+  }
+  assert(blockedTrailingDotMetadata, 'assertSafeExternalUrl blocks trailing-dot metadata.google.internal.');
+
+  let blockedTrailingDotLocalhost = false;
+  try {
+    await assertSafeExternalUrl('http://localhost./api/tracks');
+  } catch (err) {
+    blockedTrailingDotLocalhost = err instanceof UrlImportError && err.statusCode === 403;
+  }
+  assert(blockedTrailingDotLocalhost, 'assertSafeExternalUrl blocks trailing-dot localhost.');
 
   let blockedFileScheme = false;
   try {
@@ -74,6 +101,13 @@ export async function runUrlGpxImporterTests(): Promise<boolean> {
     { address: '54.93.100.10', family: 4 }
   ]);
   assert(safePublicUrl.hostname === 'www.komoot.com', 'assertSafeExternalUrl allows public Komoot URL');
+
+  // Out-of-range HTML numeric entities must never throw RangeError
+  const safeDecodedTitle = cleanKomootTourTitle('Alpenrunde &#999999999; &#x110000; &amp; &#65;');
+  assert(
+    safeDecodedTitle.includes('Alpenrunde') && safeDecodedTitle.includes('& A'),
+    'cleanKomootTourTitle safely handles out-of-range Unicode HTML entities without crashing'
+  );
 
   // 3. Komoot URL parsing (multilingual domains + share_token + collections)
   const k1 = parseKomootTourUrl('https://www.komoot.de/tour/987654321?share_token=abcXYZ_123&ref=wtd');

@@ -26,6 +26,7 @@ import { runMapZoomTests } from '../tests/mapZoom.test';
 import { runGarminStepsSyncTests } from '../tests/garminStepsSync.test';
 import { runWorkspaceQoLTests } from '../tests/workspaceQoL.test';
 import { runMobileAndRoutingTests } from '../tests/mobileAndRouting.test';
+import { runSportsMetricsEngineTests } from '../tests/sportsMetricsEngine.test';
 
 async function main() {
   try {
@@ -59,8 +60,9 @@ async function main() {
     const garminStepsSyncSuccess = await runGarminStepsSyncTests();
     const workspaceQoLSuccess = await runWorkspaceQoLTests();
     const mobileAndRoutingSuccess = runMobileAndRoutingTests();
+    const sportsMetricsSuccess = runSportsMetricsEngineTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess || !mobileAndRoutingSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess || !mobileAndRoutingSuccess || !sportsMetricsSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

@@ -119,15 +119,47 @@ function isBlockedIpv4(ip: string): boolean {
   return false;
 }
 
-function extractIpv4FromMappedIpv6(lower: string): string | null {
-  if (!lower.startsWith('::ffff:')) return null;
-  const tail = lower.slice(7);
-  if (net.isIPv4(tail)) return tail;
-  const hexMatch = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  if (!hexMatch) return null;
-  const hi = parseInt(hexMatch[1], 16);
-  const lo = parseInt(hexMatch[2], 16);
-  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+function parseIpv6Hextets(cleanIp: string): number[] | null {
+  const lower = cleanIp.toLowerCase();
+  const doubleColonParts = lower.split('::');
+  if (doubleColonParts.length > 2) return null;
+
+  const parseSegment = (segment: string): number[] | null => {
+    if (!segment) return [];
+    const parts = segment.split(':');
+    const result: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part.includes('.')) {
+        // Embedded IPv4 must appear only as the final element
+        if (i !== parts.length - 1 || !net.isIPv4(part)) return null;
+        const octets = part.split('.').map((o) => Number(o));
+        if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
+          return null;
+        }
+        result.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        result.push(parseInt(part, 16));
+      }
+    }
+    return result;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const hextets = parseSegment(doubleColonParts[0]);
+    return hextets && hextets.length === 8 ? hextets : null;
+  }
+
+  const head = parseSegment(doubleColonParts[0]);
+  const tail = parseSegment(doubleColonParts[1]);
+  if (!head || !tail) return null;
+  const missing = 8 - (head.length + tail.length);
+  if (missing < 1) return null;
+  return [...head, ...new Array<number>(missing).fill(0), ...tail];
+}
+
+function hextetsToIpv4(hi: number, lo: number): string {
   return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
@@ -138,26 +170,73 @@ export function isBlockedIpAddress(rawIp: string): boolean {
     return isBlockedIpv4(cleanIp);
   }
   if (ipVersion === 6) {
-    const lower = cleanIp.toLowerCase();
-    if (lower === '::' || lower === '::1' || /^0+:0+:0+:0+:0+:0+:0+:[01]$/.test(lower)) {
+    const h = parseIpv6Hextets(cleanIp);
+    if (!h) return true;
+
+    const firstFiveZero = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
+    const firstSixZero = firstFiveZero && h[5] === 0;
+
+    // Unspecified (::) and Loopback (::1)
+    if (firstSixZero && h[6] === 0 && (h[7] === 0 || h[7] === 1)) {
       return true;
     }
-    const mappedV4 = extractIpv4FromMappedIpv6(lower);
-    if (mappedV4) {
-      return isBlockedIpv4(mappedV4);
+
+    // IPv4-mapped IPv6 (::ffff:0:0/96) — covers canonical & expanded forms
+    if (firstFiveZero && h[5] === 0xffff) {
+      return isBlockedIpv4(hextetsToIpv4(h[6], h[7]));
     }
-    const firstHextet = lower.split(':')[0] || '';
-    if (firstHextet) {
-      const val = parseInt(firstHextet, 16);
-      if (Number.isFinite(val)) {
-        // fc00::/7 (Unique Local Addresses)
-        if ((val & 0xfe00) === 0xfc00) return true;
-        // fe80::/10 (Link-local)
-        if ((val & 0xffc0) === 0xfe80) return true;
-        // ff00::/8 (Multicast)
-        if ((val & 0xff00) === 0xff00) return true;
-      }
+
+    // IPv4-translated IPv6 (::ffff:0:0:0/96)
+    if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0xffff && h[5] === 0) {
+      return isBlockedIpv4(hextetsToIpv4(h[6], h[7]));
     }
+
+    // Deprecated IPv4-compatible IPv6 (::/96)
+    if (firstSixZero) {
+      return isBlockedIpv4(hextetsToIpv4(h[6], h[7]));
+    }
+
+    // NAT64 well-known prefix (64:ff9b::/96)
+    if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+      return isBlockedIpv4(hextetsToIpv4(h[6], h[7]));
+    }
+
+    // NAT64 local-use prefix (64:ff9b:1::/48)
+    if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0x0001) {
+      return true;
+    }
+
+    // 6to4 (2002::/16) — embeds IPv4 in hextets [1] and [2]
+    if (h[0] === 0x2002) {
+      return isBlockedIpv4(hextetsToIpv4(h[1], h[2]));
+    }
+
+    // Teredo tunneling (2001:0000::/32)
+    if (h[0] === 0x2001 && h[1] === 0x0000) {
+      return true;
+    }
+
+    // Discard-only (100::/64)
+    if (h[0] === 0x0100 && h[1] === 0 && h[2] === 0 && h[3] === 0) {
+      return true;
+    }
+
+    // Documentation (2001:db8::/32), Benchmarking (2001:2::/48), ORCHID (2001:10::/28, 2001:20::/28)
+    if (h[0] === 0x2001) {
+      if (h[1] === 0x0db8) return true;
+      if (h[1] === 0x0002 && h[2] === 0) return true;
+      if ((h[1] & 0xfff0) === 0x0010 || (h[1] & 0xfff0) === 0x0020) return true;
+    }
+
+    // fc00::/7 (Unique Local Addresses)
+    if ((h[0] & 0xfe00) === 0xfc00) return true;
+    // fe80::/10 (Link-local)
+    if ((h[0] & 0xffc0) === 0xfe80) return true;
+    // fec0::/10 (Deprecated Site-local)
+    if ((h[0] & 0xffc0) === 0xfec0) return true;
+    // ff00::/8 (Multicast)
+    if ((h[0] & 0xff00) === 0xff00) return true;
+
     return false;
   }
   return true;
@@ -195,7 +274,7 @@ export async function assertSafeExternalUrl(
     throw new UrlImportError('URLs mit eingebetteten Zugangsdaten sind nicht erlaubt.', 400);
   }
 
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
   if (!hostname) {
     throw new UrlImportError('Ungültiger Hostname in der URL.', 400);
   }
@@ -430,13 +509,13 @@ export function decodeHtmlEntities(input: string): string {
 
   return input
     .replace(/&(amp|lt|gt|quot|apos|nbsp|auml|ouml|uuml|Auml|Ouml|Uuml|szlig|ndash|mdash|#39);/g, (m) => named[m] ?? m)
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex) => {
       const cp = parseInt(hex, 16);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+      return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
     })
-    .replace(/&#(\d+);/g, (_, dec) => {
+    .replace(/&#(\d+);/g, (match, dec) => {
       const cp = parseInt(dec, 10);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+      return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
     });
 }
 
@@ -1087,7 +1166,11 @@ async function fetchWithSsrfGuard(
       if (hop >= MAX_REDIRECTS) {
         throw new UrlImportError('Zu viele Weiterleitungen beim Abrufen der URL.', 502);
       }
-      currentUrl = new URL(location, validatedUrl).toString();
+      try {
+        currentUrl = new URL(location, validatedUrl).toString();
+      } catch {
+        throw new UrlImportError('Ungültige Weiterleitungs-URL vom Zielserver.', 502);
+      }
       continue;
     }
 

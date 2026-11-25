@@ -34,6 +34,7 @@ import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
 import { RawDataTab } from './analysis/RawDataTab';
 import { PrintReportTab } from './analysis/PrintReportTab';
+import { SportsMetricsTab } from './analysis/SportsMetricsTab';
 import { NumericProfileInput } from './NumericProfileInput';
 import { Climb3DProfileCard } from './analysis/Climb3DProfileCard';
 import {
@@ -351,7 +352,7 @@ const IntensiveElevationChart: React.FC<IntensiveElevationChartProps> = ({
   );
 };
 
-export type AnalysisTab = 'overview' | 'power' | 'climbs' | 'zones' | 'nutrition' | 'splits' | 'tactics' | 'pauses' | 'rawdata' | 'report' | 'pois';
+export type AnalysisTab = 'overview' | 'metrics' | 'power' | 'climbs' | 'zones' | 'nutrition' | 'splits' | 'tactics' | 'pauses' | 'rawdata' | 'report' | 'pois';
 
 export interface IntensiveTrackAnalysisModalProps {
   track: GPXTrack;
@@ -1237,6 +1238,25 @@ GPX Route Master Pro`;
           >
             <Gauge className="w-3.5 h-3.5 shrink-0" />
             <span>{activityType === 'running' ? 'Laufzeit & Physis' : 'Fahrzeit & Physis'}</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            id="tab-cockpit-sports-metrics"
+            aria-selected={activeTab === 'metrics'}
+            onClick={() => {
+              triggerHaptic('light');
+              setActiveTab('metrics');
+            }}
+            className={`px-3 py-1.5 min-h-[34px] rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
+              activeTab === 'metrics'
+                ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+            <span>Sport &amp; Fitness</span>
           </button>
 
           {capabilities.hasPowerPhysicsTabData && (
@@ -3590,6 +3610,19 @@ GPX Route Master Pro`;
             <RawDataTab
               track={track}
               onSelectPoint={onSelectTrackPoint}
+            />
+          )}
+
+          {activeTab === 'metrics' && (
+            <SportsMetricsTab
+              track={track}
+              activityType={activityType}
+              ftp={customFtp}
+              weightKg={customWeight}
+              maxHr={customMaxHr}
+              estimatedSpeedKmh={estimatedSpeed}
+              initialTempC={customTemp}
+              onOpenGlossary={onOpenGlossary}
             />
           )}
 

@@ -236,3 +236,32 @@ export function sanitizeHexColor(color: unknown, fallback: string = '#3b82f6'): 
     ? trimmed
     : fallback;
 }
+
+/**
+ * Masks raw internal exception messages in production responses to prevent leaking
+ * database paths, upstream URLs, or runtime internals.
+ */
+export function getSafeApiErrorMessage(
+  err: unknown,
+  fallback: string,
+  isProduction: boolean = process.env.NODE_ENV === 'production'
+): string {
+  if (isProduction) return fallback;
+  const msg =
+    err && typeof err === 'object' && 'message' in err && typeof (err as { message?: unknown }).message === 'string'
+      ? (err as { message: string }).message.trim()
+      : '';
+  return msg || fallback;
+}
+
+/**
+ * Strictly validates and normalizes a Garmin activity ID before using it in API URLs or filenames.
+ */
+export function sanitizeGarminActivityId(rawId: unknown): string | null {
+  if (typeof rawId !== 'string' && typeof rawId !== 'number') return null;
+  const cleaned = String(rawId).trim().replace(/^garmin-act-/, '');
+  if (!cleaned || cleaned.includes('..') || !/^[A-Za-z0-9._-]{1,64}$/.test(cleaned)) {
+    return null;
+  }
+  return cleaned;
+}

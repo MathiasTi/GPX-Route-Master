@@ -84,7 +84,10 @@ import {
   createRateLimiter,
   resolveAllowedCorsOrigin,
   isCsrfSafeRequest,
-  getClientIp
+  getClientIp,
+  sanitizeHexColor,
+  getSafeApiErrorMessage,
+  sanitizeGarminActivityId
 } from "./utils/securityMiddleware.js";
 import fs from "fs";
 import os from "os";
@@ -126,6 +129,16 @@ async function startServer() {
       ? (process.env.DEFAULT_APP_PORT || 3000)
       : (process.env.PORT || 3000)
   );
+  const distPath = path.join(process.cwd(), "dist");
+  const distIndexPath = path.join(distPath, "index.html");
+  const isBundledProduction =
+    process.env.NODE_ENV !== "development" &&
+    fs.existsSync(distIndexPath) &&
+    typeof __filename === "string" &&
+    __filename.endsWith(".cjs");
+  const isProductionMode = process.env.NODE_ENV === "production" || isBundledProduction;
+  const safeServerError = (err: unknown, fallback: string) =>
+    getSafeApiErrorMessage(err, fallback, isProductionMode);
 
   // Initialize the SQLite database and purge any legacy persisted Garmin API keys
   initDb();
@@ -509,9 +522,9 @@ async function startServer() {
     next();
   });
 
-  // Apply stricter rate limits to outbound proxy / external fetch endpoints
+  // Apply stricter rate limits to outbound proxy / external fetch & AI endpoints
   app.use(
-    ["/api/import-url", "/api/weather", "/api/analyze-surface"],
+    ["/api/import-url", "/api/weather", "/api/analyze-surface", "/api/routing/valhalla", "/api/intensive-analysis"],
     outboundProxyLimiter.middleware
   );
 
@@ -926,7 +939,15 @@ async function startServer() {
           ele: p?.ele !== undefined && p?.ele !== null ? Number(p.ele) : undefined,
           surface: typeof p?.surface === "string" && p.surface.trim() ? p.surface.trim() : undefined,
         }))
-        .filter((p: any) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+        .filter(
+          (p: any) =>
+            Number.isFinite(p.lat) &&
+            Number.isFinite(p.lng) &&
+            p.lat >= -90 &&
+            p.lat <= 90 &&
+            p.lng >= -180 &&
+            p.lng <= 180
+        );
 
       if (normalizedPoints.length === 0) {
         return res.status(400).json({ error: "No valid GPS coordinates in points array." });
@@ -970,7 +991,7 @@ async function startServer() {
     } catch (err: any) {
       console.error("[Surface API] Unexpected error:", err?.message || err);
       return res.status(500).json({
-        error: err?.message || "Fehler bei der Oberflächen-Analyse via Valhalla / OpenStreetMap.",
+        error: safeServerError(err, "Fehler bei der Oberflächen-Analyse via Valhalla / OpenStreetMap."),
       });
     }
   });
@@ -1038,7 +1059,7 @@ async function startServer() {
     try {
       res.json({ success: true, stats: getSurfaceCacheStats() });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || "Failed to read surface cache stats" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to read surface cache stats") });
     }
   });
 
@@ -1052,7 +1073,7 @@ async function startServer() {
       });
       res.json({ success: true, stats });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || "Failed to update surface cache config" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to update surface cache config") });
     }
   });
 
@@ -1062,7 +1083,7 @@ async function startServer() {
       downsampledPointsCache.clear();
       res.json({ success: true, deletedCount, stats: getSurfaceCacheStats() });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || "Failed to clear surface cache" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to clear surface cache") });
     }
   });
 
@@ -1073,11 +1094,24 @@ async function startServer() {
       if (!track || !track.points || !Array.isArray(track.points) || track.points.length === 0) {
         return res.status(400).json({ error: "Missing or invalid track data with points." });
       }
+      if (track.points.length > 50000) {
+        return res.status(400).json({ error: "Track exceeds maximum allowed length of 50,000 points." });
+      }
 
       const points = track.points;
       const totalPts = points.length;
       const opts = options || {};
-      const targetDate = opts.date || (track.points[0]?.time ? new Date(track.points[0].time).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+      let resolvedPointDate: string | null = null;
+      if (track.points[0]?.time) {
+        const parsedPtDate = new Date(track.points[0].time);
+        if (Number.isFinite(parsedPtDate.getTime())) {
+          resolvedPointDate = parsedPtDate.toISOString().split('T')[0];
+        }
+      }
+      const targetDate =
+        typeof opts.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(opts.date.trim())
+          ? opts.date.trim()
+          : (resolvedPointDate || new Date().toISOString().split('T')[0]);
       
       // 1. Run local deterministic physics & metabolic engine first
       const baseResult = performLocalIntensiveAnalysis(track, { ...opts, date: targetDate });
@@ -1314,8 +1348,8 @@ Sportart: ${baseResult.activityType} (${baseResult.subType})
 Fitnesslevel: ${baseResult.fitnessLevel}
 
 Aufgaben:
-1. Prüfe mit Google Search nach potentiellen Ereignissen, Sperrungen oder Besonderheiten in der Region für das Datum ${targetDate}:
-   - Gibt es Straßenbauarbeiten, Passsperren, Großveranstaltungen (Marathon, Radrennen, Triathlons, Stadtfeste), Baustellen oder Verkehrsbehinderungen entlang der Route (z.B. zwischen ${startLoc} und ${endLoc})?
+1. Prüfe mit Google Search nach potentiellen Ereignissen, Sperrungen oder Besonderheiten in der Region für das Datum ${safeDate}:
+   - Gibt es Straßenbauarbeiten, Passsperren, Großveranstaltungen (Marathon, Radrennen, Triathlons, Stadtfeste), Baustellen oder Verkehrsbehinderungen entlang der Route (z.B. zwischen ${safeStartLoc} und ${safeEndLoc})?
    - Gibt es lohnenswerte Events, Wochenmärkte oder regionale Highlights an diesem Datum?
 2. Gib fundierte, konkrete taktische Tipps für diese spezifische Strecke (Pacing an Schlüsselanstiegen, Übersetzung, Reifen-/Ausrüstungsempfehlung, Verhalten auf steilen Abfahrten, Wind-/Wetter-Besonderheiten).
 3. Verfasse eine prägnante, professionelle Zusammenfassung (2-3 Sätze).
@@ -1411,7 +1445,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
 
     } catch (err: any) {
       console.error("Intensive analysis error:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to analyze GPS track." });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to analyze GPS track.") });
     }
   });
 
@@ -1477,7 +1511,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, tracks: combined });
     } catch (err: any) {
       console.error("Error searching library by bounds:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to search library by bounds" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to search library by bounds") });
     }
   });
 
@@ -1533,7 +1567,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, tracks });
     } catch (err: any) {
       console.error("Error loading full tracks:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to load tracks" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load tracks") });
     }
   });
 
@@ -1575,7 +1609,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, tracks: mapped });
     } catch (err: any) {
       console.error("Error listed library tracks:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to load library" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load library") });
     }
   });
 
@@ -1648,7 +1682,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, track });
     } catch (err: any) {
       console.error("Error reading track details:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to retrieve track" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to retrieve track") });
     }
   });
 
@@ -1710,12 +1744,14 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         ? { fileType: 'gpx', fileName: originalFilename || `${name}.gpx`, metadata: { isVirtual: true } }
         : undefined;
 
+      const safeColor = color ? sanitizeHexColor(color, '#3b82f6') : '#3b82f6';
+
       // Execute SaveTrackUseCase to strictly validate Domain invariants & invariants
       const domainSaveRes = await saveTrackUseCase.execute({
         id: id.trim(),
         name: name.trim(),
         points,
-        color: color ? String(color).slice(0, 30) : '#3b82f6',
+        color: safeColor,
         distanceKm: Math.max(0, parseFloat(String(distance)) || 0),
         ascentM: Math.max(0, parseFloat(String(ascent)) || 0),
         descentM: Math.max(0, parseFloat(String(descent)) || 0),
@@ -1750,7 +1786,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         surfaceStats,
         climbs,
         maxSlope: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : undefined,
-        color: color ? String(color).slice(0, 30) : undefined,
+        color: color ? sanitizeHexColor(color, '#3b82f6') : undefined,
         hasTimestamps: hasTimestamps === true || hasTimestamps === 1,
         rawFileDetails: safeRawFileDetails
       });
@@ -1758,7 +1794,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, id: domainSaveRes.data.id });
     } catch (err: any) {
       console.error("Error saving track to library:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to save track" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to save track") });
     }
   });
 
@@ -1786,7 +1822,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       });
       res.json({ success: true, files: details });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to list GPX files") });
     }
   });
 
@@ -1797,10 +1833,13 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       if (!Array.isArray(tracks) || tracks.length === 0) {
         return res.status(400).json({ success: false, error: "No tracks provided for batch saving." });
       }
+      if (tracks.length > 200) {
+        return res.status(400).json({ success: false, error: "Batch exceeds maximum allowed size of 200 tracks." });
+      }
 
       let savedCount = 0;
       for (const track of tracks) {
-        if (!track || !track.id || !track.name || !Array.isArray(track.points) || track.points.length === 0) {
+        if (!track || !track.id || !track.name || !Array.isArray(track.points) || track.points.length === 0 || track.points.length > 100000) {
           continue;
         }
 
@@ -1844,7 +1883,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           surfaceStats: track.surfaceStats,
           climbs: track.climbs,
           maxSlope: track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : undefined,
-          color: track.color ? String(track.color).slice(0, 30) : undefined,
+          color: track.color ? sanitizeHexColor(track.color, '#3b82f6') : undefined,
           hasTimestamps: track.hasTimestamps === true || track.hasTimestamps === 1,
           rawFileDetails: safeRawDetails
         });
@@ -1854,7 +1893,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, savedCount, totalRequested: tracks.length });
     } catch (err: any) {
       console.error("Error in batch track saving:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to batch save tracks" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to batch save tracks") });
     }
   });
 
@@ -1870,7 +1909,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, updatedCount, oldName, newName });
     } catch (err: any) {
       console.error("Error renaming tour group:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to rename tour group" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to rename tour group") });
     }
   });
 
@@ -1886,7 +1925,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, updatedCount, tourGroup });
     } catch (err: any) {
       console.error("Error assigning tour group:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to assign tour group" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to assign tour group") });
     }
   });
 
@@ -1921,7 +1960,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error updating track metadata:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to update track metadata" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to update track metadata") });
     }
   });
 
@@ -1932,7 +1971,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, deletedCount });
     } catch (err: any) {
       console.error("Error clearing library tracks:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to clear library tracks" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to clear library tracks") });
     }
   });
 
@@ -1942,7 +1981,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, deletedCount });
     } catch (err: any) {
       console.error("Error clearing library tracks:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to clear library tracks" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to clear library tracks") });
     }
   });
 
@@ -1958,12 +1997,12 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         if (deleteResult.error.code === "ENTITY_NOT_FOUND") {
           return res.status(404).json({ success: false, error: deleteResult.error.message });
         }
-        return res.status(500).json({ success: false, error: deleteResult.error.message });
+        return res.status(500).json({ success: false, error: safeServerError(deleteResult.error, "Failed to delete track") });
       }
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error deleting track:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to delete track" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to delete track") });
     }
   });
 
@@ -2198,7 +2237,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, activities: downsampledRecords });
     } catch (err: any) {
       console.error("Error searching Garmin activities:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to search Garmin activities" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to search Garmin activities") });
     }
   });
 
@@ -2260,7 +2299,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, ...result });
     } catch (err: any) {
       console.error("Error querying activities catalog:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to query activities catalog" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to query activities catalog") });
     }
   });
 
@@ -2359,7 +2398,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       });
     } catch (err: any) {
       console.error("Error loading heatmap tracks:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to load heatmap tracks" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load heatmap tracks") });
     }
   });
 
@@ -2462,7 +2501,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       });
     } catch (err: any) {
       console.error("Error in bulk-load activities:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to load selected activities" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load selected activities") });
     }
   });
 
@@ -2503,7 +2542,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error updating catalog activity metadata:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to update activity metadata" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to update activity metadata") });
     }
   });
 
@@ -2535,7 +2574,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, deletedCount });
     } catch (err: any) {
       console.error("Error in bulk-delete activities:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to delete selected activities" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to delete selected activities") });
     }
   });
 
@@ -2558,7 +2597,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       const status = getGarminPersonalApiStatus(headerKey);
       res.json({ success: true, status });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Fehler beim Abrufen des Garmin API-Status" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Fehler beim Abrufen des Garmin API-Status") });
     }
   });
 
@@ -2613,7 +2652,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         status
       });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Fehler beim Konfigurieren des Garmin Personal API Keys" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Fehler beim Konfigurieren des Garmin Personal API Keys") });
     }
   });
 
@@ -2630,7 +2669,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         status
       });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Fehler beim Entfernen des Garmin API Keys" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Fehler beim Entfernen des Garmin API Keys") });
     }
   });
 
@@ -2640,7 +2679,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       clearGarminCachedToken();
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Fehler beim Zurücksetzen der Garmin-Sitzung" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Fehler beim Zurücksetzen der Garmin-Sitzung") });
     }
   });
 
@@ -2736,7 +2775,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
   app.get("/api/garmin/personal/activity/:id/fit", async (req, res) => {
     try {
       const headerKey = extractRequestGarminKey(req);
-      const activityId = req.params.id;
+      const activityId = sanitizeGarminActivityId(req.params.id);
       if (!activityId) {
         return res.status(400).json({ success: false, error: "Ungültige Aktivitäts-ID" });
       }
@@ -2808,7 +2847,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       console.error("[Garmin Personal API] Search error:", err);
       res.status(500).json({
         success: false,
-        error: err.message || "Fehler bei der Suche in Aktivitäten und Gesundheitsdaten."
+        error: safeServerError(err, "Fehler bei der Suche in Aktivitäten und Gesundheitsdaten.")
       });
     }
   });
@@ -3500,7 +3539,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, analytics });
     } catch (err: any) {
       console.error("Analytics calculations failed:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to calculate health analytics" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to calculate health analytics") });
     }
   });
 
@@ -3514,7 +3553,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
       res.json({ success: true, data });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Failed to load health metrics" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load health metrics") });
     }
   });
 
@@ -3531,7 +3570,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
       res.json({ success: true, points_json: record.points_json });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Failed to load full activity track" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to load full activity track") });
     }
   });
 
@@ -3541,7 +3580,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       clearHealthMetrics();
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || "Failed to clear health metrics" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to clear health metrics") });
     }
   });
 
@@ -3552,7 +3591,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, versions });
     } catch (err: any) {
       console.error("Failed to load app versions:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to retrieve app versions" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to retrieve app versions") });
     }
   });
 
@@ -3574,7 +3613,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
     } catch (err: any) {
       console.error("Failed to add app version:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to persist app version" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to persist app version") });
     }
   });
 
@@ -3585,7 +3624,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.json({ success: true, settings });
     } catch (err: any) {
       console.error("Failed to load settings:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to retrieve settings" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to retrieve settings") });
     }
   });
 
@@ -3621,7 +3660,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       return res.status(400).json({ success: false, error: "Invalid request payload. Must supply valid 'key' & 'value' or 'settings' object." });
     } catch (err: any) {
       console.error("Failed to save settings:", err);
-      res.status(500).json({ success: false, error: err.message || "Failed to save settings" });
+      res.status(500).json({ success: false, error: safeServerError(err, "Failed to save settings") });
     }
   });
 
@@ -3661,16 +3700,6 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       });
     }
   });
-
-  // Vite middleware for development; static dist serving for production (including bundled dist/server.cjs)
-  const distPath = path.join(process.cwd(), "dist");
-  const distIndexPath = path.join(distPath, "index.html");
-  const isBundledProduction =
-    process.env.NODE_ENV !== "development" &&
-    fs.existsSync(distIndexPath) &&
-    typeof __filename === "string" &&
-    __filename.endsWith(".cjs");
-  const isProductionMode = process.env.NODE_ENV === "production" || isBundledProduction;
 
   // Global API error handler (masks internal stack/error details in production)
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

@@ -4,7 +4,7 @@ import {
   X, Activity, Zap, Heart, TrendingUp, Calendar, Filter, Award, 
   Info, BarChart2, CheckCircle2, ChevronRight, Play, Maximize2,
   Database, RefreshCw, Layers, Sparkles, Sliders, AlertTriangle,
-  Upload, Target, Trash2, Plus, FileText
+  Upload, Target, Trash2, Plus, FileText, ShieldCheck
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -14,6 +14,8 @@ import { getApiUrl, apiFetch } from '../utils/api';
 import { parseGPX, isCyclingType, isRunningType, isStopWatchType } from '../utils/gpxUtils';
 import { NumericProfileInput } from './NumericProfileInput';
 import { estimateCriticalPowerFromBests } from '../utils/wbalEngine';
+import { LoadSafetyProfileTab } from './analysis/LoadSafetyProfileTab';
+import type { LongitudinalActivityInput } from '../utils/sportsMetricsEngine';
 
 interface FitnessPerformanceAnalysisProps {
   onClose?: () => void;
@@ -89,11 +91,12 @@ export default function FitnessPerformanceAnalysis({
 
   // Active sub-tabs in the science dashboard
   // "ctl" = CTL/ATL/TSB Fitness Model
+  // "load_safety" = ACWR, Monotony & Strain, Longitudinal EF & Athlete Profile
   // "power" = Power Duration MMP Curve
   // "zones" = Training Zone Polarisation
   // "activities" = Detailed list
   // "goals" = Goals & Training Plan
-  const [activeTab, setActiveTab] = useState<'ctl' | 'power' | 'zones' | 'activities' | 'goals'>('ctl');
+  const [activeTab, setActiveTab] = useState<'ctl' | 'load_safety' | 'power' | 'zones' | 'activities' | 'goals'>('ctl');
 
   // Goal and Trainingsplan States
   const [goalType, setGoalType] = useState<'marathon' | 'halfmarathon' | 'tour'>('marathon');
@@ -812,6 +815,25 @@ export default function FitnessPerformanceAnalysis({
     if (fitnessTrendData.length === 0) return { ctl: 0, atl: 0, tsb: 0, acwr: 1.0 };
     return fitnessTrendData[fitnessTrendData.length - 1];
   }, [fitnessTrendData]);
+
+  const longitudinalActivities = useMemo<LongitudinalActivityInput[]>(() => {
+    return calculatedActivities
+      .filter((act) => Boolean(act.date) && !isStopWatchType(act.type))
+      .map((act) => ({
+        id: act.id,
+        name: act.name,
+        date: act.date,
+        sport: isRunningType(act.type, act.name) ? 'running' : 'cycling',
+        distanceKm: Number(act.distance) || 0,
+        durationSec: Number(act.duration) || 0,
+        ascentM: act.ascent,
+        tss: act.tss || 0,
+        avgHr: act.avg_hr ?? null,
+        avgPower: act.powerTelemetry?.avgPower ?? null,
+        normalizedPower: act.hasPower ? act.np : null,
+        peaks: act.hasPower ? act.peaks : null
+      }));
+  }, [calculatedActivities]);
 
   // All-time Power Curve Peak Values (filtered by sport)
   const allTimePowerCurve = useMemo(() => {
@@ -1794,6 +1816,15 @@ export default function FitnessPerformanceAnalysis({
                 <TrendingUp className="w-4 h-4" />
                 Fitness-Trend (CTL/TSB)
               </button>
+
+              <button
+                id="btn-fitness-tab-load-safety"
+                onClick={() => { setActiveTab('load_safety'); setSelectedActivity(null); }}
+                className={`w-full flex items-center justify-center md:justify-start gap-2.5 px-3 py-2.5 rounded-xl text-xs font-black uppercase transition-all cursor-pointer border whitespace-nowrap shrink-0 ${activeTab === 'load_safety' ? 'bg-amber-500 border-amber-500 text-white shadow-md' : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300'}`}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                Load Safety &amp; Profil
+              </button>
               
               <button
                 onClick={() => { setActiveTab('power'); setSelectedActivity(null); }}
@@ -1831,6 +1862,15 @@ export default function FitnessPerformanceAnalysis({
             {/* Right Work Area */}
             <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-white dark:bg-slate-900">
               
+              {activeTab === 'load_safety' && (
+                <LoadSafetyProfileTab
+                  activities={longitudinalActivities}
+                  dailySeries={fitnessTrendData}
+                  ftp={ftp}
+                  weightKg={userWeight}
+                />
+              )}
+
               {/* TAB 1: CTL / ATL / TSB Training Load Trends */}
               {activeTab === 'ctl' && (
                 <div className="space-y-6">

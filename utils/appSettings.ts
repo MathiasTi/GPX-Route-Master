@@ -29,6 +29,7 @@ export interface AppPreferences {
   rhrBaseline: number;
   autoFitOnLoad: boolean;
   autoSurfaceAnalysis: boolean;
+  autoColorTracksBySurface: boolean;
   showElevationProfile: boolean;
   enableAnimations: boolean;
   enableHaptics: boolean;
@@ -55,6 +56,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   rhrBaseline: 55,
   autoFitOnLoad: true,
   autoSurfaceAnalysis: false,
+  autoColorTracksBySurface: true,
   showElevationProfile: true,
   enableAnimations: true,
   enableHaptics: true,
@@ -212,6 +214,10 @@ export function sanitizeAppPreferences(raw: unknown): AppPreferences {
       typeof input.autoSurfaceAnalysis === 'boolean'
         ? input.autoSurfaceAnalysis
         : DEFAULT_APP_PREFERENCES.autoSurfaceAnalysis,
+    autoColorTracksBySurface:
+      typeof input.autoColorTracksBySurface === 'boolean'
+        ? input.autoColorTracksBySurface
+        : DEFAULT_APP_PREFERENCES.autoColorTracksBySurface,
     showElevationProfile:
       typeof input.showElevationProfile === 'boolean'
         ? input.showElevationProfile
@@ -552,6 +558,45 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Oberflächen analysieren (Valhalla & OSM)': 'Analyze Surfaces (Valhalla & OSM)',
   'Valhalla & OSM läuft...': 'Analyzing Valhalla & OSM...',
   'Duplikate entfernen': 'Remove Duplicate Tracks',
+  'Nach Untergrund färben': 'Color by Surface',
+  'Belagsfarben': 'Surface Colors',
+  'Hauptbelag': 'Primary Surface',
+  'Asphalt': 'Paved',
+  'Fahrradweg': 'Cycleway',
+  'Unbefestigt': 'Unpaved',
+  'Kopfsteinpflaster': 'Cobblestone',
+
+  // Sports & Fitness Metrics Suite
+  'Sport- & Fitness-Metriken': 'Sports & Fitness Metrics',
+  'Sport & Fitness': 'Sports & Fitness',
+  'Load Safety & Profil': 'Load Safety & Profile',
+  'Effizienz (EF)': 'Efficiency (EF)',
+  'Effizienz-Faktor (EF)': 'Efficiency Factor (EF)',
+  'Aerobe Entkopplung': 'Aerobic Decoupling',
+  'Haltbarkeit (Q4 vs. Q1)': 'Durability (Q4 vs. Q1)',
+  'Geschätzte Erholung': 'Estimated Recovery',
+  'Erholung': 'Recovery',
+  'Erholungszeit': 'Recovery Time',
+  'VAM Steigrate': 'VAM Climb Rate',
+  'Verpflegungs- & Hydrationsrechner': 'Fueling & Hydration Calculator',
+  'Kohlenhydrate': 'Carbohydrates',
+  'Flüssigkeit': 'Fluid',
+  'Energieumsatz': 'Energy Burn',
+  'Athleten-Phänotyp': 'Athlete Phenotype',
+  'Athleten-Phänotyp (Historie)': 'Athlete Phenotype (History)',
+  'VO2max-Schätzung & Wettkampf-Prognose': 'VO2max Estimate & Race Predictor',
+  'VO2max-Schätzung & Leistungs-Benchmarks': 'VO2max Estimate & Power Benchmarks',
+  'Belastungssicherheit, Effizienz-Trend & Athleten-Profil': 'Load Safety, Efficiency Trend & Athlete Profile',
+  'Monotonie & Strain (7 Tage)': 'Monotony & Strain (7 Days)',
+  'Effizienz-Faktor Trend (EF)': 'Efficiency Factor Trend (EF)',
+  'Kühl (<14°C)': 'Cool (<14°C)',
+  'Warm (>24°C)': 'Warm (>24°C)',
+  'Halbmarathon': 'Half Marathon',
+  'Kletterer': 'Climber',
+  'Zeitfahrer / Tempohärte': 'Time Trialist',
+  'Langstrecken-Diesel': 'Endurance Diesel',
+  'Tempodauerläufer': 'Tempo Runner',
+  'Berg- & Trailläufer': 'Trail & Mountain Runner',
 
   // URL & Komoot Importer
   'Dropzone oder URL': 'Dropzone or URL',

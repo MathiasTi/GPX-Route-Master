@@ -1,5 +1,19 @@
 import { HoverPointTelemetry } from '../../domain/telemetry/pointMetricsEngine';
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeHexColor(color: unknown, fallback: string): string {
+  const s = typeof color === 'string' ? color.trim() : '';
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s) ? s : fallback;
+}
+
 /**
  * Generates an SVG heart icon string for zero-overhead HTML injection into Leaflet divIcon.
  */
@@ -54,12 +68,12 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
   const { elevationM, slope, heartRate, powerWatts, speedKmh, paceFormatted, isFitFile, activityType, timeFormatted, durationEstimate } = telemetry;
 
   // Header subtitle: prefer absolute timestamp or elapsed duration
-  const timeDisplay = timeFormatted ?? durationEstimate ?? '';
+  const timeDisplay = escapeHtml(timeFormatted ?? durationEstimate ?? '');
 
   // Heart rate section
   let hrContentHtml = '';
   if (heartRate) {
-    const hrColor = heartRate.colorHex;
+    const hrColor = safeHexColor(heartRate.colorHex, '#ef4444');
     const miniZoneBar = renderHeartRateZoneSegments(heartRate.zoneNumber, hrColor);
 
     hrContentHtml = `
@@ -68,35 +82,35 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
           <div style="display: flex; align-items: center; gap: 3px;">
             ${renderHeartSvg(hrColor)}
             <span style="font-family: ui-monospace, monospace; font-size: 11px; font-weight: 800; color: #ffffff; letter-spacing: -0.02em;">
-              ${heartRate.bpm} <span style="font-size: 8px; font-weight: 500; color: #94a3b8;">bpm</span>
+              ${escapeHtml(heartRate.bpm)} <span style="font-size: 8px; font-weight: 500; color: #94a3b8;">bpm</span>
             </span>
           </div>
           <span style="font-size: 8.5px; font-weight: 700; color: ${hrColor}; background: ${hrColor}20; border: 1px solid ${hrColor}40; border-radius: 4px; padding: 1px 4px; text-transform: uppercase;">
-            ${heartRate.label}
+            ${escapeHtml(heartRate.label)}
           </span>
         </div>
         ${miniZoneBar}
         <div style="display: flex; justify-content: space-between; margin-top: 2px; font-size: 7.5px; color: #94a3b8; font-weight: 600;">
-          <span style="color: ${hrColor};">${heartRate.name}</span>
-          <span>${heartRate.percentOfMax}%</span>
+          <span style="color: ${hrColor};">${escapeHtml(heartRate.name)}</span>
+          <span>${escapeHtml(heartRate.percentOfMax)}%</span>
         </div>
       </div>
     `;
   }
 
   // Slope section
-  const slopeColor = slope.colorHex;
+  const slopeColor = safeHexColor(slope.colorHex, '#10b981');
   const slopeContentHtml = `
     <div style="background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 5px 7px; min-width: 90px; flex: 1;">
       <div style="display: flex; align-items: center; justify-content: space-between; gap: 4px;">
         <div style="display: flex; align-items: center; gap: 3px;">
           ${renderSlopeSvg(slopeColor)}
           <span style="font-family: ui-monospace, monospace; font-size: 11px; font-weight: 800; color: #ffffff; letter-spacing: -0.02em;">
-            ${slope.formatted}
+            ${escapeHtml(slope.formatted)}
           </span>
         </div>
         <span style="font-size: 8.5px; font-weight: 700; color: ${slopeColor}; background: ${slopeColor}20; border: 1px solid ${slopeColor}40; border-radius: 4px; padding: 1px 4px; text-transform: uppercase;">
-          ${slope.arrow} ${slope.label}
+          ${escapeHtml(slope.arrow)} ${escapeHtml(slope.label)}
         </span>
       </div>
       <div style="margin-top: 4px; font-size: 8px; color: #94a3b8; display: flex; justify-content: space-between; font-weight: 600;">
@@ -111,7 +125,7 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
   if (powerWatts !== null && powerWatts > 0) {
     chips.push(`
       <span style="display: inline-flex; align-items: center; gap: 2px; font-size: 8.5px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 4px; padding: 1px 5px;">
-        ${renderBoltSvg('#f59e0b')} ${powerWatts}W
+        ${renderBoltSvg('#f59e0b')} ${escapeHtml(powerWatts)}W
       </span>
     `);
   }
@@ -121,18 +135,18 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
 
   if (preferPace && paceFormatted) {
     chips.push(`
-      <span title="Pace an diesem Streckenpunkt${speedKmh ? ` (${speedKmh} km/h)` : ''}" style="display: inline-flex; align-items: center; gap: 2.5px; font-size: 8.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.14); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 1px 5px;">
+      <span title="Pace an diesem Streckenpunkt${speedKmh ? ` (${escapeHtml(speedKmh)} km/h)` : ''}" style="display: inline-flex; align-items: center; gap: 2.5px; font-size: 8.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.14); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 1px 5px;">
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle;">
           <circle cx="12" cy="12" r="10"/>
           <polyline points="12 6 12 12 16 14"/>
         </svg>
-        ${paceFormatted}
+        ${escapeHtml(paceFormatted)}
       </span>
     `);
   } else if (speedKmh !== null && speedKmh > 0) {
     chips.push(`
       <span style="display: inline-flex; align-items: center; gap: 2px; font-size: 8.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 4px; padding: 1px 5px;">
-        ${speedKmh} km/h
+        ${escapeHtml(speedKmh)} km/h
       </span>
     `);
   }

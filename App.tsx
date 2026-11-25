@@ -3342,6 +3342,10 @@ const App: React.FC = () => {
               handleOpenTrackAnalysis(id, 'overview');
               setIsMobileMenuOpen(false);
             }}
+            onOpenSportsMetrics={(id) => {
+              handleOpenTrackAnalysis(id, 'metrics');
+              setIsMobileMenuOpen(false);
+            }}
             onOpenVideoExport={(id) => {
               if (id) {
                 setMarkedTrackId(id);
@@ -3416,6 +3420,10 @@ const App: React.FC = () => {
             refreshingKomootTracks={refreshingKomootTracks}
             onRefreshAllKomootTracks={handleRefreshAllKomootTracks}
             bulkKomootRefreshProgress={bulkKomootRefreshProgress}
+            autoColorBySurface={appPrefs.autoColorTracksBySurface}
+            onToggleAutoColorBySurface={() =>
+              updateAppPreferences({ autoColorTracksBySurface: !appPrefs.autoColorTracksBySurface })
+            }
           />
           <main className="flex-1 flex flex-col relative overflow-hidden">
             {!isOnline && (

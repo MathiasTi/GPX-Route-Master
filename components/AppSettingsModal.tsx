@@ -942,6 +942,14 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                       )
                     },
                     {
+                      key: 'autoColorTracksBySurface',
+                      title: t('Tracks in der Liste nach Untergrund färben', 'Auto-Color Sidebar Tracks by Surface'),
+                      desc: t(
+                        'Färbt Strecken in der Seitenleiste automatisch nach Hauptbelag (z. B. Grün für Asphalt, Orange für Schotter).',
+                        'Automatically colors tracks in the sidebar list by primary surface (e.g. green for paved, orange for gravel).'
+                      )
+                    },
+                    {
                       key: 'enableHaptics',
                       title: t('Haptisches Feedback (Mobilgeräte)', 'Haptic Feedback (Mobile)'),
                       desc: t(

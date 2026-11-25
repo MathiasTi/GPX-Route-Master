@@ -41,7 +41,7 @@ function renderHeartRateZoneSegments(activeZone: number, activeColor: string): s
     const opacity = isCurrent ? '1' : '0.4';
     const shadow = isCurrent ? `box-shadow: 0 0 6px ${activeColor};` : '';
     
-    return `<div style="flex: 1; height: ${height}; background: ${bg}; border-radius: 2px; opacity: ${opacity}; ${shadow} transition: all 0.2s;"></div>`;
+    return `<div style="flex: 1; height: ${height}; background: ${bg}; border-radius: 2px; opacity: ${opacity}; ${shadow}"></div>`;
   }).join('');
 
   return `<div style="display: flex; gap: 2.5px; align-items: flex-end; width: 100%; height: 8px; margin-top: 3px;">${bars}</div>`;
@@ -143,19 +143,19 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
 
   // Main Card Assembly
   return `
-    <div style="position: relative; pointer-events: none;">
+    <div style="position: relative; pointer-events: none; will-change: transform; transform: translate3d(0, 0, 0); backface-visibility: hidden;">
       <!-- Floating Modern Card -->
       <div style="
         position: absolute; 
         bottom: 14px; 
         left: 50%; 
-        transform: translateX(-50%); 
+        transform: translate3d(-50%, 0, 0); 
+        will-change: transform;
+        backface-visibility: hidden;
         width: max-content; 
         max-width: 250px; 
-        background: rgba(15, 23, 42, 0.94); 
-        backdrop-filter: blur(12px); 
-        -webkit-backdrop-filter: blur(12px); 
-        border: 1px solid rgba(255, 255, 255, 0.15); 
+        background: rgba(15, 23, 42, 0.96); 
+        border: 1px solid rgba(255, 255, 255, 0.16); 
         border-radius: 12px; 
         box-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.3); 
         padding: 7px 9px; 
@@ -189,7 +189,7 @@ export function buildMapHoverCardHtml(telemetry: HoverPointTelemetry): string {
           position: absolute; 
           bottom: -5px; 
           left: 50%; 
-          transform: translateX(-50%) rotate(45deg); 
+          transform: translate3d(-50%, 0, 0) rotate(45deg); 
           width: 10px; 
           height: 10px; 
           background: rgba(15, 23, 42, 0.94); 

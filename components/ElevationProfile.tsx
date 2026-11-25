@@ -21,6 +21,7 @@ import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
 import { computePauseAwareRunningMetrics, formatPaceSeconds } from '../utils/runningMetricsEngine';
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
+import { resolveBottomSheetSnap } from '../utils/mobileSheet';
 
 const isFitTrack = (t?: GPXTrack | null): boolean => {
   if (!t) return false;
@@ -60,6 +61,7 @@ interface ElevationProfileProps {
   onCropTrack?: (startKm: number, endKm: number) => void;
   mobileProfileSnap?: 'mini' | 'standard' | 'expanded';
   onMobileProfileSnapChange?: (mode: 'mini' | 'standard' | 'expanded') => void;
+  onMobileSheetDragOffset?: (offsetPx: number) => void;
 }
 
 export interface ProfileMarkerItem {
@@ -124,10 +126,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onExtractSubTrack,
   onCropTrack,
   mobileProfileSnap = 'standard',
-  onMobileProfileSnapChange
+  onMobileProfileSnapChange,
+  onMobileSheetDragOffset
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const sheetDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startTime: number;
+    lastY: number;
+  } | null>(null);
+  const sheetDragRafRef = useRef<number | null>(null);
+  const isDraggingSheetRef = useRef(false);
+  const [isDraggingSheet, setIsDraggingSheet] = useState(false);
   const [dimensions, setDimensions] = useState({ width: 1000, height: 140 });
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [isSmoothed, setIsSmoothed] = useState(false);
@@ -157,6 +169,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return () => {
       if (hoverRafRef.current !== null) {
         cancelAnimationFrame(hoverRafRef.current);
+      }
+      if (sheetDragRafRef.current !== null) {
+        cancelAnimationFrame(sheetDragRafRef.current);
       }
     };
   }, []);
@@ -211,6 +226,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver((entries) => {
+        if (isDraggingSheetRef.current) return;
         for (const entry of entries) {
           const { width: rw, height: rh } = entry.contentRect;
           updateDimensions(rw, rh);
@@ -1441,8 +1457,107 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         </div>
       </div>
 
+      {/* Gesture-Draggable Mobile Bottom Sheet Handle (< lg) */}
+      <div
+        id="mobile-elevation-drag-handle"
+        role="slider"
+        tabIndex={0}
+        aria-label="Höhenprofil-Höhe per Wischgeste anpassen"
+        aria-valuemin={0}
+        aria-valuemax={2}
+        aria-valuenow={mobileProfileSnap === 'mini' ? 0 : mobileProfileSnap === 'standard' ? 1 : 2}
+        aria-valuetext={mobileProfileSnap}
+        onPointerDown={(e) => {
+          if (e.button !== 0 && e.pointerType === 'mouse') return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          sheetDragRef.current = {
+            pointerId: e.pointerId,
+            startY: e.clientY,
+            startTime: performance.now(),
+            lastY: e.clientY
+          };
+          isDraggingSheetRef.current = true;
+          setIsDraggingSheet(true);
+        }}
+        onPointerMove={(e) => {
+          const drag = sheetDragRef.current;
+          if (!drag || drag.pointerId !== e.pointerId) return;
+          drag.lastY = e.clientY;
+          const delta = Math.max(-160, Math.min(220, e.clientY - drag.startY));
+          if (sheetDragRafRef.current !== null) {
+            cancelAnimationFrame(sheetDragRafRef.current);
+          }
+          sheetDragRafRef.current = requestAnimationFrame(() => {
+            sheetDragRafRef.current = null;
+            onMobileSheetDragOffset?.(delta);
+          });
+        }}
+        onPointerUp={(e) => {
+          const drag = sheetDragRef.current;
+          if (!drag || drag.pointerId !== e.pointerId) return;
+          sheetDragRef.current = null;
+          isDraggingSheetRef.current = false;
+          if (sheetDragRafRef.current !== null) {
+            cancelAnimationFrame(sheetDragRafRef.current);
+            sheetDragRafRef.current = null;
+          }
+          setIsDraggingSheet(false);
+          onMobileSheetDragOffset?.(0);
+
+          const deltaY = e.clientY - drag.startY;
+          const elapsedMs = Math.max(16, performance.now() - drag.startTime);
+          const velocityY = deltaY / elapsedMs;
+
+          const resolved = resolveBottomSheetSnap({
+            currentSnap: mobileProfileSnap,
+            deltaY,
+            velocityY,
+            viewportHeight: typeof window !== 'undefined' ? window.innerHeight : 800
+          });
+
+          if (resolved === 'collapsed') {
+            triggerHaptic('medium');
+            onCollapse?.();
+          } else if (resolved !== mobileProfileSnap) {
+            triggerHaptic('light');
+            onMobileProfileSnapChange?.(resolved);
+          }
+        }}
+        onPointerCancel={() => {
+          sheetDragRef.current = null;
+          isDraggingSheetRef.current = false;
+          if (sheetDragRafRef.current !== null) {
+            cancelAnimationFrame(sheetDragRafRef.current);
+            sheetDragRafRef.current = null;
+          }
+          setIsDraggingSheet(false);
+          onMobileSheetDragOffset?.(0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            onMobileProfileSnapChange?.(mobileProfileSnap === 'mini' ? 'standard' : 'expanded');
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (mobileProfileSnap === 'expanded') onMobileProfileSnapChange?.('standard');
+            else if (mobileProfileSnap === 'standard') onMobileProfileSnapChange?.('mini');
+            else onCollapse?.();
+          }
+        }}
+        className="flex lg:hidden items-center justify-center w-full pt-2 pb-1 touch-none cursor-grab active:cursor-grabbing shrink-0 select-none"
+        title="Nach oben oder unten ziehen zum Anpassen"
+      >
+        <span
+          className={`w-11 h-1.5 rounded-full transition-colors ${
+            isDraggingSheet
+              ? 'bg-indigo-500 dark:bg-indigo-400'
+              : 'bg-slate-300 dark:bg-slate-600'
+          }`}
+        />
+      </div>
+
       {/* Unified Slim Mobile Top Bar (Single compact row across all snap heights) */}
-      <div className="flex lg:hidden items-center justify-between gap-1.5 px-1.5 py-0.5 mb-1 min-h-[42px] border-b border-slate-100 dark:border-slate-800/80 shrink-0 select-none">
+      <div className="flex lg:hidden items-center justify-between gap-1.5 px-1.5 pb-1 mb-1 min-h-[44px] border-b border-slate-100 dark:border-slate-800/80 shrink-0 select-none">
         <button
           type="button"
           onClick={() => {
@@ -1451,8 +1566,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             else if (mobileProfileSnap === 'standard') onMobileProfileSnapChange?.('expanded');
             else onMobileProfileSnapChange?.('mini');
           }}
-          className="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer touch-manipulation py-1"
-          title={`${track.name} — Tippen zum Ändern der Profilhöhe`}
+          className="flex items-center gap-1.5 min-w-0 flex-1 min-h-[40px] text-left cursor-pointer touch-manipulation py-1"
+          title={`${track.name} — Tippen oder Griff ziehen zum Ändern der Profilhöhe`}
         >
           <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: displayTrackColor }}></div>
           <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100 truncate min-w-0">
@@ -1462,7 +1577,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
         <div className="flex items-center gap-1 shrink-0">
           {/* Compact Snap Stage Switcher (S / M / L) */}
-          <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200/70 dark:border-slate-700/70 text-[10px] font-bold">
+          <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/70 dark:border-slate-700/70 text-[10.5px] font-bold">
             <button
               type="button"
               aria-label="Profilhöhe Mini"
@@ -1470,7 +1585,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('light');
                 onMobileProfileSnapChange?.('mini');
               }}
-              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
                 mobileProfileSnap === 'mini'
                   ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
                   : 'text-slate-500 dark:text-slate-400'
@@ -1485,7 +1600,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('light');
                 onMobileProfileSnapChange?.('standard');
               }}
-              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
                 mobileProfileSnap === 'standard'
                   ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
                   : 'text-slate-500 dark:text-slate-400'
@@ -1500,7 +1615,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('light');
                 onMobileProfileSnapChange?.('expanded');
               }}
-              className={`min-h-[32px] min-w-[26px] px-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
+              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
                 mobileProfileSnap === 'expanded'
                   ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
                   : 'text-slate-500 dark:text-slate-400'
@@ -1517,7 +1632,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('medium');
                 onReverseTrack(track.id);
               }}
-              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/60 transition-all cursor-pointer touch-manipulation active:scale-95"
+              className="min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/60 transition-all cursor-pointer touch-manipulation active:scale-95"
               title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
               aria-label="Richtung umkehren"
             >
@@ -1528,7 +1643,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <button
             type="button"
             onClick={() => setShowSettingsPopover((prev) => !prev)}
-            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg transition-all cursor-pointer touch-manipulation active:scale-95 ${
+            className={`min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl transition-all cursor-pointer touch-manipulation active:scale-95 ${
               showSettingsPopover
                 ? 'bg-indigo-600 text-white'
                 : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
@@ -1563,7 +1678,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             className="fixed inset-0 z-[1990]"
             onClick={() => setShowSettingsPopover(false)}
           />
-          <div className="absolute top-11 right-2 lg:right-3 z-[2000] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 w-72 max-w-[calc(100vw-1rem)] max-h-[min(70vh,460px)] overflow-y-auto text-left select-none font-sans text-slate-800 dark:text-slate-100">
+          <div className="absolute top-11 right-2 lg:right-3 z-[2000] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 w-72 max-w-[calc(100vw-1rem)] max-h-[min(70vh,460px)] overflow-y-auto text-left select-none font-sans text-slate-800 dark:text-slate-100">
             <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-1.5">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">Anzeige &amp; Werkzeuge</span>
               <button
@@ -2070,7 +2185,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       <div ref={containerRef} className="flex-1 min-h-0 relative touch-none select-none">
         {/* Mobile & Touch Floating HUD Bar - Prevents thumb from blocking metrics */}
         {hoverInfo && isTouchScrubbing && (
-          <div className="absolute top-1 left-2 right-2 z-30 bg-slate-900/95 dark:bg-slate-950/95 text-white px-3.5 py-1.5 rounded-xl shadow-xl border border-white/15 flex items-center justify-between text-[11px] font-mono pointer-events-none backdrop-blur-md animate-in fade-in duration-150">
+          <div className="absolute top-1 left-2 right-2 z-30 bg-slate-900/95 dark:bg-slate-950/95 text-white px-3.5 py-1.5 rounded-xl shadow-xl border border-white/15 flex items-center justify-between text-[11px] font-mono pointer-events-none lg:backdrop-blur-md animate-in fade-in duration-150">
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-white">{hoverInfo.dist.toFixed(2)} km</span>
               <span className="text-slate-500">|</span>
@@ -3101,4 +3216,4 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   );
 };
 
-export default ElevationProfile;
+export default React.memo(ElevationProfile);

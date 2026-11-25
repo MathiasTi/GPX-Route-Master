@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { GPXPoint, GPXTrack } from '../../types';
 import { computeHoverPointTelemetry } from '../../domain/telemetry/pointMetricsEngine';
-import { X, Heart, Zap, Gauge, Mountain } from 'lucide-react';
+import { X } from 'lucide-react';
 import { triggerHaptic } from '../../utils/haptics';
 
 export interface MobileTelemetryPillProps {
@@ -12,7 +12,7 @@ export interface MobileTelemetryPillProps {
   onClose: () => void;
 }
 
-export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
+export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = React.memo(({
   hoveredPoint,
   trackColor = '#3b82f6',
   userMaxHr = 190,
@@ -25,7 +25,15 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
     let surroundingPts: readonly GPXPoint[] | undefined = undefined;
     const matchTrack = (hoveredPoint as any).trackId
       ? tracks?.find(t => t.id === (hoveredPoint as any).trackId)
-      : tracks?.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.0001 && Math.abs(p.lng - hoveredPoint.lng) < 0.0001));
+      : tracks?.find(
+          t =>
+            t.points &&
+            t.points.some(
+              p =>
+                Math.abs(p.lat - hoveredPoint.lat) < 0.0001 &&
+                Math.abs(p.lng - hoveredPoint.lng) < 0.0001
+            )
+        );
 
     if (matchTrack) {
       surroundingPts = matchTrack.points;
@@ -33,10 +41,10 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
 
     const isFit = Boolean(
       matchTrack?.rawFileDetails?.fileType === 'fit' ||
-      matchTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
-      matchTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
-      matchTrack?.name?.toLowerCase().endsWith('.fit') ||
-      matchTrack?.id?.startsWith('fit-')
+        matchTrack?.originalFilename?.toLowerCase().endsWith('.fit') ||
+        matchTrack?.rawFileDetails?.fileName?.toLowerCase().endsWith('.fit') ||
+        matchTrack?.name?.toLowerCase().endsWith('.fit') ||
+        matchTrack?.id?.startsWith('fit-')
     );
 
     const result = computeHoverPointTelemetry(
@@ -53,7 +61,7 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
         dist: hoveredPoint.dist
       },
       surroundingPts,
-      { 
+      {
         maxHr: userMaxHr,
         isFitFile: isFit,
         activityType: matchTrack?.activityType
@@ -66,25 +74,37 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
     return null;
   }
 
+  const paceOrSpeedLabel =
+    telemetry.isFitFile || telemetry.activityType === 'running' ? 'Pace' : 'Tempo';
+  const paceOrSpeedVal =
+    (telemetry.isFitFile || telemetry.activityType === 'running') && telemetry.paceFormatted
+      ? telemetry.paceFormatted
+      : telemetry.speedKmh !== null && telemetry.speedKmh > 0
+      ? `${telemetry.speedKmh.toFixed(1)} km/h`
+      : '--';
+
   return (
     <div
       id="mobile-telemetry-pill"
       aria-label="Punkt-Telemetrie"
-      className="sm:hidden fixed top-[calc(env(safe-area-inset-top,0px)+3.5rem)] left-3 right-3 z-[1050] bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl px-3 py-2 text-white animate-in fade-in slide-in-from-top-2 duration-200"
+      className="lg:hidden fixed top-[calc(env(safe-area-inset-top,0px)+3.75rem)] left-3 right-3 z-[1050] bg-white/98 dark:bg-slate-900/98 border border-slate-200/90 dark:border-slate-700/90 rounded-2xl shadow-xl px-3 py-2 text-slate-900 dark:text-slate-100 mobile-contain"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5 mb-1.5">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <div
-            className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ring-1 ring-white/30"
+      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 dark:border-slate-800">
+        <div className="flex items-center gap-2 min-w-0 text-xs">
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0"
             style={{ backgroundColor: trackColor }}
           />
-          <span className="text-[11px] font-black text-slate-200 tracking-tight">
+          <span className="font-bold text-slate-800 dark:text-slate-100 truncate">
             Punkt-Telemetrie
           </span>
           {hoveredPoint.dist !== undefined && (
-            <span className="text-[10.5px] font-semibold text-slate-400">
-              bei {(hoveredPoint.dist / 1000).toFixed(2)} km
-            </span>
+            <>
+              <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400 shrink-0">
+                {(hoveredPoint.dist / 1000).toFixed(2)} km
+              </span>
+            </>
           )}
         </div>
 
@@ -95,95 +115,60 @@ export const MobileTelemetryPill: React.FC<MobileTelemetryPillProps> = ({
             triggerHaptic('light');
             onClose();
           }}
-          className="min-h-[32px] min-w-[32px] flex items-center justify-center p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 active:scale-95 transition-all touch-manipulation"
+          className="min-h-[44px] min-w-[44px] -my-2 -mr-2 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition-colors touch-manipulation cursor-pointer"
         >
           <X size={16} />
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-1.5 text-center">
-        {/* Höhe */}
-        <div className="flex flex-col items-center justify-center bg-white/5 rounded-xl py-1 px-1 border border-white/5">
-          <div className="flex items-center gap-0.5 text-[10px] text-slate-400 font-medium">
-            <Mountain size={11} className="text-sky-400" />
-            <span>Höhe</span>
-          </div>
-          <span className="text-xs font-black text-slate-100 mt-0.5">
+      <div className="grid grid-cols-4 gap-2 pt-2 text-center font-mono tabular-nums">
+        <div className="flex flex-col items-center">
+          <span className="font-sans text-[10px] font-medium text-slate-500 dark:text-slate-400">
+            Höhe
+          </span>
+          <span className="text-xs font-bold text-slate-900 dark:text-slate-100 mt-0.5">
             {telemetry.elevationM !== null ? `${Math.round(telemetry.elevationM)} m` : '--'}
           </span>
         </div>
 
-        {/* Steigung */}
-        <div
-          className="flex flex-col items-center justify-center rounded-xl py-1 px-1 border"
-          style={{
-            backgroundColor: `${telemetry.slope.colorHex}20`,
-            borderColor: `${telemetry.slope.colorHex}40`
-          }}
-        >
-          <div className="text-[10px] font-medium" style={{ color: telemetry.slope.colorHex }}>
-            <span>{telemetry.slope.arrow} Steigung</span>
-          </div>
+        <div className="flex flex-col items-center border-l border-slate-100 dark:border-slate-800 pl-1">
+          <span className="font-sans text-[10px] font-medium text-slate-500 dark:text-slate-400">
+            Steigung
+          </span>
           <span
-            className="text-xs font-black mt-0.5"
+            className="text-xs font-bold mt-0.5"
             style={{ color: telemetry.slope.colorHex }}
           >
-            {telemetry.slope.formatted}
+            {telemetry.slope.arrow} {telemetry.slope.formatted}
           </span>
         </div>
 
-        {/* Puls oder Watt */}
-        {telemetry.heartRate ? (
-          <div
-            className="flex flex-col items-center justify-center rounded-xl py-1 px-1 border"
-            style={{
-              backgroundColor: `${telemetry.heartRate.colorHex}20`,
-              borderColor: `${telemetry.heartRate.colorHex}40`
-            }}
-          >
-            <div className="flex items-center gap-0.5 text-[10px] font-medium text-rose-300">
-              <Heart size={11} className="text-rose-400 fill-rose-400/40" />
-              <span>{telemetry.heartRate.label}</span>
-            </div>
-            <span className="text-xs font-black text-white mt-0.5">
-              {telemetry.heartRate.bpm} bpm
-            </span>
-          </div>
-        ) : telemetry.powerWatts !== null ? (
-          <div className="flex flex-col items-center justify-center bg-amber-500/15 border border-amber-500/30 rounded-xl py-1 px-1">
-            <div className="flex items-center gap-0.5 text-[10px] font-medium text-amber-300">
-              <Zap size={11} className="text-amber-400 fill-amber-400/40" />
-              <span>Power</span>
-            </div>
-            <span className="text-xs font-black text-amber-100 mt-0.5">
-              {telemetry.powerWatts} W
-            </span>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center bg-white/5 rounded-xl py-1 px-1 border border-white/5">
-            <div className="flex items-center gap-0.5 text-[10px] text-slate-400 font-medium">
-              <Gauge size={11} className="text-slate-400" />
-              <span>Puls</span>
-            </div>
-            <span className="text-xs font-medium text-slate-500 mt-0.5">--</span>
-          </div>
-        )}
-
-        {/* Tempo / Geschwindigkeit / Pace */}
-        <div className="flex flex-col items-center justify-center bg-white/5 rounded-xl py-1 px-1 border border-white/5">
-          <div className="flex items-center gap-0.5 text-[10px] text-slate-400 font-medium">
-            <Gauge size={11} className="text-emerald-400" />
-            <span>{(telemetry.isFitFile || telemetry.activityType === 'running') ? 'Pace' : 'Tempo'}</span>
-          </div>
-          <span className="text-xs font-black text-slate-100 mt-0.5">
-            {(telemetry.isFitFile || telemetry.activityType === 'running') && telemetry.paceFormatted
-              ? telemetry.paceFormatted
-              : telemetry.speedKmh !== null && telemetry.speedKmh > 0
-              ? `${telemetry.speedKmh.toFixed(1)} km/h`
+        <div className="flex flex-col items-center border-l border-slate-100 dark:border-slate-800 pl-1">
+          <span className="font-sans text-[10px] font-medium text-slate-500 dark:text-slate-400">
+            {telemetry.heartRate
+              ? `Puls ${telemetry.heartRate.label}`
+              : telemetry.powerWatts !== null
+              ? 'Power'
+              : 'Puls'}
+          </span>
+          <span className="text-xs font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+            {telemetry.heartRate
+              ? `${telemetry.heartRate.bpm} bpm`
+              : telemetry.powerWatts !== null
+              ? `${telemetry.powerWatts} W`
               : '--'}
+          </span>
+        </div>
+
+        <div className="flex flex-col items-center border-l border-slate-100 dark:border-slate-800 pl-1">
+          <span className="font-sans text-[10px] font-medium text-slate-500 dark:text-slate-400">
+            {paceOrSpeedLabel}
+          </span>
+          <span className="text-xs font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+            {paceOrSpeedVal}
           </span>
         </div>
       </div>
     </div>
   );
-};
+});

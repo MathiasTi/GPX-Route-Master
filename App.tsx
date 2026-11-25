@@ -38,6 +38,7 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { GarminDashboard, GarminDashboardTab } from './components/GarminDashboard';
 import { MobileThumbBar } from './components/mobile/MobileThumbBar';
 import { MobileTelemetryPill } from './components/mobile/MobileTelemetryPill';
+import { MobileBottomNav } from './components/mobile/MobileBottomNav';
 import { getApiUrl, apiFetch, setSessionToken, clearSessionToken } from './utils/api';
 import { triggerHaptic } from './utils/haptics';
 import { loadWorkspaceTracks, saveWorkspaceTracks, safeGetItem, safeSetItem, safeRemoveItem, isDefaultCuratedTrack } from './utils/storage';
@@ -207,6 +208,9 @@ const App: React.FC = () => {
     bearing: 0
   });
   const [hoveredPoint, setHoveredPoint] = useState<GPXPoint | null>(null);
+  const hoveredPointRef = useRef<GPXPoint | null>(null);
+  hoveredPointRef.current = hoveredPoint;
+  const powerRecalcMountedRef = useRef<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [trackUploadProgress, setTrackUploadProgress] = useState<{
@@ -219,8 +223,23 @@ const App: React.FC = () => {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
   const [mobileToolsMenuOpen, setMobileToolsMenuOpen] = useState(false);
+  const [isRoutePlannerActive, setIsRoutePlannerActive] = useState(false);
+  const [isLiveNavActive, setIsLiveNavActive] = useState(false);
+  const mobileSheetContainerRef = useRef<HTMLDivElement | null>(null);
+  const handleMobileSheetDragOffset = useCallback((offsetPx: number) => {
+    const el = mobileSheetContainerRef.current;
+    if (!el) return;
+    if (offsetPx === 0) {
+      el.style.transition = '';
+      el.style.transform = '';
+      el.style.willChange = '';
+    } else {
+      el.style.transition = 'none';
+      el.style.willChange = 'transform';
+      el.style.transform = `translate3d(0, ${offsetPx}px, 0)`;
+    }
+  }, []);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(() => {
     const rawHash = window.location.hash.replace(/^#\/?/, '').trim();
     if (rawHash) {
@@ -241,7 +260,6 @@ const App: React.FC = () => {
 
   const navigateWorkspace = useCallback((view: WorkspaceView, tab?: GarminDashboardTab) => {
     setIsMobileMenuOpen(false);
-    setMobileNavMenuOpen(false);
     setMobileToolsMenuOpen(false);
     if (view === 'fitness') {
       const resolvedTab = tab ?? 'overview';
@@ -746,13 +764,20 @@ const App: React.FC = () => {
     }
   }, [unhydratedTracks]);
 
-  // Recalculate power stats when FTP, weight, or estimated Speed changes (debounced to keep typing fluid)
+  // Recalculate power stats when FTP, weight, or estimated Speed changes (skip initial mount; debounced to keep typing fluid)
   useEffect(() => {
+    if (!powerRecalcMountedRef.current) {
+      powerRecalcMountedRef.current = true;
+      return;
+    }
     const timer = window.setTimeout(() => {
-      setTracks(prev => prev.map(track => {
-        const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed, track.activityType);
-        return { ...track, powerStats };
-      }));
+      setTracks(prev => {
+        if (prev.length === 0) return prev;
+        return prev.map(track => {
+          const powerStats = calculatePowerStats(track.points, ftp, userWeight, estimatedSpeed, track.activityType);
+          return { ...track, powerStats };
+        });
+      });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [ftp, userWeight, estimatedSpeed]);
@@ -1657,6 +1682,102 @@ const App: React.FC = () => {
     }
   }, [tracks, hydrateTrackSurface, appPrefs.autoFitOnLoad]);
 
+  const handleToggleRoutePlanner = useCallback((forcedState?: boolean) => {
+    setIsRoutePlannerActive((prev) => {
+      const next = typeof forcedState === 'boolean' ? forcedState : !prev;
+      if (next) {
+        setIsLiveNavActive(false);
+        setIs3D(false);
+        setIsMobileMenuOpen(false);
+        if (window.innerWidth < 1024) {
+          setIsProfileCollapsed(true);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleLiveNav = useCallback((forcedState?: boolean) => {
+    setIsLiveNavActive((prev) => {
+      const next = typeof forcedState === 'boolean' ? forcedState : !prev;
+      if (next) {
+        setIsRoutePlannerActive(false);
+        setIs3D(false);
+        setIsMobileMenuOpen(false);
+        if (window.innerWidth < 1024) {
+          setIsProfileCollapsed(true);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (isLiveNavActive && (activeWorkspaceView !== 'map' || tracks.length === 0)) {
+      setIsLiveNavActive(false);
+    }
+  }, [isLiveNavActive, activeWorkspaceView, tracks.length]);
+
+  const handleOpenComparisonModal = useCallback(() => setComparisonOpen(true), []);
+  const handleOpenShortcutsModal = useCallback(() => setShortcutsModalOpen(true), []);
+  const handleToggleMobileSidebar = useCallback(() => setIsMobileMenuOpen((prev) => !prev), []);
+  const handleToggleProfileCollapsed = useCallback(() => setIsProfileCollapsed((prev) => !prev), []);
+  const handleCollapseProfile = useCallback(() => setIsProfileCollapsed(true), []);
+  const handleToggle3DMode = useCallback(() => setIs3D((prev) => !prev), []);
+  const handleOpenVideoExportModal = useCallback(() => setIsExportModalOpen(true), []);
+  const handleOpenMapIntensiveAnalysis = useCallback(
+    (id: string) => handleOpenTrackAnalysis(id, 'overview'),
+    [handleOpenTrackAnalysis]
+  );
+  const handleToggleRoutePlannerClick = useCallback(() => handleToggleRoutePlanner(), [handleToggleRoutePlanner]);
+  const handleToggleLiveNavClick = useCallback(() => handleToggleLiveNav(), [handleToggleLiveNav]);
+
+  const handleSavePlannedRoute = useCallback(
+    async (newTrack: GPXTrack, options: { saveToPlannedLibrary: boolean }) => {
+      saveToHistory();
+      setTracks((prev) => [...prev, newTrack]);
+      setMarkedTrackId(newTrack.id);
+      setIsProfileCollapsed(false);
+
+      const tightBounds = computeTightTrackBounds([newTrack]);
+      if (tightBounds) {
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('fit-active-track', { detail: tightBounds }));
+        }, 60);
+      }
+
+      let savedToLibrary = false;
+      if (options.saveToPlannedLibrary) {
+        try {
+          const libRes = await apiFetch(getApiUrl('/api/library'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: safeStringifyOrFallback(newTrack, '{}')
+          });
+          const libData = await libRes.json();
+          if (libRes.ok && libData?.success) {
+            savedToLibrary = true;
+            refreshCatalogTotalCount();
+            window.dispatchEvent(new CustomEvent('library-updated'));
+          }
+        } catch (err) {
+          console.warn('Saving planned route to library failed:', err);
+        }
+      }
+
+      setSuccessMessage(
+        appPrefs.language === 'en'
+          ? savedToLibrary
+            ? `Route "${newTrack.name}" added and saved to Planned Tours.`
+            : `Route "${newTrack.name}" added to map workspace.`
+          : savedToLibrary
+          ? `Route „${newTrack.name}“ erstellt & in Geplante Touren gespeichert.`
+          : `Route „${newTrack.name}“ in den Workspace übernommen.`
+      );
+    },
+    [tracks, saveToHistory, refreshCatalogTotalCount, appPrefs.language]
+  );
+
   const handleLoadCatalogTracksToMap = useCallback((
     loadedTracks: GPXTrack[],
     options?: { jumpToMap?: boolean; fitToTracks?: boolean; openStatsModal?: boolean }
@@ -2498,12 +2619,13 @@ const App: React.FC = () => {
 
       // 'M' shortcut: Pan to current hovered track point
       if (e.key === 'm' || e.key === 'M') {
-        if (hoveredPoint && typeof hoveredPoint.lat === 'number' && typeof hoveredPoint.lng === 'number') {
+        const currentHovered = hoveredPointRef.current;
+        if (currentHovered && typeof currentHovered.lat === 'number' && typeof currentHovered.lng === 'number') {
           e.preventDefault();
           setMapView(prev => ({
             ...prev,
-            lat: hoveredPoint.lat,
-            lng: hoveredPoint.lng
+            lat: currentHovered.lat,
+            lng: currentHovered.lng
           }));
           triggerHaptic('light');
           setSuccessMessage('Kartenansicht auf aktuellen Trackpunkt fokussiert (Taste M)');
@@ -2580,9 +2702,10 @@ const App: React.FC = () => {
           e.preventDefault();
           
           let currentIndex = -1;
-          if (hoveredPoint) {
+          const currentHovered = hoveredPointRef.current;
+          if (currentHovered) {
             currentIndex = markedTrack.points.findIndex(
-              p => p.lat === hoveredPoint.lat && p.lng === hoveredPoint.lng
+              p => p.lat === currentHovered.lat && p.lng === currentHovered.lng
             );
           }
 
@@ -2643,7 +2766,6 @@ const App: React.FC = () => {
     handleUndo,
     handleSaveTrackToLibrary,
     tracks,
-    hoveredPoint,
     mapView.zoom,
     setHoveredPoint,
     setMapView,
@@ -2702,14 +2824,13 @@ const App: React.FC = () => {
               aria-label="Menü und Streckenliste öffnen"
               onClick={() => {
                 triggerHaptic('medium');
-                setMobileNavMenuOpen(false);
                 setMobileToolsMenuOpen(false);
                 setIsMobileMenuOpen(true);
               }}
-              className="md:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0 active:scale-95 transition-transform"
+              className="md:hidden min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0 active:scale-95 transition-transform touch-manipulation"
               title="Seitenleiste öffnen"
             >
-              <Menu size={18} />
+              <Menu size={19} />
             </button>
           )}
 
@@ -2723,150 +2844,29 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Mobile/Tablet Active View Switcher Dropdown (< lg) */}
-        <div className="lg:hidden relative min-w-0 flex-1 flex justify-center">
-          <button
-            type="button"
-            id="btn-mobile-nav-switcher"
-            onClick={() => {
-              triggerHaptic('light');
-              setMobileToolsMenuOpen(false);
-              setMobileNavMenuOpen((prev) => !prev);
-            }}
-            aria-expanded={mobileNavMenuOpen}
-            aria-label={tr(appPrefs.language, 'Ansicht wechseln', 'Switch View')}
-            className={`min-h-[40px] max-w-full px-2.5 py-1 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-              mobileNavMenuOpen
-                ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
-          >
-            {activeWorkspaceView === 'map' && <MapIcon size={14} className="text-indigo-500 shrink-0" />}
-            {activeWorkspaceView === 'planned' && <Compass size={14} className="text-emerald-500 shrink-0" />}
-            {activeWorkspaceView === 'activities' && <ListFilter size={14} className="text-indigo-500 shrink-0" />}
-            {activeWorkspaceView === 'dashboard' && <BarChart3 size={14} className="text-indigo-500 shrink-0" />}
-            {activeWorkspaceView === 'fitness' && <Activity size={14} className="text-orange-500 shrink-0" />}
-            <span className="truncate">
-              {activeWorkspaceView === 'map' && tr(appPrefs.language, 'Karte', 'Map')}
-              {activeWorkspaceView === 'planned' && tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}
-              {activeWorkspaceView === 'activities' && tr(appPrefs.language, 'Aktivitäten', 'Activities')}
-              {activeWorkspaceView === 'dashboard' && tr(appPrefs.language, 'Dashboard', 'Dashboard')}
-              {activeWorkspaceView === 'fitness' && tr(appPrefs.language, 'Fitness', 'Fitness')}
+        {/* Clean Mobile/Tablet Active Page Title (< lg — primary navigation lives in persistent bottom tab bar) */}
+        <div className="lg:hidden min-w-0 flex-1 flex items-center justify-center gap-1.5 px-1">
+          <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
+            {activeWorkspaceView === 'map' && tr(appPrefs.language, 'Karte', 'Map')}
+            {activeWorkspaceView === 'planned' && tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}
+            {activeWorkspaceView === 'activities' && tr(appPrefs.language, 'Aktivitäten', 'Activities')}
+            {activeWorkspaceView === 'dashboard' && tr(appPrefs.language, 'Dashboard', 'Dashboard')}
+            {activeWorkspaceView === 'fitness' && tr(appPrefs.language, 'Fitness & Gesundheit', 'Fitness & Health')}
+          </span>
+          {activeWorkspaceView === 'map' && tracks.length > 0 && (
+            <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-400 dark:text-slate-500 shrink-0">
+              · {tracks.length}
             </span>
-            {activeWorkspaceView === 'map' && tracks.length > 0 && (
-              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
-                {tracks.length}
-              </span>
-            )}
-            {activeWorkspaceView === 'planned' && plannedToursCount !== null && (
-              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
-                {plannedToursCount}
-              </span>
-            )}
-            {activeWorkspaceView === 'activities' && catalogTotalCount !== null && (
-              <span className="font-mono tabular-nums text-[10.5px] text-slate-400 dark:text-slate-500 shrink-0">
-                {catalogTotalCount}
-              </span>
-            )}
-            <ChevronDown size={14} className={`text-slate-400 shrink-0 transition-transform ${mobileNavMenuOpen ? 'rotate-180' : ''}`} />
-          </button>
-
-          {mobileNavMenuOpen && (
-            <>
-              <div
-                className="fixed inset-0 z-[1190]"
-                onClick={() => setMobileNavMenuOpen(false)}
-              />
-              <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5">
-                <button
-                  type="button"
-                  onClick={() => navigateWorkspace('map')}
-                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
-                    activeWorkspaceView === 'map'
-                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <MapIcon size={15} className="text-indigo-500" />
-                    <span>{tr(appPrefs.language, 'Karte', 'Map')}</span>
-                  </span>
-                  {tracks.length > 0 && (
-                    <span className="font-mono tabular-nums text-[11px] text-slate-400">{tracks.length}</span>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => navigateWorkspace('planned')}
-                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
-                    activeWorkspaceView === 'planned'
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Compass size={15} className="text-emerald-500" />
-                    <span>{tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}</span>
-                  </span>
-                  {plannedToursCount !== null && (
-                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
-                      {plannedToursCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
-                    </span>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => navigateWorkspace('activities')}
-                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
-                    activeWorkspaceView === 'activities'
-                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <ListFilter size={15} className="text-indigo-500" />
-                    <span>{tr(appPrefs.language, 'Aktivitäten', 'Activities')}</span>
-                  </span>
-                  {catalogTotalCount !== null && (
-                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
-                      {catalogTotalCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
-                    </span>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => navigateWorkspace('dashboard')}
-                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
-                    activeWorkspaceView === 'dashboard'
-                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <BarChart3 size={15} className="text-indigo-500" />
-                    <span>{tr(appPrefs.language, 'Aktivitäten-Dashboard', 'Activities Dashboard')}</span>
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => openFitnessPage('overview')}
-                  className={`w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center justify-between text-xs font-bold transition-colors cursor-pointer ${
-                    activeWorkspaceView === 'fitness'
-                      ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Activity size={15} className="text-orange-500" />
-                    <span>{tr(appPrefs.language, 'Fitness & Gesundheit', 'Fitness & Health')}</span>
-                  </span>
-                </button>
-              </div>
-            </>
+          )}
+          {activeWorkspaceView === 'planned' && plannedToursCount !== null && (
+            <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-400 dark:text-slate-500 shrink-0">
+              · {plannedToursCount}
+            </span>
+          )}
+          {activeWorkspaceView === 'activities' && catalogTotalCount !== null && (
+            <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-400 dark:text-slate-500 shrink-0">
+              · {catalogTotalCount}
+            </span>
           )}
         </div>
 
@@ -3027,19 +3027,18 @@ const App: React.FC = () => {
               id="btn-mobile-overflow-menu"
               onClick={() => {
                 triggerHaptic('light');
-                setMobileNavMenuOpen(false);
                 setMobileToolsMenuOpen((prev) => !prev);
               }}
               aria-expanded={mobileToolsMenuOpen}
               aria-label={tr(appPrefs.language, 'Weitere Aktionen', 'More Actions')}
-              className={`min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+              className={`min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl border transition-colors cursor-pointer touch-manipulation active:scale-95 ${
                 mobileToolsMenuOpen
                   ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
                   : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
               }`}
               title={tr(appPrefs.language, 'Weitere Aktionen', 'More Actions')}
             >
-              <MoreHorizontal size={18} />
+              <MoreHorizontal size={19} />
             </button>
 
             {mobileToolsMenuOpen && (
@@ -3177,86 +3176,94 @@ const App: React.FC = () => {
 
         {/* Full-Screen Planned Tours (Komoot-Style Library) */}
         {activeWorkspaceView === 'planned' && (
-          <PlannedToursView
-            workspaceTracks={tracks}
-            ftp={ftp}
-            userWeight={userWeight}
-            estimatedSpeed={estimatedSpeed}
-            onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
-            onOpenToursBatch={(batchTracks, replaceWorkspace) => {
-              if (replaceWorkspace) {
-                replaceWorkspaceWithTracks(batchTracks, true);
-              } else {
-                handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
-              }
-            }}
-            onAddTourToWorkspace={handleLoadLibraryTrack}
-            onRemoveTourFromWorkspace={removeTrack}
-            onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
-            onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
-            onNavigateToMap={() => navigateWorkspace('map')}
-            onLibraryCountChange={setPlannedToursCount}
-          />
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
+            <PlannedToursView
+              workspaceTracks={tracks}
+              ftp={ftp}
+              userWeight={userWeight}
+              estimatedSpeed={estimatedSpeed}
+              onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
+              onOpenToursBatch={(batchTracks, replaceWorkspace) => {
+                if (replaceWorkspace) {
+                  replaceWorkspaceWithTracks(batchTracks, true);
+                } else {
+                  handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
+                }
+              }}
+              onAddTourToWorkspace={handleLoadLibraryTrack}
+              onRemoveTourFromWorkspace={removeTrack}
+              onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
+              onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
+              onNavigateToMap={() => navigateWorkspace('map')}
+              onLibraryCountChange={setPlannedToursCount}
+            />
+          </div>
         )}
 
         {/* Full-Screen Activities Manager Workspace */}
         {activeWorkspaceView === 'activities' && (
-          <ActivitiesManagerView
-            workspaceTracks={tracks}
-            ftp={ftp}
-            userWeight={userWeight}
-            estimatedSpeed={estimatedSpeed}
-            onLoadTracksToMap={handleLoadCatalogTracksToMap}
-            onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
-            onDatabaseCountChange={setCatalogTotalCount}
-            onOpenDashboard={() => navigateWorkspace('dashboard')}
-            onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-            onOpenGarminSync={() => openSettingsModal('garmin')}
-            onBackToMap={() => navigateWorkspace('map')}
-          />
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
+            <ActivitiesManagerView
+              workspaceTracks={tracks}
+              ftp={ftp}
+              userWeight={userWeight}
+              estimatedSpeed={estimatedSpeed}
+              onLoadTracksToMap={handleLoadCatalogTracksToMap}
+              onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
+              onDatabaseCountChange={setCatalogTotalCount}
+              onOpenDashboard={() => navigateWorkspace('dashboard')}
+              onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+              onOpenGarminSync={() => openSettingsModal('garmin')}
+              onBackToMap={() => navigateWorkspace('map')}
+            />
+          </div>
         )}
 
         {/* Full-Screen Activities Dashboard Workspace */}
         {activeWorkspaceView === 'dashboard' && (
-          <ActivitiesDashboardView
-            workspaceTracks={tracks}
-            ftp={ftp}
-            userWeight={userWeight}
-            estimatedSpeed={estimatedSpeed}
-            onLoadTracksToMap={handleLoadCatalogTracksToMap}
-            onOpenActivitiesArchive={() => navigateWorkspace('activities')}
-            onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-            onOpenGarminSync={() => openSettingsModal('garmin')}
-            onBackToMap={() => navigateWorkspace('map')}
-          />
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
+            <ActivitiesDashboardView
+              workspaceTracks={tracks}
+              ftp={ftp}
+              userWeight={userWeight}
+              estimatedSpeed={estimatedSpeed}
+              onLoadTracksToMap={handleLoadCatalogTracksToMap}
+              onOpenActivitiesArchive={() => navigateWorkspace('activities')}
+              onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+              onOpenGarminSync={() => openSettingsModal('garmin')}
+              onBackToMap={() => navigateWorkspace('map')}
+            />
+          </div>
         )}
 
         {/* Full-Screen Fitness & Health Workspace */}
         {activeWorkspaceView === 'fitness' && (
-          <GarminDashboard
-            variant="page"
-            initialTab={fitnessPageInitialTab}
-            onTabChange={handleFitnessTabChange}
-            onClose={() => navigateWorkspace('map')}
-            onLoadTrack={(tr) => {
-              handleLoadLibraryTrack(tr);
-              if (hasRealGpsData(tr)) {
-                navigateWorkspace('map');
-              } else {
-                setIntensiveAnalysisTab('overview');
-                setIntensiveAnalysisOpen(true);
-              }
-            }}
-            onDataSynced={refreshCatalogTotalCount}
-            userWeight={userWeight}
-            userAge={userAge}
-            userMaxHr={userMaxHr}
-            ftp={ftp}
-            onUpdateFtp={setFtp}
-            onUpdateWeight={setUserWeight}
-            onUpdateAge={setUserAge}
-            onUpdateMaxHr={handleMaxHrChange}
-          />
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
+            <GarminDashboard
+              variant="page"
+              initialTab={fitnessPageInitialTab}
+              onTabChange={handleFitnessTabChange}
+              onClose={() => navigateWorkspace('map')}
+              onLoadTrack={(tr) => {
+                handleLoadLibraryTrack(tr);
+                if (hasRealGpsData(tr)) {
+                  navigateWorkspace('map');
+                } else {
+                  setIntensiveAnalysisTab('overview');
+                  setIntensiveAnalysisOpen(true);
+                }
+              }}
+              onDataSynced={refreshCatalogTotalCount}
+              userWeight={userWeight}
+              userAge={userAge}
+              userMaxHr={userMaxHr}
+              ftp={ftp}
+              onUpdateFtp={setFtp}
+              onUpdateWeight={setUserWeight}
+              onUpdateAge={setUserAge}
+              onUpdateMaxHr={handleMaxHrChange}
+            />
+          </div>
         )}
 
         {/* Map Workspace (kept mounted when switching to preserve map camera & loaded layers) */}
@@ -3454,7 +3461,7 @@ const App: React.FC = () => {
                   compareTrackId={compareTrackId}
                   onStartMapComparison={handleStartMapComparison}
                   onExitMapComparison={handleExitMapComparison}
-                  onOpenComparisonModal={() => setComparisonOpen(true)}
+                  onOpenComparisonModal={handleOpenComparisonModal}
                   onMarkTrack={setMarkedTrackId}
                   hoveredPoint={hoveredPoint}
                   onHoverPoint={setHoveredPoint}
@@ -3470,9 +3477,7 @@ const App: React.FC = () => {
                   hideLegend={weatherOpen || comparisonOpen || intensiveAnalysisOpen}
                   isDark={theme === 'dark'}
                   onAnalyzeSurface={analyzeTrackSurface}
-                  onOpenIntensiveAnalysis={(id) => {
-                    handleOpenTrackAnalysis(id, 'overview');
-                  }}
+                  onOpenIntensiveAnalysis={handleOpenMapIntensiveAnalysis}
                   analyzingSurfaces={analyzingSurfaces}
                   surfaceAnalysisStatuses={surfaceAnalysisStatuses}
                   timeGaps={activeTimeGaps}
@@ -3480,12 +3485,48 @@ const App: React.FC = () => {
                   onSelectGap={handleFocusGapOnMap}
                   onSplitGap={handleSplitTrack}
                   onCloseGap={handleCloseGap}
-                  onOpenShortcuts={() => setShortcutsModalOpen(true)}
+                  onOpenShortcuts={handleOpenShortcutsModal}
                   isSidebarOpen={isMobileMenuOpen}
                   isBottomBarObscuring={!markedTrack || isProfileCollapsed}
+                  isRoutePlannerActive={isRoutePlannerActive}
+                  onToggleRoutePlanner={handleToggleRoutePlanner}
+                  onSavePlannedRoute={handleSavePlannedRoute}
+                  isLiveNavActive={isLiveNavActive}
+                  onToggleLiveNav={handleToggleLiveNav}
+                  language={appPrefs.language}
                 />
               )}
             </ErrorBoundary>
+
+            {/* Contextual Mobile Map Quick Rail (top-left, < lg) */}
+            {activeWorkspaceView === 'map' && (
+              <MobileThumbBar
+                isSidebarOpen={isMobileMenuOpen}
+                onToggleSidebar={handleToggleMobileSidebar}
+                hasTrack={!!markedTrack}
+                isProfileCollapsed={isProfileCollapsed}
+                onToggleProfile={handleToggleProfileCollapsed}
+                mobileProfileSnap={mobileProfileSnap}
+                is3D={is3D}
+                onToggle3D={handleToggle3DMode}
+                onFitTrack={() => {
+                  if (markedTrack) {
+                    const bounds = calculateTrackCenterAndBounds(markedTrack);
+                    if (bounds) {
+                      window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
+                    }
+                  }
+                }}
+                onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack?.id, 'overview')}
+                isCockpitOpen={intensiveAnalysisOpen}
+                trackCount={tracks.length}
+                visibleTrackCount={tracks.filter(t => t.visible).length}
+                isRoutePlannerActive={isRoutePlannerActive}
+                onToggleRoutePlanner={handleToggleRoutePlannerClick}
+                isLiveNavActive={isLiveNavActive}
+                onToggleLiveNav={handleToggleLiveNavClick}
+              />
+            )}
           </div>
 
           <AnimatePresence>
@@ -3686,16 +3727,17 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {markedTrack && (
-          <div className={`${
-            isProfileCollapsed
-              ? 'h-0 overflow-hidden py-0 border-t-0 shadow-none'
-              : mobileProfileSnap === 'mini'
-              ? 'h-[214px] sm:h-52 md:h-60 pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
-              : mobileProfileSnap === 'expanded'
-              ? 'h-[58vh] min-h-[340px] sm:h-72 md:h-80 pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
-              : 'h-[38vh] min-h-[260px] max-h-[360px] sm:h-60 md:h-68 md:max-h-none pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:pb-2'
-          } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 sm:px-4 md:px-6 pt-1 sm:py-2 md:py-2.5 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 relative`}>
+        {markedTrack && !isProfileCollapsed && (
+          <div
+            ref={mobileSheetContainerRef}
+            className={`${
+              mobileProfileSnap === 'mini'
+                ? 'h-[168px] lg:h-60 mb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:mb-0'
+                : mobileProfileSnap === 'expanded'
+                ? 'h-[56vh] min-h-[300px] lg:h-80 mb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:mb-0'
+                : 'h-[34vh] min-h-[225px] max-h-[320px] lg:h-68 lg:max-h-none mb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:mb-0'
+            } bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 rounded-t-3xl lg:rounded-none px-2 sm:px-4 md:px-6 pb-2 lg:py-2.5 shadow-[0_-6px_22px_-6px_rgba(15,23,42,0.14)] z-20 transition-[height] duration-150 ease-out relative mobile-contain`}
+          >
             <ErrorBoundary fallbackTitle="Höhenprofil konnte nicht geladen werden">
               <ElevationProfile 
                 track={markedTrack} 
@@ -3707,7 +3749,7 @@ const App: React.FC = () => {
                 selectedDate={selectedDate}
                 selectedTime={selectedTime}
                 onOpenIntensiveAnalysis={() => handleOpenTrackAnalysis(markedTrack.id, 'overview')}
-                onOpenVideoExport={() => setIsExportModalOpen(true)}
+                onOpenVideoExport={handleOpenVideoExportModal}
                 ftp={ftp}
                 textMarkers={textMarkers}
                 onAddTextMarker={handleAddTextMarker}
@@ -3723,7 +3765,8 @@ const App: React.FC = () => {
                 onSanitizeTrack={handleSanitizeTrack}
                 mobileProfileSnap={mobileProfileSnap}
                 onMobileProfileSnapChange={setMobileProfileSnap}
-                onCollapse={() => setIsProfileCollapsed(true)}
+                onMobileSheetDragOffset={handleMobileSheetDragOffset}
+                onCollapse={handleCollapseProfile}
               />
             </ErrorBoundary>
           </div>
@@ -3732,38 +3775,12 @@ const App: React.FC = () => {
         {markedTrack && isProfileCollapsed && (
           <button
             onClick={() => setIsProfileCollapsed(false)}
-            className="hidden sm:flex fixed bottom-4 right-4 z-[99] bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full shadow-2xl items-center gap-1.5 font-bold text-xs transition-all cursor-pointer border border-indigo-500 hover:scale-105 active:scale-95 animate-fade-in"
+            className="hidden lg:flex fixed bottom-4 right-4 z-[99] bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full shadow-2xl items-center gap-1.5 font-bold text-xs transition-all cursor-pointer border border-indigo-500 hover:scale-105 active:scale-95 animate-fade-in"
             title="Höhenprofil anzeigen"
           >
             <BarChart2 size={14} />
             <span>Höhenprofil einblenden</span>
           </button>
-        )}
-
-        {/* Mobile Ergonomic Thumb-Zone Navigation (Map Workspace only) */}
-        {activeWorkspaceView === 'map' && (
-          <MobileThumbBar
-            isSidebarOpen={isMobileMenuOpen}
-            onToggleSidebar={() => setIsMobileMenuOpen(prev => !prev)}
-            hasTrack={!!markedTrack}
-            isProfileCollapsed={isProfileCollapsed}
-            onToggleProfile={() => setIsProfileCollapsed(prev => !prev)}
-            mobileProfileSnap={mobileProfileSnap}
-            is3D={is3D}
-            onToggle3D={() => setIs3D(prev => !prev)}
-            onFitTrack={() => {
-              if (markedTrack) {
-                const bounds = calculateTrackCenterAndBounds(markedTrack);
-                if (bounds) {
-                  window.dispatchEvent(new CustomEvent('fit-active-track', { detail: bounds }));
-                }
-              }
-            }}
-            onOpenAnalytics={() => handleOpenTrackAnalysis(markedTrack?.id, 'overview')}
-            isCockpitOpen={intensiveAnalysisOpen}
-            trackCount={tracks.length}
-            visibleTrackCount={tracks.filter(t => t.visible).length}
-          />
         )}
 
         <VideoExportModal
@@ -3777,9 +3794,24 @@ const App: React.FC = () => {
         </div>
       </div>
 
+      {/* Persistent Mobile & Tablet Bottom Tab Bar across ALL Views (< lg) */}
+      <MobileBottomNav
+        activeView={activeWorkspaceView}
+        onNavigate={(view) => {
+          if (view === 'fitness') {
+            openFitnessPage('overview');
+          } else {
+            navigateWorkspace(view);
+          }
+        }}
+        language={appPrefs.language}
+        trackCount={tracks.length}
+        plannedToursCount={plannedToursCount}
+      />
+
       {/* Global Success Toast */}
       {successMessage && (
-        <div className="fixed bottom-4 right-4 z-[1350] bg-emerald-600/95 backdrop-blur-sm text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold flex items-center gap-2.5 max-w-sm border border-emerald-400/40">
+        <div className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4 right-3 sm:right-4 z-[1350] bg-emerald-600/95 backdrop-blur-sm text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold flex items-center gap-2.5 max-w-sm border border-emerald-400/40">
           <span className="w-2 h-2 rounded-full bg-emerald-200 shrink-0" />
           <span className="flex-1">{successMessage}</span>
           <button

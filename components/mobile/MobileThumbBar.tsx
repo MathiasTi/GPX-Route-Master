@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, BarChart2, Compass, Sparkles, Focus } from 'lucide-react';
+import { Layers, BarChart2, Compass, Sparkles, Route, Navigation } from 'lucide-react';
 import { triggerHaptic } from '../../utils/haptics';
 
 export interface MobileThumbBarProps {
@@ -16,155 +16,177 @@ export interface MobileThumbBarProps {
   isCockpitOpen?: boolean;
   trackCount?: number;
   visibleTrackCount?: number;
+  isRoutePlannerActive?: boolean;
+  onToggleRoutePlanner?: () => void;
+  isLiveNavActive?: boolean;
+  onToggleLiveNav?: () => void;
 }
 
-export const MobileThumbBar: React.FC<MobileThumbBarProps> = ({
+/**
+ * Contextual floating map action rail for mobile & tablet (< lg).
+ * Anchored top-left on the map canvas so it never collides with the persistent
+ * bottom navigation bar, the draggable elevation sheet, or bottom-right zoom controls.
+ */
+export const MobileThumbBar: React.FC<MobileThumbBarProps> = React.memo(({
   isSidebarOpen,
   onToggleSidebar,
   hasTrack,
   isProfileCollapsed,
   onToggleProfile,
-  mobileProfileSnap,
   is3D,
   onToggle3D,
-  onFitTrack,
   onOpenAnalytics,
   isCockpitOpen = false,
   trackCount,
-  visibleTrackCount
+  visibleTrackCount,
+  isRoutePlannerActive = false,
+  onToggleRoutePlanner,
+  isLiveNavActive = false,
+  onToggleLiveNav
 }) => {
   return (
-    <nav
+    <div
       id="mobile-thumb-bar"
-      aria-label="Mobile Schnellzugriff"
-      className="sm:hidden fixed bottom-2 left-3 right-3 z-[95] bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-2xl border border-white/20 rounded-2xl shadow-2xl px-1.5 py-1 flex items-center justify-around text-white select-none pb-[calc(0.45rem+env(safe-area-inset-bottom,0px))]"
+      role="toolbar"
+      aria-label="Karten-Schnellaktionen"
+      className="lg:hidden absolute top-2 left-2 z-[430] flex flex-col items-center gap-1.5 pointer-events-none select-none"
     >
-      {/* 1. Tracklist / Sidebar */}
-      <button
-        id="mobile-thumb-tracks"
-        type="button"
-        aria-label={`Streckenliste öffnen (${trackCount ?? 0} Strecken)`}
-        aria-pressed={isSidebarOpen}
-        onClick={() => {
-          triggerHaptic('light');
-          onToggleSidebar();
-        }}
-        className={`relative flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
-          isSidebarOpen
-            ? 'text-indigo-400 font-bold bg-indigo-500/25 ring-1 ring-indigo-400/40'
-            : 'text-slate-300 hover:text-white hover:bg-white/5'
-        }`}
-        title="Strecken & Mediathek"
-      >
-        <div className="relative">
-          <Layers size={20} />
+      <div className="pointer-events-auto flex flex-col bg-white/98 dark:bg-slate-900/98 border border-slate-200/90 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden divide-y divide-slate-200/70 dark:divide-slate-800 mobile-contain">
+        {/* 1. Tracks Drawer */}
+        <button
+          id="mobile-thumb-tracks"
+          type="button"
+          aria-label={`Streckenliste öffnen (${trackCount ?? 0} Strecken)`}
+          aria-pressed={isSidebarOpen}
+          onClick={() => {
+            triggerHaptic('light');
+            onToggleSidebar();
+          }}
+          className={`relative min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+            isSidebarOpen
+              ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400'
+              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+          }`}
+          title="Strecken & Mediathek"
+        >
+          <Layers size={19} />
           {trackCount !== undefined && trackCount > 0 && (
-            <span className="absolute -top-1.5 -right-2.5 bg-indigo-500 text-white font-black text-[9px] min-w-[15px] h-[15px] rounded-full flex items-center justify-center px-0.5 shadow-sm">
+            <span className="absolute top-1 right-1 font-mono tabular-nums text-[9px] font-bold leading-none text-indigo-600 dark:text-indigo-300">
               {visibleTrackCount !== undefined && visibleTrackCount !== trackCount
-                ? `${visibleTrackCount}/${trackCount}`
-                : trackCount}
+                ? `${visibleTrackCount}`
+                : trackCount > 99 ? '99+' : trackCount}
             </span>
           )}
-        </div>
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Tracks</span>
-      </button>
+        </button>
 
-      {/* 2. Elevation Profile */}
-      <button
-        id="mobile-thumb-profile"
-        type="button"
-        disabled={!hasTrack}
-        aria-label={isProfileCollapsed ? "Höhenprofil einblenden" : "Höhenprofil minimieren"}
-        aria-pressed={!isProfileCollapsed}
-        onClick={() => {
-          triggerHaptic('light');
-          onToggleProfile();
-        }}
-        className={`flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
-          !hasTrack
-            ? 'opacity-30 cursor-not-allowed text-slate-500'
-            : !isProfileCollapsed
-            ? 'text-indigo-400 font-bold bg-indigo-500/25 ring-1 ring-indigo-400/40'
-            : 'text-slate-300 hover:text-white hover:bg-white/5'
-        }`}
-        title="Höhenprofil ein/ausblenden"
-      >
-        <div className="relative">
-          <BarChart2 size={20} />
-          {!isProfileCollapsed && hasTrack && (
-            <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-slate-900" />
-          )}
-        </div>
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">
-          {!isProfileCollapsed && mobileProfileSnap ? (mobileProfileSnap === 'mini' ? 'Mini' : mobileProfileSnap === 'expanded' ? 'Profil+' : 'Profil') : 'Profil'}
-        </span>
-      </button>
+        {/* 2. Tap-to-Route Planner */}
+        {onToggleRoutePlanner && (
+          <button
+            id="mobile-thumb-route"
+            type="button"
+            aria-label="Routenplaner umschalten"
+            aria-pressed={isRoutePlannerActive}
+            onClick={() => {
+              triggerHaptic('light');
+              onToggleRoutePlanner();
+            }}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+              isRoutePlannerActive
+                ? 'bg-emerald-50 dark:bg-emerald-950/70 text-emerald-600 dark:text-emerald-400'
+                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+            title="Route auf Karte planen"
+          >
+            <Route size={19} />
+          </button>
+        )}
 
-      {/* 3. Fit Map View */}
-      <button
-        id="mobile-thumb-fit"
-        type="button"
-        disabled={!hasTrack}
-        aria-label="Aktive Strecke auf Karte zentrieren"
-        onClick={() => {
-          triggerHaptic('light');
-          onFitTrack();
-        }}
-        className={`flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
-          !hasTrack
-            ? 'opacity-30 cursor-not-allowed text-slate-500'
-            : 'text-slate-300 hover:text-white hover:bg-white/5'
-        }`}
-        title="Strecke zentrieren"
-      >
-        <Focus size={20} />
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Zentrieren</span>
-      </button>
+        {/* 2b. Live GPS Follow-Track Navigation */}
+        {hasTrack && onToggleLiveNav && (
+          <button
+            id="mobile-thumb-live-nav"
+            type="button"
+            aria-label={isLiveNavActive ? 'Live-Navigation beenden' : 'Live GPS-Navigation starten'}
+            aria-pressed={isLiveNavActive}
+            onClick={() => {
+              triggerHaptic('medium');
+              onToggleLiveNav();
+            }}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+              isLiveNavActive
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+            title="Track live abfahren / folgen"
+          >
+            <Navigation size={19} />
+          </button>
+        )}
 
-      {/* 4. 3D Terrain */}
-      <button
-        id="mobile-thumb-3d"
-        type="button"
-        aria-label="3D Gelände-Modus umschalten"
-        aria-pressed={is3D}
-        onClick={() => {
-          triggerHaptic('light');
-          onToggle3D();
-        }}
-        className={`flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
-          is3D
-            ? 'text-amber-400 font-bold bg-amber-500/25 ring-1 ring-amber-400/40'
-            : 'text-slate-300 hover:text-white hover:bg-white/5'
-        }`}
-        title="3D Gelände-Modus umschalten"
-      >
-        <Compass size={20} />
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">3D</span>
-      </button>
+        {/* 3. Elevation Profile Sheet Toggle */}
+        {hasTrack && (
+          <button
+            id="mobile-thumb-profile"
+            type="button"
+            aria-label={isProfileCollapsed ? 'Höhenprofil einblenden' : 'Höhenprofil ausblenden'}
+            aria-pressed={!isProfileCollapsed}
+            onClick={() => {
+              triggerHaptic('light');
+              onToggleProfile();
+            }}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+              !isProfileCollapsed
+                ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400'
+                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+            title="Höhenprofil"
+          >
+            <BarChart2 size={19} />
+          </button>
+        )}
 
-      {/* 5. Analysis Cockpit */}
-      <button
-        id="mobile-thumb-analytics"
-        type="button"
-        disabled={!hasTrack}
-        aria-label="Intensives Analyse-Cockpit öffnen"
-        aria-pressed={isCockpitOpen}
-        onClick={() => {
-          triggerHaptic('light');
-          onOpenAnalytics();
-        }}
-        className={`flex flex-col items-center justify-center min-h-[48px] min-w-[50px] px-2 py-1.5 rounded-xl transition-all touch-manipulation active:scale-95 ${
-          !hasTrack
-            ? 'opacity-30 cursor-not-allowed text-slate-500'
-            : isCockpitOpen
-            ? 'text-purple-400 font-bold bg-purple-500/25 ring-1 ring-purple-400/40'
-            : 'text-slate-300 hover:text-white hover:bg-white/5'
-        }`}
-        title="Analyse-Cockpit öffnen"
-      >
-        <Sparkles size={20} className={isCockpitOpen ? 'text-amber-300' : ''} />
-        <span className="text-[9.5px] mt-0.5 font-semibold tracking-tight">Cockpit</span>
-      </button>
-    </nav>
+        {/* 4. 3D Terrain Toggle */}
+        <button
+          id="mobile-thumb-3d"
+          type="button"
+          aria-label="3D Gelände-Modus umschalten"
+          aria-pressed={is3D}
+          onClick={() => {
+            triggerHaptic('light');
+            onToggle3D();
+          }}
+          className={`min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+            is3D
+              ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400'
+              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+          }`}
+          title="3D Gelände"
+        >
+          <Compass size={19} />
+        </button>
+
+        {/* 5. Analysis Cockpit */}
+        {hasTrack && (
+          <button
+            id="mobile-thumb-analytics"
+            type="button"
+            aria-label="Analyse-Cockpit öffnen"
+            aria-pressed={isCockpitOpen}
+            onClick={() => {
+              triggerHaptic('light');
+              onOpenAnalytics();
+            }}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center transition-colors touch-manipulation active:scale-95 cursor-pointer ${
+              isCockpitOpen
+                ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400'
+                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+            title="Analyse-Cockpit"
+          >
+            <Sparkles size={18} />
+          </button>
+        )}
+      </div>
+    </div>
   );
-};
+});

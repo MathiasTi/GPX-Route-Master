@@ -1,6 +1,6 @@
 
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle } from 'react-leaflet';
+import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
+import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
 import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
@@ -24,7 +24,28 @@ import {
   ZoomStep
 } from '../utils/mapZoom';
 import { sanitizeHexColor } from '../utils/securityMiddleware';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame } from 'lucide-react';
+import {
+  DirectWaypointRouteEngine,
+  ROUTE_PROFILE_META,
+  RoutePreview,
+  RouteProfile,
+  RouteWaypoint,
+  addRouteWaypoint,
+  buildGpxTrackFromPlannedRoute,
+  closeRouteLoop,
+  formatRoutePacePerKm,
+  moveRouteWaypoint,
+  removeRouteWaypoint,
+  reverseRouteWaypoints
+} from '../utils/routePlanner';
+import {
+  LiveGpsFix,
+  computeLiveTrackProgress,
+  resolveTrackTurnCues
+} from '../utils/liveNavigation';
+import { RoutePlannerDock } from './RoutePlannerDock';
+import { LiveNavigationHUD } from './mobile/LiveNavigationHUD';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame, Route } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -126,6 +147,12 @@ interface MapProps {
   onOpenComparisonModal?: () => void;
   isSidebarOpen?: boolean;
   isBottomBarObscuring?: boolean;
+  isRoutePlannerActive?: boolean;
+  onToggleRoutePlanner?: (active?: boolean) => void;
+  onSavePlannedRoute?: (track: GPXTrack, options: { saveToPlannedLibrary: boolean }) => void;
+  isLiveNavActive?: boolean;
+  onToggleLiveNav?: (active?: boolean) => void;
+  language?: 'de' | 'en';
 }
 
 interface TrackSeriesPoint {
@@ -609,13 +636,53 @@ const LeafletZoomBridge = ({
   }, [map, mapRef, onZoomChange]);
 
   useMapEvents({
-    zoom: () => {
-      onZoomChange(map.getZoom());
-    },
     zoomend: () => {
       pendingZoomRef.current = null;
       onZoomChange(map.getZoom());
     }
+  });
+
+  return null;
+};
+
+/**
+ * Toggles GPU interaction compositing directly on the map host DOM node without
+ * triggering React re-renders, and cancels pending hover scans so the main thread
+ * stays free during heavy route pan, pinch-zoom, and waypoint drag gestures.
+ */
+const MapInteractionCompositorBridge: React.FC<{
+  hostRef: React.RefObject<HTMLDivElement | null>;
+  isInteractingRef: React.MutableRefObject<boolean>;
+  hoverRafRef: React.MutableRefObject<number | null>;
+}> = ({ hostRef, isInteractingRef, hoverRafRef }) => {
+  const startInteraction = useCallback(() => {
+    isInteractingRef.current = true;
+    hostRef.current?.classList.add('map-interacting');
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+  }, [hostRef, isInteractingRef, hoverRafRef]);
+
+  const endInteraction = useCallback(() => {
+    isInteractingRef.current = false;
+    hostRef.current?.classList.remove('map-interacting');
+  }, [hostRef, isInteractingRef]);
+
+  useEffect(() => {
+    return () => {
+      isInteractingRef.current = false;
+      hostRef.current?.classList.remove('map-interacting');
+    };
+  }, [hostRef, isInteractingRef]);
+
+  useMapEvents({
+    movestart: startInteraction,
+    zoomstart: startInteraction,
+    dragstart: startInteraction,
+    moveend: endInteraction,
+    zoomend: endInteraction,
+    dragend: endInteraction
   });
 
   return null;
@@ -688,6 +755,69 @@ const SyncView = ({ mapView, onMapViewChange }: { mapView: any, onMapViewChange:
   useMapEvents({
     moveend: handleMapChange,
     zoomend: handleMapChange
+  });
+
+  return null;
+};
+
+const RoutePlannerClickBridge: React.FC<{
+  active: boolean;
+  onAddWaypoint: (lat: number, lng: number) => void;
+}> = ({ active, onAddWaypoint }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    const container = map.getContainer();
+    container.style.cursor = active ? 'crosshair' : '';
+    return () => {
+      container.style.cursor = '';
+    };
+  }, [active, map]);
+
+  useMapEvents({
+    click(e) {
+      if (!active) return;
+      triggerHaptic('light');
+      onAddWaypoint(e.latlng.lat, e.latlng.lng);
+    }
+  });
+
+  return null;
+};
+
+const LiveNavMapBridge: React.FC<{
+  active: boolean;
+  autoCenter: boolean;
+  gpsFix: LiveGpsFix | null;
+  onUserPan: () => void;
+}> = ({ active, autoCenter, gpsFix, onUserPan }) => {
+  const map = useMap();
+  const hasCenteredOnceRef = useRef(false);
+
+  useEffect(() => {
+    if (!active) {
+      hasCenteredOnceRef.current = false;
+    }
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || !autoCenter || !gpsFix) return;
+    const currentZoom = map.getZoom();
+    if (!hasCenteredOnceRef.current && currentZoom < 15) {
+      hasCenteredOnceRef.current = true;
+      map.setView([gpsFix.lat, gpsFix.lng], 16, { animate: true });
+    } else {
+      hasCenteredOnceRef.current = true;
+      map.panTo([gpsFix.lat, gpsFix.lng], { animate: true, duration: 0.45 });
+    }
+  }, [active, autoCenter, gpsFix, map]);
+
+  useMapEvents({
+    dragstart() {
+      if (active && autoCenter) {
+        onUserPan();
+      }
+    }
   });
 
   return null;
@@ -776,6 +906,7 @@ const SelectionTool = ({ active, onSelection, currentBounds }: { active: boolean
 const LeafletMapContainer = MapContainer as any;
 const LeafletPolyline = Polyline as any;
 const LeafletMarker = Marker as any;
+const LeafletCircle = Circle as any;
 
 const CachedLeafletTileLayer: React.FC<{
   layerId: string;
@@ -788,6 +919,8 @@ const CachedLeafletTileLayer: React.FC<{
 
   useEffect(() => {
     if (!map) return;
+
+    const activeObjectUrls = new Set<string>();
 
     const CachedTileLayerClass = L.TileLayer.extend({
       createTile(this: L.TileLayer, coords: L.Coords, done: L.DoneCallback) {
@@ -812,10 +945,12 @@ const CachedLeafletTileLayer: React.FC<{
           if (tile.__aborted) return;
           try {
             const objUrl = URL.createObjectURL(blob);
+            activeObjectUrls.add(objUrl);
             tile.__cachedObjectUrl = objUrl;
             tile.onload = () => done(undefined, tile);
             tile.onerror = () => {
               URL.revokeObjectURL(objUrl);
+              activeObjectUrls.delete(objUrl);
               tile.__cachedObjectUrl = undefined;
               loadViaDirectImg();
             };
@@ -894,6 +1029,7 @@ const CachedLeafletTileLayer: React.FC<{
       tileEl.__aborted = true;
       if (tileEl.__cachedObjectUrl) {
         URL.revokeObjectURL(tileEl.__cachedObjectUrl);
+        activeObjectUrls.delete(tileEl.__cachedObjectUrl);
         tileEl.__cachedObjectUrl = undefined;
       }
     };
@@ -902,10 +1038,17 @@ const CachedLeafletTileLayer: React.FC<{
     tileLayerInstance.addTo(map);
 
     return () => {
-      tileLayerInstance.off('tileunload', handleTileUnload);
+      // Remove layer BEFORE detaching tileunload so Leaflet marks in-flight tiles aborted and revokes blob URLs
       if (map.hasLayer(tileLayerInstance)) {
         map.removeLayer(tileLayerInstance);
       }
+      tileLayerInstance.off('tileunload', handleTileUnload);
+      activeObjectUrls.forEach((objUrl) => {
+        try {
+          URL.revokeObjectURL(objUrl);
+        } catch {}
+      });
+      activeObjectUrls.clear();
     };
   }, [map, layerId, url, attribution, maxZoom, maxNativeZoom]);
 
@@ -955,7 +1098,13 @@ const Map: React.FC<MapProps> = ({
   onExitMapComparison,
   onOpenComparisonModal,
   isSidebarOpen = false,
-  isBottomBarObscuring = false
+  isBottomBarObscuring = false,
+  isRoutePlannerActive = false,
+  onToggleRoutePlanner,
+  onSavePlannedRoute,
+  isLiveNavActive = false,
+  onToggleLiveNav,
+  language = 'de'
 }) => {
   const layer = MAP_LAYERS[activeLayer];
   const [pendingMarker, setPendingMarker] = useState<{lat: number, lng: number} | null>(null);
@@ -968,9 +1117,210 @@ const Map: React.FC<MapProps> = ({
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
   const [isQuickShortcutsOpen, setIsQuickShortcutsOpen] = useState(false);
+  const [routeProfile, setRouteProfile] = useState<RouteProfile>('road');
+  const [snapToRoads, setSnapToRoads] = useState<boolean>(true);
+  const [snappedRoutePreview, setSnappedRoutePreview] = useState<RoutePreview | null>(null);
+  const [isSnappingRoute, setIsSnappingRoute] = useState<boolean>(false);
+  const [snapFallbackNote, setSnapFallbackNote] = useState<string | null>(null);
+  const [routeWaypoints, setRouteWaypoints] = useState<RouteWaypoint[]>([]);
+  const [routeHistory, setRouteHistory] = useState<RouteWaypoint[][]>([]);
+  const [gpsFix, setGpsFix] = useState<LiveGpsFix | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<'acquiring' | 'active' | 'denied' | 'unavailable'>('acquiring');
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [isAutoCenter, setIsAutoCenter] = useState<boolean>(true);
+  const [isWakeLockActive, setIsWakeLockActive] = useState<boolean>(false);
+  const wasOffRouteRef = useRef<boolean>(false);
   const leafletMapRef = useRef<L.Map | null>(null);
   const pendingZoomRef = useRef<number | null>(null);
+  const mapHostRef = useRef<HTMLDivElement | null>(null);
+  const isMapInteractingRef = useRef<boolean>(false);
+  const compareScrubRafRef = useRef<number | null>(null);
   const [liveZoom, setLiveZoom] = useState<number>(mapView.zoom);
+  const [isCompactViewport, setIsCompactViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => {
+      const compact = window.innerWidth < 1024;
+      setIsCompactViewport((prev) => (prev === compact ? prev : compact));
+    };
+    window.addEventListener('resize', onResize, { passive: true });
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const directRoutePreview = useMemo(
+    () =>
+      DirectWaypointRouteEngine.computeRoute(routeWaypoints, routeProfile, {
+        cyclingSpeedKmh: estimatedSpeed > 0 ? estimatedSpeed : undefined
+      }),
+    [routeWaypoints, routeProfile, estimatedSpeed]
+  );
+
+  // Debounced OSM Valhalla road/trail snapping via backend proxy with automatic offline direct fallback
+  useEffect(() => {
+    if (!isRoutePlannerActive || !snapToRoads || routeWaypoints.length < 2) {
+      setSnappedRoutePreview(null);
+      setIsSnappingRoute(false);
+      setSnapFallbackNote(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsSnappingRoute(true);
+    setSnapFallbackNote(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await apiFetch(getApiUrl('/api/routing/valhalla'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            waypoints: routeWaypoints.map((wp) => ({ lat: wp.lat, lng: wp.lng })),
+            profile: routeProfile,
+            language: language === 'en' ? 'en-US' : 'de-DE'
+          }),
+          signal: controller.signal
+        });
+
+        const data = await res.json().catch(() => null);
+        if (controller.signal.aborted) return;
+
+        if (res.ok && data?.success && Array.isArray(data.points) && data.points.length >= 2) {
+          const totalDistKm = Number(data.totalDistanceKm) || 0;
+          const durationSec = Number(data.estimatedDurationSec) || 0;
+          const derivedSpeedKmh =
+            durationSec > 0 && totalDistKm > 0
+              ? totalDistKm / (durationSec / 3600)
+              : ROUTE_PROFILE_META[routeProfile].defaultSpeedKmh;
+
+          startTransition(() => {
+            setSnappedRoutePreview({
+              points: data.points,
+              segmentDistancesKm: [],
+              totalDistanceKm: Number(totalDistKm.toFixed(3)),
+              ascentM: Number(data.ascentM) || 0,
+              descentM: Number(data.descentM) || 0,
+              maxSlope: Number(data.maxSlope) || 0,
+              estimatedDurationSec: Math.round(durationSec),
+              estimatedSpeedKmh: Number(derivedSpeedKmh.toFixed(1)),
+              pacePerKmFormatted: formatRoutePacePerKm(derivedSpeedKmh),
+              maneuvers: Array.isArray(data.maneuvers) ? data.maneuvers : [],
+              engineId: 'valhalla',
+              elevationAvailable: Boolean(data.elevationAvailable)
+            });
+            setSnapFallbackNote(null);
+          });
+        } else {
+          setSnappedRoutePreview(null);
+          setSnapFallbackNote(
+            language === 'en'
+              ? 'Road routing unavailable · Using direct line'
+              : 'Straßen-Routing nicht erreichbar · Nutze Luftlinie'
+          );
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        setSnappedRoutePreview(null);
+        setSnapFallbackNote(
+          language === 'en'
+            ? 'Offline routing fallback · Direct line active'
+            : 'Offline-Fallback · Luftlinie aktiv'
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsSnappingRoute(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isRoutePlannerActive, snapToRoads, routeWaypoints, routeProfile, language]);
+
+  const routePreview = useMemo(
+    () => (snapToRoads && snappedRoutePreview ? snappedRoutePreview : directRoutePreview),
+    [snapToRoads, snappedRoutePreview, directRoutePreview]
+  );
+
+  const commitRouteWaypoints = useCallback((updater: (prev: RouteWaypoint[]) => RouteWaypoint[]) => {
+    startTransition(() => {
+      setRouteWaypoints((prev) => {
+        const next = updater(prev);
+        setRouteHistory((hist) => [...hist.slice(-24), prev]);
+        return next;
+      });
+    });
+  }, []);
+
+  const handleAddRouteWaypoint = useCallback(
+    (lat: number, lng: number) => {
+      commitRouteWaypoints((prev) => addRouteWaypoint(prev, lat, lng));
+    },
+    [commitRouteWaypoints]
+  );
+
+  const handleMoveRouteWaypoint = useCallback(
+    (id: string, lat: number, lng: number) => {
+      commitRouteWaypoints((prev) => moveRouteWaypoint(prev, id, lat, lng));
+    },
+    [commitRouteWaypoints]
+  );
+
+  const handleRemoveRouteWaypoint = useCallback(
+    (id: string) => {
+      commitRouteWaypoints((prev) => removeRouteWaypoint(prev, id));
+    },
+    [commitRouteWaypoints]
+  );
+
+  const handleUndoRouteWaypoint = useCallback(() => {
+    setRouteHistory((hist) => {
+      if (hist.length === 0) return hist;
+      const previous = hist[hist.length - 1];
+      setRouteWaypoints(previous);
+      return hist.slice(0, -1);
+    });
+  }, []);
+
+  const handleReverseRouteWaypoints = useCallback(() => {
+    commitRouteWaypoints((prev) => reverseRouteWaypoints(prev));
+  }, [commitRouteWaypoints]);
+
+  const handleCloseRouteLoop = useCallback(() => {
+    commitRouteWaypoints((prev) => closeRouteLoop(prev));
+  }, [commitRouteWaypoints]);
+
+  const handleClearRouteWaypoints = useCallback(() => {
+    if (routeWaypoints.length === 0) return;
+    commitRouteWaypoints(() => []);
+  }, [commitRouteWaypoints, routeWaypoints.length]);
+
+  const handleSavePlannedRouteInternal = useCallback(
+    ({ name, saveToPlannedLibrary }: { name: string; saveToPlannedLibrary: boolean }) => {
+      const builtTrack = buildGpxTrackFromPlannedRoute({
+        waypoints: routeWaypoints,
+        profile: routeProfile,
+        customName: name,
+        language,
+        options: {
+          cyclingSpeedKmh: estimatedSpeed > 0 ? estimatedSpeed : undefined
+        },
+        snappedPreview: snapToRoads ? snappedRoutePreview : null
+      });
+      if (!builtTrack) return;
+      onSavePlannedRoute?.(builtTrack, { saveToPlannedLibrary });
+      setRouteWaypoints([]);
+      setRouteHistory([]);
+      setSnappedRoutePreview(null);
+      setSnapFallbackNote(null);
+      onToggleRoutePlanner?.(false);
+    },
+    [routeWaypoints, routeProfile, language, estimatedSpeed, snapToRoads, snappedRoutePreview, onSavePlannedRoute, onToggleRoutePlanner]
+  );
 
   useEffect(() => {
     if (Number.isFinite(mapView.zoom)) {
@@ -1258,6 +1608,163 @@ const Map: React.FC<MapProps> = ({
     return tracks.find(t => t.visible) || null;
   }, [tracks, markedTrackId]);
 
+  const activeTrackTurnCues = useMemo(
+    () => (isLiveNavActive && activeTrack ? resolveTrackTurnCues(activeTrack, language) : []),
+    [isLiveNavActive, activeTrack, language]
+  );
+
+  const liveTrackProgress = useMemo(() => {
+    if (!isLiveNavActive || !activeTrack || !gpsFix) return null;
+    return computeLiveTrackProgress(gpsFix, activeTrack, activeTrackTurnCues, {
+      wasOffRoute: wasOffRouteRef.current
+    });
+  }, [isLiveNavActive, activeTrack, gpsFix, activeTrackTurnCues]);
+
+  useEffect(() => {
+    if (!liveTrackProgress) {
+      wasOffRouteRef.current = false;
+      return;
+    }
+    if (!wasOffRouteRef.current && liveTrackProgress.isOffRoute) {
+      triggerHaptic('heavy');
+    }
+    wasOffRouteRef.current = liveTrackProgress.isOffRoute;
+  }, [liveTrackProgress]);
+
+  const activeTrackId = activeTrack?.id ?? null;
+
+  // Live GPS watchPosition watcher for mobile Follow-Track guidance (keyed on track ID so metadata refreshes never drop GPS lock)
+  useEffect(() => {
+    if (!isLiveNavActive || !activeTrackId) {
+      setGpsFix(null);
+      setGpsError(null);
+      setGpsStatus('acquiring');
+      setIsAutoCenter(true);
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGpsStatus('unavailable');
+      setGpsError(
+        language === 'en'
+          ? 'Geolocation API is not supported in this browser.'
+          : 'Standortdienste werden von diesem Browser nicht unterstützt.'
+      );
+      return;
+    }
+
+    setGpsStatus('acquiring');
+    setGpsError(null);
+    setIsAutoCenter(true);
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const coords = position.coords;
+        const speedKmh =
+          typeof coords.speed === 'number' && Number.isFinite(coords.speed) && coords.speed >= 0
+            ? coords.speed * 3.6
+            : null;
+        setGpsFix({
+          lat: coords.latitude,
+          lng: coords.longitude,
+          accuracyM: Number.isFinite(coords.accuracy) ? coords.accuracy : 15,
+          speedKmh,
+          heading: typeof coords.heading === 'number' && Number.isFinite(coords.heading) ? coords.heading : null,
+          timestampMs: position.timestamp
+        });
+        setGpsStatus('active');
+        setGpsError(null);
+      },
+      (err) => {
+        if (err.code === 1) {
+          setGpsStatus('denied');
+          setGpsError(
+            language === 'en'
+              ? 'Location access was denied. Enable GPS permission to follow this track.'
+              : 'Standortzugriff verweigert. Bitte GPS-Berechtigung aktivieren.'
+          );
+        } else {
+          setGpsError(
+            language === 'en'
+              ? 'Waiting for a stronger GPS lock…'
+              : 'Warte auf stabileres GPS-Signal…'
+          );
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 3000,
+        timeout: 15000
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [isLiveNavActive, activeTrackId, language]);
+
+  // Screen Wake Lock during active mobile track navigation (re-acquired on visibility change)
+  useEffect(() => {
+    if (!isLiveNavActive || !activeTrackId) {
+      setIsWakeLockActive(false);
+      return;
+    }
+
+    let wakeLockSentinel: any = null;
+    let disposed = false;
+
+    const requestWakeLock = async () => {
+      try {
+        const nav = navigator as any;
+        if (!nav?.wakeLock?.request) return;
+        wakeLockSentinel = await nav.wakeLock.request('screen');
+        if (disposed) {
+          await wakeLockSentinel.release?.();
+          return;
+        }
+        setIsWakeLockActive(true);
+        wakeLockSentinel.addEventListener?.('release', () => {
+          if (!disposed) setIsWakeLockActive(false);
+        });
+      } catch {
+        if (!disposed) setIsWakeLockActive(false);
+      }
+    };
+
+    void requestWakeLock();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !disposed) {
+        void requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (wakeLockSentinel) {
+        void wakeLockSentinel.release?.().catch(() => {});
+        wakeLockSentinel = null;
+      }
+      setIsWakeLockActive(false);
+    };
+  }, [isLiveNavActive, activeTrackId]);
+
+  const gpsUserMarkerIcon = useMemo(
+    () =>
+      L.divIcon({
+        className: 'live-gps-user-dot',
+        html: `<div style="position:relative;width:22px;height:22px;display:flex;align-items:center;justify-content:center;">
+          <span style="position:absolute;inset:-4px;border-radius:9999px;background:rgba(59,130,246,0.28);"></span>
+          <span style="position:relative;width:16px;height:16px;border-radius:9999px;background:#2563eb;border:3px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.45);"></span>
+        </div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
+      }),
+    []
+  );
+
   const comparedTrack = useMemo(() => {
     if (!compareTrackId) return null;
     return tracks.find(t => t.id === compareTrackId && t.id !== activeTrack?.id) || null;
@@ -1461,13 +1968,29 @@ const Map: React.FC<MapProps> = ({
         cancelAnimationFrame(hoverRafRef.current);
         hoverRafRef.current = null;
       }
+      if (compareScrubRafRef.current !== null) {
+        cancelAnimationFrame(compareScrubRafRef.current);
+        compareScrubRafRef.current = null;
+      }
     };
+  }, []);
+
+  const scheduleCompareScrub = useCallback((frac: number) => {
+    if (compareScrubRafRef.current !== null) {
+      cancelAnimationFrame(compareScrubRafRef.current);
+    }
+    compareScrubRafRef.current = requestAnimationFrame(() => {
+      compareScrubRafRef.current = null;
+      startTransition(() => {
+        setCompareScrubFraction(frac);
+      });
+    });
   }, []);
 
   const pauseIcon = useMemo(() => new L.DivIcon({
     className: 'custom-pause-icon',
     html: `
-      <div class="relative">
+      <div class="relative" style="transform: translate3d(0, 0, 0); will-change: transform;">
         <div class="bg-amber-500 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white">
           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
         </div>
@@ -1480,7 +2003,7 @@ const Map: React.FC<MapProps> = ({
   const pendingMarkerIcon = useMemo(() => new L.DivIcon({
     className: 'pending-marker',
     html: `
-      <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -100%); margin-top: -12px;">
+      <div class="relative flex flex-col items-center select-none" style="transform: translate3d(-50%, -100%, 0); will-change: transform; backface-visibility: hidden; margin-top: -12px;">
         <div class="bg-blue-600 text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1">
           <span>📍 Neue Notiz...</span>
         </div>
@@ -1491,13 +2014,148 @@ const Map: React.FC<MapProps> = ({
     iconAnchor: [0, 0]
   }), []);
 
+  const syncedComparisonIcons = useMemo(() => {
+    if (!syncedComparisonPair) return null;
+    const gapText =
+      syncedComparisonPair.spatialGapKm < 1
+        ? `${Math.round(syncedComparisonPair.spatialGapKm * 1000)} m`
+        : `${syncedComparisonPair.spatialGapKm.toFixed(2)} km`;
+    const eleDiffText =
+      syncedComparisonPair.eleDiffM !== null
+        ? ` · Δ ${syncedComparisonPair.eleDiffM >= 0 ? '+' : ''}${syncedComparisonPair.eleDiffM} m`
+        : '';
+
+    const gapBadgeIcon =
+      syncedComparisonPair.spatialGapKm >= 0.015
+        ? new L.DivIcon({
+            className: 'dual-compare-gap-badge',
+            html: `
+              <div style="transform: translate3d(-50%, -50%, 0); will-change: transform; backface-visibility: hidden; white-space: nowrap; background: rgba(15, 23, 42, 0.9); color: #ffffff; border: 1.5px solid #818cf8; border-radius: 9999px; padding: 2px 8px; font-size: 10px; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-family: ui-monospace, monospace;">
+                ↔ ${gapText}${eleDiffText}
+              </div>
+            `,
+            iconSize: [0, 0],
+            iconAnchor: [0, 0]
+          })
+        : null;
+
+    const markerAIcon = new L.DivIcon({
+      className: 'dual-compare-marker-a',
+      html: `
+        <div style="position: relative; transform: translate3d(-50%, -50%, 0); will-change: transform; backface-visibility: hidden;">
+          <div style="width: 22px; height: 22px; border-radius: 9999px; background: #2563eb; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(37,99,235,0.65);">A</div>
+          <div style="position: absolute; bottom: 26px; left: 50%; transform: translate3d(-50%, 0, 0); white-space: nowrap; background: #1d4ed8; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
+            A: ${syncedComparisonPair.ptA.distKm.toFixed(1)} km${syncedComparisonPair.ptA.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptA.ele)}m` : ''}
+          </div>
+        </div>
+      `,
+      iconSize: [0, 0],
+      iconAnchor: [0, 0]
+    });
+
+    const markerBIcon = new L.DivIcon({
+      className: 'dual-compare-marker-b',
+      html: `
+        <div style="position: relative; transform: translate3d(-50%, -50%, 0); will-change: transform; backface-visibility: hidden;">
+          <div style="width: 22px; height: 22px; border-radius: 9999px; background: #f97316; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(249,115,22,0.65);">B</div>
+          <div style="position: absolute; top: 26px; left: 50%; transform: translate3d(-50%, 0, 0); white-space: nowrap; background: #ea580c; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
+            B: ${syncedComparisonPair.ptB.distKm.toFixed(1)} km${syncedComparisonPair.ptB.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptB.ele)}m` : ''}
+          </div>
+        </div>
+      `,
+      iconSize: [0, 0],
+      iconAnchor: [0, 0]
+    });
+
+    return { gapBadgeIcon, markerAIcon, markerBIcon };
+  }, [syncedComparisonPair]);
+
+  const textMarkerIcons = useMemo(() => {
+    const colorMap: Record<string, string> = {
+      indigo: '#3b82f6',
+      emerald: '#10b981',
+      rose: '#f43f5e',
+      amber: '#f59e0b',
+      slate: '#64748b'
+    };
+    return textMarkers.map((marker) => {
+      const bgColor = colorMap[marker.color] || '#3b82f6';
+      return new L.DivIcon({
+        className: 'custom-text-marker',
+        html: `
+          <div class="relative flex flex-col items-center select-none cursor-pointer group" style="transform: translate3d(-50%, -100%, 0); will-change: transform; backface-visibility: hidden; margin-top: -12px;" title="Rechtsklick oder Klick zum Entfernen">
+            <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1 transition-transform group-hover:scale-110" style="background-color: ${bgColor};">
+              <span>🏷️</span> ${escapeHtml(marker.label)}
+            </div>
+            <div class="w-2.5 h-2.5 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white" style="background-color: ${bgColor};"></div>
+          </div>
+        `,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0]
+      });
+    });
+  }, [textMarkers]);
+
+  const visiblePoiIcons = useMemo(() => {
+    if (!showPOIs) return [];
+    return visiblePOIs.map((poi) => {
+      let emoji = '📍';
+      let bgColor = '#3b82f6';
+      let ringColor = 'rgba(59, 130, 246, 0.2)';
+      if (poi.type === 'water') {
+        emoji = '💧';
+        bgColor = '#0ea5e9';
+        ringColor = 'rgba(14, 165, 233, 0.25)';
+      } else if (poi.type === 'supermarket') {
+        emoji = '🛒';
+        bgColor = '#10b981';
+        ringColor = 'rgba(16, 185, 129, 0.25)';
+      } else if (poi.type === 'restaurant') {
+        emoji = '🍴';
+        bgColor = '#f43f5e';
+        ringColor = 'rgba(244, 63, 94, 0.25)';
+      } else if (poi.type === 'gas_station') {
+        emoji = '⛽';
+        bgColor = '#f59e0b';
+        ringColor = 'rgba(245, 158, 11, 0.25)';
+      }
+      return {
+        emoji,
+        bgColor,
+        icon: new L.DivIcon({
+          className: 'custom-poi-marker',
+          html: `
+            <div class="relative flex flex-col items-center select-none" style="transform: translate3d(-50%, -50%, 0); will-change: transform; backface-visibility: hidden;" title="${escapeHtml(poi.name || '')}">
+              <div class="w-7 h-7 rounded-full flex items-center justify-center text-sm shadow-md border-2 border-white text-white transition-transform duration-150 hover:scale-110" style="background-color: ${bgColor}; box-shadow: 0 0 0 3px ${ringColor}, 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+                <span style="line-height: 1; font-size: 13px;">${emoji}</span>
+              </div>
+            </div>
+          `,
+          iconSize: [28, 28],
+          iconAnchor: [14, 14]
+        })
+      };
+    });
+  }, [showPOIs, visiblePOIs]);
+
   const hoverTooltipRender = useMemo(() => {
     if (!hoveredPoint) return null;
     const hoveredTrackId = (hoveredPoint as any).trackId;
+    const markedTrack = markedTrackId ? tracks.find(t => t.id === markedTrackId) : undefined;
+    const matchesCoord = (t: GPXTrack | undefined) =>
+      Boolean(
+        t?.points?.some(
+          (p) => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005
+        )
+      );
     const pointTrack = hoveredTrackId
       ? tracks.find(t => t.id === hoveredTrackId)
-      : tracks.find(t => t.points && t.points.some(p => Math.abs(p.lat - hoveredPoint.lat) < 0.00005 && Math.abs(p.lng - hoveredPoint.lng) < 0.00005))
-      || (markedTrackId ? tracks.find(t => t.id === markedTrackId) : tracks.find(t => t.visible !== false) || tracks[0]);
+      : matchesCoord(markedTrack)
+      ? markedTrack
+      : tracks.find(t => t.id !== markedTrackId && matchesCoord(t))
+      || markedTrack
+      || tracks.find(t => t.visible !== false)
+      || tracks[0];
 
     if (!pointTrack || !hasRealGpsData(pointTrack)) return null;
 
@@ -1537,21 +2195,29 @@ const Map: React.FC<MapProps> = ({
       .map(track => {
         const isMarked = track.id === markedTrackId;
         const isCompared = Boolean(isComparisonMode && comparedTrack && track.id === comparedTrack.id);
-        const validPoints = (track.points || [])
-          .map(p => {
-            if (!p) return null;
-            const latVal = typeof p.lat === 'number' ? p.lat : parseFloat(p.lat as any);
-            const lngVal = typeof p.lng === 'number' ? p.lng : parseFloat(p.lng as any);
-            if (!Number.isFinite(latVal) || !Number.isFinite(lngVal)) return null;
-            if (Math.abs(latVal) > 90 || Math.abs(lngVal) > 180) return null;
-            if (Math.abs(latVal) < 0.0001 && Math.abs(lngVal) < 0.0001) return null;
-            return { ...p, lat: latVal, lng: lngVal };
-          })
-          .filter((p): p is GPXPoint => p !== null);
+        const validPoints: GPXPoint[] = [];
+        const srcPoints = track.points || [];
+        for (let i = 0; i < srcPoints.length; i++) {
+          const p = srcPoints[i];
+          if (!p) continue;
+          const isNumericLat = typeof p.lat === 'number';
+          const isNumericLng = typeof p.lng === 'number';
+          const latVal = isNumericLat ? p.lat : parseFloat(p.lat as any);
+          const lngVal = isNumericLng ? p.lng : parseFloat(p.lng as any);
+          if (!Number.isFinite(latVal) || !Number.isFinite(lngVal)) continue;
+          if (Math.abs(latVal) > 90 || Math.abs(lngVal) > 180) continue;
+          if (Math.abs(latVal) < 0.0001 && Math.abs(lngVal) < 0.0001) continue;
+          validPoints.push(isNumericLat && isNumericLng ? p : { ...p, lat: latVal, lng: lngVal });
+        }
 
         if (validPoints.length === 0) return null;
 
-        const renderPoints = getCachedSimplifiedPoints(track.id, validPoints, 2500);
+        const maxPointsForViewport = isCompactViewport ? 900 : 2500;
+        const renderPoints = getCachedSimplifiedPoints(
+          isCompactViewport ? `${track.id}:m` : track.id,
+          validPoints,
+          maxPointsForViewport
+        );
         const positions = renderPoints.map(p => [p.lat, p.lng] as [number, number]);
 
         const selectedPolylines: [number, number][][] = [];
@@ -1576,10 +2242,10 @@ const Map: React.FC<MapProps> = ({
           ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : sanitizeColor(track.color))
           : sanitizeColor(track.color);
 
-        // Build continuous coalesced segments of identical surface types over simplified renderPoints
+        // Build surface segments ONLY when Surface Heatmap colorMode is active
         const surfaceSegments: { surface: string; positions: [number, number][] }[] = [];
-        if (renderPoints.length > 0) {
-          const pointsWithSurface = renderPoints.map((pt, idx) => {
+        if (colorMode === 'surface' && renderPoints.length > 0) {
+          const resolvePointSurface = (pt: GPXPoint, idx: number): string => {
             if (pt.surface) return pt.surface;
             if (track.surfaceStats && track.surfaceStats.length > 0 && track.distance > 0) {
               const currentDist = (idx / Math.max(1, renderPoints.length - 1)) * track.distance;
@@ -1591,14 +2257,14 @@ const Map: React.FC<MapProps> = ({
               return track.surfaceStats[track.surfaceStats.length - 1].type;
             }
             return "Asphalt";
-          });
+          };
 
-          let currentSurface = pointsWithSurface[0];
+          let currentSurface = resolvePointSurface(renderPoints[0], 0);
           let currentPositions: [number, number][] = [[renderPoints[0].lat, renderPoints[0].lng]];
 
           for (let i = 1; i < renderPoints.length; i++) {
             const pt = renderPoints[i];
-            const surf = pointsWithSurface[i];
+            const surf = resolvePointSurface(pt, i);
             if (surf === currentSurface) {
               currentPositions.push([pt.lat, pt.lng]);
             } else {
@@ -1613,43 +2279,29 @@ const Map: React.FC<MapProps> = ({
           }
         }
 
-        // Build continuous coalesced segments of identical zone colors over simplified renderPoints
+        // Build zone segments ONLY when HR, Power, or Speed colorMode is active
         const zoneSegments: { color: string; positions: [number, number][] }[] = [];
-        if (colorMode !== 'default' && renderPoints.length > 0) {
+        if (colorMode !== 'default' && colorMode !== 'surface' && renderPoints.length > 0) {
           let activeSegmentColor: string | null = null;
           let currentPositions: [number, number][] = [];
 
-          renderPoints.forEach((pt) => {
-            const color = getPointColorMode(pt, track.activityType);
+          for (let i = 0; i < renderPoints.length; i++) {
+            const pt = renderPoints[i];
+            const color = getPointColorMode(pt, track.activityType) ?? '#94a3b8';
             const latlng: [number, number] = [pt.lat, pt.lng];
 
-            if (color === null) {
-              const fallbackColor = '#94a3b8'; // gray fallback
-              if (activeSegmentColor === null) {
-                currentPositions = [latlng];
-                activeSegmentColor = fallbackColor;
-              } else if (activeSegmentColor !== fallbackColor) {
-                currentPositions.push(latlng);
-                zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
-                currentPositions = [latlng];
-                activeSegmentColor = fallbackColor;
-              } else {
-                currentPositions.push(latlng);
-              }
+            if (activeSegmentColor === null) {
+              currentPositions = [latlng];
+              activeSegmentColor = color;
+            } else if (color === activeSegmentColor) {
+              currentPositions.push(latlng);
             } else {
-              if (activeSegmentColor === null) {
-                currentPositions = [latlng];
-                activeSegmentColor = color;
-              } else if (color === activeSegmentColor) {
-                currentPositions.push(latlng);
-              } else {
-                currentPositions.push(latlng);
-                zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
-                currentPositions = [latlng];
-                activeSegmentColor = color;
-              }
+              currentPositions.push(latlng);
+              zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
+              currentPositions = [latlng];
+              activeSegmentColor = color;
             }
-          });
+          }
 
           if (currentPositions.length > 0 && activeSegmentColor !== null) {
             zoneSegments.push({ color: activeSegmentColor, positions: currentPositions });
@@ -1659,14 +2311,14 @@ const Map: React.FC<MapProps> = ({
         // Pauses > 5 minutes
         const pauses: { lat: number; lng: number; durationMins: number; startTime: Date; endTime: Date; idx: number }[] = [];
         const rawPts = track.points || [];
+        let prevMs = rawPts.length > 0 ? toValidTimestampMs(rawPts[0].time) : undefined;
         for (let i = 1; i < rawPts.length; i++) {
           const p = rawPts[i];
-          const prevP = rawPts[i - 1];
           const pMs = toValidTimestampMs(p.time);
-          const prevMs = toValidTimestampMs(prevP.time);
           if (pMs !== undefined && prevMs !== undefined) {
             const diffMs = pMs - prevMs;
             if (diffMs > 5 * 60 * 1000) {
+              const prevP = rawPts[i - 1];
               pauses.push({
                 lat: prevP.lat,
                 lng: prevP.lng,
@@ -1677,34 +2329,80 @@ const Map: React.FC<MapProps> = ({
               });
             }
           }
+          prevMs = pMs;
         }
 
-        // Active / compared route flow directional arrows
-        const arrows: { lat: number; lng: number; angle: number; idx: number }[] = [];
+        // Active / compared route flow directional arrows (binary search placement + memoized DivIcons)
+        const arrows: { lat: number; lng: number; angle: number; idx: number; icon: L.DivIcon }[] = [];
+        const safeArrowFill = sanitizeHexColor(
+          isComparisonMode ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : track.color) : track.color,
+          '#3b82f6'
+        );
         if ((isMarked || isCompared) && rawPts.length >= 2) {
-          const cumDist: number[] = [0];
+          const cumDist: number[] = new Array(rawPts.length);
+          cumDist[0] = 0;
           let totalD = 0;
           for (let i = 1; i < rawPts.length; i++) {
-            const segmentD = calculateDistance(rawPts[i - 1], rawPts[i]);
-            totalD += segmentD;
-            cumDist.push(totalD);
+            totalD += calculateDistance(rawPts[i - 1], rawPts[i]);
+            cumDist[i] = totalD;
           }
 
           if (totalD > 0) {
-            const numArrows = isCompared ? 8 : 12; // Spaced evenly along the entire route
+            const numArrows = isCompactViewport ? (isCompared ? 5 : 7) : (isCompared ? 8 : 12);
             for (let j = 1; j < numArrows; j++) {
               const targetDist = (totalD * j) / numArrows;
-              let idx = 0;
-              while (idx < cumDist.length - 1 && cumDist[idx + 1] < targetDist) {
-                idx++;
+              let lo = 0;
+              let hi = cumDist.length - 1;
+              while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (cumDist[mid] <= targetDist) lo = mid;
+                else hi = mid - 1;
               }
+              const idx = Math.min(lo, rawPts.length - 2);
               const p1 = rawPts[idx];
-              const p2 = rawPts[Math.min(idx + 1, rawPts.length - 1)];
+              const p2 = rawPts[idx + 1];
               if (p1 && p2) {
-                const angle = getBearing(p1.lat, p1.lng, p2.lat, p2.lng);
-                arrows.push({ lat: p1.lat, lng: p1.lng, angle, idx: j });
+                const angle = Math.round(getBearing(p1.lat, p1.lng, p2.lat, p2.lng));
+                const icon = new L.DivIcon({
+                  className: 'custom-arrow-icon',
+                  html: `<div style="transform: rotate(${angle}deg) translate3d(0,0,0); display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;"><svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" /><path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${safeArrowFill}" /></svg></div>`,
+                  iconSize: [22, 22],
+                  iconAnchor: [11, 11]
+                });
+                arrows.push({ lat: p1.lat, lng: p1.lng, angle, idx: j, icon });
               }
             }
+          }
+        }
+
+        // Memoize Start & End marker icons per prepared track (zero per-render DivIcon churn, static GPU-friendly ring)
+        let startIcon: L.DivIcon | null = null;
+        let endIcon: L.DivIcon | null = null;
+        if ((isMarked || isCompared) && validPoints.length > 0) {
+          const startBadgeLabel = isComparisonMode ? (isMarked ? 'START A' : 'START B') : 'START';
+          const endBadgeLabel = isComparisonMode ? (isMarked ? 'ZIEL A' : 'ZIEL B') : 'ENDE';
+          const startBgStyle = isComparisonMode
+            ? (isMarked ? 'background: linear-gradient(135deg, #3b82f6, #1d4ed8);' : 'background: linear-gradient(135deg, #fb923c, #ea580c);')
+            : '';
+          const endBgStyle = isComparisonMode
+            ? (isMarked ? 'background: linear-gradient(135deg, #1d4ed8, #1e3a8a);' : 'background: linear-gradient(135deg, #ea580c, #9a3412);')
+            : '';
+          const markerAnchor: [number, number] = isComparisonMode && isCompared ? [16, 26] : [20, 20];
+
+          startIcon = new L.DivIcon({
+            className: 'custom-start-marker',
+            html: `<div class="relative flex items-center justify-center" style="width: 40px; height: 40px;"><div class="absolute w-9 h-9 rounded-full bg-emerald-500/20"></div><div class="${isComparisonMode ? '' : 'bg-emerald-600'} text-white font-extrabold text-[8.5px] rounded-full w-8 h-8 border-2 border-white shadow-md flex items-center justify-center tracking-tight select-none text-center leading-none" style="${startBgStyle}">${startBadgeLabel}</div></div>`,
+            iconSize: [40, 40],
+            iconAnchor: markerAnchor
+          });
+
+          if (validPoints.length > 1) {
+            endIcon = new L.DivIcon({
+              className: 'custom-end-marker',
+              html: `<div class="relative flex items-center justify-center" style="width: 40px; height: 40px;"><div class="absolute w-9 h-9 rounded-full bg-rose-500/20"></div><div class="${isComparisonMode ? '' : 'bg-rose-600'} text-white font-extrabold text-[8.5px] rounded-full w-8 h-8 border-2 border-white shadow-md flex items-center justify-center tracking-tight select-none text-center leading-none" style="${endBgStyle}">${endBadgeLabel}</div></div>`,
+              iconSize: [40, 40],
+              iconAnchor: markerAnchor
+            });
           }
         }
 
@@ -1720,6 +2418,8 @@ const Map: React.FC<MapProps> = ({
           zoneSegments,
           pauses,
           arrows,
+          startIcon,
+          endIcon,
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -1732,12 +2432,33 @@ const Map: React.FC<MapProps> = ({
     }
 
     return items;
-  }, [tracks, markedTrackId, isComparisonMode, comparedTrack, selectionBounds, colorMode, getPointColorMode, calculateDistance]);
+  }, [tracks, markedTrackId, isComparisonMode, comparedTrack, selectionBounds, colorMode, getPointColorMode, calculateDistance, isCompactViewport]);
+
+  const routePreviewPositions = useMemo(
+    () => routePreview.points.map((pt) => [pt.lat, pt.lng] as [number, number]),
+    [routePreview.points]
+  );
+
+  const routeWaypointIcons = useMemo(() => {
+    const profileColor = ROUTE_PROFILE_META[routeProfile].colorHex;
+    return routeWaypoints.map((_wp, idx) => {
+      const isFirst = idx === 0;
+      const isLast = idx === routeWaypoints.length - 1 && routeWaypoints.length > 1;
+      const badgeBg = isFirst ? '#10b981' : isLast ? '#ef4444' : profileColor;
+      const badgeText = isFirst ? 'S' : isLast ? 'Z' : String(idx + 1);
+      return L.divIcon({
+        className: 'route-planner-waypoint-icon',
+        html: `<div style="width:28px;height:28px;border-radius:9999px;background:${badgeBg};color:#fff;border:2.5px solid #fff;box-shadow:0 3px 10px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;font-family:ui-monospace,monospace;transform:translate3d(0,0,0);will-change:transform;backface-visibility:hidden;">${badgeText}</div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+      });
+    });
+  }, [routeWaypoints, routeProfile]);
 
   const isDarkTile = isDark && activeLayer !== MapLayer.SATELLITE;
 
   return (
-    <div className="w-full h-full relative">
+    <div ref={mapHostRef} className="w-full h-full relative map-gpu-host">
       <LeafletMapContainer 
         center={[mapView.lat, mapView.lng]} 
         zoom={mapView.zoom} 
@@ -1785,6 +2506,8 @@ const Map: React.FC<MapProps> = ({
           zoneSegments,
           pauses,
           arrows,
+          startIcon,
+          endIcon,
         }) => {
           const isCompareHighlighted = isComparisonMode && (isMarked || isCompared);
           const isCompareDimmed = isComparisonMode && !isMarked && !isCompared;
@@ -1806,7 +2529,7 @@ const Map: React.FC<MapProps> = ({
                     }
                   },
                   mousemove: (e) => {
-                    if (!onHoverPoint) return;
+                    if (!onHoverPoint || isMapInteractingRef.current) return;
                     const lat = e.latlng.lat;
                     const lng = e.latlng.lng;
                     if (hoverRafRef.current !== null) {
@@ -1814,6 +2537,7 @@ const Map: React.FC<MapProps> = ({
                     }
                     hoverRafRef.current = requestAnimationFrame(() => {
                       hoverRafRef.current = null;
+                      if (isMapInteractingRef.current) return;
                       let closestIndex = 0;
                       let minDiff = Infinity;
                       for (let i = 0; i < validPoints.length; i++) {
@@ -1930,8 +2654,8 @@ const Map: React.FC<MapProps> = ({
                   const isSurfaceHeatmap = colorMode === 'surface';
                   return (
                     <React.Fragment key={`surface-seg-${track.id}-${sIdx}`}>
-                      {/* Outer Heatmap Glow Effect when surface heatmap is active */}
-                      {isSurfaceHeatmap && (
+                      {/* Outer Heatmap Glow Effect (desktop only to avoid 2x mobile canvas stroke cost) */}
+                      {isSurfaceHeatmap && !isCompactViewport && (
                         <LeafletPolyline
                           key={`seg-glow-${sIdx}`}
                           positions={seg.positions}
@@ -1946,7 +2670,7 @@ const Map: React.FC<MapProps> = ({
                         key={`seg-core-${sIdx}`}
                         positions={seg.positions}
                         color={segColor}
-                        weight={isMarked ? (isSurfaceHeatmap ? 6 : 8) : 4}
+                        weight={isMarked ? (isSurfaceHeatmap && !isCompactViewport ? 6 : 7) : 4}
                         opacity={isMarked ? 1.0 : 0.7}
                         interactive={false}
                       />
@@ -1991,60 +2715,26 @@ const Map: React.FC<MapProps> = ({
                 </LeafletMarker>
               ))}
 
-              {/* Active & Compared Route Flow Directional Arrows */}
+              {/* Active & Compared Route Flow Directional Arrows (memoized DivIcons) */}
               {arrows.map(arrow => (
                 <LeafletMarker
                   key={`arrow-${track.id}-${arrow.idx}`}
                   position={[arrow.lat, arrow.lng]}
                   interactive={false}
-                  icon={new L.DivIcon({
-                    className: 'custom-arrow-icon',
-                    html: `
-                      <div style="transform: rotate(${arrow.angle}deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">
-                        <svg viewBox="0 0 24 24" width="22" height="22" style="filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.65));">
-                          <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" fill="#ffffff" />
-                          <path d="M12 4.5L7 17.5l5-2.2 5 2.2z" fill="${sanitizeHexColor(isComparisonMode ? (isMarked ? '#2563eb' : isCompared ? '#f97316' : track.color) : track.color, '#3b82f6')}" />
-                        </svg>
-                      </div>
-                    `,
-                    iconSize: [24, 24],
-                    iconAnchor: [12, 12]
-                  })}
+                  icon={arrow.icon}
                 />
               ))}
 
               {/* Start- and Endepunkte für aktive und verglichene Route */}
-              {(isMarked || isCompared) && validPoints.length > 0 && (() => {
+              {(isMarked || isCompared) && validPoints.length > 0 && startIcon && (() => {
                 const startPt = validPoints[0];
                 const endPt = validPoints[validPoints.length - 1];
-                const startBadgeLabel = isComparisonMode ? (isMarked ? 'START A' : 'START B') : 'START';
-                const endBadgeLabel = isComparisonMode ? (isMarked ? 'ZIEL A' : 'ZIEL B') : 'ENDE';
-                const startBgStyle = isComparisonMode
-                  ? (isMarked ? 'background: linear-gradient(135deg, #3b82f6, #1d4ed8);' : 'background: linear-gradient(135deg, #fb923c, #ea580c);')
-                  : '';
-                const endBgStyle = isComparisonMode
-                  ? (isMarked ? 'background: linear-gradient(135deg, #1d4ed8, #1e3a8a);' : 'background: linear-gradient(135deg, #ea580c, #9a3412);')
-                  : '';
-                const markerAnchor: [number, number] = isComparisonMode && isCompared ? [16, 26] : [22, 22];
-                
                 return (
                   <>
                     <LeafletMarker
                       key={`start-${track.id}`}
                       position={[startPt.lat, startPt.lng]}
-                      icon={new L.DivIcon({
-                        className: 'custom-start-marker',
-                        html: `
-                          <div class="relative flex items-center justify-center" style="width: 44px; height: 44px;">
-                            ${!isComparisonMode ? '<div class="absolute w-8 h-8 rounded-full bg-emerald-500/35 animate-ping"></div>' : ''}
-                            <div class="${isComparisonMode ? '' : 'bg-gradient-to-br from-emerald-500 to-emerald-700'} text-white font-extrabold text-[8.5px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none text-center leading-none" style="${startBgStyle}">
-                              ${startBadgeLabel}
-                            </div>
-                          </div>
-                        `,
-                        iconSize: [44, 44],
-                        iconAnchor: markerAnchor
-                      })}
+                      icon={startIcon}
                     >
                       <Popup>
                         <div className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 text-sm">
@@ -2060,23 +2750,11 @@ const Map: React.FC<MapProps> = ({
                       </Popup>
                     </LeafletMarker>
 
-                    {validPoints.length > 1 && (
+                    {validPoints.length > 1 && endIcon && (
                       <LeafletMarker
                         key={`end-${track.id}`}
                         position={[endPt.lat, endPt.lng]}
-                        icon={new L.DivIcon({
-                          className: 'custom-end-marker',
-                          html: `
-                            <div class="relative flex items-center justify-center" style="width: 44px; height: 44px;">
-                              <div class="absolute w-8 h-8 rounded-full bg-rose-500/25"></div>
-                              <div class="${isComparisonMode ? '' : 'bg-gradient-to-br from-rose-500 to-rose-700'} text-white font-extrabold text-[8.5px] rounded-full w-9 h-9 border-2 border-white shadow-xl flex items-center justify-center tracking-tight select-none text-center leading-none" style="${endBgStyle}">
-                                ${endBadgeLabel}
-                              </div>
-                            </div>
-                          `,
-                          iconSize: [44, 44],
-                          iconAnchor: markerAnchor
-                        })}
+                        icon={endIcon}
                       >
                         <Popup>
                           <div className="font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1.5 text-sm">
@@ -2116,58 +2794,29 @@ const Map: React.FC<MapProps> = ({
               />
             )}
 
-            {syncedComparisonPair.spatialGapKm >= 0.015 && (
+            {syncedComparisonIcons?.gapBadgeIcon && (
               <LeafletMarker
                 position={[syncedComparisonPair.midLat, syncedComparisonPair.midLng]}
                 interactive={false}
-                icon={new L.DivIcon({
-                  className: 'dual-compare-gap-badge',
-                  html: `
-                    <div style="transform: translate(-50%, -50%); white-space: nowrap; background: rgba(15, 23, 42, 0.88); color: #ffffff; border: 1.5px solid #818cf8; border-radius: 9999px; padding: 2px 8px; font-size: 10px; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-family: ui-monospace, monospace;">
-                      ↔ ${syncedComparisonPair.spatialGapKm < 1 ? `${Math.round(syncedComparisonPair.spatialGapKm * 1000)} m` : `${syncedComparisonPair.spatialGapKm.toFixed(2)} km`}${syncedComparisonPair.eleDiffM !== null ? ` · Δ ${syncedComparisonPair.eleDiffM >= 0 ? '+' : ''}${syncedComparisonPair.eleDiffM} m` : ''}
-                    </div>
-                  `,
-                  iconSize: [0, 0],
-                  iconAnchor: [0, 0]
-                })}
+                icon={syncedComparisonIcons.gapBadgeIcon}
               />
             )}
 
-            <LeafletMarker
-              position={[syncedComparisonPair.ptA.lat, syncedComparisonPair.ptA.lng]}
-              interactive={false}
-              icon={new L.DivIcon({
-                className: 'dual-compare-marker-a',
-                html: `
-                  <div style="position: relative; transform: translate(-50%, -50%);">
-                    <div style="width: 22px; height: 22px; border-radius: 9999px; background: #2563eb; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(37,99,235,0.65);">A</div>
-                    <div style="position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: #1d4ed8; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
-                      A: ${syncedComparisonPair.ptA.distKm.toFixed(1)} km${syncedComparisonPair.ptA.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptA.ele)}m` : ''}
-                    </div>
-                  </div>
-                `,
-                iconSize: [0, 0],
-                iconAnchor: [0, 0]
-              })}
-            />
+            {syncedComparisonIcons && (
+              <LeafletMarker
+                position={[syncedComparisonPair.ptA.lat, syncedComparisonPair.ptA.lng]}
+                interactive={false}
+                icon={syncedComparisonIcons.markerAIcon}
+              />
+            )}
 
-            <LeafletMarker
-              position={[syncedComparisonPair.ptB.lat, syncedComparisonPair.ptB.lng]}
-              interactive={false}
-              icon={new L.DivIcon({
-                className: 'dual-compare-marker-b',
-                html: `
-                  <div style="position: relative; transform: translate(-50%, -50%);">
-                    <div style="width: 22px; height: 22px; border-radius: 9999px; background: #f97316; border: 3px solid #ffffff; color: #ffffff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(249,115,22,0.65);">B</div>
-                    <div style="position: absolute; top: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: #ea580c; color: #ffffff; border: 1.5px solid #ffffff; border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 800; font-family: ui-monospace, monospace; box-shadow: 0 3px 8px rgba(0,0,0,0.28);">
-                      B: ${syncedComparisonPair.ptB.distKm.toFixed(1)} km${syncedComparisonPair.ptB.ele !== undefined ? ` · ${Math.round(syncedComparisonPair.ptB.ele)}m` : ''}
-                    </div>
-                  </div>
-                `,
-                iconSize: [0, 0],
-                iconAnchor: [0, 0]
-              })}
-            />
+            {syncedComparisonIcons && (
+              <LeafletMarker
+                position={[syncedComparisonPair.ptB.lat, syncedComparisonPair.ptB.lng]}
+                interactive={false}
+                icon={syncedComparisonIcons.markerBIcon}
+              />
+            )}
           </>
         )}
 
@@ -2189,17 +2838,7 @@ const Map: React.FC<MapProps> = ({
 
 
 
-        {textMarkers.map(marker => {
-          const colorMap: Record<string, string> = {
-            indigo: '#3b82f6',
-            emerald: '#10b981',
-            rose: '#f43f5e',
-            amber: '#f59e0b',
-            slate: '#64748b'
-          };
-          const bgColor = colorMap[marker.color] || '#3b82f6';
-          
-          return (
+        {textMarkers.map((marker, mIdx) => (
             <LeafletMarker
               key={marker.id}
               position={[marker.lat, marker.lng]}
@@ -2210,19 +2849,7 @@ const Map: React.FC<MapProps> = ({
                   onDeleteTextMarker(marker.id);
                 }
               }}
-              icon={new L.DivIcon({
-                className: 'custom-text-marker',
-                html: `
-                  <div class="relative flex flex-col items-center select-none cursor-pointer group" style="transform: translate(-50%, -100%); margin-top: -12px;" title="Rechtsklick oder Klick zum Entfernen">
-                    <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1 transition-transform group-hover:scale-110" style="background-color: ${bgColor};">
-                      <span>🏷️</span> ${escapeHtml(marker.label)}
-                    </div>
-                    <div class="w-2.5 h-2.5 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white" style="background-color: ${bgColor};"></div>
-                  </div>
-                `,
-                iconSize: [0, 0],
-                iconAnchor: [0, 0]
-              })}
+              icon={textMarkerIcons[mIdx]}
             >
               <Popup>
                 <div className="text-xs p-1 min-w-[130px] space-y-1.5">
@@ -2253,49 +2880,19 @@ const Map: React.FC<MapProps> = ({
                 </div>
               </Popup>
             </LeafletMarker>
-          );
-        })}
+        ))}
 
         {/* Verpflegung & POI Marker */}
         {showPOIs && visiblePOIs.map((poi, pIdx) => {
-          let emoji = '📍';
-          let bgColor = '#3b82f6';
-          let ringColor = 'rgba(59, 130, 246, 0.2)';
-
-          if (poi.type === 'water') {
-            emoji = '💧';
-            bgColor = '#0ea5e9'; // sky-500
-            ringColor = 'rgba(14, 165, 233, 0.25)';
-          } else if (poi.type === 'supermarket') {
-            emoji = '🛒';
-            bgColor = '#10b981'; // emerald-500
-            ringColor = 'rgba(16, 185, 129, 0.25)';
-          } else if (poi.type === 'restaurant') {
-            emoji = '🍴';
-            bgColor = '#f43f5e'; // rose-500
-            ringColor = 'rgba(244, 63, 94, 0.25)';
-          } else if (poi.type === 'gas_station') {
-            emoji = '⛽';
-            bgColor = '#f59e0b'; // amber-500
-            ringColor = 'rgba(245, 158, 11, 0.25)';
-          }
+          const poiMeta = visiblePoiIcons[pIdx];
+          if (!poiMeta) return null;
+          const { emoji, bgColor, icon: poiIcon } = poiMeta;
 
           return (
             <LeafletMarker
               key={`poi-marker-${poi.id}-${pIdx}`}
               position={[poi.lat, poi.lng]}
-              icon={new L.DivIcon({
-                className: 'custom-poi-marker',
-                html: `
-                  <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -50%);" title="${escapeHtml(poi.name || '')}">
-                    <div class="w-7 h-7 rounded-full flex items-center justify-center text-sm shadow-md border-2 border-white text-white transition-transform duration-150 hover:scale-110" style="background-color: ${bgColor}; box-shadow: 0 0 0 3px ${ringColor}, 0 4px 6px -1px rgb(0 0 0 / 0.1);">
-                      <span style="line-height: 1; font-size: 13px;">${emoji}</span>
-                    </div>
-                  </div>
-                `,
-                iconSize: [28, 28],
-                iconAnchor: [14, 14]
-              })}
+              icon={poiIcon}
             >
               <Popup>
                 <div className="p-2 min-w-[200px] text-xs font-sans space-y-1.5 text-slate-800 dark:text-slate-100">
@@ -2440,15 +3037,187 @@ const Map: React.FC<MapProps> = ({
           </LeafletMarker>
         )}
 
+        {/* Tap-to-Route Planner Map Bridge, Preview Polyline & Draggable Waypoint Pins */}
+        <RoutePlannerClickBridge
+          active={isRoutePlannerActive}
+          onAddWaypoint={handleAddRouteWaypoint}
+        />
+
+        {/* Live GPS Follow-Track Map Bridge & Position Marker */}
+        <LiveNavMapBridge
+          active={Boolean(isLiveNavActive && activeTrack)}
+          autoCenter={isAutoCenter}
+          gpsFix={gpsFix}
+          onUserPan={() => setIsAutoCenter(false)}
+        />
+
+        {isLiveNavActive && activeTrack && gpsFix && (
+          <>
+            <LeafletCircle
+              center={[gpsFix.lat, gpsFix.lng]}
+              radius={Math.max(8, Math.min(120, gpsFix.accuracyM))}
+              pathOptions={{
+                color: '#2563eb',
+                weight: 1.5,
+                opacity: 0.45,
+                fillColor: '#3b82f6',
+                fillOpacity: 0.14
+              }}
+            />
+            <LeafletMarker
+              position={[gpsFix.lat, gpsFix.lng]}
+              icon={gpsUserMarkerIcon}
+              interactive={false}
+              zIndexOffset={1200}
+            />
+          </>
+        )}
+
+        {isRoutePlannerActive && routePreviewPositions.length >= 2 && (
+          <>
+            <Polyline
+              positions={routePreviewPositions}
+              pathOptions={{
+                color: '#ffffff',
+                weight: 7,
+                opacity: 0.85
+              }}
+            />
+            <Polyline
+              positions={routePreviewPositions}
+              pathOptions={{
+                color: ROUTE_PROFILE_META[routeProfile].colorHex,
+                weight: 4.5,
+                opacity: 0.96,
+                dashArray: routePreview.engineId === 'valhalla' ? undefined : '8 6'
+              }}
+            />
+          </>
+        )}
+
+        {isRoutePlannerActive &&
+          routeWaypoints.map((wp, idx) => {
+            const isFirst = idx === 0;
+            const isLast = idx === routeWaypoints.length - 1 && routeWaypoints.length > 1;
+            const icon = routeWaypointIcons[idx];
+
+            return (
+              <LeafletMarker
+                key={wp.id}
+                position={[wp.lat, wp.lng]}
+                icon={icon}
+                draggable={true}
+                eventHandlers={{
+                  dragstart: () => {
+                    isMapInteractingRef.current = true;
+                    mapHostRef.current?.classList.add('map-interacting');
+                  },
+                  dragend: (ev: any) => {
+                    isMapInteractingRef.current = false;
+                    mapHostRef.current?.classList.remove('map-interacting');
+                    const pos = ev.target?.getLatLng?.();
+                    if (pos) {
+                      handleMoveRouteWaypoint(wp.id, pos.lat, pos.lng);
+                    }
+                  }
+                }}
+              >
+                <Popup>
+                  <div className="p-1 text-xs space-y-1.5 min-w-[140px]">
+                    <div className="font-bold text-slate-800">
+                      {isFirst
+                        ? language === 'en' ? 'Start Point' : 'Startpunkt'
+                        : isLast
+                        ? language === 'en' ? 'Finish Point' : 'Zielpunkt'
+                        : `${language === 'en' ? 'Waypoint' : 'Wegpunkt'} ${idx + 1}`}
+                    </div>
+                    <div className="text-[10.5px] font-mono text-slate-500">
+                      {wp.lat.toFixed(5)}, {wp.lng.toFixed(5)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveRouteWaypoint(wp.id)}
+                      className="w-full py-1 px-2 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-[11px] cursor-pointer"
+                    >
+                      {language === 'en' ? 'Remove point' : 'Punkt entfernen'}
+                    </button>
+                  </div>
+                </Popup>
+              </LeafletMarker>
+            );
+          })}
+
         <LeafletZoomBridge
           mapRef={leafletMapRef}
           pendingZoomRef={pendingZoomRef}
           onZoomChange={setLiveZoom}
         />
+        <MapInteractionCompositorBridge
+          hostRef={mapHostRef}
+          isInteractingRef={isMapInteractingRef}
+          hoverRafRef={hoverRafRef}
+        />
       </LeafletMapContainer>
 
+      {/* Tap-to-Route Planner Floating Dock */}
+      {isRoutePlannerActive && (
+        <RoutePlannerDock
+          profile={routeProfile}
+          onChangeProfile={setRouteProfile}
+          snapToRoads={snapToRoads}
+          onToggleSnapToRoads={() => setSnapToRoads((prev) => !prev)}
+          isSnapping={isSnappingRoute}
+          snapFallbackNote={snapFallbackNote}
+          waypoints={routeWaypoints}
+          preview={routePreview}
+          canUndo={routeHistory.length > 0}
+          onUndo={handleUndoRouteWaypoint}
+          onReverse={handleReverseRouteWaypoints}
+          onCloseLoop={handleCloseRouteLoop}
+          onClear={handleClearRouteWaypoints}
+          onSave={handleSavePlannedRouteInternal}
+          onClose={() => onToggleRoutePlanner?.(false)}
+          language={language}
+          bottomOffsetClass={
+            isBottomBarObscuring
+              ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4'
+              : 'bottom-2 lg:bottom-4'
+          }
+        />
+      )}
+
+      {/* Live Mobile GPS Follow-Track Navigation HUD */}
+      {isLiveNavActive && activeTrack && (
+        <LiveNavigationHUD
+          trackName={activeTrack.name}
+          activityType={activeTrack.activityType}
+          gpsStatus={gpsStatus}
+          gpsError={gpsError}
+          gpsFix={gpsFix}
+          progress={liveTrackProgress}
+          isAutoCenter={isAutoCenter}
+          onToggleAutoCenter={() => {
+            setIsAutoCenter((prev) => {
+              const next = !prev;
+              if (next && gpsFix && leafletMapRef.current) {
+                leafletMapRef.current.panTo([gpsFix.lat, gpsFix.lng], { animate: true });
+              }
+              return next;
+            });
+          }}
+          isWakeLockActive={isWakeLockActive}
+          onStop={() => onToggleLiveNav?.(false)}
+          language={language}
+          bottomOffsetClass={
+            isBottomBarObscuring
+              ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4'
+              : 'bottom-2 lg:bottom-4'
+          }
+        />
+      )}
+
       {/* Mobile & Touch Floating Action Toolbar + Fine-Grained Zoom Controls */}
-      <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} right-2 sm:right-4 z-[400] flex flex-col items-end gap-2 pointer-events-none`}>
+      <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4' : 'bottom-2 lg:bottom-4'} right-2 sm:right-4 z-[400] flex flex-col items-end gap-2 pointer-events-none map-overlay-layer ${isRoutePlannerActive || isLiveNavActive ? 'hidden sm:flex' : 'flex'}`}>
         <MapZoomControls
           currentZoom={liveZoom}
           minZoom={MAP_MIN_ZOOM}
@@ -2462,21 +3231,22 @@ const Map: React.FC<MapProps> = ({
               triggerHaptic('medium');
               setRecenterTrigger(prev => prev + 1);
             }}
-            className="pointer-events-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95"
+            className="pointer-events-auto min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg lg:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-[transform,background-color] duration-150 flex items-center justify-center gap-1.5 text-xs font-bold cursor-pointer active:scale-95 touch-manipulation"
             title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten (Taste F)`}
+            aria-label="Route auf Karte zentrieren"
             id="btn-toolbar-center-route"
           >
-            <Target className="w-4 h-4 text-amber-500" />
-            <span className="hidden xs:inline">Route zentrieren</span>
+            <Target className="w-4 h-4 text-amber-500 shrink-0" />
+            <span className="hidden sm:inline whitespace-nowrap">Route zentrieren</span>
             <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">F</kbd>
           </button>
         )}
 
         {onOpenShortcuts && (
-          <div className="relative flex flex-col items-end pointer-events-auto">
+          <div className="hidden md:flex relative flex-col items-end pointer-events-auto">
             {isQuickShortcutsOpen && (
               <div
-                className="mb-2 w-60 rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl backdrop-blur-md p-3 text-[11px] text-slate-700 dark:text-slate-200 space-y-2"
+                className="mb-2 w-60 rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl lg:backdrop-blur-md p-3 text-[11px] text-slate-700 dark:text-slate-200 space-y-2"
                 role="dialog"
                 aria-label="Schnellübersicht Tastenkürzel"
               >
@@ -2531,7 +3301,7 @@ const Map: React.FC<MapProps> = ({
                 setIsQuickShortcutsOpen(false);
                 onOpenShortcuts();
               }}
-              className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
+              className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg lg:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
               title="Kompakte Tastenkürzel-Hilfe umschalten (Taste ? für Gesamtübersicht)"
               id="btn-toolbar-shortcuts"
             >
@@ -2543,18 +3313,58 @@ const Map: React.FC<MapProps> = ({
         )}
       </div>
 
-      {/* Strecken-Farbmodus, POI-Filter & Lebenszeit-Heatmap in Karten-Optionen (oben rechts) */}
-      {!isColorMenuOpen ? (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] flex items-center gap-2 pointer-events-auto">
+      {/* Strecken-Farbmodus, Routenplaner & Lebenszeit-Heatmap in Karten-Optionen (oben rechts) */}
+      {!isColorMenuOpen && !isLiveNavActive ? (
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] flex items-center gap-2 pointer-events-auto map-overlay-layer">
+          {activeTrack && onToggleLiveNav && !isRoutePlannerActive && (
+            <button
+              type="button"
+              id="btn-map-live-nav"
+              onClick={() => {
+                triggerHaptic('medium');
+                onToggleLiveNav();
+              }}
+              aria-pressed={isLiveNavActive}
+              className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl border shadow-md lg:backdrop-blur-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color] duration-150 select-none font-bold touch-manipulation whitespace-nowrap bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500"
+              title={language === 'en' ? 'Follow active track with live GPS' : 'Aktive Strecke mit Live-GPS abfahren'}
+            >
+              <Navigation className="w-4 h-4 text-white" />
+              <span className="text-xs font-semibold hidden sm:inline">
+                {language === 'en' ? 'Follow' : 'Navigieren'}
+              </span>
+            </button>
+          )}
+          {onToggleRoutePlanner && (
+            <button
+              type="button"
+              id="btn-map-route-planner"
+              onClick={() => {
+                triggerHaptic('light');
+                onToggleRoutePlanner();
+              }}
+              aria-pressed={isRoutePlannerActive}
+              className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl border shadow-md lg:backdrop-blur-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color,color,border-color] duration-150 select-none font-bold touch-manipulation whitespace-nowrap ${
+                isRoutePlannerActive
+                  ? 'bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-700'
+                  : 'bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border-slate-200/70 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+              title={language === 'en' ? 'Plan route on map' : 'Route auf Karte planen'}
+            >
+              <Route className={`w-4 h-4 ${isRoutePlannerActive ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`} />
+              <span className="text-xs font-semibold hidden sm:inline">
+                {language === 'en' ? 'Plan Route' : 'Route planen'}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setIsColorMenuOpen(true)}
-            className="relative bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-all text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
+            className="relative bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-[transform,background-color] duration-150 text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
             title="Karten-Optionen, Heatmap & Verpflegung einblenden"
             id="btn-color-mode-toggle"
           >
-            <Palette className="w-3.5 h-3.5 text-indigo-500" />
-            <span className="text-[10px] sm:text-xs font-extrabold uppercase tracking-wider hidden sm:inline">Karten-Optionen</span>
+            <Palette className="w-4 h-4 text-indigo-500" />
+            <span className="text-xs font-semibold hidden sm:inline whitespace-nowrap">Karten-Optionen</span>
             {showLifetimeHeatmap && (
               <span
                 className="w-2 h-2 rounded-full bg-orange-500 ring-2 ring-white dark:ring-slate-900 shrink-0"
@@ -2570,7 +3380,7 @@ const Map: React.FC<MapProps> = ({
             onClick={() => setIsColorMenuOpen(false)}
             aria-hidden="true"
           />
-          <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-64 max-w-[90vw] max-h-[min(74vh,520px)] overflow-y-auto">
+          <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-64 max-w-[90vw] max-h-[min(74vh,520px)] overflow-y-auto map-overlay-layer">
           <div className="font-extrabold text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
             <span className="flex items-center gap-1">
               <Palette className="w-3.5 h-3.5 text-indigo-500" />
@@ -2833,9 +3643,9 @@ const Map: React.FC<MapProps> = ({
       )}
 
       {/* Premium Map Legend explaining Surface Types or Zone Ranges */}
-      {!hideLegend && (
+      {!hideLegend && !isRoutePlannerActive && !isLiveNavActive && (
         isLegendVisible ? (
-          <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} left-2 sm:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px]`}>
+          <div className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4' : 'bottom-2 lg:bottom-4'} left-2 sm:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-3 py-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-md flex flex-col gap-1.5 font-mono text-[9px] pointer-events-auto select-none min-w-[170px] max-w-[220px] map-overlay-layer`}>
             <div className="flex items-center justify-between gap-4 font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-0.5 border-b border-slate-100 dark:border-slate-800 pb-0.5">
               <span>{colorMode === 'surface' ? 'Oberflächen-Heatmap' : colorMode === 'default' ? 'Untergrund' : colorMode === 'hr' ? 'Herzfrequenz' : colorMode === 'power' ? 'Leistung' : 'Tempo / Pace'}</span>
               <button
@@ -3065,12 +3875,12 @@ const Map: React.FC<MapProps> = ({
           </div>
         ) : (
           <button
+            type="button"
             onClick={() => setIsLegendVisible(true)}
-            className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-4' : 'bottom-2 sm:bottom-4'} left-2 sm:left-4 z-[400] flex items-center gap-1 px-2 py-1.5 sm:px-3 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-md border border-slate-200/60 dark:border-slate-800 rounded-xl text-[10px] font-bold text-slate-700 dark:text-slate-300 hover:scale-105 transition-all cursor-pointer font-mono select-none`}
+            className={`absolute ${isBottomBarObscuring ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4' : 'bottom-2 lg:bottom-4'} left-2 sm:left-4 z-[400] hidden sm:flex items-center gap-1 min-h-[40px] px-3 py-1.5 bg-white/90 dark:bg-slate-900/90 lg:backdrop-blur-md shadow-md border border-slate-200/60 dark:border-slate-800 rounded-xl text-[11px] font-bold text-slate-700 dark:text-slate-300 hover:scale-105 transition-transform duration-150 cursor-pointer font-sans select-none map-overlay-layer`}
             title="Legende anzeigen"
           >
-            <span className="text-xs sm:text-sm">🗺️</span>
-            <span className="hidden sm:inline">Legende</span>
+            <span>Legende</span>
           </button>
         )
       )}
@@ -3083,7 +3893,7 @@ const Map: React.FC<MapProps> = ({
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
-          className="absolute top-2 left-12 sm:top-3 sm:left-14 z-[450] max-w-[calc(100vw-8.5rem)] sm:max-w-[520px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl border border-indigo-200/80 dark:border-indigo-800/70 shadow-xl pointer-events-auto select-none font-sans overflow-hidden transition-all duration-200"
+          className="absolute top-2 left-16 lg:left-4 sm:top-3 z-[450] max-w-[calc(100vw-8.5rem)] sm:max-w-[520px] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md rounded-2xl border border-indigo-200/80 dark:border-indigo-800/70 shadow-xl pointer-events-auto select-none font-sans overflow-hidden transition-[opacity,transform] duration-200 map-overlay-layer"
         >
           {isCompareCollapsed ? (
             <div className="flex items-center gap-2 px-3 py-2 text-xs">
@@ -3379,7 +4189,7 @@ const Map: React.FC<MapProps> = ({
                       onMouseMove={(e) => {
                         const rect = e.currentTarget.getBoundingClientRect();
                         const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
-                        setCompareScrubFraction(frac);
+                        scheduleCompareScrub(frac);
                       }}
                       onClick={(e) => {
                         const rect = e.currentTarget.getBoundingClientRect();
@@ -3390,7 +4200,7 @@ const Map: React.FC<MapProps> = ({
                         if (e.touches.length === 0) return;
                         const rect = e.currentTarget.getBoundingClientRect();
                         const frac = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / Math.max(1, rect.width)));
-                        setCompareScrubFraction(frac);
+                        scheduleCompareScrub(frac);
                       }}
                     >
                       <line x1="0" y1="18" x2="360" y2="18" stroke="currentColor" strokeOpacity="0.08" strokeDasharray="3,3" />
@@ -3503,10 +4313,10 @@ const Map: React.FC<MapProps> = ({
       )}
 
       {/* Active Track Stats Overlay Card */}
-      {!isComparisonMode && activeTrack && (
+      {!isComparisonMode && activeTrack && !isRoutePlannerActive && !isLiveNavActive && (
         <div 
-          className={`absolute top-2 left-12 sm:top-4 sm:left-14 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg pointer-events-auto select-none font-sans transition-all duration-300 overflow-hidden max-w-[calc(100vw-3.75rem)] sm:max-w-[340px] ${
-            hoveredPoint ? 'opacity-0 pointer-events-none sm:opacity-100 sm:pointer-events-auto' : 'opacity-100'
+          className={`absolute top-2 left-16 lg:top-4 lg:left-4 z-[400] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-lg pointer-events-auto select-none font-sans transition-[opacity,transform] duration-200 overflow-hidden max-w-[calc(100vw-9rem)] sm:max-w-[340px] map-overlay-layer ${
+            hoveredPoint ? 'opacity-0 pointer-events-none lg:opacity-100 lg:pointer-events-auto' : 'opacity-100'
           }`}
           id="active-track-stats-overlay"
         >
@@ -3675,4 +4485,4 @@ const Map: React.FC<MapProps> = ({
   );
 };
 
-export default Map;
+export default React.memo(Map);

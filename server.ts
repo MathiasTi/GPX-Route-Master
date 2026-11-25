@@ -58,6 +58,7 @@ import {
   clearSurfaceAnalysisCache
 } from "./utils/db.js";
 import { analyzeRouteSurfacePipeline } from "./utils/surfaceAnalyzer.js";
+import { validateValhallaRouteRequest, fetchValhallaSnappedRoute } from "./utils/valhallaRouting.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
 import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
@@ -970,6 +971,64 @@ async function startServer() {
       console.error("[Surface API] Unexpected error:", err?.message || err);
       return res.status(500).json({
         error: err?.message || "Fehler bei der Oberflächen-Analyse via Valhalla / OpenStreetMap.",
+      });
+    }
+  });
+
+  // Bounded in-memory LRU cache (15 min TTL, max 120 routes) for fast profile toggling & undo
+  const valhallaRouteCache = new Map<string, { expiresAt: number; result: Awaited<ReturnType<typeof fetchValhallaSnappedRoute>> }>();
+  const VALHALLA_CACHE_TTL_MS = 15 * 60 * 1000;
+  const VALHALLA_CACHE_MAX_ENTRIES = 120;
+
+  // OSM Valhalla road & trail snapping proxy (fixed FOSSGIS endpoints, strict coordinate & profile validation)
+  app.post("/api/routing/valhalla", async (req, res) => {
+    const validated = validateValhallaRouteRequest(req.body);
+    if (validated.ok === false) {
+      return res.status(400).json({
+        success: false,
+        error: validated.error,
+      });
+    }
+
+    const { waypoints, profile, language } = validated.data;
+    const cacheKey = `${profile}|${language}|${waypoints.map((w) => `${w.lat},${w.lng}`).join(";")}`;
+    const now = Date.now();
+    const cached = valhallaRouteCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      // Refresh LRU recency
+      valhallaRouteCache.delete(cacheKey);
+      valhallaRouteCache.set(cacheKey, cached);
+      return res.json({
+        success: true,
+        cached: true,
+        ...cached.result,
+      });
+    }
+    if (cached) {
+      valhallaRouteCache.delete(cacheKey);
+    }
+
+    try {
+      const result = await fetchValhallaSnappedRoute(waypoints, profile, language);
+      if (valhallaRouteCache.size >= VALHALLA_CACHE_MAX_ENTRIES) {
+        const oldestKey = valhallaRouteCache.keys().next().value;
+        if (oldestKey !== undefined) valhallaRouteCache.delete(oldestKey);
+      }
+      valhallaRouteCache.set(cacheKey, {
+        expiresAt: now + VALHALLA_CACHE_TTL_MS,
+        result,
+      });
+      return res.json({
+        success: true,
+        cached: false,
+        ...result,
+      });
+    } catch (err: any) {
+      console.warn("[Valhalla Routing API] Upstream route calculation failed:", err?.message || err);
+      return res.status(502).json({
+        success: false,
+        fallbackSuggested: true,
+        error: "Routing service temporarily unavailable. Using direct route fallback.",
       });
     }
   });

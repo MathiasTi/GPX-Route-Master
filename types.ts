@@ -97,6 +97,28 @@ export interface RawFileDetails {
   };
 }
 
+export type RouteTurnDirection =
+  | 'start'
+  | 'straight'
+  | 'slight-left'
+  | 'left'
+  | 'sharp-left'
+  | 'slight-right'
+  | 'right'
+  | 'sharp-right'
+  | 'uturn'
+  | 'arrive';
+
+export interface RouteTurnCue {
+  index: number;
+  lat: number;
+  lng: number;
+  distFromStartKm: number;
+  direction: RouteTurnDirection;
+  instruction: string;
+  streetName?: string;
+}
+
 export interface GPXTrack {
   id: string;
   name: string;
@@ -111,6 +133,7 @@ export interface GPXTrack {
   powerStats?: PowerStats;
   surfaceStats?: SurfaceSegment[];
   climbs?: ClimbSegment[];
+  routeManeuvers?: RouteTurnCue[];
   duration?: number; // in seconds
   hasTimestamps?: boolean;
   description?: string;

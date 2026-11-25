@@ -20,7 +20,7 @@ interface MapZoomControlsProps {
   idPrefix?: string;
 }
 
-export const MapZoomControls: React.FC<MapZoomControlsProps> = ({
+export const MapZoomControls: React.FC<MapZoomControlsProps> = React.memo(({
   currentZoom,
   minZoom = MAP_MIN_ZOOM,
   maxZoom = MAP_MAX_ZOOM,
@@ -61,7 +61,7 @@ export const MapZoomControls: React.FC<MapZoomControlsProps> = ({
 
   return (
     <div
-      className={`flex flex-col rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl backdrop-blur-md overflow-hidden select-none pointer-events-auto ${className}`}
+      className={`flex flex-col rounded-2xl bg-white/98 dark:bg-slate-900/98 border border-slate-200/90 dark:border-slate-800 shadow-lg lg:backdrop-blur-md overflow-hidden select-none pointer-events-auto map-overlay-layer ${className}`}
       role="group"
       aria-label="Karten-Zoom-Steuerung"
       onClick={stopEvent}
@@ -100,4 +100,4 @@ export const MapZoomControls: React.FC<MapZoomControlsProps> = ({
       </button>
     </div>
   );
-};
+});

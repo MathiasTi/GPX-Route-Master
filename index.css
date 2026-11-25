@@ -22,6 +22,25 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Mobile touch & compositing performance baseline */
+html,
+body {
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+select,
+input,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+.mobile-contain {
+  contain: layout style;
+}
+
 /* Leaflet dark-tiles filter - preserves map contrast in dark mode beautifully */
 .dark .dark-tiles .leaflet-tile-container {
   filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(105%);
@@ -49,11 +68,68 @@
   background-color: #111827 !important;
 }
 
-/* Smooth hardware-accelerated transitions on Leaflet route paths */
+/* Smooth transitions on Leaflet route paths when idle */
 path.leaflet-interactive {
-  transition: stroke 0.4s cubic-bezier(0.4, 0, 0.2, 1),
-              stroke-width 0.4s cubic-bezier(0.4, 0, 0.2, 1),
-              stroke-opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: stroke 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              stroke-width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              stroke-opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================================
+   Map Overlay GPU Compositing & Hardware-Accelerated Transform Layers
+   Keeps floating HUDs, route markers, and Leaflet overlay panes isolated on
+   dedicated compositor layers so the main thread stays free during heavy
+   route interactions (panning, pinch-zooming, waypoint dragging, scrubbing).
+   ============================================================================ */
+.map-overlay-layer {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  will-change: transform, opacity;
+  contain: layout style;
+}
+
+.map-gpu-host {
+  contain: layout style;
+}
+
+/* Promote Leaflet vector, marker, and tooltip overlay panes to GPU layers */
+.map-gpu-host .leaflet-overlay-pane,
+.map-gpu-host .leaflet-marker-pane,
+.map-gpu-host .leaflet-tooltip-pane {
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.map-gpu-host .leaflet-overlay-pane canvas,
+.map-gpu-host .leaflet-overlay-pane svg {
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+}
+
+/* Hardware-accelerate high-frequency route, hover, and comparison markers */
+.map-gpu-host .custom-hover-tooltip-marker,
+.map-gpu-host .route-planner-waypoint-icon,
+.map-gpu-host .custom-text-marker,
+.map-gpu-host .custom-poi-marker,
+.map-gpu-host .dual-compare-gap-badge,
+.map-gpu-host .dual-compare-marker-a,
+.map-gpu-host .dual-compare-marker-b {
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* During active pan/zoom/waypoint drag: promote map/tile panes & freeze SVG stroke transitions */
+.map-gpu-host.map-interacting .leaflet-map-pane,
+.map-gpu-host.map-interacting .leaflet-tile-pane {
+  will-change: transform;
+}
+
+.map-gpu-host.map-interacting path.leaflet-interactive {
+  transition: none !important;
 }
 
 /* ============================================================================

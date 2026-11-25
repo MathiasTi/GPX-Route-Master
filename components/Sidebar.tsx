@@ -1404,14 +1404,15 @@ const Sidebar: React.FC<SidebarProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: 0.16 }}
             onClick={() => setIsMobileMenuOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1050] md:hidden"
+            className="fixed inset-0 bg-slate-950/55 z-[1050] md:hidden"
           />
         )}
       </AnimatePresence>
 
       <div className={`
-        fixed inset-y-0 left-0 z-[1060] md:z-[80] transition-all duration-300 transform
+        fixed inset-y-0 left-0 z-[1060] md:z-[80] transition-transform duration-200 ease-out will-change-transform md:transition-[width]
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         md:relative md:translate-x-0
         w-[88vw] max-w-[340px] md:w-auto bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-2xl md:shadow-none
@@ -2443,7 +2444,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             </section>
           </div>
 
-          <div className="relative z-10 px-4 py-3 border-t border-slate-200/60 dark:border-slate-800/80 bg-slate-50/90 dark:bg-slate-900/90 backdrop-blur-sm text-[10px] text-slate-500 rounded-b-xl">
+          <div className="relative z-10 px-4 py-3 border-t border-slate-200/60 dark:border-slate-800/80 bg-slate-50/95 dark:bg-slate-900/95 text-[10px] text-slate-500 rounded-b-xl">
             <div className="flex justify-between items-center font-medium gap-2">
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
@@ -2491,4 +2492,4 @@ const Sidebar: React.FC<SidebarProps> = ({
   );
 };
 
-export default Sidebar;
+export default React.memo(Sidebar);

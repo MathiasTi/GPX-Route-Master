@@ -1457,6 +1457,15 @@ const HIGH_CONTRAST_COLORS = [
 
 let colorIndex = 0;
 const locationCache = new Map<string, string>();
+const LOCATION_CACHE_MAX_SIZE = 500;
+
+const setLocationCacheEntry = (key: string, value: string) => {
+  if (locationCache.size >= LOCATION_CACHE_MAX_SIZE && !locationCache.has(key)) {
+    const oldestKey = locationCache.keys().next().value;
+    if (oldestKey !== undefined) locationCache.delete(oldestKey);
+  }
+  locationCache.set(key, value);
+};
 
 export const getLocationName = async (lat: number, lng: number): Promise<string> => {
   const fallback = `${lat.toFixed(2)}, ${lng.toFixed(2)}`;
@@ -1465,10 +1474,9 @@ export const getLocationName = async (lat: number, lng: number): Promise<string>
     return locationCache.get(cacheKey)!;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
-
     const response = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
       {
@@ -1479,31 +1487,29 @@ export const getLocationName = async (lat: number, lng: number): Promise<string>
         signal: controller.signal
       }
     );
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
-      locationCache.set(cacheKey, fallback);
       return fallback;
     }
 
     const text = await response.text();
     if (!text || !text.startsWith('{')) {
-      locationCache.set(cacheKey, fallback);
       return fallback;
     }
 
     const data = JSON.parse(text);
     if (data && data.address) {
       const resolved = data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.county || "Unbekannter Ort";
-      locationCache.set(cacheKey, resolved);
+      setLocationCacheEntry(cacheKey, resolved);
       return resolved;
     }
-    locationCache.set(cacheKey, fallback);
+    setLocationCacheEntry(cacheKey, fallback);
     return fallback;
   } catch {
-    // Graceful fallback without noisy console errors
-    locationCache.set(cacheKey, fallback);
+    // Graceful fallback without poisoning cache on transient offline errors
     return fallback;
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

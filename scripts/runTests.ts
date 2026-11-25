@@ -25,6 +25,7 @@ import { runKomootVersioningTests } from '../tests/komootVersioning.test';
 import { runMapZoomTests } from '../tests/mapZoom.test';
 import { runGarminStepsSyncTests } from '../tests/garminStepsSync.test';
 import { runWorkspaceQoLTests } from '../tests/workspaceQoL.test';
+import { runMobileAndRoutingTests } from '../tests/mobileAndRouting.test';
 
 async function main() {
   try {
@@ -57,8 +58,9 @@ async function main() {
     const mapZoomSuccess = runMapZoomTests();
     const garminStepsSyncSuccess = await runGarminStepsSyncTests();
     const workspaceQoLSuccess = await runWorkspaceQoLTests();
+    const mobileAndRoutingSuccess = runMobileAndRoutingTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess || !mobileAndRoutingSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

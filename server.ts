@@ -60,6 +60,7 @@ import {
 import { analyzeRouteSurfacePipeline } from "./utils/surfaceAnalyzer.js";
 import { validateValhallaRouteRequest, fetchValhallaSnappedRoute } from "./utils/valhallaRouting.js";
 import { calculateSurfaceStatsFromPoints, hydratePointsWithSurface } from "./utils/gpxUtils.js";
+import { sanitizeMetadataRecursive, sanitizePlainText, sanitizeTextMarkers } from "./utils/trackSanitizer.js";
 import { safeJsonParse, safeStringifyOrFallback } from "./domain/serialization/safeJson.js";
 import { performLocalIntensiveAnalysis, calculateCumulativeDistances, formatSecondsToTime } from "./utils/intensiveAnalysis.js";
 import {
@@ -1726,30 +1727,42 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         return res.status(400).json({ success: false, error: "Points array exceeds maximum allowed length of 100,000 points." });
       }
 
-      const tagsList = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : (typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : []);
+      const safeTrackName = sanitizePlainText(name, 200) || "Unbenannter Track";
+      const tagsList = (
+        Array.isArray(tags)
+          ? tags.map(t => sanitizePlainText(t, 64))
+          : (typeof tags === 'string' ? tags.split(',').map(t => sanitizePlainText(t, 64)) : [])
+      ).filter(Boolean);
       if (isVirtual === true && !tagsList.some(t => t.toLowerCase() === 'indoor/virtuell')) {
         tagsList.push('Indoor/Virtuell');
       }
-      const safeDesc = String(description || "").slice(0, 5000);
+      const safeDesc = sanitizePlainText(description || "", 4000);
+      const safeTourGroup = typeof tourGroup === "string" ? sanitizePlainText(tourGroup, 120) : undefined;
+      const safeOrigFilename = originalFilename
+        ? sanitizePlainText(originalFilename, 255)
+        : (rawFileDetails?.fileName ? sanitizePlainText(rawFileDetails.fileName, 255) : undefined);
       const safeActivityType = activityType === "running" ? "running" : "cycling";
       const safeRawFileDetails = rawFileDetails && typeof rawFileDetails === "object"
-        ? {
+        ? sanitizeMetadataRecursive({
             ...rawFileDetails,
             metadata: {
               ...(rawFileDetails.metadata || {}),
               ...(isVirtual === true ? { isVirtual: true } : {})
             }
-          }
+          })
         : isVirtual === true
-        ? { fileType: 'gpx', fileName: originalFilename || `${name}.gpx`, metadata: { isVirtual: true } }
+        ? { fileType: 'gpx', fileName: safeOrigFilename || `${safeTrackName}.gpx`, metadata: { isVirtual: true } }
         : undefined;
+      const safeSurfaceStats = Array.isArray(surfaceStats)
+        ? sanitizeMetadataRecursive(surfaceStats)
+        : surfaceStats;
 
       const safeColor = color ? sanitizeHexColor(color, '#3b82f6') : '#3b82f6';
 
       // Execute SaveTrackUseCase to strictly validate Domain invariants & invariants
       const domainSaveRes = await saveTrackUseCase.execute({
         id: id.trim(),
-        name: name.trim(),
+        name: safeTrackName,
         points,
         color: safeColor,
         distanceKm: Math.max(0, parseFloat(String(distance)) || 0),
@@ -1769,7 +1782,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       // Also persist legacy metadata extensions (powerStats, surfaceStats, climbs, rawFileDetails) to SQLite
       saveTrack({
         id: id.trim(),
-        name: name.trim(),
+        name: safeTrackName,
         distance: parseFloat(String(distance)) || 0,
         ascent: parseFloat(String(ascent)) || 0,
         descent: parseFloat(String(descent)) || 0,
@@ -1777,13 +1790,13 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
         activityType: safeActivityType,
         description: safeDesc,
         tags: tagsList.join(","),
-        dateCreated: dateCreated ? String(dateCreated).slice(0, 40) : undefined,
-        tourGroup: typeof tourGroup === "string" ? tourGroup.trim().slice(0, 120) : undefined,
+        dateCreated: dateCreated ? sanitizePlainText(dateCreated, 40) : undefined,
+        tourGroup: safeTourGroup,
         addedAt: typeof addedAt === "number" && Number.isFinite(addedAt) ? addedAt : undefined,
-        originalFilename: originalFilename ? String(originalFilename).slice(0, 255) : (rawFileDetails?.fileName ? String(rawFileDetails.fileName).slice(0, 255) : undefined),
+        originalFilename: safeOrigFilename,
         points,
         powerStats,
-        surfaceStats,
+        surfaceStats: safeSurfaceStats,
         climbs,
         maxSlope: maxSlope !== undefined && maxSlope !== null ? parseFloat(String(maxSlope)) : undefined,
         color: color ? sanitizeHexColor(color, '#3b82f6') : undefined,
@@ -1843,30 +1856,40 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           continue;
         }
 
-        const tagsList = Array.isArray(track.tags)
-          ? track.tags.slice(0, 50).map((t: any) => String(t).trim()).filter(Boolean)
-          : String(track.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean);
+        const safeBatchName = sanitizePlainText(track.name, 200) || "Unbenannter Track";
+        const tagsList = (
+          Array.isArray(track.tags)
+            ? track.tags.slice(0, 50).map((t: any) => sanitizePlainText(t, 64))
+            : String(track.tags || "").split(",").map((t: string) => sanitizePlainText(t, 64))
+        ).filter(Boolean);
         if (track.isVirtual === true && !tagsList.some((t: string) => t.toLowerCase() === 'indoor/virtuell')) {
           tagsList.push('Indoor/Virtuell');
         }
         const tagsStr = tagsList.join(",").slice(0, 1000);
-        const safeDesc = String(track.description || "").slice(0, 5000);
+        const safeDesc = sanitizePlainText(track.description || "", 4000);
+        const safeTourGroup = typeof track.tourGroup === "string" ? sanitizePlainText(track.tourGroup, 120) : undefined;
+        const safeOrigFilename = track.originalFilename
+          ? sanitizePlainText(track.originalFilename, 255)
+          : (track.rawFileDetails?.fileName ? sanitizePlainText(track.rawFileDetails.fileName, 255) : undefined);
         const safeActivityType = String(track.activityType || "cycling").slice(0, 50);
         const safeRawDetails = track.rawFileDetails && typeof track.rawFileDetails === "object"
-          ? {
+          ? sanitizeMetadataRecursive({
               ...track.rawFileDetails,
               metadata: {
                 ...(track.rawFileDetails.metadata || {}),
                 ...(track.isVirtual === true ? { isVirtual: true } : {})
               }
-            }
+            })
           : track.isVirtual === true
-          ? { fileType: 'gpx', fileName: track.originalFilename || `${track.name}.gpx`, metadata: { isVirtual: true } }
+          ? { fileType: 'gpx', fileName: safeOrigFilename || `${safeBatchName}.gpx`, metadata: { isVirtual: true } }
           : undefined;
+        const safeBatchSurfaceStats = Array.isArray(track.surfaceStats)
+          ? sanitizeMetadataRecursive(track.surfaceStats)
+          : track.surfaceStats;
 
         saveTrack({
           id: String(track.id).trim().slice(0, 128),
-          name: String(track.name).trim().slice(0, 500),
+          name: safeBatchName,
           distance: parseFloat(String(track.distance)) || 0,
           ascent: parseFloat(String(track.ascent)) || 0,
           descent: parseFloat(String(track.descent)) || 0,
@@ -1874,13 +1897,13 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
           activityType: safeActivityType,
           description: safeDesc,
           tags: tagsStr,
-          dateCreated: track.dateCreated ? String(track.dateCreated).slice(0, 40) : undefined,
-          tourGroup: typeof track.tourGroup === "string" ? track.tourGroup.trim().slice(0, 120) : undefined,
+          dateCreated: track.dateCreated ? sanitizePlainText(track.dateCreated, 40) : undefined,
+          tourGroup: safeTourGroup,
           addedAt: typeof track.addedAt === "number" && Number.isFinite(track.addedAt) ? track.addedAt : undefined,
-          originalFilename: track.originalFilename ? String(track.originalFilename).slice(0, 255) : (track.rawFileDetails?.fileName ? String(track.rawFileDetails.fileName).slice(0, 255) : undefined),
+          originalFilename: safeOrigFilename,
           points: track.points,
           powerStats: track.powerStats,
-          surfaceStats: track.surfaceStats,
+          surfaceStats: safeBatchSurfaceStats,
           climbs: track.climbs,
           maxSlope: track.maxSlope !== undefined && track.maxSlope !== null ? parseFloat(String(track.maxSlope)) : undefined,
           color: track.color ? sanitizeHexColor(track.color, '#3b82f6') : undefined,
@@ -3617,10 +3640,26 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     }
   });
 
+  const sanitizeSettingValue = (settingKey: string, rawVal: unknown): string => {
+    const strVal = String(rawVal ?? "").slice(0, 50000);
+    if (settingKey === "velo_text_markers") {
+      try {
+        const parsed = JSON.parse(strVal);
+        return JSON.stringify(sanitizeTextMarkers(parsed)).slice(0, 50000);
+      } catch {
+        return "[]";
+      }
+    }
+    return strVal;
+  };
+
   // GET /api/settings: Retrieve all settings from SQLite
   app.get("/api/settings", (req, res) => {
     try {
       const settings = getAllSettings();
+      if (typeof settings.velo_text_markers === "string") {
+        settings.velo_text_markers = sanitizeSettingValue("velo_text_markers", settings.velo_text_markers);
+      }
       res.json({ success: true, settings });
     } catch (err: any) {
       console.error("Failed to load settings:", err);
@@ -3646,14 +3685,14 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       if (settings && typeof settings === "object" && !Array.isArray(settings)) {
         for (const [k, v] of Object.entries(settings)) {
           if (!forbiddenKeys.includes(k) && typeof k === "string" && k.length <= 128) {
-            saveSetting(k, String(v).slice(0, 50000));
+            saveSetting(k, sanitizeSettingValue(k, v));
           }
         }
         return res.json({ success: true, message: "Settings saved successfully." });
       }
 
       if (key !== undefined && typeof key === "string" && !forbiddenKeys.includes(key) && key.length <= 128) {
-        saveSetting(key, String(value ?? "").slice(0, 50000));
+        saveSetting(key, sanitizeSettingValue(key, value));
         return res.json({ success: true, message: `Setting '${key}' saved successfully.` });
       }
 

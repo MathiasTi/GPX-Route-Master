@@ -3,7 +3,33 @@ import { GPXPoint, GPXTrack, PowerStats, ClimbSegment, TimeGap, TrackValidationR
 import { toValidTimestampMs } from '../domain/telemetry/safeTime';
 import { validateTrackStartPoint } from './startPointValidator';
 import { getKomootSourceMeta, getVersionedGpxFilename } from './komootVersioning';
-export { validateTrackStartPoint };
+import {
+  sanitizePlainText,
+  containsUnsafeMarkup,
+  sanitizeSafeHttpUrl,
+  sanitizeMetadataRecursive,
+  hasUnsafeMetadataRecursive,
+  sanitizeMarkerColor,
+  sanitizeTextMarker,
+  sanitizeTextMarkers,
+  sanitizeTrackMetadata,
+  detectUnsafeTrackAndMarkerMetadata,
+  preCheckGpxUploadContent
+} from './trackSanitizer';
+export {
+  validateTrackStartPoint,
+  sanitizePlainText,
+  containsUnsafeMarkup,
+  sanitizeSafeHttpUrl,
+  sanitizeMetadataRecursive,
+  hasUnsafeMetadataRecursive,
+  sanitizeMarkerColor,
+  sanitizeTextMarker,
+  sanitizeTextMarkers,
+  sanitizeTrackMetadata,
+  detectUnsafeTrackAndMarkerMetadata,
+  preCheckGpxUploadContent
+};
 
 export const toDate = (timeVal: any): Date | undefined => {
   if (!timeVal) return undefined;
@@ -1578,16 +1604,17 @@ export const getChildNode = (parent: Element, tagName: string): Element | null =
   return null;
 };
 
-export const validateGPX = (xmlString: string): { isValid: boolean; error?: string } => {
+export const validateGPX = (xmlString: string): { isValid: boolean; error?: string; warning?: string } => {
   try {
-    // Security check: Ignore custom ENTITY, DOCTYPE, or SYSTEM tags to avoid XXE/Billion-Laughs attacks
-    const lowerXml = xmlString.toLowerCase();
-    if (lowerXml.includes('<!entity') || lowerXml.includes('<!doctype') || lowerXml.includes('<!system')) {
-      return { isValid: false, error: "Sicherheitsfehler: Benutzerdefinierte DOCTYPE- oder ENTITY-Definitionen sind im GPX nicht erlaubt." };
+    // Security pre-check: block DOCTYPE/ENTITY/SYSTEM (XXE) and neutralize active XSS markup in GPX metadata
+    const preCheck = preCheckGpxUploadContent(xmlString);
+    if (preCheck.blocked) {
+      return { isValid: false, error: preCheck.error };
     }
+    const safeXml = preCheck.sanitizedXml ?? xmlString;
 
     const parser = new DOMParser();
-    const xml = parser.parseFromString(xmlString, "text/xml");
+    const xml = parser.parseFromString(safeXml, "text/xml");
     
     // Check for XML parsing errors
     const parserError = xml.getElementsByTagName("parsererror");
@@ -1860,7 +1887,13 @@ export const hasRealGpsData = (track: Partial<GPXTrack> | null | undefined): boo
 };
 
 export const parseGPX = async (xmlString: string, fileName: string): Promise<GPXTrack | null> => {
-  const validation = validateGPX(xmlString);
+  const preCheck = preCheckGpxUploadContent(xmlString);
+  if (preCheck.blocked) {
+    console.error("GPX Validation Error:", preCheck.error);
+    return null;
+  }
+  const safeXml = preCheck.sanitizedXml ?? xmlString;
+  const validation = validateGPX(safeXml);
   if (!validation.isValid) {
     console.error("GPX Validation Error:", validation.error);
     return null;
@@ -1868,7 +1901,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
 
   try {
     const parser = new DOMParser();
-    const xml = parser.parseFromString(xmlString, "text/xml");
+    const xml = parser.parseFromString(safeXml, "text/xml");
     const trkpts = getGPXPoints(xml);
     
     // Try to extract name, description, and metadata timestamp from GPX XML
@@ -2082,7 +2115,7 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
       });
     });
 
-    return {
+    const rawTrack: GPXTrack = {
       id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,
       name: activityName,
       points,
@@ -2110,6 +2143,8 @@ export const parseGPX = async (xmlString: string, fileName: string): Promise<GPX
         }
       }
     };
+
+    return sanitizeTrackMetadata(rawTrack).track;
   } catch (error) {
     console.error("Error parsing GPX:", error);
     return null;
@@ -2242,6 +2277,9 @@ export interface ExportGPXOptions {
 }
 
 export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string => {
+  const safeTrack = sanitizeTrackMetadata(track).track;
+  track = safeTrack;
+
   const escapeXml = (unsafe: string): string => {
     return (unsafe || '')
       .replace(/&/g, '&amp;')
@@ -2347,8 +2385,9 @@ export const exportToGPX = (track: GPXTrack, options?: ExportGPXOptions): string
 
   // Export Waypoints (Text Markers / POIs)
   if (options?.textMarkers && options.textMarkers.length > 0) {
-    options.textMarkers.forEach(m => {
-      const markerName = m.label || (m as any).text || 'Waypoint';
+    const cleanMarkers = sanitizeTextMarkers(options.textMarkers);
+    cleanMarkers.forEach(m => {
+      const markerName = sanitizePlainText(m.label || 'Waypoint', 120) || 'Waypoint';
       xml += `\n  <wpt lat="${m.lat.toFixed(6)}" lon="${m.lng.toFixed(6)}">`;
       xml += `\n    <name>${escapeXml(markerName)}</name>`;
       xml += `\n    <sym>Waypoint</sym>`;
@@ -2714,7 +2753,7 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
       }
     });
 
-    return {
+    const rawStreamTrack: GPXTrack = {
       id: crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${Math.random()}`,
       name: activityName,
       points: sanitizedPoints,
@@ -2742,6 +2781,8 @@ export const parseGPXStream = async (blob: Blob, fileName: string): Promise<GPXT
         }
       }
     };
+
+    return sanitizeTrackMetadata(rawStreamTrack).track;
   } catch (error) {
     console.error("Error parsing GPX stream:", error);
     return null;
@@ -3604,7 +3645,10 @@ export const getCachedSimplifiedPoints = (trackId: string, points: GPXPoint[], t
  * Performs a comprehensive validation pre-check on a track to identify coordinate errors,
  * extreme outliers, Null Island drops, missing elevations, and sensor spikes.
  */
-export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport => {
+export const analyzeTrackValidation = (
+  track: GPXTrack,
+  textMarkers: TextMarker[] = []
+): TrackValidationReport => {
   const points = track.points || [];
   const totalPoints = points.length;
   const issues: ValidationIssue[] = [];
@@ -3813,6 +3857,22 @@ export const analyzeTrackValidation = (track: GPXTrack): TrackValidationReport =
     issues.push(startValidation.issue);
   }
 
+  // 7. Recursive Track Metadata & TextMarker Security Check
+  const relatedMarkers = textMarkers.filter((m) => !m.trackId || m.trackId === track.id);
+  const unsafeCheck = detectUnsafeTrackAndMarkerMetadata(track, relatedMarkers);
+  if (unsafeCheck.count > 0) {
+    issues.push({
+      id: 'issue-unsafe-metadata',
+      type: 'unsafe_metadata',
+      severity: 'warning',
+      title: 'Unsichere HTML-/Skript-Zeichen in Metadaten oder Markern',
+      description: `${unsafeCheck.count} Feld(er) (${unsafeCheck.fields.slice(0, 4).join(', ')}) enthalten potenziell unsichere HTML- oder Skript-Sequenzen.`,
+      affectedCount: unsafeCheck.count,
+      autoFixable: true,
+      fixDescription: 'Track-Metadaten und Marker-Namen werden rekursiv in sicheren Klartext bereinigt.'
+    });
+  }
+
   let overallStatus: 'clean' | 'info' | 'warning' | 'error' = 'clean';
   if (issues.some(i => i.severity === 'error')) {
     overallStatus = 'error';
@@ -3855,7 +3915,9 @@ export const autoFixTrackValidation = (
   userWeight: number = 75,
   estimatedSpeed: number = 25
 ): GPXTrack => {
-  if (!track.points || track.points.length === 0) return track;
+  const metadataSanitized = sanitizeTrackMetadata(track).track;
+  if (!metadataSanitized.points || metadataSanitized.points.length === 0) return metadataSanitized;
+  track = metadataSanitized;
 
   // 1. Filter out invalid coords and Null Island
   const isValidCoord = (p: GPXPoint) => {
@@ -4348,10 +4410,17 @@ export const shiftLoopStartTrack = (
 
 export const sanitizeTrackAllInOne = (
   track: GPXTrack,
-  options: { removeSpikes?: boolean; smoothElevation?: boolean; simplifyPoints?: boolean } = {
+  options: {
+    removeSpikes?: boolean;
+    smoothElevation?: boolean;
+    simplifyPoints?: boolean;
+    sanitizeMetadata?: boolean;
+    textMarkers?: TextMarker[];
+  } = {
     removeSpikes: true,
     smoothElevation: true,
-    simplifyPoints: true
+    simplifyPoints: true,
+    sanitizeMetadata: true
   },
   ftp: number = 250,
   userWeight: number = 75,
@@ -4361,17 +4430,39 @@ export const sanitizeTrackAllInOne = (
   removedOutliers: number;
   fixedSpikes: number;
   reducedPoints: number;
+  sanitizedMetadataFields: number;
+  sanitizedTextMarkers: TextMarker[];
 } => {
-  if (!track || !track.points || track.points.length < 3) {
+  const shouldSanitizeMeta = options.sanitizeMetadata !== false;
+  const metaResult = shouldSanitizeMeta
+    ? sanitizeTrackMetadata(track)
+    : { track, sanitizedFieldsCount: 0 };
+  const sanitizedTrackBase = metaResult.track;
+  let sanitizedMetadataFields = metaResult.sanitizedFieldsCount;
+
+  const rawMarkers = Array.isArray(options.textMarkers) ? options.textMarkers : [];
+  const sanitizedTextMarkers = shouldSanitizeMeta
+    ? rawMarkers.map((m) => {
+        const clean = sanitizeTextMarker(m);
+        if (clean.label !== m.label || clean.color !== m.color || clean.trackId !== m.trackId) {
+          sanitizedMetadataFields++;
+        }
+        return clean;
+      })
+    : rawMarkers;
+
+  if (!sanitizedTrackBase || !sanitizedTrackBase.points || sanitizedTrackBase.points.length < 3) {
     return {
-      sanitizedTrack: track,
+      sanitizedTrack: sanitizedTrackBase,
       removedOutliers: 0,
       fixedSpikes: 0,
-      reducedPoints: 0
+      reducedPoints: 0,
+      sanitizedMetadataFields,
+      sanitizedTextMarkers
     };
   }
 
-  let pts = track.points.map(p => ({ ...p }));
+  let pts = sanitizedTrackBase.points.map(p => ({ ...p }));
   let removedOutliers = 0;
   let fixedSpikes = 0;
 
@@ -4431,13 +4522,15 @@ export const sanitizeTrackAllInOne = (
   const climbs = findClimbs(pts);
   const surfaceStats = calculateSurfaceStatsFromPoints(pts);
   hydratePointsWithSurface(pts, surfaceStats, totalDistKm);
-  const powerStats = calculatePowerStats(pts, ftp, userWeight, estimatedSpeed, track.activityType);
+  const powerStats = calculatePowerStats(pts, ftp, userWeight, estimatedSpeed, sanitizedTrackBase.activityType);
 
-  const cleanName = track.name.includes('(Bereinigt)') ? track.name : `${track.name} (Bereinigt)`;
+  const cleanName = sanitizedTrackBase.name.includes('(Bereinigt)')
+    ? sanitizedTrackBase.name
+    : `${sanitizedTrackBase.name} (Bereinigt)`;
 
   return {
     sanitizedTrack: {
-      ...track,
+      ...sanitizedTrackBase,
       name: cleanName,
       points: pts,
       distance: totalDistKm,
@@ -4450,7 +4543,9 @@ export const sanitizeTrackAllInOne = (
     },
     removedOutliers,
     fixedSpikes,
-    reducedPoints
+    reducedPoints,
+    sanitizedMetadataFields,
+    sanitizedTextMarkers
   };
 };
 

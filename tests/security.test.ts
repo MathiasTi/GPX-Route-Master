@@ -23,8 +23,19 @@ import {
   sanitizeGarminActivityId
 } from '../utils/securityMiddleware';
 import { buildMapHoverCardHtml } from '../components/map/MapHoverTooltipCard';
-import { analyzeTrackValidation, autoFixTrackValidation } from '../utils/gpxUtils';
-import { GPXTrack } from '../types';
+import {
+  analyzeTrackValidation,
+  autoFixTrackValidation,
+  sanitizeTrackAllInOne,
+  exportToGPX,
+  preCheckGpxUploadContent,
+  sanitizePlainText,
+  sanitizeMetadataRecursive,
+  hasUnsafeMetadataRecursive,
+  sanitizeTextMarker,
+  sanitizeTextMarkers
+} from '../utils/gpxUtils';
+import { GPXTrack, TextMarker } from '../types';
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import path from 'path';
@@ -460,6 +471,239 @@ export function runSecurityTests(): boolean {
         serverSrc.includes('zwischen ${safeStartLoc} und ${safeEndLoc}'),
       'Gemini prompt interpolates sanitized safeDate, safeStartLoc, and safeEndLoc'
     );
+  });
+
+  // 18. Recursive Plain-Text & Nested Metadata XSS Sanitization
+  test('Track Sanitizer: Strips nested script/event-handler/protocol XSS while preserving UTF-8 text', () => {
+    assert(
+      sanitizePlainText('Taunus & Feldberg Runde (ÄÖÜß)') === 'Taunus & Feldberg Runde (ÄÖÜß)',
+      'Legitimate UTF-8 track names with umlauts and ampersands must be preserved'
+    );
+    const nestedPayload = 'Alpen <scr<script>ipt>alert(1)</scr</script>ipt> Tour';
+    const cleanedNested = sanitizePlainText(nestedPayload);
+    assert(!cleanedNested.toLowerCase().includes('<script'), 'Nested script tag bypass must be removed');
+    assert(!cleanedNested.includes('alert(1)'), 'Script body must be stripped');
+    assert(cleanedNested.includes('Alpen') && cleanedNested.includes('Tour'), 'Surrounding benign text preserved');
+
+    const imgEventPayload = 'Cafe <img src=x onerror=alert(document.cookie)> Stop';
+    const cleanedImg = sanitizePlainText(imgEventPayload);
+    assert(!cleanedImg.includes('<img') && !cleanedImg.toLowerCase().includes('onerror='), 'Image event handler XSS must be stripped');
+
+    const svgPayload = '<svg/onload=alert(1)>Passhöhe';
+    const cleanedSvg = sanitizePlainText(svgPayload);
+    assert(!cleanedSvg.toLowerCase().includes('<svg') && !cleanedSvg.toLowerCase().includes('onload='), 'SVG onload payload must be stripped');
+    assert(cleanedSvg.includes('Passhöhe'), 'Text after SVG payload preserved');
+
+    const jsProtoPayload = 'javascript:alert(1) data:text/html,<script>x</script> Ziel';
+    const cleanedProto = sanitizePlainText(jsProtoPayload);
+    assert(!cleanedProto.toLowerCase().includes('javascript:') && !cleanedProto.toLowerCase().includes('data:text/html'), 'Dangerous URI schemes must be stripped');
+
+    const unclosedTag = 'Start <iframe src="evil"';
+    const cleanedUnclosed = sanitizePlainText(unclosedTag);
+    assert(!cleanedUnclosed.includes('<') && !cleanedUnclosed.toLowerCase().includes('iframe'), 'Unclosed HTML tag fragments must be removed');
+
+    const nestedObj: Record<string, any> = {
+      creator: 'Garmin <script>alert(1)</script>',
+      nested: {
+        items: ['ok', '<img src=x onerror=alert(2)>Wpt', { deepNote: 'onclick=evil() Gipfel' }],
+        sourceUrl: 'https://www.komoot.com/tour/12345',
+        badUrl: 'javascript:alert(3)'
+      }
+    };
+    nestedObj.self = nestedObj; // circular reference resilience
+    assert(hasUnsafeMetadataRecursive(nestedObj) === true, 'Recursive detector must flag deeply nested XSS');
+    const rec = sanitizeMetadataRecursive(nestedObj);
+    assert(rec.nested.sourceUrl === 'https://www.komoot.com/tour/12345', 'Valid https URL in *Url key preserved');
+    assert(rec.nested.badUrl === '', 'javascript: URL in *Url key must be cleared');
+    assert(!JSON.stringify(rec.nested.items).toLowerCase().includes('onerror'), 'Nested array/object payloads must be cleaned');
+    assert(hasUnsafeMetadataRecursive(rec) === false, 'Sanitized nested metadata must pass clean check');
+  });
+
+  // 19. User-Defined TextMarker Sanitization (XSS + Color + Bounds Defense)
+  test('TextMarker Sanitizer: Cleans XSS in marker names, validates colors, and rejects invalid coordinates', () => {
+    const dirtyMarkers: TextMarker[] = [
+      {
+        id: 'm1<script>',
+        lat: 50.1109,
+        lng: 8.6821,
+        label: '<img src=x onerror=alert(1)>Bäckerei <b>Pause</b>',
+        color: '" onclick="alert(1)'
+      },
+      {
+        id: 'm2',
+        lat: 50.2,
+        lng: 8.7,
+        label: '<script>alert("xss")</script>',
+        color: 'emerald'
+      },
+      {
+        id: 'm3',
+        lat: 50.3,
+        lng: 8.8,
+        label: 'Aussichtspunkt',
+        color: '#2563eb'
+      },
+      {
+        id: 'm4-oob',
+        lat: 95.0,
+        lng: 200.0,
+        label: 'Invalid Coord',
+        color: 'indigo'
+      }
+    ];
+
+    const cleaned = sanitizeTextMarkers(dirtyMarkers);
+    assert(cleaned.length === 3, 'Out-of-bounds marker must be dropped');
+    assert(!cleaned[0].label.includes('<img') && !cleaned[0].label.toLowerCase().includes('onerror') && cleaned[0].label.includes('Bäckerei'), 'XSS stripped from marker 1 label');
+    assert(cleaned[0].color === 'indigo', 'Injected color attribute must fall back to safe default');
+    assert(cleaned[1].label === 'Marker', 'Pure-script marker label must fall back to safe "Marker"');
+    assert(cleaned[1].color === 'emerald', 'Whitelisted palette color preserved');
+    assert(cleaned[2].color === '#2563eb' && cleaned[2].label === 'Aussichtspunkt', 'Valid hex color and clean label preserved');
+
+    const single = sanitizeTextMarker({
+      id: 'm-js',
+      lat: 48.1,
+      lng: 11.5,
+      label: 'javascript:alert(1) Treffpunkt',
+      color: 'rose'
+    });
+    assert(single !== null && !single.label.toLowerCase().includes('javascript:') && single.label.includes('Treffpunkt'), 'Single marker sanitizer strips javascript: URI');
+  });
+
+  // 20. sanitizeTrackAllInOne Recursive Track Metadata & TextMarker Sanitization
+  test('sanitizeTrackAllInOne: Recursively sanitizes track metadata and passed TextMarkers (even with <3 points)', () => {
+    const taintedTrack: GPXTrack = {
+      id: 'track-xss-1',
+      name: 'Feldberg <script>alert(1)</script> Classic',
+      description: '<svg onload=alert(2)>Schöne Tour',
+      tourGroup: '<b>Rennrad</b> Gruppe',
+      originalFilename: 'tour<img src=x onerror=alert(3)>.gpx',
+      tags: ['asphalt', '<script>evil()</script>berge'],
+      distance: 12,
+      ascent: 300,
+      descent: 300,
+      maxSlope: 8,
+      color: '" onmouseover="alert(1)',
+      visible: true,
+      points: [
+        { lat: 50.11, lng: 8.68, ele: 200, surface: '<script>x</script>asphalt' },
+        { lat: 50.12, lng: 8.69, ele: 250, surface: 'gravel' }
+      ],
+      routeManeuvers: [
+        { index: 0, distFromStartKm: 0, lat: 50.11, lng: 8.68, instruction: '<img src=x onerror=alert(4)>Links abbiegen', direction: 'left', streetName: '<b>Hauptstr</b>' }
+      ],
+      rawFileDetails: {
+        fileType: 'gpx',
+        fileName: 'raw<script>.gpx',
+        fileSize: 1024,
+        metadata: {
+          creator: 'EvilGPS <iframe src="x"></iframe>',
+          komootSource: {
+            sourceType: 'komoot',
+            sourceUrl: 'javascript:alert(5)',
+            version: 1,
+            contentHash: 'abc123',
+            importedAt: '2026-01-01T00:00:00Z',
+            lastCheckedAt: '2026-01-01T00:00:00Z',
+            versionHistory: []
+          },
+          rawRecords: [
+            {
+              type: 'wpt',
+              data: {
+                name: '<svg/onload=alert(6)>Brunnen',
+                desc: 'Wasser <script>steal()</script>'
+              }
+            }
+          ]
+        }
+      }
+    };
+
+    const taintedMarkers: TextMarker[] = [
+      { id: 'tm-1', lat: 50.115, lng: 8.685, label: '<img src=x onerror=alert(9)>Gipfelkreuz', color: 'javascript:alert(1)' }
+    ];
+
+    const res = sanitizeTrackAllInOne(taintedTrack, { textMarkers: taintedMarkers });
+    assert(res.sanitizedMetadataFields > 0, 'Must report sanitized metadata fields even with <3 points');
+    assert(!res.sanitizedTrack.name.includes('<script') && res.sanitizedTrack.name.includes('Feldberg'), 'Track name sanitized');
+    assert(!String(res.sanitizedTrack.description || '').toLowerCase().includes('onload'), 'Track description sanitized');
+    assert(!String(res.sanitizedTrack.tourGroup || '').includes('<b>'), 'Track tourGroup sanitized');
+    assert(res.sanitizedTrack.color === '#3b82f6', 'Malicious track color replaced with safe hex');
+    assert(!res.sanitizedTrack.tags!.some(t => t.includes('<script')), 'Track tags sanitized');
+    assert(!String(res.sanitizedTrack.points[0].surface || '').includes('<script'), 'Track point surface sanitized');
+    assert(!res.sanitizedTrack.routeManeuvers![0].instruction.includes('<img'), 'Route maneuver instruction sanitized');
+    assert(!String(res.sanitizedTrack.routeManeuvers![0].streetName || '').includes('<b>'), 'Route maneuver streetName sanitized');
+    assert(!String(res.sanitizedTrack.rawFileDetails?.metadata?.creator || '').toLowerCase().includes('iframe'), 'Nested rawFileDetails creator sanitized');
+    assert(res.sanitizedTrack.rawFileDetails?.metadata?.komootSource?.sourceUrl === '', 'Unsafe sourceUrl in rawFileDetails cleared');
+    assert(!String(res.sanitizedTrack.rawFileDetails?.metadata?.rawRecords?.[0]?.data?.name || '').toLowerCase().includes('onload'), 'Nested GPX waypoint name sanitized');
+    assert(res.sanitizedTextMarkers.length === 1, 'Sanitized text markers returned');
+    assert(!res.sanitizedTextMarkers[0].label.includes('<img') && res.sanitizedTextMarkers[0].label.includes('Gipfelkreuz'), 'Passed TextMarker label sanitized');
+    assert(res.sanitizedTextMarkers[0].color === 'indigo', 'Passed TextMarker malicious color replaced');
+
+    // Validation & autoFix check
+    const validationReport = analyzeTrackValidation(taintedTrack, taintedMarkers);
+    assert(validationReport.issues.some(i => i.type === 'unsafe_metadata'), 'analyzeTrackValidation flags unsafe_metadata on tainted track/markers');
+
+    const autoFixed = autoFixTrackValidation(taintedTrack);
+    const recheck = analyzeTrackValidation(autoFixed, res.sanitizedTextMarkers);
+    assert(!recheck.issues.some(i => i.type === 'unsafe_metadata'), 'autoFixTrackValidation clears unsafe_metadata issues');
+  });
+
+  // 21. GPX Upload Pre-Check & Export XSS Hardening
+  test('GPX Pre-Check & Export: Blocks DTD/ENTITY and neutralizes active XSS markup in GPX uploads and exports', () => {
+    const xxeGpx = '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><gpx><trk><name>&xxe;</name></trk></gpx>';
+    const xxeCheck = preCheckGpxUploadContent(xxeGpx);
+    assert(xxeCheck.blocked === true, 'GPX pre-check must block DOCTYPE/ENTITY/SYSTEM declarations');
+
+    const xssGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Test">
+  <metadata><name><![CDATA[<script>alert(1)</script>Harz Runde]]></name></metadata>
+  <wpt lat="51.7" lon="10.6"><name>&lt;img src=x onerror=alert(2)&gt;Brocken</name><desc>javascript:alert(3) Gipfel</desc></wpt>
+  <trk><name>Tour <svg/onload=alert(4)>Nord</name><trkseg>
+    <trkpt lat="51.7" lon="10.6"><ele>1141</ele></trkpt>
+  </trkseg></trk>
+</gpx>`;
+    const xssCheck = preCheckGpxUploadContent(xssGpx);
+    const cleanedXml = xssCheck.sanitizedXml || '';
+    assert(xssCheck.blocked === false, 'XSS GPX is sanitized rather than blocked as XXE');
+    assert(xssCheck.hasUnsafeMarkup === true, 'GPX pre-check must detect active script/event/encoded-HTML payloads');
+    assert(!cleanedXml.toLowerCase().includes('<script'), 'Script block removed from sanitized GPX XML');
+    assert(!cleanedXml.toLowerCase().includes('onload='), 'SVG onload removed from sanitized GPX XML');
+    assert(!cleanedXml.toLowerCase().includes('onerror='), 'Encoded img onerror removed from sanitized GPX XML');
+    assert(!cleanedXml.toLowerCase().includes('javascript:'), 'javascript: scheme removed from sanitized GPX XML');
+    assert(cleanedXml.includes('<trkpt lat="51.7" lon="10.6">'), 'Valid GPX geometry tags remain intact');
+
+    const exported = exportToGPX(
+      {
+        id: 'exp-1',
+        name: '<script>alert(1)</script>Export Tour',
+        description: '<img src=x onerror=alert(2)>Beschreibung',
+        distance: 1,
+        ascent: 10,
+        descent: 10,
+        maxSlope: 2,
+        color: '#3b82f6',
+        visible: true,
+        points: [{ lat: 50.1, lng: 8.6, ele: 150 }]
+      },
+      {
+        textMarkers: [{ id: 'm1', lat: 50.1, lng: 8.6, label: '<svg onload=alert(3)>Startpunkt', color: 'indigo' }]
+      }
+    );
+    assert(!exported.toLowerCase().includes('alert(1)') && !exported.toLowerCase().includes('onerror') && !exported.toLowerCase().includes('onload'), 'GPX export must sanitize track metadata and TextMarker waypoint names');
+    assert(exported.includes('Export Tour') && exported.includes('Startpunkt'), 'Clean labels preserved in GPX export');
+  });
+
+  // 22. End-to-End Wiring Check for Saved TextMarkers across Client & Server
+  test('Marker Persistence & Rendering Wiring: App, Map, and server sanitize TextMarkers and library metadata', () => {
+    const mapSrc = fs.readFileSync(path.join(process.cwd(), 'components/Map.tsx'), 'utf-8');
+    const appSrc = fs.readFileSync(path.join(process.cwd(), 'App.tsx'), 'utf-8');
+    const serverSrc = fs.readFileSync(path.join(process.cwd(), 'server.ts'), 'utf-8');
+
+    assert(mapSrc.includes('escapeHtml(sanitizePlainText(marker.label'), 'Map.tsx sanitizes and HTML-escapes TextMarker labels before L.DivIcon rendering');
+    assert(appSrc.includes('sanitizeTextMarkers(JSON.parse(') && appSrc.includes('preCheckGpxUploadContent'), 'App.tsx sanitizes stored TextMarkers and runs GPX upload pre-check');
+    assert(serverSrc.includes('"velo_text_markers"') && serverSrc.includes('sanitizeTextMarkers'), 'server.ts sanitizes velo_text_markers settings on persistence and retrieval');
   });
 
   console.log(`\n🔒 Security Test Results: ${passed} passed, ${failed} failed.\n`);

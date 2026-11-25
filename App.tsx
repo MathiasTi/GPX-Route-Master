@@ -21,7 +21,7 @@ import {
   useDomLanguageSync
 } from './utils/appSettings';
 import { AppSettingsModal, AppSettingsTab } from './components/AppSettingsModal';
-import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, findDuplicateTracksByIdenticalGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData } from './utils/gpxUtils';
+import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, findDuplicateTracksByIdenticalGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData, sanitizeTextMarker, sanitizeTextMarkers, sanitizeTrackMetadata, preCheckGpxUploadContent } from './utils/gpxUtils';
 import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
 import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -142,7 +142,7 @@ const App: React.FC = () => {
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>(() => {
     try {
       const saved = safeGetItem('velo_text_markers');
-      return saved ? JSON.parse(saved) : [];
+      return saved ? sanitizeTextMarkers(JSON.parse(saved)) : [];
     } catch (e) {
       return [];
     }
@@ -445,10 +445,10 @@ const App: React.FC = () => {
   }, []);
 
   const handleAddTextMarker = useCallback((newMarker: Omit<TextMarker, 'id'>) => {
-    const marker: TextMarker = {
+    const marker: TextMarker = sanitizeTextMarker({
       ...newMarker,
       id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 11)
-    };
+    });
     setTextMarkers(prev => [...prev, marker]);
   }, []);
 
@@ -457,7 +457,9 @@ const App: React.FC = () => {
   }, []);
 
   const handleUpdateTextMarker = useCallback((id: string, updates: Partial<TextMarker>) => {
-    setTextMarkers(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
+    setTextMarkers(prev =>
+      prev.map(m => (m.id === id ? sanitizeTextMarker({ ...m, ...updates, id: m.id }) : m))
+    );
   }, []);
 
   const handleToggle3D = useCallback((mode: boolean) => {
@@ -704,7 +706,7 @@ const App: React.FC = () => {
               }
               if (s.velo_text_markers) {
                 try {
-                  setTextMarkers(JSON.parse(s.velo_text_markers));
+                  setTextMarkers(sanitizeTextMarkers(JSON.parse(s.velo_text_markers)));
                 } catch (e) {}
               }
             }
@@ -1108,12 +1110,31 @@ const App: React.FC = () => {
     if (!track) return;
 
     saveToHistory();
-    const res = sanitizeTrackAllInOne(track, { removeSpikes: true, smoothElevation: true, simplifyPoints: true }, ftp, userWeight, estimatedSpeed);
+    const res = sanitizeTrackAllInOne(
+      track,
+      {
+        removeSpikes: true,
+        smoothElevation: true,
+        simplifyPoints: true,
+        sanitizeMetadata: true,
+        textMarkers
+      },
+      ftp,
+      userWeight,
+      estimatedSpeed
+    );
     setTracks(prev => prev.map(t => t.id === trackId ? res.sanitizedTrack : t));
-    const msg = `Track bereinigt: ${res.removedOutliers} GPS-Ausreißer entfernt, ${res.fixedSpikes} Höhen-Spikes geglättet, ${res.reducedPoints} Punkte reduziert.`;
+    if (res.sanitizedTextMarkers.length > 0) {
+      setTextMarkers(res.sanitizedTextMarkers);
+    }
+    const metaSuffix =
+      res.sanitizedMetadataFields > 0
+        ? `, ${res.sanitizedMetadataFields} Metadaten-/Marker-Felder bereinigt`
+        : '';
+    const msg = `Track bereinigt: ${res.removedOutliers} GPS-Ausreißer entfernt, ${res.fixedSpikes} Höhen-Spikes geglättet, ${res.reducedPoints} Punkte reduziert${metaSuffix}.`;
     setSuccessMessage(msg);
     triggerHaptic('success');
-  }, [tracks, ftp, userWeight, estimatedSpeed, saveToHistory]);
+  }, [tracks, textMarkers, ftp, userWeight, estimatedSpeed, saveToHistory]);
 
   const handleCloseGap = useCallback((originalTrackId: string, gap: TimeGap) => {
     const track = tracks.find(t => t.id === originalTrackId);
@@ -1205,8 +1226,9 @@ const App: React.FC = () => {
         buffer = bufferOrBlob;
       }
 
-      const parsed = await parseFIT(buffer, name);
-      if (parsed) {
+      const rawParsed = await parseFIT(buffer, name);
+      if (rawParsed) {
+        const parsed = sanitizeTrackMetadata(rawParsed).track;
         parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
         newTracks.push(parsed);
         
@@ -1228,33 +1250,52 @@ const App: React.FC = () => {
     const processGpxFileOrText = async (fileOrText: Blob | string, name: string) => {
       let parsed: GPXTrack | null = null;
       if (typeof fileOrText === 'string') {
-        const validation = validateGPX(fileOrText);
+        const preCheck = preCheckGpxUploadContent(fileOrText);
+        if (preCheck.blocked) {
+          errors.push(`${name}: ${preCheck.error}`);
+          return;
+        }
+        const safeXml = preCheck.sanitizedXml ?? fileOrText;
+        const validation = validateGPX(safeXml);
         if (!validation.isValid) {
           errors.push(`${name}: ${validation.error}`);
           return;
         }
-        parsed = await parseGPX(fileOrText, name);
+        parsed = await parseGPX(safeXml, name);
       } else {
-        // Direct GPX Blob/File streaming
-        // Simple security pre-check: read first 20KB for DOCTYPE / ENTITY
+        // GPX upload security pre-check: inspect header / small files for DOCTYPE/ENTITY and active XSS markup
+        let sanitizedFallbackXml: string | null = null;
         try {
-          const preCheckBlob = fileOrText.slice(0, 20000);
+          const preCheckLimit = fileOrText.size <= 512 * 1024 ? fileOrText.size : 65536;
+          const preCheckBlob = fileOrText.slice(0, preCheckLimit);
           const preCheckText = await preCheckBlob.text();
-          const lowerPre = preCheckText.toLowerCase();
-          if (lowerPre.includes('<!entity') || lowerPre.includes('<!doctype') || lowerPre.includes('<!system')) {
-            errors.push(`${name}: Sicherheitsfehler: Benutzerdefinierte DOCTYPE- oder ENTITY-Definitionen sind im GPX nicht erlaubt.`);
+          const preCheck = preCheckGpxUploadContent(preCheckText);
+          if (preCheck.blocked) {
+            errors.push(`${name}: ${preCheck.error}`);
             return;
+          }
+          if (preCheck.hasUnsafeMarkup && fileOrText.size <= 5 * 1024 * 1024) {
+            const fullText = preCheckLimit >= fileOrText.size ? preCheckText : await fileOrText.text();
+            const fullPreCheck = preCheckGpxUploadContent(fullText);
+            if (fullPreCheck.blocked) {
+              errors.push(`${name}: ${fullPreCheck.error}`);
+              return;
+            }
+            sanitizedFallbackXml = fullPreCheck.sanitizedXml ?? fullText;
           }
         } catch (e) {
           console.error("GPX safety precheck error", e);
         }
 
-        parsed = await parseGPXStream(fileOrText, name);
+        parsed = sanitizedFallbackXml
+          ? await parseGPX(sanitizedFallbackXml, name)
+          : await parseGPXStream(fileOrText, name);
       }
 
       if (parsed) {
-        parsed.powerStats = calculatePowerStats(parsed.points, ftp, userWeight, estimatedSpeed);
-        newTracks.push(parsed);
+        const sanitizedParsed = sanitizeTrackMetadata(parsed).track;
+        sanitizedParsed.powerStats = calculatePowerStats(sanitizedParsed.points, ftp, userWeight, estimatedSpeed);
+        newTracks.push(sanitizedParsed);
       } else {
         errors.push(`${name}: Fehler beim Verarbeiten oder keine gültigen Trackpunkte gefunden.`);
       }
@@ -1392,9 +1433,9 @@ const App: React.FC = () => {
       }
 
       if (uniqueNewTracks.length > 0) {
-        // Run validation pre-check on newly uploaded tracks
+        // Run validation pre-check on newly uploaded tracks (including metadata & marker checks)
         const tracksWithAnomalies = uniqueNewTracks.filter(nt => {
-          const rep = analyzeTrackValidation(nt);
+          const rep = analyzeTrackValidation(nt, textMarkers);
           return rep.status === 'warning' || rep.status === 'error';
         });
 
@@ -1413,12 +1454,13 @@ const App: React.FC = () => {
     if (e && typeof e === 'object' && 'target' in e && e.target && 'value' in e.target) {
       (e.target as any).value = '';
     }
-  }, [tracks, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
+  }, [tracks, textMarkers, saveToHistory, ftp, userWeight, estimatedSpeed, setSelectedDate, setSelectedTime]);
 
   const commitApprovedTracks = useCallback((approvedTracks: GPXTrack[], fitMeta?: { fitDate: string | null; fitTime: string | null }) => {
     if (approvedTracks.length === 0) return;
+    const sanitizedApproved = approvedTracks.map(t => sanitizeTrackMetadata(t).track);
     saveToHistory();
-    setTracks(prev => [...prev, ...approvedTracks]);
+    setTracks(prev => [...prev, ...sanitizedApproved]);
     
     if (fitMeta && fitMeta.fitDate && fitMeta.fitTime) {
       setSelectedDate(fitMeta.fitDate);

@@ -508,7 +508,9 @@ export const TrackValidationModal: React.FC<TrackValidationModalProps> = ({
                                 {issue.title}
                               </h5>
                               <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-white/80 dark:bg-slate-900/80 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800">
-                                {issue.affectedCount} Punkt{issue.affectedCount !== 1 ? 'e' : ''} betroffen
+                                {issue.type === 'unsafe_metadata'
+                                  ? `${issue.affectedCount} Feld${issue.affectedCount !== 1 ? 'er' : ''} betroffen`
+                                  : `${issue.affectedCount} Punkt${issue.affectedCount !== 1 ? 'e' : ''} betroffen`}
                               </span>
                             </div>
                             <p className="text-xs text-slate-600 dark:text-slate-300">

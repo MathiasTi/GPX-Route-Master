@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo, startTransiti
 import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
-import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData } from '../utils/gpxUtils';
+import { calculateDistance, formatPace, getPaceString, formatGapDuration, getCachedSimplifiedPoints, findClimbs, downloadTrackAsGPX, hasRealGpsData, sanitizePlainText } from '../utils/gpxUtils';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { triggerHaptic } from '../utils/haptics';
 import { computeHoverPointTelemetry } from '../domain/telemetry/pointMetricsEngine';
@@ -2079,13 +2079,14 @@ const Map: React.FC<MapProps> = ({
       slate: '#64748b'
     };
     return textMarkers.map((marker) => {
-      const bgColor = colorMap[marker.color] || '#3b82f6';
+      const bgColor = colorMap[marker.color] || sanitizeHexColor(marker.color, '#3b82f6');
+      const safeLabel = escapeHtml(sanitizePlainText(marker.label, 120) || 'Marker');
       return new L.DivIcon({
         className: 'custom-text-marker',
         html: `
           <div class="relative flex flex-col items-center select-none cursor-pointer group" style="transform: translate3d(-50%, -100%, 0); will-change: transform; backface-visibility: hidden; margin-top: -12px;" title="Rechtsklick oder Klick zum Entfernen">
             <div class="text-white text-[10px] font-black px-2 py-1 rounded-lg shadow-lg whitespace-nowrap border-2 border-white flex items-center gap-1 transition-transform group-hover:scale-110" style="background-color: ${bgColor};">
-              <span>🏷️</span> ${escapeHtml(marker.label)}
+              <span>🏷️</span> ${safeLabel}
             </div>
             <div class="w-2.5 h-2.5 rotate-45 -mt-1 shadow-md border-r-2 border-b-2 border-white" style="background-color: ${bgColor};"></div>
           </div>
@@ -2973,7 +2974,7 @@ const Map: React.FC<MapProps> = ({
                           onAddTextMarker({
                             lat: pendingMarker.lat,
                             lng: pendingMarker.lng,
-                            label: val,
+                            label: sanitizePlainText(val, 120) || 'Marker',
                             color: 'indigo',
                             trackId: markedTrackId || undefined,
                             distanceAlongTrack: dist
@@ -3013,7 +3014,7 @@ const Map: React.FC<MapProps> = ({
                         onAddTextMarker({
                           lat: pendingMarker.lat,
                           lng: pendingMarker.lng,
-                          label: val,
+                          label: sanitizePlainText(val, 120) || 'Marker',
                           color: 'indigo',
                           trackId: markedTrackId || undefined,
                           distanceAlongTrack: dist

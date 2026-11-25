@@ -256,7 +256,8 @@ export type ValidationIssueType =
   | 'missing_elevation'
   | 'elevation_spike'
   | 'missing_time'
-  | 'start_point_deviation';
+  | 'start_point_deviation'
+  | 'unsafe_metadata';
 
 export type ValidationSeverity = 'clean' | 'info' | 'warning' | 'error';
 

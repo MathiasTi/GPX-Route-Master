@@ -197,6 +197,12 @@ if [[ "$USER_MODE" != "true" && -z "$RUN_AS" ]]; then
   fi
 fi
 
+escape_systemd_specifiers() {
+  local s="$1"
+  s="${s//%/%%}"
+  printf '%s' "$s"
+}
+
 escape_systemd_val() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -205,6 +211,7 @@ escape_systemd_val() {
   printf '%s' "$s"
 }
 
+ESC_WORKDIR="$(escape_systemd_specifiers "$REPO_DIR")"
 ESC_REPO_DIR="$(escape_systemd_val "$REPO_DIR")"
 ESC_DEPLOY_SCRIPT="$(escape_systemd_val "$DEPLOY_SCRIPT")"
 ESC_REMOTE="$(escape_systemd_val "$GIT_REMOTE")"
@@ -230,7 +237,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-${USER_DIRECTIVE}WorkingDirectory=\"${ESC_REPO_DIR}\"
+${USER_DIRECTIVE}WorkingDirectory=${ESC_WORKDIR}
 Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
 Environment=\"REPO_DIR=${ESC_REPO_DIR}\"
 Environment=\"GIT_REMOTE=${ESC_REMOTE}\"
@@ -279,6 +286,9 @@ printf '%s' "$TIMER_CONTENT" >"$TIMER_FILE"
 chmod 644 "$SERVICE_FILE" "$TIMER_FILE"
 
 systemctl "${SYSTEMCTL_ARGS[@]}" daemon-reload
+if command -v systemd-analyze >/dev/null 2>&1; then
+  systemd-analyze "${SYSTEMCTL_ARGS[@]}" verify "$SERVICE_FILE" "$TIMER_FILE"
+fi
 systemctl "${SYSTEMCTL_ARGS[@]}" enable --now "${SERVICE_NAME}.timer"
 
 echo "Installed and enabled ${SERVICE_NAME}.timer (${ON_CALENDAR}):"

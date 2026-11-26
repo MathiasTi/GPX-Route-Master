@@ -14,6 +14,7 @@ import {
   saveStress,
   saveRhr,
   saveSteps,
+  getHealthMetrics,
   runInTransaction,
   getGarminActivityById,
   findExistingActivityDuplicate
@@ -22,6 +23,7 @@ import { parseFIT } from './fitUtils';
 import { parseGPX, calculateElevationStats, calculatePowerStats, findClimbs, calculateSurfaceStatsFromPoints, hydratePointsWithSurface, generateVirtualRoute } from './gpxUtils';
 import { GPXPoint, GPXTrack } from '../types';
 import { sanitizeGarminActivityId } from './securityMiddleware';
+import { estimateFtpFromActivities } from './ftpEstimator';
 
 const DEFAULT_BASE_URL = 'https://personal.connectapi.garmin.com';
 const TOKEN_ENDPOINT_PATH = '/personalapitoken-service/personal-api/personal-api-key/token';
@@ -2216,4 +2218,571 @@ export async function syncGarminPersonalHealth(options: {
       updateSyncProgress({ active: false });
     }
   }
+}
+
+export type AthleteMetricKey =
+  | 'ftp'
+  | 'userWeight'
+  | 'userAge'
+  | 'userMaxHr'
+  | 'rhrBaseline'
+  | 'estimatedSpeed';
+
+export type AthleteMetricSource = 'garmin-cloud' | 'garmin-db';
+
+export interface GarminAthleteProfileResult {
+  cloudConnected: boolean;
+  cloudError?: string;
+  profile: Partial<Record<AthleteMetricKey, number>>;
+  sources: Partial<Record<AthleteMetricKey, { source: AthleteMetricSource; detail: string }>>;
+  meta: {
+    birthDate?: string;
+    weightDate?: string;
+    vo2Max?: number;
+    lactateThresholdHr?: number;
+    checkedEndpoints: string[];
+  };
+}
+
+export function calculateAgeFromBirthDate(birthDate: unknown, now: Date = new Date()): number | undefined {
+  if (typeof birthDate !== 'string') return undefined;
+  const match = birthDate.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || month < 1 || month > 12 || day < 1 || day > 31) {
+    return undefined;
+  }
+  const refYear = now.getUTCFullYear();
+  const refMonth = now.getUTCMonth() + 1;
+  const refDay = now.getUTCDate();
+  let age = refYear - year;
+  if (refMonth < month || (refMonth === month && refDay < day)) {
+    age -= 1;
+  }
+  if (!Number.isFinite(age) || age < 10 || age > 100) {
+    return undefined;
+  }
+  return age;
+}
+
+export function normalizeGarminWeightKg(raw: unknown): number | undefined {
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return undefined;
+  const kg = num > 500 ? num / 1000 : num;
+  if (!Number.isFinite(kg) || kg < 25 || kg > 300) return undefined;
+  return Number(kg.toFixed(1));
+}
+
+export function parseGarminAthleteProfilePayload(
+  payload: any,
+  now: Date = new Date()
+): {
+  ftp?: number;
+  userWeight?: number;
+  userAge?: number;
+  userMaxHr?: number;
+  rhrBaseline?: number;
+  birthDate?: string;
+  vo2Max?: number;
+  lactateThresholdHr?: number;
+} {
+  if (!payload || typeof payload !== 'object') return {};
+
+  const result: {
+    ftp?: number;
+    userWeight?: number;
+    userAge?: number;
+    userMaxHr?: number;
+    rhrBaseline?: number;
+    birthDate?: string;
+    vo2Max?: number;
+    lactateThresholdHr?: number;
+  } = {};
+
+  if (Array.isArray(payload)) {
+    // Heart-rate zones array returned by /biometric-service/heartRateZones or /userprofile-service/userprofile/heartRateZones
+    const preferred =
+      payload.find((z) => String(z?.sport || '').toUpperCase() === 'DEFAULT') ||
+      payload.find((z) => String(z?.sport || '').toUpperCase() === 'CYCLING') ||
+      payload.find((z) => z && (z.maxHeartRateUsed || z.restingHeartRateUsed || z.lactateThresholdHeartRateUsed));
+
+    if (preferred) {
+      const maxHr = Number(preferred.maxHeartRateUsed ?? preferred.maxHeartRate);
+      if (Number.isFinite(maxHr) && maxHr >= 100 && maxHr <= 230) {
+        result.userMaxHr = Math.round(maxHr);
+      }
+      const rhr = Number(preferred.restingHeartRateUsed ?? preferred.restingHeartRate);
+      if (Number.isFinite(rhr) && rhr >= 30 && rhr <= 110) {
+        result.rhrBaseline = Math.round(rhr);
+      }
+      const lthr = Number(preferred.lactateThresholdHeartRateUsed ?? preferred.lactateThresholdHeartRate);
+      if (Number.isFinite(lthr) && lthr >= 90 && lthr <= 220) {
+        result.lactateThresholdHr = Math.round(lthr);
+      }
+    }
+    return result;
+  }
+
+  const userData = payload.userData && typeof payload.userData === 'object' ? payload.userData : payload;
+  const bio =
+    payload.biometricProfile && typeof payload.biometricProfile === 'object'
+      ? payload.biometricProfile
+      : payload;
+
+  const birthRaw = userData.birthDate ?? userData.dateOfBirth ?? bio.birthDate ?? payload.birthDate;
+  if (typeof birthRaw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(birthRaw.trim())) {
+    const cleanBirth = birthRaw.trim().slice(0, 10);
+    const parsedAge = calculateAgeFromBirthDate(cleanBirth, now);
+    if (parsedAge !== undefined) {
+      result.birthDate = cleanBirth;
+      result.userAge = parsedAge;
+    }
+  }
+  if (result.userAge === undefined) {
+    const explicitAge = Number(userData.age ?? bio.age ?? payload.age);
+    if (Number.isFinite(explicitAge) && explicitAge >= 10 && explicitAge <= 100) {
+      result.userAge = Math.round(explicitAge);
+    }
+  }
+
+  const weightKg = normalizeGarminWeightKg(
+    userData.weight ??
+      userData.weightInGrams ??
+      bio.weight ??
+      bio.weightInGrams ??
+      payload.weight ??
+      payload.weightInGrams
+  );
+  if (weightKg !== undefined) {
+    result.userWeight = weightKg;
+  }
+
+  const ftpRaw = Number(
+    userData.functionalThresholdPower ??
+      bio.functionalThresholdPower ??
+      payload.functionalThresholdPower ??
+      payload.latestFunctionalThresholdPower?.functionalThresholdPower ??
+      payload.ftp
+  );
+  if (Number.isFinite(ftpRaw) && ftpRaw >= 50 && ftpRaw <= 700) {
+    result.ftp = Math.round(ftpRaw);
+  }
+
+  const maxHrRaw = Number(
+    userData.maxHeartRate ??
+      userData.maxHr ??
+      bio.maxHeartRate ??
+      payload.maxHeartRate ??
+      payload.maxHeartRateUsed
+  );
+  if (Number.isFinite(maxHrRaw) && maxHrRaw >= 100 && maxHrRaw <= 230) {
+    result.userMaxHr = Math.round(maxHrRaw);
+  }
+
+  const rhrRaw = Number(
+    userData.restingHeartRate ??
+      userData.restingHeartRateBeatsPerMinute ??
+      bio.restingHeartRate ??
+      payload.restingHeartRate ??
+      payload.restingHeartRateUsed
+  );
+  if (Number.isFinite(rhrRaw) && rhrRaw >= 30 && rhrRaw <= 110) {
+    result.rhrBaseline = Math.round(rhrRaw);
+  }
+
+  const vo2Raw = Number(userData.vo2Max ?? userData.vo2MaxCycling ?? bio.vo2Max ?? bio.vo2MaxRunning ?? payload.vo2Max);
+  if (Number.isFinite(vo2Raw) && vo2Raw >= 15 && vo2Raw <= 95) {
+    result.vo2Max = Math.round(vo2Raw);
+  }
+
+  const lthrRaw = Number(
+    userData.lactateThresholdHeartRate ??
+      bio.lactateThresholdHeartRate ??
+      payload.lactateThresholdHeartRate ??
+      payload.heartRate
+  );
+  if (Number.isFinite(lthrRaw) && lthrRaw >= 90 && lthrRaw <= 220) {
+    result.lactateThresholdHr = Math.round(lthrRaw);
+  }
+
+  if (Array.isArray(payload.heartRateZones)) {
+    const zonesParsed = parseGarminAthleteProfilePayload(payload.heartRateZones, now);
+    if (result.userMaxHr === undefined && zonesParsed.userMaxHr !== undefined) {
+      result.userMaxHr = zonesParsed.userMaxHr;
+    }
+    if (result.rhrBaseline === undefined && zonesParsed.rhrBaseline !== undefined) {
+      result.rhrBaseline = zonesParsed.rhrBaseline;
+    }
+    if (result.lactateThresholdHr === undefined && zonesParsed.lactateThresholdHr !== undefined) {
+      result.lactateThresholdHr = zonesParsed.lactateThresholdHr;
+    }
+  }
+
+  return result;
+}
+
+function estimateAthleteMetricsFromLocalGarminDb(): {
+  profile: Partial<Record<AthleteMetricKey, number>>;
+  sources: Partial<Record<AthleteMetricKey, { source: AthleteMetricSource; detail: string }>>;
+  weightDate?: string;
+} {
+  const profile: Partial<Record<AthleteMetricKey, number>> = {};
+  const sources: Partial<Record<AthleteMetricKey, { source: AthleteMetricSource; detail: string }>> = {};
+  let weightDate: string | undefined;
+
+  const health = getHealthMetrics('default', { includePoints: true });
+
+  // 1. Latest genuine body weight measurement from Garmin DB
+  if (Array.isArray(health.weight) && health.weight.length > 0) {
+    for (let i = health.weight.length - 1; i >= 0; i--) {
+      const wRow = health.weight[i];
+      const kg = normalizeGarminWeightKg(wRow?.weight);
+      if (kg !== undefined) {
+        profile.userWeight = kg;
+        weightDate = typeof wRow?.date === 'string' ? wRow.date : undefined;
+        sources.userWeight = {
+          source: 'garmin-db',
+          detail: weightDate ? `Garmin-DB (${weightDate})` : 'Garmin-DB'
+        };
+        break;
+      }
+    }
+  }
+
+  // 2. Resting HR baseline from up to last 30 synced daily RHR entries
+  if (Array.isArray(health.rhr) && health.rhr.length > 0) {
+    const recentRhr = health.rhr
+      .slice(-30)
+      .map((r: any) => Number(r?.rhr))
+      .filter((v: number) => Number.isFinite(v) && v >= 30 && v <= 110);
+    if (recentRhr.length > 0) {
+      const meanRhr = Math.round(recentRhr.reduce((a: number, b: number) => a + b, 0) / recentRhr.length);
+      profile.rhrBaseline = meanRhr;
+      sources.rhrBaseline = {
+        source: 'garmin-db',
+        detail: `Garmin-DB (Ø ${recentRhr.length} Tage)`
+      };
+    }
+  }
+
+  // 3. Peak HR (3rd highest point sample across synced activities to guard against single-spike artifacts)
+  //    and median cycling speed from synced Garmin activities; FTP via shared ftpEstimator
+  const activities = Array.isArray(health.activities) ? health.activities.slice(-150) : [];
+  let maxPeakHr = 0;
+  const cyclingSpeeds: number[] = [];
+
+  for (const act of activities) {
+    const rawType = `${act?.type || ''} ${act?.name || ''}`.toLowerCase();
+    const isCycling =
+      rawType.includes('cycl') ||
+      rawType.includes('bike') ||
+      rawType.includes('rad') ||
+      rawType.includes('gravel') ||
+      rawType.includes('mtb') ||
+      rawType.includes('virtual_ride') ||
+      rawType.includes('indoor_cycling');
+
+    const distKm = Number(act?.distance || 0);
+    const durSec = Number(act?.duration || 0);
+    if (isCycling && Number.isFinite(distKm) && Number.isFinite(durSec) && distKm >= 5 && durSec >= 900) {
+      const speedKmh = distKm / (durSec / 3600);
+      if (Number.isFinite(speedKmh) && speedKmh >= 8 && speedKmh <= 48) {
+        cyclingSpeeds.push(speedKmh);
+      }
+    }
+
+    if (typeof act?.points_json !== 'string' || !act.points_json.trim().startsWith('[')) continue;
+    let pts: any[];
+    try {
+      pts = JSON.parse(act.points_json);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(pts) || pts.length < 10) continue;
+
+    // Peak HR ignoring top 2 single-point spikes
+    const hrSamples: number[] = [];
+    for (const pt of pts) {
+      const hr = Number(pt?.hr);
+      if (Number.isFinite(hr) && hr >= 110 && hr <= 225) {
+        hrSamples.push(hr);
+      }
+    }
+
+    if (hrSamples.length >= 10) {
+      hrSamples.sort((a, b) => b - a);
+      const robustPeak = Math.round(hrSamples[Math.min(2, hrSamples.length - 1)]);
+      if (robustPeak > maxPeakHr) {
+        maxPeakHr = robustPeak;
+      }
+    }
+  }
+
+  let savedBikeWeight = 8.5;
+  try {
+    const rawPrefs = getSetting('app_preferences', '');
+    if (rawPrefs) {
+      const parsedPrefs = JSON.parse(rawPrefs);
+      if (typeof parsedPrefs?.bikeWeight === 'number' && parsedPrefs.bikeWeight >= 0 && parsedPrefs.bikeWeight <= 50) {
+        savedBikeWeight = parsedPrefs.bikeWeight;
+      }
+    }
+  } catch {
+    // fallback default 8.5 kg
+  }
+
+  const ftpReport = estimateFtpFromActivities(activities, {
+    userWeightKg: profile.userWeight || 75,
+    bikeWeightKg: savedBikeWeight
+  });
+
+  if (maxPeakHr >= 140) {
+    profile.userMaxHr = maxPeakHr;
+    sources.userMaxHr = {
+      source: 'garmin-db',
+      detail: 'Garmin-DB (Peak aus Aktivitäten)'
+    };
+  }
+  if (ftpReport.recommendedFtp !== null && ftpReport.recommendedFtp >= 80) {
+    profile.ftp = ftpReport.recommendedFtp;
+    sources.ftp = {
+      source: 'garmin-db',
+      detail: `Garmin-DB (${ftpReport.bestMethod?.label || 'eFTP'})`
+    };
+  }
+  if (cyclingSpeeds.length > 0) {
+    cyclingSpeeds.sort((a, b) => a - b);
+    const medianSpeed = cyclingSpeeds[Math.floor(cyclingSpeeds.length / 2)];
+    profile.estimatedSpeed = Number(medianSpeed.toFixed(1));
+    sources.estimatedSpeed = {
+      source: 'garmin-db',
+      detail: 'Garmin-DB (Median Rad-Tempo)'
+    };
+  }
+
+  return { profile, sources, weightDate };
+}
+
+/**
+ * Downloads athlete biometrics (FTP, weight, age, max HR, RHR baseline) from the Garmin Personal API
+ * and fills any unavailable metrics from already-synced Garmin DB records.
+ */
+export async function fetchGarminAthleteProfile(options?: {
+  overrideApiKey?: string;
+  includeLocalFallback?: boolean;
+}): Promise<GarminAthleteProfileResult> {
+  const includeLocalFallback = options?.includeLocalFallback !== false;
+  const active = getActiveGarminApiKey(options?.overrideApiKey);
+
+  const profile: Partial<Record<AthleteMetricKey, number>> = {};
+  const sources: Partial<Record<AthleteMetricKey, { source: AthleteMetricSource; detail: string }>> = {};
+  const checkedEndpoints: string[] = [];
+  let birthDate: string | undefined;
+  let weightDate: string | undefined;
+  let vo2Max: number | undefined;
+  let lactateThresholdHr: number | undefined;
+  let cloudConnected = false;
+  let cloudError: string | undefined;
+
+  const assignCloudMetric = (key: AthleteMetricKey, val: number | undefined, detail: string) => {
+    if (val !== undefined && Number.isFinite(val) && profile[key] === undefined) {
+      profile[key] = val;
+      sources[key] = { source: 'garmin-cloud', detail };
+    }
+  };
+
+  if (active.key) {
+    try {
+      const { accessToken } = await getGarminBearerToken(options?.overrideApiKey, undefined, false);
+      const baseUrl = active.baseUrl;
+      cloudConnected = true;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const start90 = new Date(Date.now() - 90 * 86400 * 1000).toISOString().slice(0, 10);
+      const start30 = new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+      const endEpochSec = Math.floor(Date.now() / 1000);
+      const start90EpochSec = Math.floor(Date.now() / 1000 - 90 * 86400);
+
+      // 1. User settings & personal profile
+      const profileUrls = [
+        `${baseUrl}/userprofile-service/userprofile/user-settings`,
+        `${baseUrl}/userprofile-service/userprofile/personal-information`,
+        `${baseUrl}/personal-api/user-profile`,
+        `${baseUrl}/personal-api/profile`
+      ];
+      const profileRes = await fetchGarminJsonWithFallback(profileUrls, accessToken, {
+        allowNotFoundAsEmpty: true,
+        allowErrorsAsEmpty: true
+      });
+      profileRes.attempts.forEach((a) => checkedEndpoints.push(`${a.path} [${a.status}]`));
+      const parsedProfile = parseGarminAthleteProfilePayload(profileRes.data);
+      if (parsedProfile.birthDate) birthDate = parsedProfile.birthDate;
+      if (parsedProfile.vo2Max !== undefined) vo2Max = parsedProfile.vo2Max;
+      if (parsedProfile.lactateThresholdHr !== undefined) lactateThresholdHr = parsedProfile.lactateThresholdHr;
+      assignCloudMetric('userAge', parsedProfile.userAge, 'Garmin Connect Profil');
+      assignCloudMetric('userWeight', parsedProfile.userWeight, 'Garmin Connect Profil');
+      assignCloudMetric('ftp', parsedProfile.ftp, 'Garmin Connect Profil');
+      assignCloudMetric('userMaxHr', parsedProfile.userMaxHr, 'Garmin Connect Profil');
+      assignCloudMetric('rhrBaseline', parsedProfile.rhrBaseline, 'Garmin Connect Profil');
+
+      // 2. Heart-rate zones (MaxHR / RestingHR / LTHR)
+      const hrZoneUrls = [
+        `${baseUrl}/biometric-service/heartRateZones`,
+        `${baseUrl}/userprofile-service/userprofile/heartRateZones`
+      ];
+      const hrZonesRes = await fetchGarminJsonWithFallback(hrZoneUrls, accessToken, {
+        allowNotFoundAsEmpty: true,
+        allowErrorsAsEmpty: true
+      });
+      hrZonesRes.attempts.forEach((a) => checkedEndpoints.push(`${a.path} [${a.status}]`));
+      const parsedHrZones = parseGarminAthleteProfilePayload(hrZonesRes.data);
+      if (lactateThresholdHr === undefined && parsedHrZones.lactateThresholdHr !== undefined) {
+        lactateThresholdHr = parsedHrZones.lactateThresholdHr;
+      }
+      assignCloudMetric('userMaxHr', parsedHrZones.userMaxHr, 'Garmin HF-Zonen');
+      assignCloudMetric('rhrBaseline', parsedHrZones.rhrBaseline, 'Garmin HF-Zonen');
+
+      // 3. Dedicated biometrics (FTP & Lactate Threshold)
+      if (profile.ftp === undefined || lactateThresholdHr === undefined) {
+        const bioUrls = [
+          `${baseUrl}/biometric-service/biometric/latestFunctionalThresholdPower/CYCLING`,
+          `${baseUrl}/biometric-service/biometric/powerToWeight/latest/${encodeURIComponent(today)}`,
+          `${baseUrl}/biometric-service/stats/lactateThreshold`,
+          `${baseUrl}/personal-api/biometrics`
+        ];
+        const bioRes = await fetchGarminJsonWithFallback(bioUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        bioRes.attempts.forEach((a) => checkedEndpoints.push(`${a.path} [${a.status}]`));
+        const parsedBio = parseGarminAthleteProfilePayload(bioRes.data);
+        if (lactateThresholdHr === undefined && parsedBio.lactateThresholdHr !== undefined) {
+          lactateThresholdHr = parsedBio.lactateThresholdHr;
+        }
+        assignCloudMetric('ftp', parsedBio.ftp, 'Garmin Biometrics');
+        assignCloudMetric('userWeight', parsedBio.userWeight, 'Garmin Biometrics');
+      }
+
+      // 4. Latest body composition / scale weight (last 90 days)
+      const weightUrls = [
+        `${baseUrl}/weight-service/weight/dateRange?startDate=${encodeURIComponent(start90)}&endDate=${encodeURIComponent(today)}`,
+        `${baseUrl}/weight-service/weight/range/${encodeURIComponent(start90)}/${encodeURIComponent(today)}`,
+        `${baseUrl}/wellness-api/rest/bodyComps?uploadStartTimeInSeconds=${start90EpochSec}&uploadEndTimeInSeconds=${endEpochSec}`,
+        `${baseUrl}/personal-api/weight?startDate=${encodeURIComponent(start90)}&endDate=${encodeURIComponent(today)}`
+      ];
+      const weightRes = await fetchGarminJsonWithFallback(weightUrls, accessToken, {
+        allowNotFoundAsEmpty: true,
+        allowErrorsAsEmpty: true
+      });
+      weightRes.attempts.forEach((a) => checkedEndpoints.push(`${a.path} [${a.status}]`));
+      const weightList: any[] = Array.isArray(weightRes.data)
+        ? weightRes.data
+        : Array.isArray(weightRes.data?.dateWeightList)
+        ? weightRes.data.dateWeightList
+        : Array.isArray(weightRes.data?.bodyComps)
+        ? weightRes.data.bodyComps
+        : Array.isArray(weightRes.data?.data)
+        ? weightRes.data.data
+        : [];
+      const sortedWeights = weightList
+        .map((w) => {
+          const dStr = String(
+            w?.calendarDate ||
+              w?.date ||
+              (w?.measurementTimeInSeconds ? new Date(w.measurementTimeInSeconds * 1000).toISOString().slice(0, 10) : '') ||
+              (w?.timestampGMT ? new Date(w.timestampGMT).toISOString().slice(0, 10) : '')
+          ).slice(0, 10);
+          const kg = normalizeGarminWeightKg(w?.weight ?? w?.weightInGrams);
+          return { dateStr: dStr, kg, raw: w };
+        })
+        .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.dateStr) && item.kg !== undefined)
+        .sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+
+      if (sortedWeights.length > 0) {
+        const latestW = sortedWeights[sortedWeights.length - 1];
+        // Prefer latest scale measurement over static profile weight
+        profile.userWeight = latestW.kg;
+        weightDate = latestW.dateStr;
+        sources.userWeight = {
+          source: 'garmin-cloud',
+          detail: `Garmin Waage (${latestW.dateStr})`
+        };
+        try {
+          const bmi = latestW.raw?.bmi !== undefined ? Number(Number(latestW.raw.bmi).toFixed(1)) : undefined;
+          const bfRaw = latestW.raw?.bodyFat ?? latestW.raw?.bodyFatInPercent;
+          const bodyFat = bfRaw !== undefined ? Number(Number(bfRaw).toFixed(1)) : undefined;
+          saveWeight(latestW.dateStr, latestW.kg!, bmi, bodyFat);
+        } catch {
+          // Non-critical DB persistence
+        }
+      }
+
+      // 5. Recent 30-day RHR mean if still missing
+      if (profile.rhrBaseline === undefined) {
+        const rhrUrls = [
+          `${baseUrl}/usersummary-service/stats/rhr/daily/${encodeURIComponent(start30)}/${encodeURIComponent(today)}`,
+          `${baseUrl}/usersummary-service/v2/dailysummaries?startDate=${encodeURIComponent(start30)}&endDate=${encodeURIComponent(today)}`
+        ];
+        const rhrRes = await fetchGarminJsonWithFallback(rhrUrls, accessToken, {
+          allowNotFoundAsEmpty: true,
+          allowErrorsAsEmpty: true
+        });
+        rhrRes.attempts.forEach((a) => checkedEndpoints.push(`${a.path} [${a.status}]`));
+        const rhrList = extractGarminDailiesList(rhrRes.data);
+        const rhrValues: number[] = [];
+        for (const row of rhrList) {
+          const parsed = parseGarminDailyRecord(row, 'rhr');
+          if (parsed?.rhr !== undefined && parsed.rhr >= 30 && parsed.rhr <= 110) {
+            rhrValues.push(parsed.rhr);
+            try {
+              saveRhr(parsed.date, parsed.rhr);
+            } catch {
+              // ignore
+            }
+          }
+        }
+        if (rhrValues.length > 0) {
+          const meanRhr = Math.round(rhrValues.reduce((a, b) => a + b, 0) / rhrValues.length);
+          assignCloudMetric('rhrBaseline', meanRhr, `Garmin 30d-Ruhepuls (${rhrValues.length} Tage)`);
+        }
+      }
+    } catch (err: any) {
+      cloudConnected = false;
+      cloudError = err?.message || 'Garmin Cloud Authentifizierung fehlgeschlagen.';
+    }
+  } else {
+    cloudError = 'Kein Garmin Personal API Key für diese Tab-Sitzung hinterlegt.';
+  }
+
+  // Local Garmin DB fallback for any metrics not provided by live cloud endpoints
+  if (includeLocalFallback) {
+    const local = estimateAthleteMetricsFromLocalGarminDb();
+    if (!weightDate && local.weightDate) {
+      weightDate = local.weightDate;
+    }
+    (Object.keys(local.profile) as AthleteMetricKey[]).forEach((key) => {
+      if (profile[key] === undefined && local.profile[key] !== undefined) {
+        profile[key] = local.profile[key];
+        if (local.sources[key]) {
+          sources[key] = local.sources[key];
+        }
+      }
+    });
+  }
+
+  return {
+    cloudConnected,
+    cloudError,
+    profile,
+    sources,
+    meta: {
+      birthDate,
+      weightDate,
+      vo2Max,
+      lactateThresholdHr,
+      checkedEndpoints: checkedEndpoints.slice(0, 20)
+    }
+  };
 }

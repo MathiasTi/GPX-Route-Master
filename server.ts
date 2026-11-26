@@ -74,8 +74,10 @@ import {
   getGarminSyncProgress,
   cancelGarminSync,
   syncGarminPersonalHealth,
-  downloadAndParseGarminActivityFit
+  downloadAndParseGarminActivityFit,
+  fetchGarminAthleteProfile
 } from "./utils/garminPersonalApi.js";
+import { estimateFtpFromActivities } from "./utils/ftpEstimator.js";
 import { SqliteTrackRepository } from "./infrastructure/repositories/sqliteTrackRepository.js";
 import { GetTrackByIdUseCase } from "./application/usecases/track/getTrackById.usecase.js";
 import { SaveTrackUseCase } from "./application/usecases/track/saveTrack.usecase.js";
@@ -2852,6 +2854,96 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       res.status(400).json({
         success: false,
         error: safeServerError(err, "Fehler beim Herunterladen der FIT-Strecke.")
+      });
+    }
+  });
+
+  // POST /api/garmin/personal/athlete-profile: Fetch athlete values (FTP, weight, age, max HR, RHR) from Garmin API + synced DB fallback
+  app.post("/api/garmin/personal/athlete-profile", async (req, res) => {
+    try {
+      const headerKey = extractRequestGarminKey(req);
+      const includeLocalFallback = req.body?.includeLocalFallback !== false;
+      const result = await fetchGarminAthleteProfile({
+        overrideApiKey: headerKey,
+        includeLocalFallback
+      });
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.error("[Garmin Personal API] Athlete profile fetch error:", err);
+      res.status(400).json({
+        success: false,
+        error: safeServerError(err, "Fehler beim Laden der Athletenwerte aus Garmin.")
+      });
+    }
+  });
+
+  // POST /api/athlete/estimate-ftp: Multi-method eFTP estimation from synced Garmin activities + cycling tracks
+  app.post("/api/athlete/estimate-ftp", (req, res) => {
+    try {
+      const body = req.body || {};
+      const storedWeight = Number(getSetting("userWeight", "75"));
+      const userWeightKg =
+        typeof body.userWeight === "number" && Number.isFinite(body.userWeight) && body.userWeight >= 30
+          ? body.userWeight
+          : Number.isFinite(storedWeight) && storedWeight >= 30
+            ? storedWeight
+            : 75;
+
+      let bikeWeightKg = 8.5;
+      if (typeof body.bikeWeight === "number" && Number.isFinite(body.bikeWeight) && body.bikeWeight >= 0) {
+        bikeWeightKg = body.bikeWeight;
+      } else {
+        try {
+          const rawPrefs = getSetting("app_preferences", "");
+          if (rawPrefs) {
+            const parsedPrefs = JSON.parse(rawPrefs);
+            if (typeof parsedPrefs?.bikeWeight === "number" && Number.isFinite(parsedPrefs.bikeWeight) && parsedPrefs.bikeWeight >= 0) {
+              bikeWeightKg = parsedPrefs.bikeWeight;
+            }
+          }
+        } catch {
+          // fallback 8.5 kg
+        }
+      }
+
+      const lookbackDays =
+        typeof body.lookbackDays === "number" && Number.isFinite(body.lookbackDays) && body.lookbackDays >= 14
+          ? Math.round(body.lookbackDays)
+          : 90;
+
+      const health = getHealthMetrics("default", { includePoints: true });
+      const garminActs = Array.isArray(health.activities) ? health.activities : [];
+
+      const libraryTracks = getAllTracksFull(40).map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.activity_type || "cycling",
+        date: t.date_created,
+        distance: t.distance,
+        duration: t.duration,
+        ascent: t.ascent,
+        points_json: t.points_json
+      }));
+
+      const combined = garminActs.length > 0 ? [...garminActs, ...libraryTracks] : libraryTracks;
+      const report = estimateFtpFromActivities(combined, {
+        userWeightKg,
+        bikeWeightKg,
+        lookbackDays
+      });
+
+      res.json({
+        success: true,
+        ...report
+      });
+    } catch (err: any) {
+      console.error("[Athlete] FTP estimation error:", err);
+      res.status(500).json({
+        success: false,
+        error: safeServerError(err, "Fehler bei der FTP-Berechnung.")
       });
     }
   });

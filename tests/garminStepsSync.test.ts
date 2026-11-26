@@ -1,7 +1,10 @@
 import {
   extractGarminDailiesList,
   parseGarminDailyRecord,
-  fetchGarminJsonWithFallback
+  fetchGarminJsonWithFallback,
+  calculateAgeFromBirthDate,
+  normalizeGarminWeightKg,
+  parseGarminAthleteProfilePayload
 } from '../utils/garminPersonalApi';
 
 function assert(condition: boolean, message: string) {
@@ -202,6 +205,56 @@ export async function runGarminStepsSyncTests(): Promise<boolean> {
     }
     assert(threw401, 'HTTP 401 must throw immediately even with allowErrorsAsEmpty');
     assert(calls === 1, `Expected 1 call before 401 abort, got ${calls}`);
+  });
+
+  await test('calculateAgeFromBirthDate handles passed and upcoming birthdays cleanly', () => {
+    const ref = new Date('2026-11-26T12:00:00Z');
+    assert(calculateAgeFromBirthDate('1990-06-15', ref) === 36, 'Expected age 36 for 1990-06-15');
+    assert(calculateAgeFromBirthDate('1990-12-20', ref) === 35, 'Expected age 35 before December birthday');
+    assert(calculateAgeFromBirthDate('invalid-date', ref) === undefined, 'Invalid birthDate must return undefined');
+  });
+
+  await test('normalizeGarminWeightKg converts grams to kg and filters invalid values', () => {
+    assert(normalizeGarminWeightKg(75400) === 75.4, 'Expected 75400g -> 75.4 kg');
+    assert(normalizeGarminWeightKg(75.4) === 75.4, 'Expected 75.4kg -> 75.4 kg');
+    assert(normalizeGarminWeightKg(5) === undefined, 'Expected out-of-range weight to return undefined');
+  });
+
+  await test('parseGarminAthleteProfilePayload extracts userData biometrics and heartRateZones', () => {
+    const ref = new Date('2026-11-26T12:00:00Z');
+    const parsedProfile = parseGarminAthleteProfilePayload(
+      {
+        userData: {
+          birthDate: '1988-05-10',
+          weight: 72800,
+          functionalThresholdPower: 295,
+          vo2MaxCycling: 59,
+          lactateThresholdHeartRate: 171
+        },
+        heartRateZones: [
+          {
+            sport: 'RUNNING',
+            maxHeartRateUsed: 192,
+            restingHeartRateUsed: 47
+          },
+          {
+            sport: 'DEFAULT',
+            maxHeartRateUsed: 190,
+            restingHeartRateUsed: 46,
+            lactateThresholdHeartRateUsed: 170
+          }
+        ]
+      },
+      ref
+    );
+
+    assert(parsedProfile.userAge === 38, `Expected age 38, got ${parsedProfile.userAge}`);
+    assert(parsedProfile.userWeight === 72.8, `Expected weight 72.8, got ${parsedProfile.userWeight}`);
+    assert(parsedProfile.ftp === 295, `Expected FTP 295, got ${parsedProfile.ftp}`);
+    assert(parsedProfile.userMaxHr === 190, `Expected DEFAULT maxHR 190, got ${parsedProfile.userMaxHr}`);
+    assert(parsedProfile.rhrBaseline === 46, `Expected DEFAULT RHR 46, got ${parsedProfile.rhrBaseline}`);
+    assert(parsedProfile.vo2Max === 59, `Expected VO2max 59, got ${parsedProfile.vo2Max}`);
+    assert(parsedProfile.lactateThresholdHr === 171, `Expected LTHR 171, got ${parsedProfile.lactateThresholdHr}`);
   });
 
   console.log(`👟 Garmin Steps Sync Tests: ${passed} passed, ${failed} failed.\n`);

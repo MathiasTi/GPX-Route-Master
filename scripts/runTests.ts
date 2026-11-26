@@ -27,6 +27,8 @@ import { runGarminStepsSyncTests } from '../tests/garminStepsSync.test';
 import { runWorkspaceQoLTests } from '../tests/workspaceQoL.test';
 import { runMobileAndRoutingTests } from '../tests/mobileAndRouting.test';
 import { runSportsMetricsEngineTests } from '../tests/sportsMetricsEngine.test';
+import { runTrainingPlanAndFtpTests } from '../tests/trainingPlanAndFtp.test';
+import { runDailyWorkoutAndFitExportTests } from '../tests/dailyWorkoutAndFitExport.test';
 
 async function main() {
   try {
@@ -61,8 +63,10 @@ async function main() {
     const workspaceQoLSuccess = await runWorkspaceQoLTests();
     const mobileAndRoutingSuccess = runMobileAndRoutingTests();
     const sportsMetricsSuccess = runSportsMetricsEngineTests();
+    const trainingPlanAndFtpSuccess = runTrainingPlanAndFtpTests();
+    const dailyWorkoutAndFitSuccess = runDailyWorkoutAndFitExportTests();
 
-    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess || !mobileAndRoutingSuccess || !sportsMetricsSuccess) {
+    if (!gpxSuccess || !perfSuccess || !storageSuccess || !intensiveSuccess || !navSuccess || !anomalySuccess || !benchmarkSuccess || !securitySuccess || !hoverPreviewSuccess || !glossarySuccess || !shortcutsSuccess || !workspaceDashboardSuccess || !cleanArchSuccess || !portsAdaptersSuccess || !offlineCacheSuccess || !pointMetricsSuccess || !safeJsonSuccess || !safeTimeSuccess || !mobilePillSuccess || !powerZonesSuccess || !garminSessionKeySuccess || !activitiesCatalogSuccess || !urlImporterSuccess || !komootVersioningSuccess || !mapZoomSuccess || !garminStepsSyncSuccess || !workspaceQoLSuccess || !mobileAndRoutingSuccess || !sportsMetricsSuccess || !trainingPlanAndFtpSuccess || !dailyWorkoutAndFitSuccess) {
       console.error('❌ One or more test suites failed.');
       process.exit(1);
     } else {

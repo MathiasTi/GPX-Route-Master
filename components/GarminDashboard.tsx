@@ -4,7 +4,7 @@ import {
   X, Database, AlertCircle, CheckCircle, RefreshCw, Trash2, 
   Heart, Moon, Sparkles, Footprints, Flame, TrendingUp, Info,
   Zap, Key, Activity, Calendar, BarChart2, ShieldCheck,
-  Trophy, Award, Timer, Mountain, ArrowUpRight, Sliders
+  Trophy, Award, Timer, Mountain, ArrowUpRight, Sliders, Download
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -13,6 +13,7 @@ import {
   PolarGrid, PolarAngleAxis, PolarRadiusAxis
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
+import { garminFetch } from '../utils/garminSessionKey';
 import { resolveGarminTrackForMap } from '../utils/garminClient';
 import { useAppPreferences } from '../utils/appSettings';
 import { formatDistance, formatElevation } from '../utils/units';
@@ -26,6 +27,7 @@ import {
 import FitnessPerformanceAnalysis from './FitnessPerformanceAnalysis';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import { GarminActivitiesAnalysis } from './GarminActivitiesAnalysis';
+import type { TrainingVitalsSnapshot } from '../utils/trainingPlanEngine';
 
 export type GarminDashboardTab =
   | 'overview'
@@ -237,7 +239,55 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   const [recordsSportFilter, setRecordsSportFilter] = useState<'all' | 'cycling' | 'running'>('all');
   const [recordsYearFilter, setRecordsYearFilter] = useState<string>('all');
   const [showAthleteSettings, setShowAthleteSettings] = useState(false);
+  const [isFetchingGarminAthlete, setIsFetchingGarminAthlete] = useState(false);
+  const [athleteSyncMsg, setAthleteSyncMsg] = useState<string | null>(null);
   const [selectedHeatmapDate, setSelectedHeatmapDate] = useState<string | null>(null);
+
+  const handleFetchGarminAthleteProfile = useCallback(async () => {
+    setIsFetchingGarminAthlete(true);
+    setAthleteSyncMsg(null);
+    try {
+      const res = await garminFetch(getApiUrl('/api/garmin/personal/athlete-profile'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeLocalFallback: true })
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        setAthleteSyncMsg(json?.error || 'Laden aus Garmin fehlgeschlagen.');
+        return;
+      }
+      const p = json.profile || {};
+      const applied: string[] = [];
+      if (typeof p.ftp === 'number' && Number.isFinite(p.ftp)) {
+        onUpdateFtp?.(p.ftp);
+        applied.push(`FTP ${p.ftp} W`);
+      }
+      if (typeof p.userWeight === 'number' && Number.isFinite(p.userWeight)) {
+        onUpdateWeight?.(p.userWeight);
+        applied.push(`${p.userWeight} kg`);
+      }
+      if (typeof p.userAge === 'number' && Number.isFinite(p.userAge)) {
+        onUpdateAge?.(p.userAge);
+        applied.push(`${p.userAge} J`);
+      }
+      if (typeof p.userMaxHr === 'number' && Number.isFinite(p.userMaxHr)) {
+        onUpdateMaxHr?.(p.userMaxHr);
+        applied.push(`HFmax ${p.userMaxHr}`);
+      }
+      if (applied.length > 0) {
+        setAthleteSyncMsg(
+          `Übernommen: ${applied.join(' · ')}${json.cloudConnected ? '' : ' (Garmin-DB)'}`
+        );
+      } else {
+        setAthleteSyncMsg('Keine Athletenwerte in Garmin gefunden.');
+      }
+    } catch {
+      setAthleteSyncMsg('Netzwerkfehler beim Laden aus Garmin.');
+    } finally {
+      setIsFetchingGarminAthlete(false);
+    }
+  }, [onUpdateFtp, onUpdateWeight, onUpdateAge, onUpdateMaxHr]);
 
   const activityPoints = useMemo(() => {
     return analyticsData?.activityCorrelations?.points || [];
@@ -625,6 +675,79 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
     return { latestScore, label, tone, series, baselineRhr: baselineRhr ? Math.round(baselineRhr) : null };
   }, [rhrData, sleepData, stressData, appPrefs.rhrBaseline]);
+
+  const vitalsSnapshot = useMemo<TrainingVitalsSnapshot>(() => {
+    const sleep7 = sleepData.slice(-7);
+    const sleepHoursAvg7d =
+      sleep7.length > 0
+        ? Number((sleep7.reduce((s, d) => s + d.duration, 0) / sleep7.length / 60).toFixed(1))
+        : null;
+    const sleepScoreAvg7d =
+      sleep7.length > 0
+        ? Math.round(sleep7.reduce((s, d) => s + d.sleepScore, 0) / sleep7.length)
+        : null;
+
+    const sleepLatestEntry = sleepData.length > 0 ? sleepData[sleepData.length - 1] : null;
+    const sleepHoursLatest =
+      sleepLatestEntry && Number(sleepLatestEntry.duration) > 0
+        ? Number((Number(sleepLatestEntry.duration) / 60).toFixed(1))
+        : null;
+    const sleepScoreLatest =
+      sleepLatestEntry && Number.isFinite(Number(sleepLatestEntry.sleepScore)) && Number(sleepLatestEntry.sleepScore) > 0
+        ? Math.round(Number(sleepLatestEntry.sleepScore))
+        : null;
+
+    const rhrRecent7 = rhrData.slice(-7);
+    const rhrBaseline30 = rhrData.slice(-30);
+    const rhrLatest = rhrData.length > 0 ? rhrData[rhrData.length - 1].rhr : null;
+    const rhrBaselineVal =
+      rhrBaseline30.length > 0
+        ? Number((rhrBaseline30.reduce((s, d) => s + d.rhr, 0) / rhrBaseline30.length).toFixed(1))
+        : readinessSummary.baselineRhr ?? (appPrefs.rhrBaseline > 0 ? appPrefs.rhrBaseline : null);
+    const rhr7dDelta =
+      rhrRecent7.length > 0 && rhrBaselineVal !== null
+        ? Number(
+            (rhrRecent7.reduce((s, d) => s + d.rhr, 0) / rhrRecent7.length - rhrBaselineVal).toFixed(1)
+          )
+        : rhrStatsSummary.trend7dDelta;
+    const rhrTodayDelta =
+      rhrLatest !== null && rhrBaselineVal !== null
+        ? Number((rhrLatest - rhrBaselineVal).toFixed(1))
+        : null;
+
+    const stress7 = stressData.slice(-7);
+    const stressAvg7d =
+      stress7.length > 0
+        ? Math.round(stress7.reduce((s, d) => s + d.avg_stress, 0) / stress7.length)
+        : null;
+    const stressLatest =
+      stressData.length > 0 && Number.isFinite(Number(stressData[stressData.length - 1].avg_stress))
+        ? Math.round(Number(stressData[stressData.length - 1].avg_stress))
+        : null;
+
+    const steps7 = stepsData.slice(-7);
+    const stepsAvg7d =
+      steps7.length > 0
+        ? Math.round(steps7.reduce((s, d) => s + d.steps, 0) / steps7.length)
+        : null;
+
+    return {
+      readinessScore: readinessSummary.latestScore,
+      readinessLabel: readinessSummary.label,
+      readinessTone: readinessSummary.tone,
+      sleepHoursAvg7d,
+      sleepScoreAvg7d,
+      sleepHoursLatest,
+      sleepScoreLatest,
+      rhrLatest,
+      rhrBaseline: rhrBaselineVal !== null ? Math.round(rhrBaselineVal) : null,
+      rhr7dDelta,
+      rhrTodayDelta,
+      stressAvg7d,
+      stressLatest,
+      stepsAvg7d
+    };
+  }, [readinessSummary, sleepData, rhrData, rhrStatsSummary.trend7dDelta, stressData, stepsData, appPrefs.rhrBaseline]);
 
   // 365-Day Activity & Consistency Heatmap
   const yearlyHeatmapData = useMemo(() => {
@@ -1556,10 +1679,29 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="text-xs font-bold bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 px-2.5 py-1 rounded-lg border border-amber-200/70 dark:border-amber-800/50 font-mono">
                 Leistungsgewicht: {userWeight > 0 ? (ftp / userWeight).toFixed(2) : '0.00'} W/kg
               </div>
+              <button
+                type="button"
+                onClick={handleFetchGarminAthleteProfile}
+                disabled={isFetchingGarminAthlete}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold transition-colors cursor-pointer"
+                title="FTP, Gewicht, Alter und HF max aus Garmin herunterladen"
+              >
+                {isFetchingGarminAthlete ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                <span>Aus Garmin laden</span>
+              </button>
+              {athleteSyncMsg && (
+                <span className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                  {athleteSyncMsg}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setShowAthleteSettings(false)}
@@ -2472,6 +2614,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         userMaxHr={userMaxHr}
                         ftp={ftp}
                         rhrBaseline={readinessSummary.baselineRhr ?? appPrefs.rhrBaseline}
+                        vitals={vitalsSnapshot}
                         onUpdateFtp={onUpdateFtp}
                         onUpdateMaxHr={onUpdateMaxHr}
                         onUpdateWeight={onUpdateWeight}

@@ -25,6 +25,7 @@ import {
   Wifi,
   WifiOff,
   CheckCircle2,
+  AlertCircle,
   Layers,
   Clock
 } from 'lucide-react';
@@ -37,6 +38,12 @@ import {
 } from '../services/offlineCacheService';
 import { enforceTileCacheQuota } from '../utils/tileCacheDb';
 import { apiFetch, getApiUrl } from '../utils/api';
+import { garminFetch } from '../utils/garminSessionKey';
+import {
+  calculateFtpFromFieldTest,
+  FtpFieldTestType,
+  FtpEstimationReport
+} from '../utils/ftpEstimator';
 import { GarminPersonalApiPanel } from './GarminPersonalApiPanel';
 import { FreeMetricInput } from './FreeMetricInput';
 import {
@@ -160,6 +167,18 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
 
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [isFetchingGarminAthlete, setIsFetchingGarminAthlete] = useState(false);
+  const [garminAthleteFeedback, setGarminAthleteFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    summary: string;
+    details: Array<{ label: string; value: string; source: string }>;
+    needsGarminConnect?: boolean;
+  } | null>(null);
+  const [isCalculatingFtp, setIsCalculatingFtp] = useState(false);
+  const [ftpEstimateReport, setFtpEstimateReport] = useState<FtpEstimationReport | null>(null);
+  const [ftpEstimateError, setFtpEstimateError] = useState<string | null>(null);
+  const [fieldTestType, setFieldTestType] = useState<FtpFieldTestType>('20min');
+  const [fieldTestWatts, setFieldTestWatts] = useState<number>(Math.round(ftp / 0.95));
 
   useEffect(() => {
     if (isOpen) {
@@ -167,6 +186,8 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
       setTilePurgeMessage(null);
       setSurfaceCacheMessage(null);
       setImportError(null);
+      setGarminAthleteFeedback(null);
+      setFtpEstimateError(null);
     }
   }, [isOpen, initialTab]);
 
@@ -183,6 +204,147 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   const wattsPerKg = (ftp / Math.max(0.1, userWeight)).toFixed(2);
   const systemWeightNum = userWeight + preferences.bikeWeight;
   const systemWeight = systemWeightNum.toFixed(1);
+
+  const handleFetchGarminAthleteProfile = async () => {
+    setIsFetchingGarminAthlete(true);
+    setGarminAthleteFeedback(null);
+    try {
+      const res = await garminFetch(getApiUrl('/api/garmin/personal/athlete-profile'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeLocalFallback: true })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        setGarminAthleteFeedback({
+          type: 'error',
+          summary: data?.error || t('Athletenwerte konnten nicht aus Garmin geladen werden.', 'Failed to load athlete metrics from Garmin.'),
+          details: [],
+          needsGarminConnect: true
+        });
+        return;
+      }
+
+      const profile = data.profile || {};
+      const sources = data.sources || {};
+      const details: Array<{ label: string; value: string; source: string }> = [];
+
+      if (typeof profile.ftp === 'number' && Number.isFinite(profile.ftp)) {
+        onUpdateFtp(profile.ftp);
+        details.push({
+          label: 'FTP',
+          value: `${profile.ftp} W`,
+          source: sources.ftp?.detail || 'Garmin'
+        });
+      }
+      if (typeof profile.userWeight === 'number' && Number.isFinite(profile.userWeight)) {
+        onUpdateWeight(profile.userWeight);
+        details.push({
+          label: t('Gewicht', 'Weight'),
+          value: `${profile.userWeight} kg`,
+          source: sources.userWeight?.detail || 'Garmin'
+        });
+      }
+      if (typeof profile.userAge === 'number' && Number.isFinite(profile.userAge)) {
+        onUpdateAge(profile.userAge);
+        details.push({
+          label: t('Alter', 'Age'),
+          value: `${profile.userAge}`,
+          source: sources.userAge?.detail || 'Garmin'
+        });
+      }
+      if (typeof profile.userMaxHr === 'number' && Number.isFinite(profile.userMaxHr)) {
+        onUpdateMaxHr(profile.userMaxHr);
+        details.push({
+          label: 'HF max',
+          value: `${profile.userMaxHr} bpm`,
+          source: sources.userMaxHr?.detail || 'Garmin'
+        });
+      }
+      if (typeof profile.rhrBaseline === 'number' && Number.isFinite(profile.rhrBaseline)) {
+        onUpdatePreferences({ rhrBaseline: profile.rhrBaseline });
+        details.push({
+          label: t('Ruhepuls', 'Resting HR'),
+          value: `${profile.rhrBaseline} bpm`,
+          source: sources.rhrBaseline?.detail || 'Garmin'
+        });
+      }
+      if (typeof profile.estimatedSpeed === 'number' && Number.isFinite(profile.estimatedSpeed)) {
+        onUpdateEstimatedSpeed(profile.estimatedSpeed);
+        details.push({
+          label: t('Ø Rad-Tempo', 'Avg Cycling Speed'),
+          value: `${profile.estimatedSpeed} km/h`,
+          source: sources.estimatedSpeed?.detail || 'Garmin'
+        });
+      }
+
+      if (details.length > 0) {
+        const cloudNote = !data.cloudConnected
+          ? t(
+              ' (aus synchronisierter Garmin-DB; für Live-Cloud-Werte Garmin Personal API verbinden)',
+              ' (from synced Garmin DB; connect Garmin Personal API for live cloud profile fields)'
+            )
+          : '';
+        setGarminAthleteFeedback({
+          type: data.cloudConnected ? 'success' : 'warning',
+          summary: `${details.length} ${t('Athletenwerte aus Garmin übernommen', 'athlete metrics loaded from Garmin')}${cloudNote}.`,
+          details,
+          needsGarminConnect: !data.cloudConnected
+        });
+      } else {
+        setGarminAthleteFeedback({
+          type: 'warning',
+          summary: data.cloudConnected
+            ? t(
+                'Garmin Cloud verbunden, aber keine Athleten-Stammdaten (FTP/Gewicht/Alter/HF) gefunden.',
+                'Garmin Cloud connected, but no athlete profile metrics (FTP/weight/age/HR) were returned.'
+              )
+            : t(
+                'Keine Garmin-Verbindung aktiv und noch keine synchronisierten Garmin-Daten vorhanden.',
+                'No active Garmin connection and no synced Garmin health/activity data available yet.'
+              ),
+          details: [],
+          needsGarminConnect: !data.cloudConnected
+        });
+      }
+    } catch {
+      setGarminAthleteFeedback({
+        type: 'error',
+        summary: t('Verbindungsfehler beim Laden der Garmin-Athletenwerte.', 'Network error while fetching Garmin athlete metrics.'),
+        details: []
+      });
+    } finally {
+      setIsFetchingGarminAthlete(false);
+    }
+  };
+
+  const handleCalculateFtpFromActivities = async () => {
+    setIsCalculatingFtp(true);
+    setFtpEstimateError(null);
+    try {
+      const res = await apiFetch(getApiUrl('/api/athlete/estimate-ftp'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userWeight,
+          bikeWeight: preferences.bikeWeight,
+          lookbackDays: 90
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        setFtpEstimateError(data?.error || t('FTP-Berechnung fehlgeschlagen.', 'FTP calculation failed.'));
+        return;
+      }
+      setFtpEstimateReport(data as FtpEstimationReport);
+    } catch {
+      setFtpEstimateError(t('Verbindungsfehler bei der FTP-Berechnung.', 'Network error during FTP calculation.'));
+    } finally {
+      setIsCalculatingFtp(false);
+    }
+  };
+
+  const fieldTestPreview = calculateFtpFromFieldTest(fieldTestType, fieldTestWatts, userWeight);
 
   const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -753,6 +915,222 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                 <span className="text-xs font-mono tabular-nums font-bold px-2.5 py-1 rounded-lg bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
                   HF-Reserve: {Math.max(0, Math.round(userMaxHr - preferences.rhrBaseline))} bpm
                 </span>
+              </div>
+
+              {/* Download Athlete Values from Garmin */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                      {t('Athletenwerte aus Garmin herunterladen', 'Download Athlete Values from Garmin')}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {t(
+                        'Lädt FTP, Körpergewicht, Alter, HF max, Ruhepuls und Rad-Tempo direkt aus deinem Garmin-Profil oder synchronisierten Garmin-Daten.',
+                        'Fetches FTP, weight, age, max HR, resting HR, and cycling speed from your Garmin profile or synced Garmin data.'
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-fetch-garmin-athlete"
+                    onClick={handleFetchGarminAthleteProfile}
+                    disabled={isFetchingGarminAthlete}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
+                  >
+                    {isFetchingGarminAthlete ? (
+                      <RefreshCw size={14} className="animate-spin" />
+                    ) : (
+                      <Download size={14} />
+                    )}
+                    <span>
+                      {isFetchingGarminAthlete
+                        ? t('Lade Garmin-Daten…', 'Loading from Garmin…')
+                        : t('Aus Garmin laden', 'Load from Garmin')}
+                    </span>
+                  </button>
+                </div>
+
+                {garminAthleteFeedback && (
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] space-y-1.5 ${
+                      garminAthleteFeedback.type === 'success'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-200'
+                        : garminAthleteFeedback.type === 'warning'
+                        ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-200'
+                        : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 font-semibold">
+                        {garminAthleteFeedback.type === 'success' ? (
+                          <CheckCircle2 size={14} className="shrink-0" />
+                        ) : (
+                          <AlertCircle size={14} className="shrink-0" />
+                        )}
+                        <span>{garminAthleteFeedback.summary}</span>
+                      </span>
+                      {garminAthleteFeedback.needsGarminConnect && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('garmin')}
+                          className="px-2 py-0.5 rounded-md bg-white/90 dark:bg-slate-900 border border-current/30 font-bold text-[10px] hover:opacity-90 cursor-pointer shrink-0"
+                        >
+                          {t('Garmin verbinden', 'Connect Garmin')}
+                        </button>
+                      )}
+                    </div>
+                    {garminAthleteFeedback.details.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {garminAthleteFeedback.details.map((d) => (
+                          <span
+                            key={d.label}
+                            title={d.source}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/80 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-700 font-mono text-[10px]"
+                          >
+                            <span className="font-bold">{d.label}:</span>
+                            <span>{d.value}</span>
+                            <span className="text-slate-400">({d.source})</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Multi-Method FTP Calculator */}
+              <div className="p-3.5 rounded-2xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-800/50 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      <Zap size={13} className="text-amber-500" />
+                      <span>{t('FTP berechnen (Powermeter, Critical Power & Steigungs-Physik)', 'Calculate FTP (Power Meter, Critical Power & Climbing Physics)')}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {t(
+                        'Analysiert 60-Min / 20-Min / 8-Min-Leistungspeaks, Critical Power oder lange Bergfahrten aus deinen synchronisierten Aktivitäten.',
+                        'Analyzes 60-min / 20-min / 8-min power peaks, Critical Power, or sustained climbs from your synced activities.'
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-calculate-ftp-activities"
+                    onClick={handleCalculateFtpFromActivities}
+                    disabled={isCalculatingFtp}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
+                  >
+                    {isCalculatingFtp ? (
+                      <RefreshCw size={14} className="animate-spin" />
+                    ) : (
+                      <Zap size={14} />
+                    )}
+                    <span>
+                      {isCalculatingFtp
+                        ? t('Berechne FTP…', 'Calculating FTP…')
+                        : t('Aus Aktivitäten berechnen', 'Calculate from Activities')}
+                    </span>
+                  </button>
+                </div>
+
+                {ftpEstimateError && (
+                  <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 text-[11px] text-rose-700 dark:text-rose-300 font-semibold">
+                    {ftpEstimateError}
+                  </div>
+                )}
+
+                {ftpEstimateReport && (
+                  <div className="p-2.5 rounded-xl bg-white/90 dark:bg-slate-900/80 border border-amber-200/70 dark:border-amber-800/50 space-y-2 text-[11px]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-slate-800 dark:text-slate-100">
+                          {ftpEstimateReport.summary}
+                        </span>
+                        {ftpEstimateReport.confidence !== 'none' && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                              ftpEstimateReport.confidence === 'high'
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                : ftpEstimateReport.confidence === 'medium'
+                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}
+                          >
+                            {ftpEstimateReport.confidence}
+                          </span>
+                        )}
+                      </div>
+                      {ftpEstimateReport.recommendedFtp !== null && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateFtp(ftpEstimateReport.recommendedFtp!)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                        >
+                          {t('FTP übernehmen', 'Apply FTP')} ({ftpEstimateReport.recommendedFtp} W)
+                        </button>
+                      )}
+                    </div>
+
+                    {ftpEstimateReport.candidates.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {ftpEstimateReport.candidates.map((cand) => (
+                          <button
+                            key={cand.method}
+                            type="button"
+                            onClick={() => onUpdateFtp(cand.ftpWatts)}
+                            title={`${cand.basisValue}${cand.activityName ? ` · ${cand.activityName}` : ''}`}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-amber-100/70 dark:hover:bg-amber-900/30 border border-slate-200/80 dark:border-slate-700 font-mono text-[10px] text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+                          >
+                            <span className="font-bold text-amber-600 dark:text-amber-400">{cand.ftpWatts} W</span>
+                            <span>{cand.label}</span>
+                            <span className="text-slate-400">({cand.wkg} W/kg)</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Compact Field Test Calculator */}
+                <div className="pt-2 border-t border-amber-200/50 dark:border-amber-800/40 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="font-bold text-slate-600 dark:text-slate-300">
+                    {t('Feldtest-Rechner', 'Field Test Calculator')}:
+                  </span>
+                  <select
+                    aria-label={t('Feldtest-Typ', 'Field test type')}
+                    value={fieldTestType}
+                    onChange={(e) => setFieldTestType(e.target.value as FtpFieldTestType)}
+                    className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
+                  >
+                    <option value="20min">20-Min-Test (×0.95)</option>
+                    <option value="8min">8-Min-Test (×0.90)</option>
+                    <option value="ramp">Ramp-Test MAP (×0.75)</option>
+                    <option value="60min">60-Min TT (×1.00)</option>
+                  </select>
+                  <FreeMetricInput
+                    value={fieldTestWatts}
+                    allowDecimal={false}
+                    onCommit={(val) => setFieldTestWatts(val)}
+                    ariaLabel={t('Testleistung (Watt)', 'Test power (Watts)')}
+                    className="w-20 px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono font-bold text-xs text-slate-900 dark:text-slate-100 text-center"
+                  />
+                  <span className="text-slate-500 font-mono">W</span>
+                  {fieldTestPreview && (
+                    <>
+                      <span className="font-mono font-black text-amber-600 dark:text-amber-400">
+                        = {fieldTestPreview.ftpWatts} W ({fieldTestPreview.wkg} W/kg)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUpdateFtp(fieldTestPreview.ftpWatts)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 font-bold text-[10px] hover:opacity-90 cursor-pointer"
+                      >
+                        {t('Übernehmen', 'Apply')}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
@@ -1542,6 +1920,140 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Multi-Method FTP Calculator */}
+              <div className="p-3.5 rounded-2xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-800/50 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      <Zap size={13} className="text-amber-500" />
+                      <span>{t('FTP berechnen (Powermeter, Critical Power & Steigungs-Physik)', 'Calculate FTP (Power Meter, Critical Power & Climbing Physics)')}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {t(
+                        'Analysiert 60-Min / 20-Min / 8-Min-Leistungspeaks, Critical Power oder lange Bergfahrten aus deinen synchronisierten Aktivitäten.',
+                        'Analyzes 60-min / 20-min / 8-min power peaks, Critical Power, or sustained climbs from your synced activities.'
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-calculate-ftp-activities"
+                    onClick={handleCalculateFtpFromActivities}
+                    disabled={isCalculatingFtp}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
+                  >
+                    {isCalculatingFtp ? (
+                      <RefreshCw size={14} className="animate-spin" />
+                    ) : (
+                      <Zap size={14} />
+                    )}
+                    <span>
+                      {isCalculatingFtp
+                        ? t('Berechne FTP…', 'Calculating FTP…')
+                        : t('Aus Aktivitäten berechnen', 'Calculate from Activities')}
+                    </span>
+                  </button>
+                </div>
+
+                {ftpEstimateError && (
+                  <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 text-[11px] text-rose-700 dark:text-rose-300 font-semibold">
+                    {ftpEstimateError}
+                  </div>
+                )}
+
+                {ftpEstimateReport && (
+                  <div className="p-2.5 rounded-xl bg-white/90 dark:bg-slate-900/80 border border-amber-200/70 dark:border-amber-800/50 space-y-2 text-[11px]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-slate-800 dark:text-slate-100">
+                          {ftpEstimateReport.summary}
+                        </span>
+                        {ftpEstimateReport.confidence !== 'none' && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                              ftpEstimateReport.confidence === 'high'
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                : ftpEstimateReport.confidence === 'medium'
+                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}
+                          >
+                            {ftpEstimateReport.confidence}
+                          </span>
+                        )}
+                      </div>
+                      {ftpEstimateReport.recommendedFtp !== null && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateFtp(ftpEstimateReport.recommendedFtp!)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                        >
+                          {t('FTP übernehmen', 'Apply FTP')} ({ftpEstimateReport.recommendedFtp} W)
+                        </button>
+                      )}
+                    </div>
+
+                    {ftpEstimateReport.candidates.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {ftpEstimateReport.candidates.map((cand) => (
+                          <button
+                            key={cand.method}
+                            type="button"
+                            onClick={() => onUpdateFtp(cand.ftpWatts)}
+                            title={`${cand.basisValue}${cand.activityName ? ` · ${cand.activityName}` : ''}`}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-amber-100/70 dark:hover:bg-amber-900/30 border border-slate-200/80 dark:border-slate-700 font-mono text-[10px] text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+                          >
+                            <span className="font-bold text-amber-600 dark:text-amber-400">{cand.ftpWatts} W</span>
+                            <span>{cand.label}</span>
+                            <span className="text-slate-400">({cand.wkg} W/kg)</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Compact Field Test Calculator */}
+                <div className="pt-2 border-t border-amber-200/50 dark:border-amber-800/40 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="font-bold text-slate-600 dark:text-slate-300">
+                    {t('Feldtest-Rechner', 'Field Test Calculator')}:
+                  </span>
+                  <select
+                    aria-label={t('Feldtest-Typ', 'Field test type')}
+                    value={fieldTestType}
+                    onChange={(e) => setFieldTestType(e.target.value as FtpFieldTestType)}
+                    className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
+                  >
+                    <option value="20min">20-Min-Test (×0.95)</option>
+                    <option value="8min">8-Min-Test (×0.90)</option>
+                    <option value="ramp">Ramp-Test MAP (×0.75)</option>
+                    <option value="60min">60-Min TT (×1.00)</option>
+                  </select>
+                  <FreeMetricInput
+                    value={fieldTestWatts}
+                    allowDecimal={false}
+                    onCommit={(val) => setFieldTestWatts(val)}
+                    ariaLabel={t('Testleistung (Watt)', 'Test power (Watts)')}
+                    className="w-20 px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono font-bold text-xs text-slate-900 dark:text-slate-100 text-center"
+                  />
+                  <span className="text-slate-500 font-mono">W</span>
+                  {fieldTestPreview && (
+                    <>
+                      <span className="font-mono font-black text-amber-600 dark:text-amber-400">
+                        = {fieldTestPreview.ftpWatts} W ({fieldTestPreview.wkg} W/kg)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUpdateFtp(fieldTestPreview.ftpWatts)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 font-bold text-[10px] hover:opacity-90 cursor-pointer"
+                      >
+                        {t('Übernehmen', 'Apply')}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           )}

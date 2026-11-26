@@ -504,6 +504,15 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Offline-Modus:': 'Offline Mode:',
   'Tastenkürzel': 'Keyboard Shortcuts',
   'Sportmetrik-Glossar': 'Sports Metrics Glossary',
+  'Aus Garmin laden': 'Load from Garmin',
+  'Athletenwerte aus Garmin laden': 'Load Athlete Values from Garmin',
+  'FTP berechnen': 'Calculate FTP',
+  'Aus Aktivitäten berechnen': 'Calculate from Activities',
+  'FTP übernehmen': 'Apply FTP',
+  'Feldtest-Rechner': 'Field Test Calculator',
+  'Vitaldaten-Anpassung': 'Vitals Adaptation',
+  'Einheiten pro Woche': 'Sessions per Week',
+  'Erholungsschutz aktiv': 'Recovery Guard Active',
   'Strecke umkehren': 'Reverse Track',
   'Steigungsanomalien beheben': 'Fix Gradient Anomalies',
   'Zeitlücken-Analyse': 'Time Gap Analysis',
@@ -747,7 +756,12 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Datenbank-Status': 'Database Status',
   'Synchronisieren': 'Sync',
   'Vorheriger Zeitraum': 'Previous Period',
-  'Nächster Zeitraum': 'Next Period'
+  'Nächster Zeitraum': 'Next Period',
+  'Heutige Trainingsempfehlung': "Today's Workout Recommendation",
+  'Tagesform': 'Daily Feel',
+  'Zeitbudget': 'Time Budget',
+  'Warum heute dieses Training?': 'Why this workout today?',
+  'Garmin Import-Hinweis': 'Garmin Import Guide'
 };
 
 const SORTED_PHRASE_ENTRIES = Object.entries(DE_TO_EN_EXACT).sort(

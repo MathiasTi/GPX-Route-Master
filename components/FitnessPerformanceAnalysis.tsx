@@ -15,15 +15,37 @@ import { parseGPX, isCyclingType, isRunningType, isStopWatchType } from '../util
 import { useAppPreferences } from '../utils/appSettings';
 import {
   formatDistance,
+  formatElevation,
   formatSpeed,
   formatPaceFromSecPerKm,
+  formatWeight,
   speedUnit,
   getLocale
 } from '../utils/units';
 import { NumericProfileInput } from './NumericProfileInput';
 import { estimateCriticalPowerFromBests } from '../utils/wbalEngine';
 import { LoadSafetyProfileTab } from './analysis/LoadSafetyProfileTab';
-import type { LongitudinalActivityInput } from '../utils/sportsMetricsEngine';
+import { calculateVdotFromEffort, type LongitudinalActivityInput } from '../utils/sportsMetricsEngine';
+import { estimateFtpFromActivities } from '../utils/ftpEstimator';
+import {
+  generateAdaptiveTrainingPlan,
+  type TrainingVitalsSnapshot,
+  type TrainingGoalType,
+  type PlannedWorkout
+} from '../utils/trainingPlanEngine';
+import {
+  suggestDailyWorkout,
+  getWorkoutStepVisuals,
+  type DailySportChoice,
+  type DailyTimeBudgetMin,
+  type DailyFeelChoice
+} from '../utils/dailyWorkoutEngine';
+import {
+  downloadWorkoutAsFit,
+  downloadWorkoutAsTcx,
+  downloadWorkoutAsZwo,
+  type GarminExportTargetMode
+} from '../utils/garminWorkoutExporter';
 
 interface FitnessPerformanceAnalysisProps {
   onClose?: () => void;
@@ -38,6 +60,7 @@ interface FitnessPerformanceAnalysisProps {
   isEmbedded?: boolean;
   initialActivities?: GarminActivity[];
   rhrBaseline?: number;
+  vitals?: TrainingVitalsSnapshot | null;
 }
 
 interface GarminActivity {
@@ -76,13 +99,15 @@ export default function FitnessPerformanceAnalysis({
   onUpdateAge,
   isEmbedded = false,
   initialActivities,
-  rhrBaseline
+  rhrBaseline,
+  vitals
 }: FitnessPerformanceAnalysisProps) {
   const appPrefs = useAppPreferences();
   // Local adjustable sports metrics
   const [ftp, setFtp] = useState(initialFtp || 250);
   const [maxHr, setMaxHr] = useState(initialMaxHr || 185);
   const [rhr, setRhr] = useState<number>(rhrBaseline ?? appPrefs.rhrBaseline ?? 55);
+  const [fetchedVitals, setFetchedVitals] = useState<TrainingVitalsSnapshot | null>(null);
 
   useEffect(() => {
     const resolved = rhrBaseline ?? appPrefs.rhrBaseline;
@@ -133,7 +158,7 @@ export default function FitnessPerformanceAnalysis({
   const [activeTab, setActiveTab] = useState<'ctl' | 'load_safety' | 'power' | 'zones' | 'activities' | 'goals'>('ctl');
 
   // Goal and Trainingsplan States
-  const [goalType, setGoalType] = useState<'marathon' | 'halfmarathon' | 'tour'>('marathon');
+  const [goalType, setGoalType] = useState<TrainingGoalType>('marathon');
   const [goalName, setGoalName] = useState('Saison-Highlight');
   const [goalDistance, setGoalDistance] = useState<number>(42.2);
   const [goalElevation, setGoalElevation] = useState<number>(300);
@@ -142,9 +167,17 @@ export default function FitnessPerformanceAnalysis({
   const [gpxLoading, setGpxLoading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [planDuration, setPlanDuration] = useState<4 | 8 | 12>(8);
+  const [sessionsPerWeek, setSessionsPerWeek] = useState<'auto' | 3 | 4 | 5 | 6>('auto');
+  const [useVitalsAdaptation, setUseVitalsAdaptation] = useState<boolean>(true);
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(0);
   const [historyAnalysisRange, setHistoryAnalysisRange] = useState<'1week' | '4weeks' | 'all'>('4weeks');
   const [performanceMetric, setPerformanceMetric] = useState<'speed' | 'hr' | 'both'>('both');
+  const [dailySportChoice, setDailySportChoice] = useState<DailySportChoice>('auto');
+  const [dailyTimeBudget, setDailyTimeBudget] = useState<DailyTimeBudgetMin>('auto');
+  const [dailyFeel, setDailyFeel] = useState<DailyFeelChoice>('auto');
+  const [exportTargetMode, setExportTargetMode] = useState<GarminExportTargetMode>('auto');
+  const [selectedDailyOptionIdx, setSelectedDailyOptionIdx] = useState<number>(0);
+  const [showGarminImportHint, setShowGarminImportHint] = useState<boolean>(false);
 
   useEffect(() => {
     if (isEmbedded || !onClose) return;
@@ -159,7 +192,12 @@ export default function FitnessPerformanceAnalysis({
 
   // Sync default presets when goalType changes
   useEffect(() => {
-    if (goalType === 'marathon') {
+    if (goalType === '10k') {
+      setGoalName('Mein 10K-Wettkampf');
+      setGoalDistance(10.0);
+      setGoalElevation(60);
+      setGoalSport('running');
+    } else if (goalType === 'marathon') {
       setGoalName('Mein Marathon');
       setGoalDistance(42.2);
       setGoalElevation(300);
@@ -169,6 +207,11 @@ export default function FitnessPerformanceAnalysis({
       setGoalDistance(21.1);
       setGoalElevation(150);
       setGoalSport('running');
+    } else if (goalType === 'granfondo') {
+      setGoalName('Alpen-Gran Fondo / Radmarathon');
+      setGoalDistance(135);
+      setGoalElevation(2400);
+      setGoalSport('cycling');
     } else if (goalType === 'tour') {
       setGoalName('Alpenpass-Herausforderung / Radtour');
       setGoalDistance(100);
@@ -279,6 +322,70 @@ export default function FitnessPerformanceAnalysis({
       const result = await response.json();
       if (result.success && result.data && result.data.activities) {
         setActivities(result.data.activities);
+        const rhrRows = Array.isArray(result.data.rhr) ? result.data.rhr.filter((x: any) => Number(x?.rhr) > 0) : [];
+        const sleepRows = Array.isArray(result.data.sleep) ? result.data.sleep.filter((x: any) => Number(x?.duration) > 0) : [];
+        const stressRows = Array.isArray(result.data.stress) ? result.data.stress.filter((x: any) => Number.isFinite(Number(x?.avg_stress))) : [];
+        const stepsRows = Array.isArray(result.data.steps) ? result.data.steps.filter((x: any) => Number(x?.steps) >= 0) : [];
+        if (rhrRows.length > 0 || sleepRows.length > 0 || stressRows.length > 0) {
+          const rhr30 = rhrRows.slice(-30);
+          const rhr7 = rhrRows.slice(-7);
+          const baseRhrVal =
+            rhr30.length > 0
+              ? rhr30.reduce((s: number, d: any) => s + Number(d.rhr), 0) / rhr30.length
+              : effectiveRhr;
+          const rhr7dDelta =
+            rhr7.length > 0
+              ? Number((rhr7.reduce((s: number, d: any) => s + Number(d.rhr), 0) / rhr7.length - baseRhrVal).toFixed(1))
+              : null;
+          const sleep7 = sleepRows.slice(-7);
+          const sleepLatestRow = sleepRows.length > 0 ? sleepRows[sleepRows.length - 1] : null;
+          const sleepHoursLatest =
+            sleepLatestRow && Number(sleepLatestRow.duration) > 0
+              ? Number((Number(sleepLatestRow.duration) / 60).toFixed(1))
+              : null;
+          const sleepScoreLatest =
+            sleepLatestRow && Number(sleepLatestRow.sleep_score ?? sleepLatestRow.sleepScore) > 0
+              ? Math.round(Number(sleepLatestRow.sleep_score ?? sleepLatestRow.sleepScore))
+              : null;
+          const sleepHoursAvg7d =
+            sleep7.length > 0
+              ? Number((sleep7.reduce((s: number, d: any) => s + Number(d.duration), 0) / sleep7.length / 60).toFixed(1))
+              : null;
+          const stress7 = stressRows.slice(-7);
+          const stressLatestRow = stressRows.length > 0 ? stressRows[stressRows.length - 1] : null;
+          const stressLatest =
+            stressLatestRow && Number.isFinite(Number(stressLatestRow.avg_stress))
+              ? Math.round(Number(stressLatestRow.avg_stress))
+              : null;
+          const stressAvg7d =
+            stress7.length > 0
+              ? Math.round(stress7.reduce((s: number, d: any) => s + Number(d.avg_stress), 0) / stress7.length)
+              : null;
+          const steps7 = stepsRows.slice(-7);
+          const stepsAvg7d =
+            steps7.length > 0
+              ? Math.round(steps7.reduce((s: number, d: any) => s + Number(d.steps), 0) / steps7.length)
+              : null;
+          const rhrLatestVal = rhrRows.length > 0 ? Number(rhrRows[rhrRows.length - 1].rhr) : null;
+          const rhrTodayDelta =
+            rhrLatestVal !== null && Number.isFinite(baseRhrVal)
+              ? Number((rhrLatestVal - baseRhrVal).toFixed(1))
+              : null;
+          setFetchedVitals({
+            readinessScore: null,
+            sleepHoursAvg7d,
+            sleepScoreAvg7d: null,
+            sleepHoursLatest,
+            sleepScoreLatest,
+            rhrLatest: rhrLatestVal,
+            rhrBaseline: Math.round(baseRhrVal),
+            rhr7dDelta,
+            rhrTodayDelta,
+            stressAvg7d,
+            stressLatest,
+            stepsAvg7d
+          });
+        }
       } else {
         throw new Error("Fehler beim Verarbeiten der Server-Antwort");
       }
@@ -1122,77 +1229,31 @@ export default function FitnessPerformanceAnalysis({
     });
   }, [calculatedActivities, filterType, searchQuery]);
 
-  // Scientific Recommendations computation
-  const trainingRecommendations = useMemo(() => {
-    const userCtl = currentFitness.ctl || 25; // fallback to 25 if zero
-    const classification = trainingZonesAggr.classification;
+  const resolvedVitals = vitals ?? fetchedVitals;
 
-    // 1. Calculate estimated requirements for the target
-    let expectedSpeed = goalSport === 'running' ? 10 : 22; // km/h
-    // Adjust speed based on elevation: lose speed if there's significant climbing
-    const elevDensity = goalDistance > 0 ? (goalElevation / goalDistance) : 0; // m of climbing per km
-    if (goalSport === 'running') {
-      expectedSpeed = Math.max(6, 11 - (elevDensity * 0.05));
-    } else {
-      expectedSpeed = Math.max(12, 24 - (elevDensity * 0.2));
-    }
+  // Multi-method auto FTP estimate from synced activities
+  const ftpEstimation = useMemo(() => {
+    return estimateFtpFromActivities(calculatedActivities, {
+      userWeightKg: userWeight || 75,
+      bikeWeightKg: appPrefs.bikeWeight ?? 8.5,
+      lookbackDays: 90
+    });
+  }, [calculatedActivities, userWeight, appPrefs.bikeWeight]);
 
-    const estDurationHours = goalDistance / expectedSpeed;
-    
-    // Estimate Event TSS:
-    // Marathon is around 250-320 TSS
-    // Half Marathon is around 130-170 TSS
-    // Cycling tour depends heavily on duration & elevation. Average IF of 0.72.
-    let estTss = 100;
-    if (goalType === 'marathon') {
-      estTss = 280;
-    } else if (goalType === 'halfmarathon') {
-      estTss = 140;
-    } else {
-      // Custom cycling/running tour
-      const estimatedIf = goalSport === 'running' ? 0.82 : 0.70;
-      estTss = Math.round(estDurationHours * Math.pow(estimatedIf, 2) * 100);
-    }
-
-    // 2. CTL targets
-    let targetCtl = 40;
-    if (goalType === 'marathon') targetCtl = 60;
-    else if (goalType === 'halfmarathon') targetCtl = 40;
-    else {
-      // custom tour based on estimated TSS
-      targetCtl = Math.max(30, Math.round(estTss / 4.5));
-    }
-
-    const ctlGap = Math.max(0, targetCtl - userCtl);
-    const weeklyTssTarget = Math.round(userCtl * 7 * 0.95 + ctlGap * 18);
-
-    // 3. Readiness / preparation index
-    let readinessScore = 50;
-    if (userCtl >= targetCtl) {
-      readinessScore = 95;
-    } else {
-      readinessScore = Math.max(15, Math.round((userCtl / targetCtl) * 100));
-    }
-
-    return {
-      estDurationHours: parseFloat(estDurationHours.toFixed(1)),
-      estTss,
-      targetCtl,
-      ctlGap,
-      weeklyTssTargetRange: [Math.max(100, weeklyTssTarget - 50), weeklyTssTarget + 50],
-      readinessScore,
-      userCtlLevel: userCtl < 35 ? 'Einsteiger' : userCtl < 70 ? 'Fortgeschritten' : 'Profi / Leistungssportler',
-      acwrWarning: currentFitness.acwr > 1.5
-    };
-  }, [currentFitness.ctl, goalDistance, goalElevation, goalSport, goalType, trainingZonesAggr.classification]);
-
-  // Scientific Activity Background Profiler
+  // Rich Activity & Performance Background Profiler (Feeds the Adaptive Trainingsplan)
   const activityProfile = useMemo(() => {
     if (!calculatedActivities || calculatedActivities.length === 0) {
       return {
         avgWeeklySessions: 0,
         avgWeeklyDistance: 0,
         avgWeeklyDuration: 0,
+        avgWeeklyAscentM: 0,
+        longestSessionDistanceKm: 0,
+        longestSessionDurationMin: 0,
+        recentAvgCyclingSpeedKmh: null as number | null,
+        recentAvgRunningPaceSecKm: null as number | null,
+        estimatedVdot: null as number | null,
+        recentMonotony: null as number | null,
         hasRecentRunning: false,
         hasRecentCycling: false,
         isTrained: false,
@@ -1201,440 +1262,318 @@ export default function FitnessPerformanceAnalysis({
       };
     }
 
-    const allDates = calculatedActivities.map(a => new Date(a.date).getTime());
-    const latestDateMs = Math.max(...allDates);
+    const allDates = calculatedActivities
+      .map((a) => new Date(a.date).getTime())
+      .filter((ms) => Number.isFinite(ms));
+    const latestDateMs = allDates.length > 0 ? Math.max(...allDates) : Date.now();
 
     let filtered = calculatedActivities;
-    let diffWeeks = 4; // default
+    let diffWeeks = 4;
     let rangeLabel = 'Letzte 4 Wochen';
 
     if (historyAnalysisRange === '1week') {
       const cutoff = latestDateMs - 7 * 24 * 60 * 60 * 1000;
-      filtered = calculatedActivities.filter(a => new Date(a.date).getTime() >= cutoff);
+      filtered = calculatedActivities.filter((a) => new Date(a.date).getTime() >= cutoff);
       diffWeeks = 1;
       rangeLabel = 'Letzte 1 Woche';
     } else if (historyAnalysisRange === '4weeks') {
       const cutoff = latestDateMs - 28 * 24 * 60 * 60 * 1000;
-      filtered = calculatedActivities.filter(a => new Date(a.date).getTime() >= cutoff);
+      filtered = calculatedActivities.filter((a) => new Date(a.date).getTime() >= cutoff);
       diffWeeks = 4;
       rangeLabel = 'Letzte 4 Wochen';
     } else {
-      const minDate = Math.min(...allDates);
+      const minDate = allDates.length > 0 ? Math.min(...allDates) : latestDateMs - 7 * 86400000;
       const diffDays = Math.max(7, (latestDateMs - minDate) / (1000 * 60 * 60 * 24));
       diffWeeks = diffDays / 7;
       rangeLabel = 'Ganze Historie';
     }
 
-    // Fallback if filtering results in 0 activities
     if (filtered.length === 0) {
-      filtered = calculatedActivities.slice(-3); // fallback to last 3
-      const dates = filtered.map(a => new Date(a.date).getTime());
-      const minDate = Math.min(...dates);
-      const maxDate = Math.max(...dates);
+      filtered = calculatedActivities.slice(-3);
+      const dates = filtered.map((a) => new Date(a.date).getTime()).filter((ms) => Number.isFinite(ms));
+      const minDate = dates.length > 0 ? Math.min(...dates) : latestDateMs - 7 * 86400000;
+      const maxDate = dates.length > 0 ? Math.max(...dates) : latestDateMs;
       const diffDays = Math.max(7, (maxDate - minDate) / (1000 * 60 * 60 * 24));
       diffWeeks = diffDays / 7;
     }
 
     const totalSessions = filtered.length;
     const totalDistance = filtered.reduce((sum, a) => sum + (a.distance || 0), 0);
-    const totalDuration = filtered.reduce((sum, a) => sum + (a.duration || 0), 0) / 3600; // hours
+    const totalDuration = filtered.reduce((sum, a) => sum + (a.duration || 0), 0) / 3600;
+    const totalAscent = filtered.reduce((sum, a) => sum + (a.ascent || 0), 0);
 
-    const hasRecentRunning = filtered.some(a => a.type.toLowerCase().includes('run'));
-    const hasRecentCycling = filtered.some(a => a.type.toLowerCase().includes('cycle') || a.type.toLowerCase().includes('bike'));
+    const hasRecentRunning = filtered.some((a) => isRunningType(a.type, a.name));
+    const hasRecentCycling = filtered.some((a) => isCyclingType(a.type, a.name));
+
+    const goalMatched = filtered.filter((a) =>
+      goalSport === 'running' ? isRunningType(a.type, a.name) : isCyclingType(a.type, a.name)
+    );
+    const longestPool = goalMatched.length > 0 ? goalMatched : filtered;
+    const longestSessionDistanceKm = longestPool.reduce(
+      (max, a) => Math.max(max, Number(a.distance) || 0),
+      0
+    );
+    const longestSessionDurationMin = Math.round(
+      longestPool.reduce((max, a) => Math.max(max, Number(a.duration) || 0), 0) / 60
+    );
+
+    const cyclingSpeeds = calculatedActivities
+      .filter((a) => isCyclingType(a.type, a.name) && (a.distance || 0) >= 5 && (a.duration || 0) >= 900)
+      .slice(-25)
+      .map((a) => Number(a.distance) / (Number(a.duration) / 3600))
+      .filter((s) => Number.isFinite(s) && s >= 10 && s <= 48)
+      .sort((a, b) => a - b);
+    const recentAvgCyclingSpeedKmh =
+      cyclingSpeeds.length > 0 ? Number(cyclingSpeeds[Math.floor(cyclingSpeeds.length / 2)].toFixed(1)) : null;
+
+    const runActs = calculatedActivities.filter(
+      (a) => isRunningType(a.type, a.name) && (a.distance || 0) >= 2 && (a.duration || 0) >= 600
+    );
+    const runningPaces = runActs
+      .slice(-20)
+      .map((a) => Number(a.duration) / Number(a.distance))
+      .filter((p) => Number.isFinite(p) && p >= 180 && p <= 650)
+      .sort((a, b) => a - b);
+    const recentAvgRunningPaceSecKm =
+      runningPaces.length > 0 ? Math.round(runningPaces[Math.floor(runningPaces.length / 2)]) : null;
+
+    let bestVdot: number | null = null;
+    for (const rAct of runActs.slice(-30)) {
+      if (Number(rAct.distance) >= 3 && Number(rAct.duration) >= 720) {
+        const vdot = calculateVdotFromEffort(Number(rAct.distance) * 1000, Number(rAct.duration));
+        if (vdot && (!bestVdot || vdot > bestVdot)) {
+          bestVdot = vdot;
+        }
+      }
+    }
+
+    // Recent 7-day Foster Monotony estimate from fitnessTrendData
+    const last7Trend = fitnessTrendData.slice(-7);
+    let recentMonotony: number | null = null;
+    if (last7Trend.length === 7) {
+      const tssVals = last7Trend.map((d) => d.tss || 0);
+      const mean = tssVals.reduce((s, v) => s + v, 0) / 7;
+      const variance = tssVals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / 7;
+      const std = Math.sqrt(variance);
+      if (std > 1 && mean > 0) {
+        recentMonotony = Number((mean / std).toFixed(2));
+      }
+    }
 
     const avgWeeklySessions = totalSessions / diffWeeks;
     const avgWeeklyDistance = totalDistance / diffWeeks;
     const avgWeeklyDuration = totalDuration / diffWeeks;
+    const avgWeeklyAscentM = totalAscent / diffWeeks;
 
     return {
       avgWeeklySessions: parseFloat(avgWeeklySessions.toFixed(1)),
       avgWeeklyDistance: parseFloat(avgWeeklyDistance.toFixed(1)),
       avgWeeklyDuration: parseFloat(avgWeeklyDuration.toFixed(1)),
+      avgWeeklyAscentM: Math.round(avgWeeklyAscentM),
+      longestSessionDistanceKm: parseFloat(longestSessionDistanceKm.toFixed(1)),
+      longestSessionDurationMin,
+      recentAvgCyclingSpeedKmh,
+      recentAvgRunningPaceSecKm,
+      estimatedVdot: bestVdot,
+      recentMonotony,
       hasRecentRunning,
       hasRecentCycling,
       isTrained: (currentFitness.ctl || 0) > 35 || avgWeeklySessions >= 2.5,
       filteredCount: totalSessions,
       historyRangeLabel: rangeLabel
     };
-  }, [calculatedActivities, currentFitness.ctl, historyAnalysisRange]);
+  }, [calculatedActivities, currentFitness.ctl, historyAnalysisRange, goalSport, fitnessTrendData]);
 
-  // Helper inside component to generate workouts for a given week index
-  const generateWorkoutsForWeek = useCallback((
-    weekIdx: number, 
-    totalWeeks: number, 
-    phase: string, 
-    weekTss: number, 
-    sport: 'running' | 'cycling',
-    distance: number,
-    elevation: number
-  ) => {
-    const isCycling = sport === 'cycling';
-    const isDeload = phase.toLowerCase().includes('del') || phase.toLowerCase().includes('erhol');
-    const isTaper = phase.toLowerCase().includes('taper');
-    const isPeak = phase.toLowerCase().includes('peak');
-    const isBuild = phase.toLowerCase().includes('build') || phase.toLowerCase().includes('temp');
-
-    // Workout 1: The Intensity Key Session (Intervals or threshold)
-    let workout1: any;
-    if (isCycling) {
-      if (isDeload || isTaper) {
-        workout1 = {
-          title: `Kurze Schwellenreize W${weekIdx + 1}`,
-          description: "Erhalt der neuromuskulären Anspannung bei deutlich reduziertem Volumen zur Entlastung.",
-          tss: Math.round(weekTss * 0.35),
-          steps: [
-            { name: "Warm-up (GA1)", durationMinutes: 10, targetFtpPercent: 55, targetHrPercent: 65 },
-            { name: "Schwellen-Intervall", durationMinutes: 4, targetFtpPercent: 95, targetHrPercent: 85, reps: 3, restDurationMinutes: 3 },
-            { name: "Cool-down", durationMinutes: 10, targetFtpPercent: 50, targetHrPercent: 60 }
-          ]
-        };
-      } else if (isPeak) {
-        workout1 = {
-          title: `VO2max Power-Intervalle W${weekIdx + 1}`,
-          description: "Entwicklung der maximalen Sauerstoffaufnahme und Erhöhung des kardiovaskulären Limits.",
-          tss: Math.round(weekTss * 0.40),
-          steps: [
-            { name: "Warm-up (GA1)", durationMinutes: 15, targetFtpPercent: 60, targetHrPercent: 68 },
-            { name: "VO2max Intervall", durationMinutes: 4, targetFtpPercent: 115, targetHrPercent: 95, reps: 5, restDurationMinutes: 4 },
-            { name: "Cool-down", durationMinutes: 15, targetFtpPercent: 50, targetHrPercent: 60 }
-          ]
-        };
-      } else if (isBuild) {
-        workout1 = {
-          title: `Sweet Spot Schwellen-Sitzung W${weekIdx + 1}`,
-          description: "Hocheffiziente Steigerung der anaeroben Schwelle (SST) bei gut tolerierbarer Ermüdung.",
-          tss: Math.round(weekTss * 0.38),
-          steps: [
-            { name: "Warm-up (GA1)", durationMinutes: 15, targetFtpPercent: 60, targetHrPercent: 68 },
-            { name: "SST Intervall", durationMinutes: 15, targetFtpPercent: 90, targetHrPercent: 88, reps: 2, restDurationMinutes: 5 },
-            { name: "Cool-down", durationMinutes: 15, targetFtpPercent: 52, targetHrPercent: 60 }
-          ]
-        };
-      } else { // Base
-        workout1 = {
-          title: `Trittfrequenz-Aktivierung W${weekIdx + 1}`,
-          description: "Verbesserung der Bewegungseffizienz durch High-Cadence Reize.",
-          tss: Math.round(weekTss * 0.30),
-          steps: [
-            { name: "Warm-up (GA1)", durationMinutes: 15, targetFtpPercent: 55, targetHrPercent: 65 },
-            { name: "High-Cadence-Intervall", durationMinutes: 5, targetFtpPercent: 80, targetHrPercent: 78, reps: 3, restDurationMinutes: 5 },
-            { name: "Cool-down", durationMinutes: 10, targetFtpPercent: 50, targetHrPercent: 60 }
-          ]
-        };
-      }
-    } else { // Running
-      if (isDeload || isTaper) {
-        workout1 = {
-          title: `Kurze Tempo-Aktivierung W${weekIdx + 1}`,
-          description: "Neuromuskuläre Spritzigkeit erhalten durch kurze Belastungsreize.",
-          tss: Math.round(weekTss * 0.35),
-          steps: [
-            { name: "Warm-up (Lockerer Trab)", durationMinutes: 10, targetHrPercent: 65 },
-            { name: "Renntempo-Intervall", durationMinutes: 3, targetHrPercent: 85, reps: 3, restDurationMinutes: 3 },
-            { name: "Cool-down", durationMinutes: 10, targetHrPercent: 60 }
-          ]
-        };
-      } else if (isPeak) {
-        workout1 = {
-          title: `VO2max Intervalle W${weekIdx + 1}`,
-          description: "Peak-Sauerstoffaufnahme durch klassische Intervalle zur Erreichung der Topform.",
-          tss: Math.round(weekTss * 0.40),
-          steps: [
-            { name: "Einlaufen (GA1)", durationMinutes: 12, targetHrPercent: 68 },
-            { name: "VO2max Intervall", durationMinutes: 3, targetHrPercent: 93, reps: 5, restDurationMinutes: 3 },
-            { name: "Auslaufen", durationMinutes: 10, targetHrPercent: 60 }
-          ]
-        };
-      } else if (isBuild) {
-        workout1 = {
-          title: `Schwellen-Tempowechsel W${weekIdx + 1}`,
-          description: "Förderung der Laktatpufferung im angestrebten Wettkampftempo.",
-          tss: Math.round(weekTss * 0.38),
-          steps: [
-            { name: "Einlaufen (GA1)", durationMinutes: 15, targetHrPercent: 70 },
-            { name: "Tempo-Intervall", durationMinutes: 8, targetHrPercent: 88, reps: 3, restDurationMinutes: 4 },
-            { name: "Auslaufen", durationMinutes: 10, targetHrPercent: 62 }
-          ]
-        };
-      } else { // Base
-        workout1 = {
-          title: `Steigerungslauf W${weekIdx + 1}`,
-          description: "Lockerer Einstieg in intensivere Tempobereiche mit Fokus auf Laufökonomie.",
-          tss: Math.round(weekTss * 0.32),
-          steps: [
-            { name: "Warm-up", durationMinutes: 15, targetHrPercent: 65 },
-            { name: "Steigerungs-Intervall", durationMinutes: 1.5, targetHrPercent: 80, reps: 5, restDurationMinutes: 2 },
-            { name: "Cool-down", durationMinutes: 10, targetHrPercent: 60 }
-          ]
-        };
-      }
-    }
-
-    // Workout 2: The Endurance Builder (The Long Ride / Run)
-    let workout2: any;
-    const enduranceTss = Math.round(weekTss * (isDeload ? 0.40 : 0.45));
-    if (isCycling) {
-      const baseHrs = isDeload ? 1.5 : isTaper ? 1.5 : isPeak ? 3.5 : isBuild ? 3.0 : 2.0;
-      const hours = Math.max(1.2, baseHrs + (elevation / 1000) * 0.4);
-      workout2 = {
-        title: `Grundlagen-Dauerfahrt W${weekIdx + 1}`,
-        description: `Stärkung des Fettstoffwechsels und Schulung des Stehvermögens über ${hours.toFixed(1)} Std.`,
-        tss: enduranceTss,
-        steps: [
-          { name: "Warm-up", durationMinutes: 10, targetFtpPercent: 50, targetHrPercent: 60 },
-          { name: "GA1 Dauerbereich", durationMinutes: Math.round(hours * 60), targetFtpPercent: 65, targetHrPercent: 70 },
-          { name: "Cool-down", durationMinutes: 10, targetFtpPercent: 50, targetHrPercent: 58 }
-        ]
-      };
-    } else { // Running
-      const baseKms = isDeload ? 10 : isTaper ? 12 : isPeak ? Math.max(14, distance * 0.65) : isBuild ? Math.max(12, distance * 0.55) : Math.max(10, distance * 0.45);
-      const estimatedMinutes = Math.round(baseKms * 6); // 6 min/km pace
-      workout2 = {
-        title: `Langer GA1 Dauerlauf W${weekIdx + 1}`,
-        description: `Wichtige orthopädische Gewöhnung über geplante ${baseKms.toFixed(1)} km im aeroben Wohlfühltempo.`,
-        tss: enduranceTss,
-        steps: [
-          { name: "Einlaufen", durationMinutes: 10, targetHrPercent: 62 },
-          { name: "GA1 Dauerlauf", durationMinutes: estimatedMinutes, targetHrPercent: 72 },
-          { name: "Auslaufen", durationMinutes: 10, targetHrPercent: 62 }
-        ]
-      };
-    }
-
-    // Workout 3: Active Recovery / Light Support Session
-    let workout3: any;
-    const recoveryTss = Math.round(weekTss * 0.17);
-    if (isCycling) {
-      workout3 = {
-        title: `Regeneratives Kurbeln W${weekIdx + 1}`,
-        description: "Aktiver Laktatabbau und Entlastung der Muskulatur nach harten Belastungstagen.",
-        tss: recoveryTss,
-        steps: [
-          { name: "Aktive Erholung", durationMinutes: 45, targetFtpPercent: 48, targetHrPercent: 55 }
-        ]
-      };
-    } else { // Running
-      workout3 = {
-        title: `Regenerativer DL oder Walk W${weekIdx + 1}`,
-        description: "Förderung der Durchblutung zur Beschleunigung der zellulären Erholung.",
-        tss: recoveryTss,
-        steps: [
-          { name: "Erholungslauf", durationMinutes: 30, targetHrPercent: 60 }
-        ]
-      };
-    }
-
-    return [workout1, workout2, workout3];
-  }, []);
-
-  // Scientific Training Plan Generator
-  const generatedPlan = useMemo(() => {
-    const weeksCount = planDuration;
-    const userCtl = currentFitness.ctl || 25;
-    const baseTss = Math.max(120, userCtl * 7 * 0.95);
-    
-    const plan: any[] = [];
-    
-    for (let w = 0; w < weeksCount; w++) {
-      let phase = '';
-      let phaseDesc = '';
-      let loadMultiplier = 1.0;
-      
-      if (weeksCount === 8) {
-        if (w < 2) {
-          phase = 'Base (Fundament)';
-          phaseDesc = 'Aufbau des aeroben Herz-Kreislauf-Systems und orthopädische Festigung.';
-          loadMultiplier = 1.0 + (w * 0.08);
-        } else if (w < 3) {
-          phase = 'Build (Kraftausdauer)';
-          phaseDesc = 'Einführung längerer Reize nahe der anaeroben Schwelle zur Steigerung des maximalen Laktatumsatzes.';
-          loadMultiplier = 1.22;
-        } else if (w < 4) {
-          phase = 'Deload (Erholung)';
-          phaseDesc = 'Superkompensation: Aktive Regeneration zur Absorption des vorherigen Belastungsblocks.';
-          loadMultiplier = 0.72;
-        } else if (w < 6) {
-          phase = 'Peak (Spezifische Belastung)';
-          phaseDesc = 'Maximaler Reiz: Hochintensive Reize im Schwellen- und VO2max-Bereich für den letzten Schliff.';
-          loadMultiplier = 1.38;
-        } else if (w < 7) {
-          phase = 'Tapering I';
-          phaseDesc = 'Beginnende Volumenreduktion bei gleichbleibender Intensität, um Ermüdung abzubauen.';
-          loadMultiplier = 0.82;
-        } else {
-          phase = 'Tapering II & Event';
-          phaseDesc = 'Maximale Frische am Wettkampftag. Kurze, spritzige Intervalle gefolgt von voller Erholung.';
-          loadMultiplier = 0.48;
-        }
-      } else if (weeksCount === 4) {
-        if (w === 0) {
-          phase = 'Build (Belastungsaufbau)';
-          phaseDesc = 'Fokus auf Sweet-Spot- und Laktatschwellenintervalle zur Festigung der Tempohärte.';
-          loadMultiplier = 1.15;
-        } else if (w === 1) {
-          phase = 'Peak (Hauptbelastung)';
-          phaseDesc = 'Härtester Wochenblock mit wettkampfspezifischer Intervalldichte.';
-          loadMultiplier = 1.35;
-        } else if (w === 2) {
-          phase = 'Tapering (Regeneration)';
-          phaseDesc = 'Drastische Verringerung des Volumens für volle Kohlenhydratspeicher und Muskelregeneration.';
-          loadMultiplier = 0.75;
-        } else {
-          phase = 'Wettkampf-Woche';
-          phaseDesc = 'Kurze neuromuscularer Aktivierungen vor dem eigentlichen Hauptlauf.';
-          loadMultiplier = 0.45;
-        }
-      } else { // 12 Weeks
-        if (w < 3) {
-          phase = 'Base I (Fundament)';
-          phaseDesc = 'Gleichmäßiger aerober Aufbau, Optimierung der mitochondrialen Dichte und Fettsäureoxidation.';
-          loadMultiplier = 0.95 + (w * 0.06);
-        } else if (w === 3) {
-          phase = 'Deload (Anpassung)';
-          phaseDesc = 'Superkompensation für den Übergang in den ersten echten Schwellenblock.';
-          loadMultiplier = 0.70;
-        } else if (w < 7) {
-          phase = 'Build I (Schwellenverschiebung)';
-          phaseDesc = 'Intensive Kraftausdauereinheiten und gesteigerte Dauerläufe zur Verschiebung des Ermüdungspunkts.';
-          loadMultiplier = 1.15 + ((w - 4) * 0.05);
-        } else if (w === 7) {
-          phase = 'Deload (Anpassung)';
-          phaseDesc = 'Zelluläre Regeneration vor dem härtesten Peak-Belastungsblock.';
-          loadMultiplier = 0.74;
-        } else if (w < 10) {
-          phase = 'Peak (Wettkampfsimulation)';
-          phaseDesc = 'Extrem spezifisches Renntempo-Training und VO2max-Reize für maximale aerobe Leistung.';
-          loadMultiplier = 1.38;
-        } else if (w === 10) {
-          phase = 'Tapering I';
-          phaseDesc = 'Volumenreduktion um 35%. Der Körper beginnt, die tiefe Muskelmüdigkeit abzustreifen.';
-          loadMultiplier = 0.85;
-        } else {
-          phase = 'Tapering II & Wettkampf';
-          phaseDesc = 'Voll aufgeladene Glykogenspeicher und höchste neurale Spannkraft für deine Höchstleistung.';
-          loadMultiplier = 0.50;
-        }
-      }
-      
-      const startTssScale = activityProfile.isTrained ? baseTss : Math.min(baseTss, 210);
-      const targetTss = Math.round(startTssScale * loadMultiplier);
-      const workouts = generateWorkoutsForWeek(w, weeksCount, phase, targetTss, goalSport, goalDistance, goalElevation);
-      
-      plan.push({
-        weekNumber: w + 1,
-        phase,
-        phaseDesc,
-        targetTss,
-        workouts
-      });
-    }
-    
-    return plan;
-  }, [planDuration, currentFitness.ctl, goalSport, goalDistance, goalElevation, activityProfile.isTrained, generateWorkoutsForWeek]);
-
-  // Garmin Target TCX Generator
-  const exportToTcx = useCallback((workout: any) => {
-    const sport = goalSport === 'running' ? 'Running' : 'Biking';
-    
-    // Simple helper inside exportToTcx scope to generate Target XML
-    const getTcxTargetXml = (step: any, sportType: string) => {
-      if (sportType === 'Biking' && step.targetFtpPercent) {
-        const targetWatts = Math.round((ftp * step.targetFtpPercent) / 100);
-        const lowWatts = Math.round(targetWatts * 0.93);
-        const highWatts = Math.round(targetWatts * 1.07);
-        return `        <Target xsi:type="CustomPower_t">
-          <CustomPowerZone xsi:type="CustomPowerZone_t">
-            <Low>${lowWatts}</Low>
-            <High>${highWatts}</High>
-          </CustomPowerZone>
-        </Target>\n`;
-      } else if (step.targetHrPercent) {
-        const targetBpm = Math.round((maxHr * step.targetHrPercent) / 100);
-        const lowHr = Math.round(targetBpm * 0.93);
-        const highHr = Math.round(targetBpm * 1.07);
-        return `        <Target xsi:type="HeartRate_t">
-          <HeartRateZone xsi:type="HeartRateAboveZone_t">
-            <Min xsi:type="HeartRateInBeatsPerMinute_t">
-              <Value>${lowHr}</Value>
-            </Min>
-            <Max xsi:type="HeartRateInBeatsPerMinute_t">
-              <Value>${highHr}</Value>
-            </Max>
-          </HeartRateZone>
-        </Target>\n`;
-      } else {
-        return `        <Target xsi:type="None_t"/>\n`;
-      }
-    };
-
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<TrainingCenterDatabase 
-  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2" 
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-  xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd">
-  <Workouts>
-    <Workout Sport="${sport}">
-      <Name>${workout.title.substring(0, 15).replace(/[^a-zA-Z0-9 ]/g, '')}</Name>
-      <Notes>${workout.description || 'Wissenschaftlicher Trainingsplan'}</Notes>
-`;
-
-    let stepId = 1;
-    
-    workout.steps.forEach((step: any) => {
-      if (step.reps && step.reps > 1) {
-        for (let r = 0; r < step.reps; r++) {
-          xml += `      <Step xsi:type="Step_t">
-        <StepId>${stepId++}</StepId>
-        <Name>${step.name.substring(0, 10)} ${r + 1}</Name>
-        <Intensity>Active</Intensity>
-        <Duration xsi:type="Time_t">
-          <Seconds>${step.durationMinutes * 60}</Seconds>
-        </Duration>
-`;
-          xml += getTcxTargetXml(step, sport);
-          xml += `      </Step>\n`;
-
-          if (step.restDurationMinutes) {
-            xml += `      <Step xsi:type="Step_t">
-        <StepId>${stepId++}</StepId>
-        <Name>Pause</Name>
-        <Intensity>Resting</Intensity>
-        <Duration xsi:type="Time_t">
-          <Seconds>${step.restDurationMinutes * 60}</Seconds>
-        </Duration>
-`;
-            xml += getTcxTargetXml({ name: "Pause", durationMinutes: step.restDurationMinutes, targetHrPercent: 60, targetFtpPercent: 50 }, sport);
-            xml += `      </Step>\n`;
-          }
-        }
-      } else {
-        xml += `      <Step xsi:type="Step_t">
-        <StepId>${stepId++}</StepId>
-        <Name>${step.name.substring(0, 15)}</Name>
-        <Intensity>${step.name.toLowerCase().includes('warm') ? 'Warmup' : step.name.toLowerCase().includes('cool') || step.name.toLowerCase().includes('auslauf') ? 'Cooldown' : 'Active'}</Intensity>
-        <Duration xsi:type="Time_t">
-          <Seconds>${step.durationMinutes * 60}</Seconds>
-        </Duration>
-`;
-        xml += getTcxTargetXml(step, sport);
-        xml += `      </Step>\n`;
-      }
+  // Holistic Adaptive Training Plan combining Athlete Stats, History, Load & Garmin Vitals
+  const adaptivePlan = useMemo(() => {
+    const z3Pct = trainingZonesAggr.hrData?.[2]?.percent ?? 0;
+    return generateAdaptiveTrainingPlan({
+      goal: {
+        name: goalName,
+        type: goalType,
+        sport: goalSport,
+        distanceKm: goalDistance,
+        elevationM: goalElevation,
+        planWeeks: planDuration,
+        sessionsPerWeek,
+        useVitalsAdaptation
+      },
+      athlete: {
+        ftp,
+        estimatedFtp: ftpEstimation.recommendedFtp,
+        weightKg: userWeight || 75,
+        bikeWeightKg: appPrefs.bikeWeight ?? 8.5,
+        age: userAge || 35,
+        maxHr,
+        rhrBaseline: effectiveRhr
+      },
+      load: {
+        ctl: currentFitness.ctl || 0,
+        atl: currentFitness.atl || 0,
+        tsb: currentFitness.tsb || 0,
+        acwr: currentFitness.acwr || 1.0,
+        monotony: activityProfile.recentMonotony,
+        polarizationClass: trainingZonesAggr.classification,
+        z3GreyZonePct: z3Pct
+      },
+      history: {
+        avgWeeklySessions: activityProfile.avgWeeklySessions,
+        avgWeeklyDistanceKm: activityProfile.avgWeeklyDistance,
+        avgWeeklyDurationHrs: activityProfile.avgWeeklyDuration,
+        avgWeeklyAscentM: activityProfile.avgWeeklyAscentM,
+        longestSessionDistanceKm: activityProfile.longestSessionDistanceKm,
+        longestSessionDurationMin: activityProfile.longestSessionDurationMin,
+        recentAvgCyclingSpeedKmh: activityProfile.recentAvgCyclingSpeedKmh,
+        recentAvgRunningPaceSecKm: activityProfile.recentAvgRunningPaceSecKm,
+        estimatedVdot: activityProfile.estimatedVdot
+      },
+      vitals: resolvedVitals
     });
+  }, [
+    goalName,
+    goalType,
+    goalSport,
+    goalDistance,
+    goalElevation,
+    planDuration,
+    sessionsPerWeek,
+    useVitalsAdaptation,
+    ftp,
+    ftpEstimation.recommendedFtp,
+    userWeight,
+    appPrefs.bikeWeight,
+    userAge,
+    maxHr,
+    effectiveRhr,
+    currentFitness,
+    activityProfile,
+    trainingZonesAggr,
+    resolvedVitals
+  ]);
 
-    xml += `    </Workout>
-  </Workouts>
-</TrainingCenterDatabase>`;
+  const trainingRecommendations = adaptivePlan.assessment;
+  const generatedPlan = adaptivePlan.weeks;
 
-    const blob = new Blob([xml], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Garmin_${workout.title.replace(/[^a-zA-Z0-9]/g, '_')}.tcx`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }, [goalSport, ftp, maxHr]);
+  const dailyRecommendation = useMemo(() => {
+    const z3Pct = trainingZonesAggr.hrData?.[2]?.percent ?? 0;
+    return suggestDailyWorkout({
+      requestedSport: dailySportChoice,
+      timeBudgetMin: dailyTimeBudget,
+      userFeel: dailyFeel,
+      useVitalsAdaptation,
+      goal: {
+        sport: goalSport,
+        distanceKm: goalDistance,
+        elevationM: goalElevation,
+        phase: generatedPlan[selectedWeekIndex]?.phase,
+        isHillyGoal: adaptivePlan.assessment.isHillyGoal
+      },
+      athlete: {
+        ftp,
+        estimatedFtp: ftpEstimation.recommendedFtp,
+        weightKg: userWeight || 75,
+        age: userAge || 35,
+        maxHr,
+        rhrBaseline: effectiveRhr,
+        estimatedVdot: activityProfile.estimatedVdot,
+        recentAvgRunningPaceSecKm: activityProfile.recentAvgRunningPaceSecKm
+      },
+      load: {
+        ctl: currentFitness.ctl || 0,
+        atl: currentFitness.atl || 0,
+        tsb: currentFitness.tsb || 0,
+        acwr: currentFitness.acwr || 1.0,
+        monotony: activityProfile.recentMonotony,
+        z3GreyZonePct: z3Pct
+      },
+      recentActivities: calculatedActivities.slice(-40).map((a) => ({
+        date: a.date,
+        type: a.type,
+        name: a.name,
+        distance: a.distance,
+        duration: a.duration,
+        ascent: a.ascent,
+        tss: a.tss,
+        avg_hr: a.avg_hr,
+        ifScore: a.intensityFactor
+      })),
+      vitals: resolvedVitals
+    });
+  }, [
+    dailySportChoice,
+    dailyTimeBudget,
+    dailyFeel,
+    useVitalsAdaptation,
+    goalSport,
+    goalDistance,
+    goalElevation,
+    generatedPlan,
+    selectedWeekIndex,
+    adaptivePlan.assessment.isHillyGoal,
+    ftp,
+    ftpEstimation.recommendedFtp,
+    userWeight,
+    userAge,
+    maxHr,
+    effectiveRhr,
+    activityProfile.estimatedVdot,
+    activityProfile.recentAvgRunningPaceSecKm,
+    activityProfile.recentMonotony,
+    currentFitness,
+    trainingZonesAggr,
+    calculatedActivities,
+    resolvedVitals
+  ]);
+
+  const activeDailyOption =
+    selectedDailyOptionIdx > 0 && selectedDailyOptionIdx <= dailyRecommendation.alternatives.length
+      ? dailyRecommendation.alternatives[selectedDailyOptionIdx - 1]
+      : null;
+  const displayedDailyWorkout = activeDailyOption ? activeDailyOption.workout : dailyRecommendation.primaryWorkout;
+  const displayedDailySport = activeDailyOption ? activeDailyOption.sport : dailyRecommendation.resolvedSport;
+
+  useEffect(() => {
+    setSelectedDailyOptionIdx(0);
+  }, [dailySportChoice, dailyTimeBudget, dailyFeel, goalSport, useVitalsAdaptation]);
+
+  const handleExportFit = useCallback(
+    (workout: PlannedWorkout, sportOverride?: 'running' | 'cycling') => {
+      downloadWorkoutAsFit(workout, {
+        sport: sportOverride || goalSport,
+        targetMode: exportTargetMode,
+        ftp,
+        maxHr,
+        rhr: effectiveRhr
+      });
+    },
+    [goalSport, exportTargetMode, ftp, maxHr, effectiveRhr]
+  );
+
+  const handleExportTcx = useCallback(
+    (workout: PlannedWorkout, sportOverride?: 'running' | 'cycling') => {
+      downloadWorkoutAsTcx(workout, {
+        sport: sportOverride || goalSport,
+        targetMode: exportTargetMode,
+        ftp,
+        maxHr,
+        rhr: effectiveRhr
+      });
+    },
+    [goalSport, exportTargetMode, ftp, maxHr, effectiveRhr]
+  );
+
+  const handleExportZwo = useCallback(
+    (workout: PlannedWorkout, sportOverride?: 'running' | 'cycling') => {
+      downloadWorkoutAsZwo(workout, {
+        sport: sportOverride || goalSport,
+        targetMode: 'power',
+        ftp,
+        maxHr,
+        rhr: effectiveRhr
+      });
+    },
+    [goalSport, ftp, maxHr, effectiveRhr]
+  );
 
   const mainContent = (
     <div className="w-full h-full flex flex-col overflow-hidden">
@@ -1739,6 +1678,18 @@ export default function FitnessPerformanceAnalysis({
             <div className="text-[11px] bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 px-2.5 py-1 rounded-lg font-mono font-bold border border-amber-200/70 dark:border-amber-800/40">
               {userWeight > 0 ? (ftp / userWeight).toFixed(2) : '0.00'} W/kg
             </div>
+
+            {ftpEstimation.recommendedFtp !== null && Math.abs(ftpEstimation.recommendedFtp - ftp) >= 5 && (
+              <button
+                type="button"
+                onClick={() => handleSaveFtp(ftpEstimation.recommendedFtp!)}
+                title={ftpEstimation.summary}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[11px] font-bold cursor-pointer transition-colors"
+              >
+                <Sparkles className="w-3 h-3 shrink-0" />
+                <span>eFTP {ftpEstimation.recommendedFtp} W übernehmen</span>
+              </button>
+            )}
           </div>
 
           {/* Global Sport Modality Selector */}
@@ -2731,8 +2682,315 @@ export default function FitnessPerformanceAnalysis({
                         Dein individueller Trainingsrechner
                       </h2>
                       <p className="text-xs text-indigo-100 mt-1 leading-relaxed">
-                        Berechne präzise wöchentliche Trainingsstress-Zielwerte (TSS) und spezifische Schlüsseleinheiten basierend auf deiner aktuellen Fitness (CTL) und deinem individuellen Ziel.
+                        Berechne präzise wöchentliche Trainingsstress-Zielwerte (TSS) und spezifische Schlüsseleinheiten basierend auf deiner aktuellen Fitness (CTL), Vitaldaten und deinem Ziel.
                       </p>
+                    </div>
+                  </div>
+
+                  {/* DAILY SUGGESTED WORKOUT HERO CARD */}
+                  <div className="bg-white dark:bg-slate-900 border border-indigo-200/80 dark:border-indigo-900/50 rounded-3xl p-5 sm:p-6 shadow-sm space-y-5">
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex items-center gap-1 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full">
+                            <Sparkles className="w-3 h-3" />
+                            Heutige Trainingsempfehlung
+                          </span>
+                          <span
+                            className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border ${
+                              dailyRecommendation.tone === 'rose'
+                                ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
+                                : dailyRecommendation.tone === 'sky'
+                                  ? 'bg-sky-500/10 border-sky-500/30 text-sky-600 dark:text-sky-400'
+                                  : dailyRecommendation.tone === 'emerald'
+                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
+                            }`}
+                          >
+                            {dailyRecommendation.zoneBadge}
+                          </span>
+                          <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400">
+                            {displayedDailySport === 'running' ? '🏃 Laufen' : '🚴 Radsport'} · Readiness {dailyRecommendation.dailyReadinessScore}/100
+                          </span>
+                        </div>
+                        <h3 className="text-base sm:text-lg font-black text-slate-800 dark:text-white tracking-tight">
+                          {displayedDailyWorkout.title}
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                          {dailyRecommendation.sportReason} {displayedDailyWorkout.description}
+                        </p>
+                      </div>
+
+                      {/* Intensity KPI Pills */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0">
+                        <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 px-3 py-2 rounded-2xl text-center">
+                          <span className="block text-[8.5px] font-extrabold text-slate-400 uppercase">RPE (1–10)</span>
+                          <span className="text-sm font-mono font-black text-slate-800 dark:text-white">
+                            {activeDailyOption ? `${activeDailyOption.rpeRange[0]}–${activeDailyOption.rpeRange[1]}` : `${dailyRecommendation.rpeRange[0]}–${dailyRecommendation.rpeRange[1]}`}
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 px-3 py-2 rounded-2xl text-center">
+                          <span className="block text-[8.5px] font-extrabold text-slate-400 uppercase">Ziel-IF</span>
+                          <span className="text-sm font-mono font-black text-indigo-500">
+                            {(activeDailyOption ? activeDailyOption.targetIf : dailyRecommendation.targetIf).toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 px-3 py-2 rounded-2xl text-center">
+                          <span className="block text-[8.5px] font-extrabold text-slate-400 uppercase">Dauer / TSS</span>
+                          <span className="text-sm font-mono font-black text-amber-500">
+                            {displayedDailyWorkout.estimatedDurationMin}m · {displayedDailyWorkout.tss}
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 px-3 py-2 rounded-2xl text-center">
+                          <span className="block text-[8.5px] font-extrabold text-slate-400 uppercase">Erholung</span>
+                          <span className="text-sm font-mono font-black text-emerald-500">
+                            ~{dailyRecommendation.estimatedRecoveryHours} h
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Controls Bar: Sport, Time Budget, Daily Feel, Garmin Target Mode */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="space-y-1">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Sportart heute</span>
+                        <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl">
+                          {([
+                            { id: 'auto', label: 'Auto' },
+                            { id: 'running', label: 'Laufen' },
+                            { id: 'cycling', label: 'Rad' }
+                          ] as const).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setDailySportChoice(opt.id)}
+                              className={`flex-1 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                dailySportChoice === opt.id
+                                  ? 'bg-indigo-600 text-white shadow-xs'
+                                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Zeitbudget</span>
+                        <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl">
+                          {(['auto', 30, 45, 60, 90] as const).map((mins) => (
+                            <button
+                              key={String(mins)}
+                              type="button"
+                              onClick={() => setDailyTimeBudget(mins)}
+                              className={`flex-1 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                dailyTimeBudget === mins
+                                  ? 'bg-indigo-600 text-white shadow-xs'
+                                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                              }`}
+                            >
+                              {mins === 'auto' ? 'Auto' : `${mins}m`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Tagesform</span>
+                        <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl">
+                          {([
+                            { id: 'auto', label: 'Auto' },
+                            { id: 'fresh', label: 'Frisch' },
+                            { id: 'normal', label: 'Normal' },
+                            { id: 'tired', label: 'Müde' }
+                          ] as const).map((f) => (
+                            <button
+                              key={f.id}
+                              type="button"
+                              onClick={() => setDailyFeel(f.id)}
+                              className={`flex-1 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                dailyFeel === f.id
+                                  ? 'bg-indigo-600 text-white shadow-xs'
+                                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                              }`}
+                            >
+                              {f.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Garmin Ziel-Steuerung</span>
+                        <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl">
+                          {([
+                            { id: 'auto', label: 'Auto' },
+                            { id: 'power', label: 'Watt' },
+                            { id: 'hr', label: 'Puls' },
+                            { id: 'pace', label: 'Pace' }
+                          ] as const).map((tm) => (
+                            <button
+                              key={tm.id}
+                              type="button"
+                              onClick={() => setExportTargetMode(tm.id)}
+                              className={`flex-1 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                exportTargetMode === tm.id
+                                  ? 'bg-amber-500 text-slate-900 shadow-xs'
+                                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                              }`}
+                            >
+                              {tm.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Visual Intensity Profile + Why Today Factors */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+                      <div className="lg:col-span-5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-700/70 rounded-2xl p-3.5 flex flex-col justify-between gap-3">
+                        <div className="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          <span>Intensitätsprofil</span>
+                          <span className="font-mono text-slate-500 dark:text-slate-300">
+                            {displayedDailyWorkout.estimatedDurationMin} Min {displayedDailyWorkout.targetDistanceKm ? `· ~${formatDistance(displayedDailyWorkout.targetDistanceKm, appPrefs.unitSystem, appPrefs.language, 1)}` : ''}
+                          </span>
+                        </div>
+                        <div className="h-16 flex items-end gap-1 pt-2">
+                          {getWorkoutStepVisuals(displayedDailyWorkout, displayedDailySport, ftp, maxHr, effectiveRhr).map((seg, idx) => (
+                            <div
+                              key={idx}
+                              title={`${seg.label}: ${seg.minutes} Min`}
+                              style={{ flexGrow: Math.max(1, seg.minutes), height: `${seg.heightPct}%` }}
+                              className={`${seg.colorClass} rounded-t-md min-w-[6px] transition-all opacity-90 hover:opacity-100`}
+                            />
+                          ))}
+                        </div>
+                        <div className="space-y-1 border-t border-slate-200/70 dark:border-slate-700 pt-2">
+                          {displayedDailyWorkout.steps.map((st, sIdx) => (
+                            <div key={sIdx} className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                              <span className="font-bold text-slate-700 dark:text-slate-200">
+                                {st.reps && st.reps > 1 ? `${st.reps}× ` : ''}{st.name} ({st.durationMinutes}m{st.restDurationMinutes ? ` / +${st.restDurationMinutes}m` : ''})
+                              </span>
+                              <span className="font-mono font-bold text-slate-500 dark:text-slate-300">
+                                {displayedDailySport === 'cycling' && st.targetWattsRange
+                                  ? `${st.targetWattsRange[0]}–${st.targetWattsRange[1]} W`
+                                  : st.targetPaceRangeSecKm
+                                    ? `${formatPaceFromSecPerKm(st.targetPaceRangeSecKm[0], appPrefs.unitSystem, false)}–${formatPaceFromSecPerKm(st.targetPaceRangeSecKm[1], appPrefs.unitSystem, true)}`
+                                    : st.targetHrBpmRange
+                                      ? `${st.targetHrBpmRange[0]}–${st.targetHrBpmRange[1]} bpm`
+                                      : ''}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="lg:col-span-7 flex flex-col justify-between gap-3">
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                            Warum heute dieses Training?
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {dailyRecommendation.factors.slice(0, 4).map((f, idx) => (
+                              <div
+                                key={idx}
+                                className={`p-2.5 rounded-xl border text-[10px] space-y-0.5 ${
+                                  f.impact === 'limit'
+                                    ? 'bg-rose-50/70 dark:bg-rose-950/25 border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300'
+                                    : f.impact === 'caution'
+                                      ? 'bg-amber-50/70 dark:bg-amber-950/25 border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-300'
+                                      : f.impact === 'positive'
+                                        ? 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+                                        : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1 font-extrabold">
+                                  <span>{f.label}</span>
+                                  <span className="font-mono">{f.value}</span>
+                                </div>
+                                <p className="opacity-85 leading-snug">{f.detail}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Alternatives & Garmin Export Actions */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDailyOptionIdx(0)}
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border cursor-pointer transition-all ${
+                                selectedDailyOptionIdx === 0
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                              }`}
+                            >
+                              Empfehlung
+                            </button>
+                            {dailyRecommendation.alternatives.map((alt, aIdx) => (
+                              <button
+                                key={aIdx}
+                                type="button"
+                                onClick={() => setSelectedDailyOptionIdx(aIdx + 1)}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border cursor-pointer transition-all ${
+                                  selectedDailyOptionIdx === aIdx + 1
+                                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-400'
+                                }`}
+                              >
+                                {alt.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleExportFit(displayedDailyWorkout, displayedDailySport)}
+                              className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-slate-900 font-black px-3 py-1.5 rounded-xl text-[10px] transition-all cursor-pointer shadow-xs"
+                              title="Als native binäre Garmin .FIT Workout-Datei herunterladen"
+                            >
+                              <Upload className="w-3 h-3 rotate-180" />
+                              Garmin .FIT
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleExportTcx(displayedDailyWorkout, displayedDailySport)}
+                              className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold px-2.5 py-1.5 rounded-xl text-[10px] transition-all cursor-pointer border border-slate-200 dark:border-slate-700"
+                              title="Als Training Center Database (.TCX) herunterladen"
+                            >
+                              <FileText className="w-3 h-3" />
+                              .TCX
+                            </button>
+                            {displayedDailySport === 'cycling' && (
+                              <button
+                                type="button"
+                                onClick={() => handleExportZwo(displayedDailyWorkout, displayedDailySport)}
+                                className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold px-2.5 py-1.5 rounded-xl text-[10px] transition-all cursor-pointer border border-slate-200 dark:border-slate-700"
+                                title="Als Zwift / Smart-Trainer (.ZWO) herunterladen"
+                              >
+                                .ZWO
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowGarminImportHint((v) => !v)}
+                              className="p-1.5 rounded-xl text-slate-400 hover:text-indigo-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+                              title="Garmin Import-Hinweis anzeigen"
+                            >
+                              <Info className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {showGarminImportHint && (
+                          <div className="bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-900/60 rounded-xl p-2.5 text-[10px] text-indigo-800 dark:text-indigo-200 leading-relaxed">
+                            <strong>Garmin Import:</strong> Verbinde deine Garmin-Uhr oder deinen Edge per USB (macOS z. B. mit OpenMTP / Android File Transfer) und kopiere die heruntergeladene <code className="font-mono font-bold">.fit</code>-Datei in den Ordner <code className="font-mono font-bold">GARMIN/NewFiles/</code>. Nach dem Trennen erscheint die Einheit automatisch unter <em>Training → Trainings</em>.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -2749,24 +3007,69 @@ export default function FitnessPerformanceAnalysis({
                         {/* Presets */}
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">Ziel-Schablone wählen</label>
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                            {[
+                              { id: '10k' as const, label: '10K' },
+                              { id: 'halfmarathon' as const, label: 'Halbmarathon' },
+                              { id: 'marathon' as const, label: 'Marathon' },
+                              { id: 'granfondo' as const, label: 'Gran Fondo' },
+                              { id: 'tour' as const, label: 'Eigene Tour' }
+                            ].map((preset) => (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                onClick={() => setGoalType(preset.id)}
+                                className={`py-2 px-1.5 rounded-xl text-[11px] font-extrabold transition-all border cursor-pointer ${
+                                  goalType === preset.id
+                                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
+                                    : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Sessions per week & Vitals Adaptation */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
+                              Einheiten pro Woche ({adaptivePlan.resolvedSessionsPerWeek}×)
+                            </label>
+                            <div className="flex bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 rounded-xl">
+                              {(['auto', 3, 4, 5, 6] as const).map((cnt) => (
+                                <button
+                                  key={String(cnt)}
+                                  type="button"
+                                  onClick={() => setSessionsPerWeek(cnt)}
+                                  className={`flex-1 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all ${
+                                    sessionsPerWeek === cnt
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                                  }`}
+                                >
+                                  {cnt === 'auto' ? 'Auto' : `${cnt}×`}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
+                              Vitaldaten-Anpassung
+                            </label>
                             <button
-                              onClick={() => setGoalType('halfmarathon')}
-                              className={`py-2 px-1 rounded-xl text-xs font-extrabold transition-all border ${goalType === 'halfmarathon' ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs' : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'}`}
+                              type="button"
+                              onClick={() => setUseVitalsAdaptation((v) => !v)}
+                              className={`w-full py-1.5 px-3 rounded-xl border text-[11px] font-bold flex items-center justify-between cursor-pointer transition-colors ${
+                                useVitalsAdaptation
+                                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                              }`}
                             >
-                              Halbmarathon
-                            </button>
-                            <button
-                              onClick={() => setGoalType('marathon')}
-                              className={`py-2 px-1 rounded-xl text-xs font-extrabold transition-all border ${goalType === 'marathon' ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs' : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'}`}
-                            >
-                              Marathon
-                            </button>
-                            <button
-                              onClick={() => setGoalType('tour')}
-                              className={`py-2 px-1 rounded-xl text-xs font-extrabold transition-all border ${goalType === 'tour' ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs' : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'}`}
-                            >
-                              Eigene Tour
+                              <span>{useVitalsAdaptation ? 'Aktiv (Garmin Vital & Last)' : 'Aus (Basisplan)'}</span>
+                              <span className="font-mono text-[10px]">{useVitalsAdaptation ? 'AN' : 'AUS'}</span>
                             </button>
                           </div>
                         </div>
@@ -2878,8 +3181,12 @@ export default function FitnessPerformanceAnalysis({
                                 <button
                                   onClick={() => {
                                     setUploadedGpxTracks([]);
-                                    setGoalDistance(goalType === 'marathon' ? 42.2 : goalType === 'halfmarathon' ? 21.1 : 100);
-                                    setGoalElevation(goalType === 'marathon' ? 300 : goalType === 'halfmarathon' ? 150 : 1500);
+                                    setGoalDistance(
+                                      goalType === '10k' ? 10 : goalType === 'marathon' ? 42.2 : goalType === 'halfmarathon' ? 21.1 : goalType === 'granfondo' ? 135 : 100
+                                    );
+                                    setGoalElevation(
+                                      goalType === '10k' ? 60 : goalType === 'marathon' ? 300 : goalType === 'halfmarathon' ? 150 : goalType === 'granfondo' ? 2400 : 1500
+                                    );
                                   }}
                                   className="text-[8px] font-bold text-rose-500 hover:underline cursor-pointer"
                                 >
@@ -3003,11 +3310,105 @@ export default function FitnessPerformanceAnalysis({
                         <div className="bg-white dark:bg-slate-800 border border-slate-150 dark:border-slate-750 p-3 rounded-2xl">
                           <span className="block text-[8px] font-extrabold text-slate-400 uppercase">Sichere Steigerung</span>
                           <span className="text-sm font-mono font-black text-emerald-500 block mt-0.5">
-                            +3 bis +5 CTL
+                            +{trainingRecommendations.safeWeeklyCtlRamp} CTL / W
                           </span>
-                          <span className="text-[7.5px] font-bold text-slate-400">max. pro Woche (ACWR)</span>
+                          <span className="text-[7.5px] font-bold text-slate-400">{trainingRecommendations.deloadRatioLabel}</span>
                         </div>
                       </div>
+
+                      {/* 4-Pillar Adaptive Context Strip (Athlete + History + Vitals + Signals) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-3.5 rounded-2xl space-y-1.5">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-amber-500 block">
+                            Athletenprofil
+                          </span>
+                          <div className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                            {ftp} W ({userWeight > 0 ? (ftp / userWeight).toFixed(2) : '0.00'} W/kg) · {formatWeight(userWeight, appPrefs.unitSystem, 1)}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                            Alter {userAge} J. · Karvonen {effectiveRhr}–{maxHr} bpm
+                          </div>
+                          {ftpEstimation.recommendedFtp !== null && (
+                            <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-100 dark:border-slate-800 text-[10px]">
+                              <span className="text-indigo-600 dark:text-indigo-400 font-bold">
+                                eFTP: {ftpEstimation.recommendedFtp} W ({ftpEstimation.bestMethod?.label})
+                              </span>
+                              {Math.abs(ftpEstimation.recommendedFtp - ftp) >= 5 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveFtp(ftpEstimation.recommendedFtp!)}
+                                  className="px-1.5 py-0.5 rounded bg-indigo-600 text-white font-bold text-[9px] cursor-pointer"
+                                >
+                                  Übernehmen
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-3.5 rounded-2xl space-y-1.5">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-indigo-500 block">
+                            Trainingshistorie
+                          </span>
+                          <div className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                            CTL {currentFitness.ctl} · TSB {currentFitness.tsb} · ACWR {currentFitness.acwr}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                            Längste: {formatDistance(activityProfile.longestSessionDistanceKm, appPrefs.unitSystem, appPrefs.language, 1)} · {activityProfile.avgWeeklySessions}×/Woche
+                          </div>
+                          {activityProfile.estimatedVdot && (
+                            <div className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              VDOT {activityProfile.estimatedVdot.toFixed(1)} · Schwelle {formatPaceFromSecPerKm(adaptivePlan.runningPaces.thresholdSecKm, appPrefs.unitSystem, true)}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-3.5 rounded-2xl space-y-1.5">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-rose-500 block">
+                            Garmin Vitaldaten &amp; Schutz
+                          </span>
+                          <div className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                            Readiness: {resolvedVitals?.readinessScore ?? '—'} · Schlaf: {resolvedVitals?.sleepHoursAvg7d ?? '—'} h
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                            RHR-Trend: {resolvedVitals?.rhr7dDelta !== null && resolvedVitals?.rhr7dDelta !== undefined ? `${resolvedVitals.rhr7dDelta >= 0 ? '+' : ''}${resolvedVitals.rhr7dDelta} bpm` : '—'} · Stress: {resolvedVitals?.stressAvg7d ?? '—'}
+                          </div>
+                          <div
+                            className={`text-[10px] font-bold ${
+                              adaptivePlan.vitalsModulation.status === 'recovery'
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : adaptivePlan.vitalsModulation.status === 'caution'
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-emerald-600 dark:text-emerald-400'
+                            }`}
+                          >
+                            W1 Faktor: {Math.round(adaptivePlan.vitalsModulation.appliedMultiplier * 100)}% ({adaptivePlan.vitalsModulation.intensityCap})
+                          </div>
+                        </div>
+                      </div>
+
+                      {adaptivePlan.coachingSignals.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {adaptivePlan.coachingSignals.map((sig, idx) => (
+                            <div
+                              key={idx}
+                              title={sig.detail}
+                              className={`px-3 py-1.5 rounded-xl border text-[10px] font-semibold flex items-center gap-1.5 ${
+                                sig.tone === 'rose'
+                                  ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300'
+                                  : sig.tone === 'amber'
+                                    ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-300'
+                                    : sig.tone === 'emerald'
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/50 text-indigo-700 dark:text-indigo-300'
+                              }`}
+                            >
+                              <span className="font-black">{sig.title}:</span>
+                              <span className="opacity-90">{sig.detail}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {/* SCIENTIFIC PERIODIZED TRAINING PLAN */}
                       <div className="bg-slate-50 dark:bg-slate-800/30 border border-slate-200/50 dark:border-slate-800 p-5 rounded-3xl space-y-5">
@@ -3103,7 +3504,9 @@ export default function FitnessPerformanceAnalysis({
                                 className={`shrink-0 py-2 px-3.5 rounded-xl text-center border transition-all cursor-pointer ${selectedWeekIndex === idx ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white hover:bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'}`}
                               >
                                 <span className="block text-[10px] font-black uppercase">W{week.weekNumber}</span>
-                                <span className="block text-[8px] font-mono opacity-80 mt-0.5">{week.targetTss} TSS</span>
+                                <span className="block text-[8px] font-mono opacity-80 mt-0.5">
+                                  {week.targetTss} TSS · {week.estimatedHours}h{week.vitalsAdapted ? ' 🩺' : ''}
+                                </span>
                               </button>
                             ))}
                           </div>
@@ -3114,12 +3517,19 @@ export default function FitnessPerformanceAnalysis({
                           <div className="space-y-4 pt-1">
                             {/* Phase Theory Box */}
                             <div className="bg-indigo-500/5 border border-indigo-500/10 p-4 rounded-2xl space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="bg-indigo-600 text-white text-[9px] px-2 py-0.5 rounded-md font-extrabold uppercase tracking-wide">
-                                  {generatedPlan[selectedWeekIndex].phase}
-                                </span>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="bg-indigo-600 text-white text-[9px] px-2 py-0.5 rounded-md font-extrabold uppercase tracking-wide">
+                                    {generatedPlan[selectedWeekIndex].phase}
+                                  </span>
+                                  {generatedPlan[selectedWeekIndex].vitalsAdapted && (
+                                    <span className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[9px] px-2 py-0.5 rounded-md font-extrabold uppercase">
+                                      Vital- &amp; Last-angepasst
+                                    </span>
+                                  )}
+                                </div>
                                 <span className="text-xs font-mono font-extrabold text-indigo-600 dark:text-indigo-400">
-                                  Soll: {generatedPlan[selectedWeekIndex].targetTss} TSS
+                                  Soll: {generatedPlan[selectedWeekIndex].targetTss} TSS · ~{generatedPlan[selectedWeekIndex].estimatedHours} Std
                                 </span>
                               </div>
                               <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-350 pt-1">
@@ -3127,9 +3537,9 @@ export default function FitnessPerformanceAnalysis({
                               </p>
                             </div>
 
-                            {/* 3 Workouts Container */}
+                            {/* Workouts Container */}
                             <div className="space-y-3.5">
-                              {generatedPlan[selectedWeekIndex].workouts.map((workout: any, wIdx: number) => (
+                              {generatedPlan[selectedWeekIndex].workouts.map((workout: PlannedWorkout, wIdx: number) => (
                                 <div 
                                   key={wIdx} 
                                   className="bg-white dark:bg-slate-800 border border-slate-150 dark:border-slate-750 rounded-2xl p-4 space-y-3 shadow-xs hover:border-indigo-500/30 transition-all"
@@ -3137,25 +3547,71 @@ export default function FitnessPerformanceAnalysis({
                                   {/* Workout Header */}
                                   <div className="flex justify-between items-start gap-2">
                                     <div>
-                                      <span className="text-[8px] font-mono font-extrabold px-1.5 py-0.5 rounded-md uppercase bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-950">
-                                        Einheit {wIdx + 1} • {workout.tss} TSS
-                                      </span>
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="text-[8px] font-mono font-extrabold px-1.5 py-0.5 rounded-md uppercase bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+                                          {workout.dayLabel}
+                                        </span>
+                                        <span className="text-[8px] font-mono font-extrabold px-1.5 py-0.5 rounded-md uppercase bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-950">
+                                          Einheit {wIdx + 1} • {workout.tss} TSS • ~{workout.estimatedDurationMin} Min
+                                        </span>
+                                        {workout.targetDistanceKm && (
+                                          <span className="text-[8px] font-mono font-bold text-slate-400">
+                                            (~{formatDistance(workout.targetDistanceKm, appPrefs.unitSystem, appPrefs.language, 1)})
+                                          </span>
+                                        )}
+                                      </div>
                                       <h5 className="text-xs font-extrabold text-slate-800 dark:text-white mt-1.5">
                                         {workout.title}
                                       </h5>
                                     </div>
-                                    <button
-                                      onClick={() => exportToTcx(workout)}
-                                      className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-slate-900 font-extrabold px-2.5 py-1 rounded-lg text-[9px] transition-all cursor-pointer shadow-xs shrink-0"
-                                      title="Als TCX Workout für Garmin Uhr/Radcomputer downloaden"
-                                    >
-                                      <FileText className="w-3 h-3" />
-                                      Garmin Export
-                                    </button>
+                                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleExportFit(workout)}
+                                          className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-slate-900 font-extrabold px-2.5 py-1 rounded-lg text-[9px] transition-all cursor-pointer shadow-xs"
+                                          title="Als native Garmin .FIT Workout-Datei für Uhr/Edge herunterladen (GARMIN/NewFiles/)"
+                                        >
+                                          <Upload className="w-3 h-3 rotate-180" />
+                                          Garmin .FIT
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleExportTcx(workout)}
+                                          className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold px-2 py-1 rounded-lg text-[9px] transition-all cursor-pointer"
+                                          title="Als .TCX Workout herunterladen"
+                                        >
+                                          <FileText className="w-3 h-3" />
+                                          .TCX
+                                        </button>
+                                        {goalSport === 'cycling' && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleExportZwo(workout)}
+                                            className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold px-2 py-1 rounded-lg text-[9px] transition-all cursor-pointer"
+                                            title="Als Zwift .ZWO Workout herunterladen"
+                                          >
+                                            .ZWO
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                  <div className="h-5 flex items-end gap-0.5 pt-0.5">
+                                    {getWorkoutStepVisuals(workout, goalSport, ftp, maxHr, effectiveRhr).map((seg, sBarIdx) => (
+                                      <div
+                                        key={sBarIdx}
+                                        title={`${seg.label}: ${seg.minutes} Min`}
+                                        style={{ flexGrow: Math.max(1, seg.minutes), height: `${seg.heightPct}%` }}
+                                        className={`${seg.colorClass} rounded-t-sm min-w-[4px] opacity-85`}
+                                      />
+                                    ))}
                                   </div>
 
                                   <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
                                     {workout.description}
+                                  </p>
+                                  <p className="text-[9.5px] font-semibold text-indigo-600 dark:text-indigo-400">
+                                    Begründung: {workout.rationale}
                                   </p>
 
                                   {/* Workout Steps */}
@@ -3164,10 +3620,10 @@ export default function FitnessPerformanceAnalysis({
                                       Geplante Abschnitte (Workouts-Struktur)
                                     </span>
                                     <div className="space-y-1">
-                                      {workout.steps.map((step: any, sIdx: number) => (
+                                      {workout.steps.map((step, sIdx) => (
                                         <div 
                                           key={sIdx} 
-                                          className="flex items-center justify-between text-[10px] bg-slate-50 dark:bg-slate-800/65 p-1.5 rounded-lg border border-slate-100/50 dark:border-slate-800"
+                                          className="flex flex-wrap items-center justify-between gap-2 text-[10px] bg-slate-50 dark:bg-slate-800/65 p-1.5 rounded-lg border border-slate-100/50 dark:border-slate-800"
                                         >
                                           <div className="flex items-center gap-2">
                                             <span className="font-mono text-slate-400 text-[8px]">{sIdx + 1}.</span>
@@ -3175,7 +3631,7 @@ export default function FitnessPerformanceAnalysis({
                                               {step.name} {step.reps && step.reps > 1 ? `(${step.reps}x)` : ''}
                                             </span>
                                           </div>
-                                          <div className="flex items-center gap-2 font-mono">
+                                          <div className="flex flex-wrap items-center gap-2 font-mono">
                                             <span className="text-slate-500 font-bold">
                                               {step.durationMinutes} Min
                                             </span>
@@ -3185,16 +3641,19 @@ export default function FitnessPerformanceAnalysis({
                                               </span>
                                             ) : null}
                                             <span className="text-slate-300">|</span>
-                                            {goalSport === 'cycling' && step.targetFtpPercent ? (
+                                            {goalSport === 'cycling' && step.targetWattsRange ? (
                                               <span className="text-amber-500 font-black">
-                                                {Math.round((ftp * step.targetFtpPercent) / 100)} W ({step.targetFtpPercent}% FTP)
+                                                {step.targetWattsRange[0]}–{step.targetWattsRange[1]} W ({step.targetFtpPercent}% FTP)
                                               </span>
-                                            ) : step.targetHrPercent ? (
+                                            ) : step.targetPaceRangeSecKm ? (
+                                              <span className="text-indigo-500 font-black">
+                                                {formatPaceFromSecPerKm(step.targetPaceRangeSecKm[0], appPrefs.unitSystem, false)}–{formatPaceFromSecPerKm(step.targetPaceRangeSecKm[1], appPrefs.unitSystem, true)}
+                                              </span>
+                                            ) : null}
+                                            {step.targetHrBpmRange && (
                                               <span className="text-emerald-500 font-black">
-                                                {Math.round((maxHr * step.targetHrPercent) / 100)} bpm ({step.targetHrPercent}% HF)
+                                                {step.targetHrBpmRange[0]}–{step.targetHrBpmRange[1]} bpm ({step.targetHrrPercent ?? step.targetHrPercent}% HRR)
                                               </span>
-                                            ) : (
-                                              <span className="text-slate-400 font-medium">Locker</span>
                                             )}
                                           </div>
                                         </div>

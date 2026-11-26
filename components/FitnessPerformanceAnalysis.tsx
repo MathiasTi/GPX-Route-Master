@@ -1288,8 +1288,12 @@ export default function FitnessPerformanceAnalysis({
       rangeLabel = 'Ganze Historie';
     }
 
+    const newestFirstActivities = [...calculatedActivities].sort((a, b) =>
+      String(b.date || '').localeCompare(String(a.date || ''))
+    );
+
     if (filtered.length === 0) {
-      filtered = calculatedActivities.slice(-3);
+      filtered = newestFirstActivities.slice(0, 3);
       const dates = filtered.map((a) => new Date(a.date).getTime()).filter((ms) => Number.isFinite(ms));
       const minDate = dates.length > 0 ? Math.min(...dates) : latestDateMs - 7 * 86400000;
       const maxDate = dates.length > 0 ? Math.max(...dates) : latestDateMs;
@@ -1317,20 +1321,20 @@ export default function FitnessPerformanceAnalysis({
       longestPool.reduce((max, a) => Math.max(max, Number(a.duration) || 0), 0) / 60
     );
 
-    const cyclingSpeeds = calculatedActivities
+    const cyclingSpeeds = newestFirstActivities
       .filter((a) => isCyclingType(a.type, a.name) && (a.distance || 0) >= 5 && (a.duration || 0) >= 900)
-      .slice(-25)
+      .slice(0, 25)
       .map((a) => Number(a.distance) / (Number(a.duration) / 3600))
       .filter((s) => Number.isFinite(s) && s >= 10 && s <= 48)
       .sort((a, b) => a - b);
     const recentAvgCyclingSpeedKmh =
       cyclingSpeeds.length > 0 ? Number(cyclingSpeeds[Math.floor(cyclingSpeeds.length / 2)].toFixed(1)) : null;
 
-    const runActs = calculatedActivities.filter(
+    const runActs = newestFirstActivities.filter(
       (a) => isRunningType(a.type, a.name) && (a.distance || 0) >= 2 && (a.duration || 0) >= 600
     );
     const runningPaces = runActs
-      .slice(-20)
+      .slice(0, 20)
       .map((a) => Number(a.duration) / Number(a.distance))
       .filter((p) => Number.isFinite(p) && p >= 180 && p <= 650)
       .sort((a, b) => a - b);
@@ -1338,7 +1342,7 @@ export default function FitnessPerformanceAnalysis({
       runningPaces.length > 0 ? Math.round(runningPaces[Math.floor(runningPaces.length / 2)]) : null;
 
     let bestVdot: number | null = null;
-    for (const rAct of runActs.slice(-30)) {
+    for (const rAct of runActs.slice(0, 30)) {
       if (Number(rAct.distance) >= 3 && Number(rAct.duration) >= 720) {
         const vdot = calculateVdotFromEffort(Number(rAct.distance) * 1000, Number(rAct.duration));
         if (vdot && (!bestVdot || vdot > bestVdot)) {
@@ -1486,17 +1490,20 @@ export default function FitnessPerformanceAnalysis({
         monotony: activityProfile.recentMonotony,
         z3GreyZonePct: z3Pct
       },
-      recentActivities: calculatedActivities.slice(-40).map((a) => ({
-        date: a.date,
-        type: a.type,
-        name: a.name,
-        distance: a.distance,
-        duration: a.duration,
-        ascent: a.ascent,
-        tss: a.tss,
-        avg_hr: a.avg_hr,
-        ifScore: a.intensityFactor
-      })),
+      recentActivities: [...calculatedActivities]
+        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+        .slice(0, 40)
+        .map((a) => ({
+          date: a.date,
+          type: a.type,
+          name: a.name,
+          distance: a.distance,
+          duration: a.duration,
+          ascent: a.ascent,
+          tss: a.tss,
+          avg_hr: a.avg_hr,
+          ifScore: a.intensityFactor
+        })),
       vitals: resolvedVitals
     });
   }, [
@@ -1531,6 +1538,11 @@ export default function FitnessPerformanceAnalysis({
       : null;
   const displayedDailyWorkout = activeDailyOption ? activeDailyOption.workout : dailyRecommendation.primaryWorkout;
   const displayedDailySport = activeDailyOption ? activeDailyOption.sport : dailyRecommendation.resolvedSport;
+  const displayedDailyTone = activeDailyOption ? activeDailyOption.tone : dailyRecommendation.tone;
+  const displayedDailyZoneBadge = activeDailyOption ? activeDailyOption.zoneBadge : dailyRecommendation.zoneBadge;
+  const displayedDailyRecoveryHours = activeDailyOption
+    ? activeDailyOption.estimatedRecoveryHours
+    : dailyRecommendation.estimatedRecoveryHours;
 
   useEffect(() => {
     setSelectedDailyOptionIdx(0);
@@ -2698,16 +2710,16 @@ export default function FitnessPerformanceAnalysis({
                           </span>
                           <span
                             className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border ${
-                              dailyRecommendation.tone === 'rose'
+                              displayedDailyTone === 'rose'
                                 ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
-                                : dailyRecommendation.tone === 'sky'
+                                : displayedDailyTone === 'sky'
                                   ? 'bg-sky-500/10 border-sky-500/30 text-sky-600 dark:text-sky-400'
-                                  : dailyRecommendation.tone === 'emerald'
+                                  : displayedDailyTone === 'emerald'
                                     ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
                                     : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
                             }`}
                           >
-                            {dailyRecommendation.zoneBadge}
+                            {displayedDailyZoneBadge}
                           </span>
                           <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400">
                             {displayedDailySport === 'running' ? '🏃 Laufen' : '🚴 Radsport'} · Readiness {dailyRecommendation.dailyReadinessScore}/100
@@ -2744,7 +2756,7 @@ export default function FitnessPerformanceAnalysis({
                         <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 px-3 py-2 rounded-2xl text-center">
                           <span className="block text-[8.5px] font-extrabold text-slate-400 uppercase">Erholung</span>
                           <span className="text-sm font-mono font-black text-emerald-500">
-                            ~{dailyRecommendation.estimatedRecoveryHours} h
+                            ~{displayedDailyRecoveryHours} h
                           </span>
                         </div>
                       </div>

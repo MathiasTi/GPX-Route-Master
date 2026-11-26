@@ -2469,7 +2469,11 @@ function estimateAthleteMetricsFromLocalGarminDb(): {
 
   // 3. Peak HR (3rd highest point sample across synced activities to guard against single-spike artifacts)
   //    and median cycling speed from synced Garmin activities; FTP via shared ftpEstimator
-  const activities = Array.isArray(health.activities) ? health.activities.slice(-150) : [];
+  const activities = Array.isArray(health.activities)
+    ? [...health.activities]
+        .sort((a, b) => String(b?.date || '').localeCompare(String(a?.date || '')))
+        .slice(0, 150)
+    : [];
   let maxPeakHr = 0;
   const cyclingSpeeds: number[] = [];
 

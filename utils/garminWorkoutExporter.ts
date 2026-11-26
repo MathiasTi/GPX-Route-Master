@@ -245,11 +245,11 @@ function buildFitSteps(workout: PlannedWorkout, options: GarminWorkoutExportOpti
         name: `Wdh ${reps}x`,
         durationType: 6, // repeat_until_steps_cmplt
         durationValue: startIndex,
-        targetType: 2, // open
+        targetType: 0xff, // invalid sentinel per Garmin FIT Workout repeat_steps spec
         targetValue: reps,
-        customTargetLow: 0,
-        customTargetHigh: 0,
-        intensity: 0,
+        customTargetLow: 0xffffffff,
+        customTargetHigh: 0xffffffff,
+        intensity: 0xff,
       });
     } else {
       fitSteps.push({

@@ -308,6 +308,47 @@ export function runDailyWorkoutAndFitExportTests(): boolean {
     assert.ok(repeatStep);
     assert.equal(repeatStep.data.target_value, 4);
     assert.equal(repeatStep.data.duration_value, 1); // points back to workIntervalStep index
+    assert.equal(repeatStep.data.target_type, 0xff);
+    assert.equal(repeatStep.data.intensity, 0xff);
+  });
+
+  check('Alternatives expose zoneBadge/tone/recoveryHours and DESC 60-item history sees index 0 recent hard session', () => {
+    const now = new Date('2026-06-15T09:00:00Z');
+    const fresh = suggestDailyWorkout(makeBaseDailyInput({ now }));
+    assert.ok(fresh.alternatives.length >= 2);
+    for (const alt of fresh.alternatives) {
+      assert.ok(alt.zoneBadge.length > 0);
+      assert.ok(alt.tone.length > 0);
+      assert.ok(alt.estimatedRecoveryHours >= 6);
+    }
+
+    // Simulated DB DESC order (newest at index 0, older 59 sessions afterwards)
+    const descActs: DailyActivitySummary[] = [
+      {
+        date: '2026-06-14T18:00:00Z',
+        type: 'cycling',
+        name: 'Hard Race',
+        distance: 80,
+        duration: 6000,
+        tss: 130,
+        avg_hr: 172,
+      },
+      ...Array.from({ length: 59 }, (_, i) => ({
+        date: new Date(now.getTime() - (i + 5) * 86400 * 1000).toISOString(),
+        type: 'cycling',
+        name: `Old Spin ${i}`,
+        distance: 30,
+        duration: 3600,
+        tss: 40,
+        avg_hr: 130,
+      })),
+    ];
+    const slicedNewest40 = [...descActs]
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      .slice(0, 40);
+    const rec = suggestDailyWorkout(makeBaseDailyInput({ now, recentActivities: slicedNewest40 }));
+    assert.ok(rec.recentSummary.hoursSinceLastHardSession !== null && rec.recentSummary.hoursSinceLastHardSession < 24);
+    assert.ok(rec.intensityLevel === 'easy' || rec.intensityLevel === 'rest');
   });
 
   check('FIT binary round-trip encodes running pace (mm/s) and HR (+100) targets accurately', () => {

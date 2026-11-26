@@ -36,6 +36,9 @@ export interface DailyWorkoutOption {
   label: string;
   sport: 'running' | 'cycling';
   intensityLevel: DailyIntensityLevel;
+  zoneBadge: string;
+  tone: 'slate' | 'sky' | 'emerald' | 'amber' | 'rose';
+  estimatedRecoveryHours: number;
   workout: PlannedWorkout;
   targetIf: number;
   rpeRange: [number, number];
@@ -1016,6 +1019,9 @@ export function suggestDailyWorkout(input: DailyWorkoutInput): DailyWorkoutRecom
       label: `Sanftere Option: ${altMeta.zoneBadge}`,
       sport: resolvedSport,
       intensityLevel: altLevel,
+      zoneBadge: altMeta.zoneBadge,
+      tone: altMeta.tone,
+      estimatedRecoveryHours: altMeta.recoveryHours,
       targetIf: altMeta.targetIf,
       rpeRange: altMeta.rpeRange,
       workout: buildDailyWorkout({
@@ -1039,6 +1045,9 @@ export function suggestDailyWorkout(input: DailyWorkoutInput): DailyWorkoutRecom
     label: otherSport === 'cycling' ? 'Wechsel zu Radfahren' : 'Wechsel zu Laufen',
     sport: otherSport,
     intensityLevel: level,
+    zoneBadge: meta.zoneBadge,
+    tone: meta.tone,
+    estimatedRecoveryHours: meta.recoveryHours,
     targetIf: meta.targetIf,
     rpeRange: meta.rpeRange,
     workout: buildDailyWorkout({

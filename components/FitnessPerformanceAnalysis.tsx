@@ -12,6 +12,14 @@ import {
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { parseGPX, isCyclingType, isRunningType, isStopWatchType } from '../utils/gpxUtils';
+import { useAppPreferences } from '../utils/appSettings';
+import {
+  formatDistance,
+  formatSpeed,
+  formatPaceFromSecPerKm,
+  speedUnit,
+  getLocale
+} from '../utils/units';
 import { NumericProfileInput } from './NumericProfileInput';
 import { estimateCriticalPowerFromBests } from '../utils/wbalEngine';
 import { LoadSafetyProfileTab } from './analysis/LoadSafetyProfileTab';
@@ -29,6 +37,7 @@ interface FitnessPerformanceAnalysisProps {
   onUpdateAge?: (age: number) => void;
   isEmbedded?: boolean;
   initialActivities?: GarminActivity[];
+  rhrBaseline?: number;
 }
 
 interface GarminActivity {
@@ -66,12 +75,37 @@ export default function FitnessPerformanceAnalysis({
   onUpdateWeight,
   onUpdateAge,
   isEmbedded = false,
-  initialActivities
+  initialActivities,
+  rhrBaseline
 }: FitnessPerformanceAnalysisProps) {
+  const appPrefs = useAppPreferences();
   // Local adjustable sports metrics
   const [ftp, setFtp] = useState(initialFtp || 250);
   const [maxHr, setMaxHr] = useState(initialMaxHr || 185);
-  const [rhr, setRhr] = useState(55); // Default Resting Heart Rate for calculations
+  const [rhr, setRhr] = useState<number>(rhrBaseline ?? appPrefs.rhrBaseline ?? 55);
+
+  useEffect(() => {
+    const resolved = rhrBaseline ?? appPrefs.rhrBaseline;
+    if (resolved && Number.isFinite(resolved)) {
+      setRhr(resolved);
+    }
+  }, [rhrBaseline, appPrefs.rhrBaseline]);
+
+  const effectiveRhr = Math.max(30, Math.min(Math.max(45, maxHr - 35), rhr));
+  const useKarvonen = maxHr > effectiveRhr + 30;
+  const classifyHrZone = useCallback(
+    (hrVal: number): number => {
+      const ratio = useKarvonen
+        ? (hrVal - effectiveRhr) / (maxHr - effectiveRhr)
+        : hrVal / Math.max(1, maxHr);
+      if (ratio < 0.60) return 0;
+      if (ratio < 0.70) return 1;
+      if (ratio < 0.80) return 2;
+      if (ratio < 0.90) return 3;
+      return 4;
+    },
+    [useKarvonen, effectiveRhr, maxHr]
+  );
 
   const hasInitialActivities = Boolean(initialActivities && initialActivities.length > 0);
   const [activities, setActivities] = useState<GarminActivity[]>(() =>
@@ -428,10 +462,15 @@ export default function FitnessPerformanceAnalysis({
         calculatedIf = ftp > 0 ? np / ftp : 0.7;
         calculatedTss = ftp > 0 ? ((safeDuration * np * calculatedIf) / (ftp * 3600)) * 100 : 60;
       } else if (act.avg_hr || hrSamples.length > 0) {
-        // TRIMP or hrTSS approximation
+        // Karvonen HRR-based hrTSS approximation when RHR + MaxHR reserve is valid
         const avgHr = act.avg_hr || avgHrSampled;
-        const lthr = maxHr * 0.85; // Est Lactate Threshold HR
-        calculatedIf = lthr > 0 ? avgHr / lthr : 0.7;
+        if (useKarvonen) {
+          const hrrRatio = Math.max(0.25, Math.min(1.25, (avgHr - effectiveRhr) / (maxHr - effectiveRhr)));
+          calculatedIf = hrrRatio / 0.85;
+        } else {
+          const lthr = maxHr * 0.85; // Est Lactate Threshold HR
+          calculatedIf = lthr > 0 ? avgHr / lthr : 0.7;
+        }
         const durationHours = safeDuration / 3600;
         // hrTSS estimate
         calculatedTss = durationHours * Math.pow(calculatedIf, 2) * 100;
@@ -458,7 +497,7 @@ export default function FitnessPerformanceAnalysis({
         hrSamples
       };
     });
-  }, [parsedActivitiesTelemetry, ftp, maxHr]);
+  }, [parsedActivitiesTelemetry, ftp, maxHr, effectiveRhr, useKarvonen]);
 
   // Overall sports distribution and breakdown
   const sportBreakdown = useMemo(() => {
@@ -577,7 +616,7 @@ export default function FitnessPerformanceAnalysis({
         id: item.id,
         name: item.name,
         date: item.date,
-        formattedDate: new Date(item.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }),
+        formattedDate: new Date(item.date).toLocaleDateString(getLocale(appPrefs.language), { day: '2-digit', month: '2-digit' }),
         distance: parseFloat(item.distance.toFixed(1)),
         duration: item.duration,
         avg_hr: item.avg_hr || null,
@@ -796,7 +835,7 @@ export default function FitnessPerformanceAnalysis({
 
       // Format date for display (de-DE)
       const dObj = new Date(`${date}T12:00:00Z`);
-      const formattedDate = dObj.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+      const formattedDate = dObj.toLocaleDateString(getLocale(appPrefs.language), { day: '2-digit', month: '2-digit' });
 
       return {
         date,
@@ -876,7 +915,7 @@ export default function FitnessPerformanceAnalysis({
         power: peakInfo.power,
         relPower: parseFloat(relPower.toFixed(2)),
         activityName: peakInfo.activityName || 'Keine Daten',
-        date: peakInfo.date ? new Date(peakInfo.date).toLocaleDateString('de-DE') : '',
+        date: peakInfo.date ? new Date(peakInfo.date).toLocaleDateString(getLocale(appPrefs.language)) : '',
         isRun: peakInfo.isRun
       };
     });
@@ -908,15 +947,7 @@ export default function FitnessPerformanceAnalysis({
       // If no points, split overall duration proportionally
       if (act.pointsCount === 0) {
         if (act.avg_hr) {
-          const hr = act.avg_hr;
-          const ratio = hr / maxHr;
-          let zoneIdx = 0;
-          if (ratio < 0.60) zoneIdx = 0;
-          else if (ratio < 0.70) zoneIdx = 1;
-          else if (ratio < 0.80) zoneIdx = 2;
-          else if (ratio < 0.90) zoneIdx = 3;
-          else zoneIdx = 4;
-          hrZonesSeconds[zoneIdx] += act.duration;
+          hrZonesSeconds[classifyHrZone(act.avg_hr)] += act.duration;
         }
         if (act.hasPower && act.np) {
           const pwr = act.np;
@@ -948,24 +979,10 @@ export default function FitnessPerformanceAnalysis({
       if (hrSamples.length > 0) {
         const dt = act.duration > 0 ? act.duration / hrSamples.length : 1;
         for (let i = 0; i < hrSamples.length; i++) {
-          const ratio = hrSamples[i] / maxHr;
-          let zoneIdx = 0;
-          if (ratio < 0.60) zoneIdx = 0;
-          else if (ratio < 0.70) zoneIdx = 1;
-          else if (ratio < 0.80) zoneIdx = 2;
-          else if (ratio < 0.90) zoneIdx = 3;
-          else zoneIdx = 4;
-          hrZonesSeconds[zoneIdx] += dt;
+          hrZonesSeconds[classifyHrZone(hrSamples[i])] += dt;
         }
       } else if (act.avg_hr) {
-        const ratio = act.avg_hr / maxHr;
-        let zoneIdx = 0;
-        if (ratio < 0.60) zoneIdx = 0;
-        else if (ratio < 0.70) zoneIdx = 1;
-        else if (ratio < 0.80) zoneIdx = 2;
-        else if (ratio < 0.90) zoneIdx = 3;
-        else zoneIdx = 4;
-        hrZonesSeconds[zoneIdx] += act.duration;
+        hrZonesSeconds[classifyHrZone(act.avg_hr)] += act.duration;
       }
 
       if (powerSamples.length > 0) {
@@ -1002,12 +1019,17 @@ export default function FitnessPerformanceAnalysis({
     const hrTotal = hrZonesSeconds.reduce((a, b) => a + b, 0);
     const pwrTotal = pwrZonesSeconds.reduce((a, b) => a + b, 0);
 
+    const hrBound = (pct: number) =>
+      useKarvonen
+        ? Math.round(effectiveRhr + (maxHr - effectiveRhr) * pct)
+        : Math.round(maxHr * pct);
+    const hrModeTag = useKarvonen ? 'HRR' : 'HFmax';
     const hrLabels = [
-      'Z1 Kompensation (KB) <60%',
-      'Z2 Grundlagen 1 (GA1) 60-70%',
-      'Z3 Grundlagen 2 (GA2) 70-80%',
-      'Z4 Entwicklungsbereich (EB) 80-90%',
-      'Z5 Spitzenbereich (SB) >90%'
+      `Z1 Kompensation <60% ${hrModeTag} (<${hrBound(0.60)} bpm)`,
+      `Z2 Grundlagen 1 60–70% ${hrModeTag} (${hrBound(0.60)}–${hrBound(0.70)} bpm)`,
+      `Z3 Grundlagen 2 70–80% ${hrModeTag} (${hrBound(0.70)}–${hrBound(0.80)} bpm)`,
+      `Z4 Entwicklungsbereich 80–90% ${hrModeTag} (${hrBound(0.80)}–${hrBound(0.90)} bpm)`,
+      `Z5 Spitzenbereich >90% ${hrModeTag} (>${hrBound(0.90)} bpm)`
     ];
 
     const cyclingPwrLabels = [
@@ -1058,7 +1080,7 @@ export default function FitnessPerformanceAnalysis({
     }
 
     return { hrData, pwrData, classification, isRunningView };
-  }, [sportFilteredActivities, maxHr, ftp, filterType]);
+  }, [sportFilteredActivities, maxHr, ftp, filterType, classifyHrZone, effectiveRhr, useKarvonen]);
 
   // Form (TSB) classification feedback
   const formStatus = useMemo(() => {
@@ -1934,7 +1956,7 @@ export default function FitnessPerformanceAnalysis({
                           <div>
                             <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">Radsport Belastungsanteil</span>
                             <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                              {sportBreakdown.cyclingCount} Aktivitäten • {sportBreakdown.cyclingDist} km
+                              {sportBreakdown.cyclingCount} Aktivitäten • {formatDistance(sportBreakdown.cyclingDist, appPrefs.unitSystem, appPrefs.language, 1)}
                             </p>
                           </div>
                         </div>
@@ -1950,7 +1972,7 @@ export default function FitnessPerformanceAnalysis({
                           <div>
                             <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Laufsport Belastungsanteil</span>
                             <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                              {sportBreakdown.runningCount} Aktivitäten • {sportBreakdown.runningDist} km
+                              {sportBreakdown.runningCount} Aktivitäten • {formatDistance(sportBreakdown.runningDist, appPrefs.unitSystem, appPrefs.language, 1)}
                             </p>
                           </div>
                         </div>
@@ -1971,7 +1993,7 @@ export default function FitnessPerformanceAnalysis({
                         <span>{filterType === 'running' ? 'Laufsport-spezifisches Fitness- & Ermüdungsmodell aktiv (hrTSS / rFTPw)' : 'Radsport-spezifisches Fitness- & Ermüdungsmodell aktiv (Coggan TSS / FTP)'}</span>
                       </div>
                       <span className="text-[10px] font-mono font-bold opacity-80">
-                        {filterType === 'running' ? `${sportBreakdown.runningCount} Einheiten (${sportBreakdown.runningDist} km)` : `${sportBreakdown.cyclingCount} Einheiten (${sportBreakdown.cyclingDist} km)`}
+                        {filterType === 'running' ? `${sportBreakdown.runningCount} Einheiten (${formatDistance(sportBreakdown.runningDist, appPrefs.unitSystem, appPrefs.language, 1)})` : `${sportBreakdown.cyclingCount} Einheiten (${formatDistance(sportBreakdown.cyclingDist, appPrefs.unitSystem, appPrefs.language, 1)})`}
                       </span>
                     </div>
                   )}
@@ -2238,7 +2260,7 @@ export default function FitnessPerformanceAnalysis({
                             </div>
                             <div>
                               <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Gesamtdistanz</p>
-                              <p className="text-sm font-black text-slate-800 dark:text-white font-mono">{performanceStats.totalDistance} km</p>
+                              <p className="text-sm font-black text-slate-800 dark:text-white font-mono">{formatDistance(performanceStats.totalDistance, appPrefs.unitSystem, appPrefs.language, 1)}</p>
                             </div>
                           </div>
 
@@ -2254,7 +2276,9 @@ export default function FitnessPerformanceAnalysis({
                                 {filterType === 'running' ? (
                                   <>
                                     <span className="text-sm font-black text-slate-800 dark:text-white font-mono">
-                                      {performanceStats.avgPace}
+                                      {performanceStats.avgPaceDecimal > 0
+                                        ? formatPaceFromSecPerKm(performanceStats.avgPaceDecimal * 60, appPrefs.unitSystem, true)
+                                        : performanceStats.avgPace}
                                     </span>
                                     {performanceStats.paceDiffSec !== 0 && (
                                       <span className={`text-[9px] font-black flex items-center ${performanceStats.paceTrend === 'faster' ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -2265,7 +2289,7 @@ export default function FitnessPerformanceAnalysis({
                                 ) : (
                                   <>
                                     <span className="text-sm font-black text-slate-800 dark:text-white font-mono">
-                                      {performanceStats.avgSpeed} <span className="text-[10px] font-bold text-slate-400">km/h</span>
+                                      {formatSpeed(performanceStats.avgSpeed, appPrefs.unitSystem, 1).replace(` ${speedUnit(appPrefs.unitSystem)}`, '')} <span className="text-[10px] font-bold text-slate-400">{speedUnit(appPrefs.unitSystem)}</span>
                                     </span>
                                     {performanceStats.speedDiff !== 0 && (
                                       <span className={`text-[9px] font-black flex items-center ${performanceStats.speedTrend === 'up' ? 'text-emerald-500' : 'text-rose-500'}`}>

@@ -32,11 +32,13 @@ import {
 import { resolveTrackPointSpeedsKmh } from '../../domain/telemetry/pointMetricsEngine';
 import { NumericProfileInput } from '../NumericProfileInput';
 import { triggerHaptic } from '../../utils/haptics';
+import { useAppPreferences } from '../../utils/appSettings';
 
 interface PowerPhysicsTabProps {
   track: GPXTrack;
   activityType: 'cycling' | 'running';
   initialWeight?: number;
+  initialBikeWeight?: number;
   initialFtp?: number;
   onOpenGlossary?: (metricId?: string) => void;
   onSelectTrackPoint?: (lat: number, lng: number) => void;
@@ -46,10 +48,13 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
   track,
   activityType,
   initialWeight = 75,
+  initialBikeWeight,
   initialFtp = 220,
   onOpenGlossary,
   onSelectTrackPoint
 }) => {
+  const appPrefs = useAppPreferences();
+  const resolvedDefaultBikeWeight = initialBikeWeight ?? appPrefs.bikeWeight ?? 8.5;
   const capabilities = useMemo(() => resolveTrackCapabilities({ ...track, activityType }), [track, activityType]);
 
   // Cycling parameters
@@ -59,7 +64,13 @@ export const PowerPhysicsTab: React.FC<PowerPhysicsTabProps> = ({
   const [windSpeedKmh, setWindSpeedKmh] = useState<number>(0);
   const [ftpValue, setFtpValue] = useState<number>(initialFtp);
   const [wPrimeKj, setWPrimeKj] = useState<number>(20);
-  const [bikeWeight, setBikeWeight] = useState<number>(bikeType === 'road' ? 8.5 : bikeType === 'gravel' ? 10.5 : 12.5);
+  const [bikeWeight, setBikeWeight] = useState<number>(resolvedDefaultBikeWeight);
+
+  React.useEffect(() => {
+    if (initialBikeWeight !== undefined && Number.isFinite(initialBikeWeight)) {
+      setBikeWeight(initialBikeWeight);
+    }
+  }, [initialBikeWeight]);
   const [hoverWbalIdx, setHoverWbalIdx] = useState<number | null>(null);
 
   // Running parameters (Critical Speed in sec/km & D' in meters)

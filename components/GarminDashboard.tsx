@@ -14,6 +14,8 @@ import {
 } from 'recharts';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { resolveGarminTrackForMap } from '../utils/garminClient';
+import { useAppPreferences } from '../utils/appSettings';
+import { formatDistance, formatElevation } from '../utils/units';
 import {
   isCyclingType,
   isRunningType,
@@ -210,6 +212,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
   onUpdateWeight,
   onUpdateAge
 }) => {
+  const appPrefs = useAppPreferences();
   const [data, setData] = useState<HealthData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
@@ -562,9 +565,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     }
 
     const rhrRecent30 = rhrData.slice(-30);
-    const baselineRhr = rhrRecent30.length > 0
+    const measuredBaselineRhr = rhrRecent30.length > 0
       ? rhrRecent30.reduce((sum, r) => sum + r.rhr, 0) / rhrRecent30.length
       : null;
+    const baselineRhr = measuredBaselineRhr ?? (appPrefs.rhrBaseline > 0 ? appPrefs.rhrBaseline : null);
 
     const recentDates = allDates.slice(-14);
     const series = recentDates.map((date) => {
@@ -620,7 +624,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
     }
 
     return { latestScore, label, tone, series, baselineRhr: baselineRhr ? Math.round(baselineRhr) : null };
-  }, [rhrData, sleepData, stressData]);
+  }, [rhrData, sleepData, stressData, appPrefs.rhrBaseline]);
 
   // 365-Day Activity & Consistency Heatmap
   const yearlyHeatmapData = useMemo(() => {
@@ -1777,7 +1781,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           Trainings-Volumen ({healthRangeDays === 'all' ? 'Gesamt' : `${healthRangeDays}T`})
                         </span>
                         <span className="text-lg font-black text-slate-800 dark:text-slate-100 font-mono tabular-nums">
-                          {overviewSportSummary.distanceKm.toLocaleString('de-DE')} km
+                          {formatDistance(overviewSportSummary.distanceKm, appPrefs.unitSystem, appPrefs.language, 1)}
                         </span>
                       </div>
                     </div>
@@ -1786,9 +1790,9 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </span>
                   </div>
                   <div className="text-[10.5px] text-slate-500 dark:text-slate-400 font-mono flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span>+{overviewSportSummary.ascentM.toLocaleString('de-DE')} hm · {overviewSportSummary.hours}h</span>
-                    <span className="text-blue-600 dark:text-blue-400 font-bold">🚴 {overviewSportSummary.cyclingCount} ({overviewSportSummary.cyclingKm} km)</span>
-                    <span className="text-orange-600 dark:text-orange-400 font-bold">🏃 {overviewSportSummary.runningCount} ({overviewSportSummary.runningKm} km)</span>
+                    <span>{formatElevation(overviewSportSummary.ascentM, appPrefs.unitSystem, appPrefs.language, true)} · {overviewSportSummary.hours}h</span>
+                    <span className="text-blue-600 dark:text-blue-400 font-bold">🚴 {overviewSportSummary.cyclingCount} ({formatDistance(overviewSportSummary.cyclingKm, appPrefs.unitSystem, appPrefs.language, 1)})</span>
+                    <span className="text-orange-600 dark:text-orange-400 font-bold">🏃 {overviewSportSummary.runningCount} ({formatDistance(overviewSportSummary.runningKm, appPrefs.unitSystem, appPrefs.language, 1)})</span>
                   </div>
                 </button>
 
@@ -1854,7 +1858,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     <div className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-orange-100 dark:border-orange-900/40">
                       <span className="block text-[9px] font-sans font-bold text-slate-400 uppercase">🏃 Weitester Lauf</span>
                       <span className="font-black text-slate-800 dark:text-slate-100">
-                        {recordsData.running.longestDistance ? `${recordsData.running.longestDistance.distance.toFixed(2)} km` : '-'}
+                        {recordsData.running.longestDistance ? formatDistance(recordsData.running.longestDistance.distance, appPrefs.unitSystem, appPrefs.language, 2) : '-'}
                       </span>
                     </div>
                   </div>
@@ -1882,7 +1886,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                           {overviewSportSummary.latestActivity.name}
                         </p>
                         <p className="text-[10.5px] text-slate-500 dark:text-slate-400 font-mono">
-                          {normalizeDateKey(overviewSportSummary.latestActivity.date)} · {overviewSportSummary.latestActivity.distance.toFixed(1)} km · {formatDurationHhMm(overviewSportSummary.latestActivity.duration)}
+                          {normalizeDateKey(overviewSportSummary.latestActivity.date)} · {formatDistance(overviewSportSummary.latestActivity.distance, appPrefs.unitSystem, appPrefs.language, 1)} · {formatDurationHhMm(overviewSportSummary.latestActivity.duration)}
                         </p>
                       </div>
                       {onLoadTrack && (
@@ -2467,6 +2471,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                         userAge={userAge}
                         userMaxHr={userMaxHr}
                         ftp={ftp}
+                        rhrBaseline={readinessSummary.baselineRhr ?? appPrefs.rhrBaseline}
                         onUpdateFtp={onUpdateFtp}
                         onUpdateMaxHr={onUpdateMaxHr}
                         onUpdateWeight={onUpdateWeight}

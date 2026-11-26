@@ -30,6 +30,7 @@ import {
   isRecordingPauseGap
 } from '../utils/gpxUtils';
 import { triggerHaptic } from '../utils/haptics';
+import { useAppPreferences } from '../utils/appSettings';
 import { PowerPhysicsTab } from './analysis/PowerPhysicsTab';
 import { ZonesTab } from './analysis/ZonesTab';
 import { RawDataTab } from './analysis/RawDataTab';
@@ -397,6 +398,7 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   onReverseTrack,
   onSanitizeTrack
 }) => {
+  const appPrefs = useAppPreferences();
   // Activity Configuration State
   const initialDetected = useMemo<'cycling' | 'running'>(() => {
     if (track.activityType === 'running' || track.activityType === 'cycling') {
@@ -492,11 +494,12 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
         fitnessLevel,
         targetFtp: customFtp,
         userWeightKg: customWeight,
+        equipmentWeightKg: activityType === 'cycling' ? appPrefs.bikeWeight : 0.8,
         temperatureC: customTemp
       },
       textMarkers
     );
-  }, [track, activityType, subType, fitnessLevel, customFtp, customWeight, customTemp, textMarkers]);
+  }, [track, activityType, subType, fitnessLevel, customFtp, customWeight, appPrefs.bikeWeight, customTemp, textMarkers]);
 
   const realSplits: RealTrackSplit[] = useMemo(() => {
     return computeRealTrackSplits(
@@ -807,13 +810,12 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
   const [pacingSplitKm, setPacingSplitKm] = useState<number>(2.5);
 
   const pacingSim = useMemo(() => {
-    const bikeWeight = subType === 'road' ? 8.5 : subType === 'gravel' ? 10.5 : 12.5;
     const crr = subType === 'road' ? 0.004 : subType === 'gravel' ? 0.0065 : 0.009;
     const cda = activityType === 'running' ? 0.45 : subType === 'road' ? 0.31 : 0.36;
     return runPacingSimulation(track, {
       ftpWatts: customFtp,
       riderWeightKg: customWeight,
-      bikeWeightKg: activityType === 'cycling' ? bikeWeight : 0.8,
+      bikeWeightKg: activityType === 'cycling' ? appPrefs.bikeWeight : 0.8,
       cda,
       crr,
       windSpeedKmh: pacingWindKmh,
@@ -821,7 +823,7 @@ export const IntensiveTrackAnalysisModal: React.FC<IntensiveTrackAnalysisModalPr
       strategy: pacingStrategy,
       segmentLengthKm: pacingSplitKm
     });
-  }, [track, customFtp, customWeight, subType, activityType, pacingWindKmh, pacingIfPct, pacingStrategy, pacingSplitKm]);
+  }, [track, customFtp, customWeight, appPrefs.bikeWeight, subType, activityType, pacingWindKmh, pacingIfPct, pacingStrategy, pacingSplitKm]);
 
   const runningPacingSim = useMemo(() => {
     return runRunningPacingSimulation(track, {
@@ -3588,6 +3590,7 @@ GPX Route Master Pro`;
               track={track}
               activityType={activityType}
               initialWeight={customWeight}
+              initialBikeWeight={appPrefs.bikeWeight}
               initialFtp={customFtp}
               onOpenGlossary={onOpenGlossary}
               onSelectTrackPoint={onSelectTrackPoint}

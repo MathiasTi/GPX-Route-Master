@@ -1,16 +1,14 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { Suspense, useState, useCallback, useEffect, useRef } from 'react';
 import { GPXTrack, GPXPoint, TextMarker, MapLayer, TimeGap } from './types';
 import Sidebar from './components/Sidebar';
 import { PasswordGate } from './components/PasswordGate';
 import Map from './components/Map';
-import Map3D from './components/Map3D';
 import ElevationProfile from './components/ElevationProfile';
-import { ActivitiesManagerView } from './components/ActivitiesManagerView';
-import { ActivitiesDashboardView } from './components/ActivitiesDashboardView';
-import { PlannedToursView } from './components/PlannedToursView';
 import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
 import {
   AppPreferences,
+  AppPreferencesProvider,
+  ImportedSettingsPayload,
   DEFAULT_APP_PREFERENCES,
   loadAppPreferences,
   saveAppPreferences,
@@ -20,22 +18,16 @@ import {
   tr,
   useDomLanguageSync
 } from './utils/appSettings';
-import { AppSettingsModal, AppSettingsTab } from './components/AppSettingsModal';
+import { getLocale } from './utils/units';
+import type { AppSettingsTab } from './components/AppSettingsModal';
 import { parseGPX, mergeTracks, validateGPX, calculatePowerStats, calculateDistance, parseGPXStream, hydratePointsWithSurface, calculateSurfaceStatsFromPoints, checkTrackDuplicateGPS, findDuplicateTracksByIdenticalGPS, detectTimeGaps, splitTrackAtIndex, sliceTrackRange, closeTimeGapInTrack, reverseTrack, shiftLoopStartTrack, sanitizeTrackAllInOne, analyzeTrackValidation, autoFixTrackValidation, calculateTrackCenterAndBounds, repairTrackGradientAnomalies, applyElevationFilterToTrack, ElevationFilterStrength, hasRealGpsData, sanitizeTextMarker, sanitizeTextMarkers, sanitizeTrackMetadata, preCheckGpxUploadContent } from './utils/gpxUtils';
-import { TimeGapAnalysisModal } from './components/TimeGapAnalysisModal';
-import { TrackValidationModal } from './components/TrackValidationModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { parseFIT } from './utils/fitUtils';
 import { unzipSync } from 'fflate';
 import { arrayMove } from '@dnd-kit/sortable';
-import { TrackComparison } from './components/TrackComparison';
 import { AnimatePresence, motion } from 'motion/react';
-import { VideoExportModal } from './components/VideoExportModal';
-import { WeatherOverlay } from './components/WeatherOverlay';
-import { IntensiveTrackAnalysisModal, AnalysisTab } from './components/IntensiveTrackAnalysisModal';
-import { SportMetricsGlossaryModal } from './components/SportMetricsGlossaryModal';
-import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
-import { GarminDashboard, GarminDashboardTab } from './components/GarminDashboard';
+import type { AnalysisTab } from './components/IntensiveTrackAnalysisModal';
+import type { GarminDashboardTab } from './components/GarminDashboard';
 import { MobileThumbBar } from './components/mobile/MobileThumbBar';
 import { MobileTelemetryPill } from './components/mobile/MobileTelemetryPill';
 import { MobileBottomNav } from './components/mobile/MobileBottomNav';
@@ -61,6 +53,51 @@ import {
   resolveKeyboardZoomAction
 } from './utils/mapZoom';
 import { resolveRefreshedTrackName } from './utils/workspaceQoL';
+
+const Map3D = React.lazy(() => import('./components/Map3D'));
+const PlannedToursView = React.lazy(() => import('./components/PlannedToursView'));
+const ActivitiesDashboardView = React.lazy(() => import('./components/ActivitiesDashboardView'));
+const AppSettingsModal = React.lazy(() => import('./components/AppSettingsModal'));
+
+const GarminDashboard = React.lazy(() =>
+  import('./components/GarminDashboard').then((m) => ({ default: m.GarminDashboard }))
+);
+const ActivitiesManagerView = React.lazy(() =>
+  import('./components/ActivitiesManagerView').then((m) => ({ default: m.ActivitiesManagerView }))
+);
+const IntensiveTrackAnalysisModal = React.lazy(() =>
+  import('./components/IntensiveTrackAnalysisModal').then((m) => ({ default: m.IntensiveTrackAnalysisModal }))
+);
+const VideoExportModal = React.lazy(() =>
+  import('./components/VideoExportModal').then((m) => ({ default: m.VideoExportModal }))
+);
+const TrackComparison = React.lazy(() =>
+  import('./components/TrackComparison').then((m) => ({ default: m.TrackComparison }))
+);
+const SportMetricsGlossaryModal = React.lazy(() =>
+  import('./components/SportMetricsGlossaryModal').then((m) => ({ default: m.SportMetricsGlossaryModal }))
+);
+const WeatherOverlay = React.lazy(() =>
+  import('./components/WeatherOverlay').then((m) => ({ default: m.WeatherOverlay }))
+);
+const TimeGapAnalysisModal = React.lazy(() =>
+  import('./components/TimeGapAnalysisModal').then((m) => ({ default: m.TimeGapAnalysisModal }))
+);
+const TrackValidationModal = React.lazy(() =>
+  import('./components/TrackValidationModal').then((m) => ({ default: m.TrackValidationModal }))
+);
+const KeyboardShortcutsModal = React.lazy(() =>
+  import('./components/KeyboardShortcutsModal').then((m) => ({ default: m.KeyboardShortcutsModal }))
+);
+
+const LazyViewFallback: React.FC<{ label?: string }> = ({ label }) => (
+  <div className="flex-1 flex items-center justify-center p-8 text-xs font-semibold text-slate-400 dark:text-slate-500">
+    <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 shadow-sm">
+      <RefreshCw size={14} className="animate-spin text-indigo-500" />
+      <span>{label || 'Laden...'}</span>
+    </div>
+  </div>
+);
 
 const VALID_FITNESS_TABS: readonly GarminDashboardTab[] = [
   'overview',
@@ -435,6 +472,39 @@ const App: React.FC = () => {
         resetPrefs.language,
         'Einstellungen auf Standardwerte zurückgesetzt.',
         'Settings reset to defaults.'
+      )
+    );
+  }, []);
+
+  const handleImportSettings = useCallback((payload: ImportedSettingsPayload) => {
+    const importedPrefs = saveAppPreferences(payload.preferences);
+    setAppPrefs(importedPrefs);
+    setTheme(resolveEffectiveTheme(importedPrefs.colorMode));
+    setActiveLayer(importedPrefs.defaultMapLayer);
+    setIsProfileCollapsed(!importedPrefs.showElevationProfile);
+    if (payload.athlete) {
+      if (typeof payload.athlete.ftp === 'number' && Number.isFinite(payload.athlete.ftp)) {
+        setFtp(payload.athlete.ftp);
+      }
+      if (typeof payload.athlete.userWeight === 'number' && Number.isFinite(payload.athlete.userWeight)) {
+        setUserWeight(payload.athlete.userWeight);
+      }
+      if (typeof payload.athlete.userAge === 'number' && Number.isFinite(payload.athlete.userAge)) {
+        setUserAge(payload.athlete.userAge);
+      }
+      if (typeof payload.athlete.userMaxHr === 'number' && Number.isFinite(payload.athlete.userMaxHr)) {
+        setUserMaxHr(payload.athlete.userMaxHr);
+        safeSetItem('velo_user_max_hr', String(payload.athlete.userMaxHr));
+      }
+      if (typeof payload.athlete.estimatedSpeed === 'number' && Number.isFinite(payload.athlete.estimatedSpeed)) {
+        setEstimatedSpeed(payload.athlete.estimatedSpeed);
+      }
+    }
+    setSuccessMessage(
+      tr(
+        importedPrefs.language,
+        'Einstellungen erfolgreich aus JSON importiert.',
+        'Settings imported from JSON successfully.'
       )
     );
   }, []);
@@ -2842,7 +2912,8 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="relative flex flex-col h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-50" id="app-workspace-root">
+    <AppPreferencesProvider value={appPrefs}>
+      <div className="relative flex flex-col h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-50" id="app-workspace-root">
       {/* Hidden File Input for Topbar GPX/FIT Quick Import */}
       <input
         ref={topbarUploadInputRef}
@@ -2949,7 +3020,7 @@ const App: React.FC = () => {
             <span>{tr(appPrefs.language, 'Geplante Touren', 'Planned Tours')}</span>
             {plannedToursCount !== null && (
               <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
-                {plannedToursCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
+                {plannedToursCount.toLocaleString(getLocale(appPrefs.language))}
               </span>
             )}
           </button>
@@ -2968,7 +3039,7 @@ const App: React.FC = () => {
             <span>{tr(appPrefs.language, 'Aktivitäten', 'Activities')}</span>
             {catalogTotalCount !== null && (
               <span className="font-mono tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
-                {catalogTotalCount.toLocaleString(appPrefs.language === 'en' ? 'en-US' : 'de-DE')}
+                {catalogTotalCount.toLocaleString(getLocale(appPrefs.language))}
               </span>
             )}
           </button>
@@ -3219,92 +3290,100 @@ const App: React.FC = () => {
         {/* Full-Screen Planned Tours (Komoot-Style Library) */}
         {activeWorkspaceView === 'planned' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <PlannedToursView
-              workspaceTracks={tracks}
-              ftp={ftp}
-              userWeight={userWeight}
-              estimatedSpeed={estimatedSpeed}
-              onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
-              onOpenToursBatch={(batchTracks, replaceWorkspace) => {
-                if (replaceWorkspace) {
-                  replaceWorkspaceWithTracks(batchTracks, true);
-                } else {
-                  handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
-                }
-              }}
-              onAddTourToWorkspace={handleLoadLibraryTrack}
-              onRemoveTourFromWorkspace={removeTrack}
-              onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
-              onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
-              onNavigateToMap={() => navigateWorkspace('map')}
-              onLibraryCountChange={setPlannedToursCount}
-            />
+            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+              <PlannedToursView
+                workspaceTracks={tracks}
+                ftp={ftp}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+                onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
+                onOpenToursBatch={(batchTracks, replaceWorkspace) => {
+                  if (replaceWorkspace) {
+                    replaceWorkspaceWithTracks(batchTracks, true);
+                  } else {
+                    handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
+                  }
+                }}
+                onAddTourToWorkspace={handleLoadLibraryTrack}
+                onRemoveTourFromWorkspace={removeTrack}
+                onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
+                onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
+                onNavigateToMap={() => navigateWorkspace('map')}
+                onLibraryCountChange={setPlannedToursCount}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Full-Screen Activities Manager Workspace */}
         {activeWorkspaceView === 'activities' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <ActivitiesManagerView
-              workspaceTracks={tracks}
-              ftp={ftp}
-              userWeight={userWeight}
-              estimatedSpeed={estimatedSpeed}
-              onLoadTracksToMap={handleLoadCatalogTracksToMap}
-              onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
-              onDatabaseCountChange={setCatalogTotalCount}
-              onOpenDashboard={() => navigateWorkspace('dashboard')}
-              onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-              onOpenGarminSync={() => openSettingsModal('garmin')}
-              onBackToMap={() => navigateWorkspace('map')}
-            />
+            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+              <ActivitiesManagerView
+                workspaceTracks={tracks}
+                ftp={ftp}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+                onLoadTracksToMap={handleLoadCatalogTracksToMap}
+                onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
+                onDatabaseCountChange={setCatalogTotalCount}
+                onOpenDashboard={() => navigateWorkspace('dashboard')}
+                onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+                onOpenGarminSync={() => openSettingsModal('garmin')}
+                onBackToMap={() => navigateWorkspace('map')}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Full-Screen Activities Dashboard Workspace */}
         {activeWorkspaceView === 'dashboard' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <ActivitiesDashboardView
-              workspaceTracks={tracks}
-              ftp={ftp}
-              userWeight={userWeight}
-              estimatedSpeed={estimatedSpeed}
-              onLoadTracksToMap={handleLoadCatalogTracksToMap}
-              onOpenActivitiesArchive={() => navigateWorkspace('activities')}
-              onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-              onOpenGarminSync={() => openSettingsModal('garmin')}
-              onBackToMap={() => navigateWorkspace('map')}
-            />
+            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+              <ActivitiesDashboardView
+                workspaceTracks={tracks}
+                ftp={ftp}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+                onLoadTracksToMap={handleLoadCatalogTracksToMap}
+                onOpenActivitiesArchive={() => navigateWorkspace('activities')}
+                onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+                onOpenGarminSync={() => openSettingsModal('garmin')}
+                onBackToMap={() => navigateWorkspace('map')}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Full-Screen Fitness & Health Workspace */}
         {activeWorkspaceView === 'fitness' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <GarminDashboard
-              variant="page"
-              initialTab={fitnessPageInitialTab}
-              onTabChange={handleFitnessTabChange}
-              onClose={() => navigateWorkspace('map')}
-              onLoadTrack={(tr) => {
-                handleLoadLibraryTrack(tr);
-                if (hasRealGpsData(tr)) {
-                  navigateWorkspace('map');
-                } else {
-                  setIntensiveAnalysisTab('overview');
-                  setIntensiveAnalysisOpen(true);
-                }
-              }}
-              onDataSynced={refreshCatalogTotalCount}
-              userWeight={userWeight}
-              userAge={userAge}
-              userMaxHr={userMaxHr}
-              ftp={ftp}
-              onUpdateFtp={setFtp}
-              onUpdateWeight={setUserWeight}
-              onUpdateAge={setUserAge}
-              onUpdateMaxHr={handleMaxHrChange}
-            />
+            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+              <GarminDashboard
+                variant="page"
+                initialTab={fitnessPageInitialTab}
+                onTabChange={handleFitnessTabChange}
+                onClose={() => navigateWorkspace('map')}
+                onLoadTrack={(tr) => {
+                  handleLoadLibraryTrack(tr);
+                  if (hasRealGpsData(tr)) {
+                    navigateWorkspace('map');
+                  } else {
+                    setIntensiveAnalysisTab('overview');
+                    setIntensiveAnalysisOpen(true);
+                  }
+                }}
+                onDataSynced={refreshCatalogTotalCount}
+                userWeight={userWeight}
+                userAge={userAge}
+                userMaxHr={userMaxHr}
+                ftp={ftp}
+                onUpdateFtp={setFtp}
+                onUpdateWeight={setUserWeight}
+                onUpdateAge={setUserAge}
+                onUpdateMaxHr={handleMaxHrChange}
+              />
+            </Suspense>
           </div>
         )}
 
@@ -3490,19 +3569,21 @@ const App: React.FC = () => {
           <div className="w-full h-full relative isolate z-10">
             <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
               {is3D ? (
-                <Map3D 
-                  tracks={tracks} 
-                  activeLayer={activeLayer}
-                  markedTrackId={markedTrackId}
-                  onMarkTrack={setMarkedTrackId}
-                  hoveredPoint={hoveredPoint}
-                  onHoverPoint={setHoveredPoint}
-                  selectionBounds={selectionBounds}
-                  onSelection={setSelectionBounds}
-                  mapView={mapView}
-                  onMapViewChange={setMapView}
-                  estimatedSpeed={estimatedSpeed}
-                />
+                <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, '3D-Karte wird geladen…', 'Loading 3D map…')} />}>
+                  <Map3D 
+                    tracks={tracks} 
+                    activeLayer={activeLayer}
+                    markedTrackId={markedTrackId}
+                    onMarkTrack={setMarkedTrackId}
+                    hoveredPoint={hoveredPoint}
+                    onHoverPoint={setHoveredPoint}
+                    selectionBounds={selectionBounds}
+                    onSelection={setSelectionBounds}
+                    mapView={mapView}
+                    onMapViewChange={setMapView}
+                    estimatedSpeed={estimatedSpeed}
+                  />
+                </Suspense>
               ) : (
                 <Map 
                   tracks={tracks} 
@@ -3581,39 +3662,43 @@ const App: React.FC = () => {
 
           <AnimatePresence>
             {timeGapModalOpen && (
-              <TimeGapAnalysisModal
-                isOpen={timeGapModalOpen}
-                tracks={tracks}
-                selectedTrackId={timeGapTrackId}
-                onClose={() => setTimeGapModalOpen(false)}
-                onSplitTrack={handleSplitTrack}
-                onCloseGap={handleCloseGap}
-                onBatchSplit={handleBatchSplit}
-                onBatchCloseGaps={handleBatchCloseGaps}
-                onFocusGapOnMap={handleFocusGapOnMap}
-              />
+              <Suspense fallback={null}>
+                <TimeGapAnalysisModal
+                  isOpen={timeGapModalOpen}
+                  tracks={tracks}
+                  selectedTrackId={timeGapTrackId}
+                  onClose={() => setTimeGapModalOpen(false)}
+                  onSplitTrack={handleSplitTrack}
+                  onCloseGap={handleCloseGap}
+                  onBatchSplit={handleBatchSplit}
+                  onBatchCloseGaps={handleBatchCloseGaps}
+                  onFocusGapOnMap={handleFocusGapOnMap}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {validationModalOpen && pendingValidationTracks.length > 0 && (
-              <TrackValidationModal
-                isOpen={validationModalOpen}
-                pendingTracks={pendingValidationTracks}
-                onClose={() => {
-                  setValidationModalOpen(false);
-                  setPendingValidationTracks([]);
-                }}
-                onConfirmTracks={handleConfirmValidationTracks}
-                onCancel={() => {
-                  setValidationModalOpen(false);
-                  setPendingValidationTracks([]);
-                }}
-                isPreCheck={isValidationPreCheck}
-                ftp={ftp}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-              />
+              <Suspense fallback={null}>
+                <TrackValidationModal
+                  isOpen={validationModalOpen}
+                  pendingTracks={pendingValidationTracks}
+                  onClose={() => {
+                    setValidationModalOpen(false);
+                    setPendingValidationTracks([]);
+                  }}
+                  onConfirmTracks={handleConfirmValidationTracks}
+                  onCancel={() => {
+                    setValidationModalOpen(false);
+                    setPendingValidationTracks([]);
+                  }}
+                  isPreCheck={isValidationPreCheck}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  estimatedSpeed={estimatedSpeed}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
@@ -3644,16 +3729,18 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   <div className="p-4 overflow-y-auto max-h-[calc(90vh-70px)]">
-                    <WeatherOverlay
-                      track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                      allTracks={tracks}
-                      onSelectTrack={(id) => setMarkedTrackId(id)}
-                      selectedDate={selectedDate}
-                      setSelectedDate={setSelectedDate}
-                      selectedTime={selectedTime}
-                      setSelectedTime={setSelectedTime}
-                      onClose={() => setWeatherOpen(false)}
-                    />
+                    <Suspense fallback={null}>
+                      <WeatherOverlay
+                        track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                        allTracks={tracks}
+                        onSelectTrack={(id) => setMarkedTrackId(id)}
+                        selectedDate={selectedDate}
+                        setSelectedDate={setSelectedDate}
+                        selectedTime={selectedTime}
+                        setSelectedTime={setSelectedTime}
+                        onClose={() => setWeatherOpen(false)}
+                      />
+                    </Suspense>
                   </div>
                 </motion.div>
               </div>
@@ -3662,86 +3749,94 @@ const App: React.FC = () => {
 
           <AnimatePresence>
             {comparisonOpen && (
-              <TrackComparison 
-                tracks={tracks}
-                onClose={() => setComparisonOpen(false)}
-                ftp={ftp}
-                userWeight={userWeight}
-                userAge={userAge}
-                estimatedSpeed={estimatedSpeed}
-                initialTrack1Id={markedTrackId}
-                initialTrack2Id={compareTrackId}
-                onCompareOnMap={(id1, id2) => {
-                  setComparisonOpen(false);
-                  handleStartMapComparison(id1, id2);
-                }}
-              />
+              <Suspense fallback={null}>
+                <TrackComparison 
+                  tracks={tracks}
+                  onClose={() => setComparisonOpen(false)}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  userAge={userAge}
+                  estimatedSpeed={estimatedSpeed}
+                  initialTrack1Id={markedTrackId}
+                  initialTrack2Id={compareTrackId}
+                  onCompareOnMap={(id1, id2) => {
+                    setComparisonOpen(false);
+                    handleStartMapComparison(id1, id2);
+                  }}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {intensiveAnalysisOpen && (markedTrack || tracks.find(t => t.visible) || tracks[0]) && (
-              <IntensiveTrackAnalysisModal
-                key={`intensive-analysis-modal-${(markedTrack || tracks.find(t => t.visible) || tracks[0]).id}`}
-                track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                allTracks={tracks}
-                onSelectTrack={(id) => setMarkedTrackId(id)}
-                initialTab={intensiveAnalysisTab}
-                onClose={() => setIntensiveAnalysisOpen(false)}
-                ftp={ftp}
-                userWeight={userWeight}
-                userAge={userAge}
-                userMaxHr={userMaxHr}
-                estimatedSpeed={estimatedSpeed}
-                textMarkers={textMarkers}
-                onAddTextMarker={handleAddTextMarker}
-                onSelectTrackPoint={(lat, lng) => {
-                  setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
-                }}
-                onSelection={(bounds) => {
-                  setSelectionBounds(bounds);
-                  if (bounds && is3D) {
-                    const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
-                    const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
-                    const maxDelta = Math.max(latDiff, lngDiff);
-                    const estimatedZoom = Math.min(18, Math.max(11, Math.floor(Math.log2(360 / maxDelta))));
-                    setMapView(prev => ({
-                      ...prev,
-                      lat: (bounds.minLat + bounds.maxLat) / 2,
-                      lng: (bounds.minLng + bounds.maxLng) / 2,
-                      zoom: estimatedZoom
-                    }));
-                  }
-                }}
-                onReverseTrack={handleReverseTrack}
-                onSanitizeTrack={handleSanitizeTrack}
-                onOpenGlossary={(metricId) => {
-                  setInitialGlossaryMetricId(metricId);
-                  setGlossaryOpen(true);
-                }}
-              />
+              <Suspense fallback={null}>
+                <IntensiveTrackAnalysisModal
+                  key={`intensive-analysis-modal-${(markedTrack || tracks.find(t => t.visible) || tracks[0]).id}`}
+                  track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                  allTracks={tracks}
+                  onSelectTrack={(id) => setMarkedTrackId(id)}
+                  initialTab={intensiveAnalysisTab}
+                  onClose={() => setIntensiveAnalysisOpen(false)}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  userAge={userAge}
+                  userMaxHr={userMaxHr}
+                  estimatedSpeed={estimatedSpeed}
+                  textMarkers={textMarkers}
+                  onAddTextMarker={handleAddTextMarker}
+                  onSelectTrackPoint={(lat, lng) => {
+                    setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
+                  }}
+                  onSelection={(bounds) => {
+                    setSelectionBounds(bounds);
+                    if (bounds && is3D) {
+                      const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
+                      const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
+                      const maxDelta = Math.max(latDiff, lngDiff);
+                      const estimatedZoom = Math.min(18, Math.max(11, Math.floor(Math.log2(360 / maxDelta))));
+                      setMapView(prev => ({
+                        ...prev,
+                        lat: (bounds.minLat + bounds.maxLat) / 2,
+                        lng: (bounds.minLng + bounds.maxLng) / 2,
+                        zoom: estimatedZoom
+                      }));
+                    }
+                  }}
+                  onReverseTrack={handleReverseTrack}
+                  onSanitizeTrack={handleSanitizeTrack}
+                  onOpenGlossary={(metricId) => {
+                    setInitialGlossaryMetricId(metricId);
+                    setGlossaryOpen(true);
+                  }}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {glossaryOpen && (
-              <SportMetricsGlossaryModal
-                onClose={() => {
-                  setGlossaryOpen(false);
-                  setInitialGlossaryMetricId(undefined);
-                }}
-                initialMetricId={initialGlossaryMetricId}
-                isDark={theme === 'dark'}
-              />
+              <Suspense fallback={null}>
+                <SportMetricsGlossaryModal
+                  onClose={() => {
+                    setGlossaryOpen(false);
+                    setInitialGlossaryMetricId(undefined);
+                  }}
+                  initialMetricId={initialGlossaryMetricId}
+                  isDark={theme === 'dark'}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {shortcutsModalOpen && (
-              <KeyboardShortcutsModal
-                isOpen={shortcutsModalOpen}
-                onClose={() => setShortcutsModalOpen(false)}
-              />
+              <Suspense fallback={null}>
+                <KeyboardShortcutsModal
+                  isOpen={shortcutsModalOpen}
+                  onClose={() => setShortcutsModalOpen(false)}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
 
@@ -3833,13 +3928,17 @@ const App: React.FC = () => {
           </button>
         )}
 
-        <VideoExportModal
-          track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}
-          isOpen={isExportModalOpen}
-          onClose={() => setIsExportModalOpen(false)}
-          userWeight={userWeight}
-          estimatedSpeed={estimatedSpeed}
-        />
+        {isExportModalOpen && (
+          <Suspense fallback={null}>
+            <VideoExportModal
+              track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}
+              isOpen={isExportModalOpen}
+              onClose={() => setIsExportModalOpen(false)}
+              userWeight={userWeight}
+              estimatedSpeed={estimatedSpeed}
+            />
+          </Suspense>
+        )}
           </main>
         </div>
       </div>
@@ -3878,41 +3977,45 @@ const App: React.FC = () => {
       {/* Global Settings & UI Style Customization Modal */}
       <AnimatePresence>
         {settingsModalOpen && (
-          <AppSettingsModal
-            isOpen={settingsModalOpen}
-            onClose={() => setSettingsModalOpen(false)}
-            initialTab={settingsInitialTab}
-            preferences={appPrefs}
-            onUpdatePreferences={updateAppPreferences}
-            onResetDefaults={handleResetAppPreferences}
-            ftp={ftp}
-            onUpdateFtp={setFtp}
-            userWeight={userWeight}
-            onUpdateWeight={setUserWeight}
-            userAge={userAge}
-            onUpdateAge={setUserAge}
-            userMaxHr={userMaxHr}
-            onUpdateMaxHr={handleMaxHrChange}
-            estimatedSpeed={estimatedSpeed}
-            onUpdateEstimatedSpeed={setEstimatedSpeed}
-            activeLayer={activeLayer}
-            onSelectMapLayer={setActiveLayer}
-            tracks={tracks}
-            isOnline={isOnline}
-            onGarminDataSynced={refreshCatalogTotalCount}
-            onLoadGarminTrack={(tr) => {
-              handleLoadLibraryTrack(tr);
-              if (hasRealGpsData(tr)) {
-                navigateWorkspace('map');
-              } else {
-                setIntensiveAnalysisTab('overview');
-                setIntensiveAnalysisOpen(true);
-              }
-            }}
-          />
+          <Suspense fallback={null}>
+            <AppSettingsModal
+              isOpen={settingsModalOpen}
+              onClose={() => setSettingsModalOpen(false)}
+              initialTab={settingsInitialTab}
+              preferences={appPrefs}
+              onUpdatePreferences={updateAppPreferences}
+              onResetDefaults={handleResetAppPreferences}
+              onImportSettings={handleImportSettings}
+              ftp={ftp}
+              onUpdateFtp={setFtp}
+              userWeight={userWeight}
+              onUpdateWeight={setUserWeight}
+              userAge={userAge}
+              onUpdateAge={setUserAge}
+              userMaxHr={userMaxHr}
+              onUpdateMaxHr={handleMaxHrChange}
+              estimatedSpeed={estimatedSpeed}
+              onUpdateEstimatedSpeed={setEstimatedSpeed}
+              activeLayer={activeLayer}
+              onSelectMapLayer={setActiveLayer}
+              tracks={tracks}
+              isOnline={isOnline}
+              onGarminDataSynced={refreshCatalogTotalCount}
+              onLoadGarminTrack={(tr) => {
+                handleLoadLibraryTrack(tr);
+                if (hasRealGpsData(tr)) {
+                  navigateWorkspace('map');
+                } else {
+                  setIntensiveAnalysisTab('overview');
+                  setIntensiveAnalysisOpen(true);
+                }
+              }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
-    </div>
+      </div>
+    </AppPreferencesProvider>
   );
 };
 

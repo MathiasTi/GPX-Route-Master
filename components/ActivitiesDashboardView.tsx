@@ -50,6 +50,19 @@ import {
 } from '../utils/garminClient';
 import { getSessionGarminKey } from '../utils/garminSessionKey';
 import { hasRealGpsData, isStopWatchType } from '../utils/gpxUtils';
+import { useAppPreferences } from '../utils/appSettings';
+import {
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+  formatPaceFromSecPerKm,
+  formatVam,
+  convertDistance,
+  convertElevation,
+  distanceUnit,
+  elevationUnit,
+  getLocale
+} from '../utils/units';
 import type {
   CatalogActivityItem,
   CatalogActivityCategory,
@@ -256,14 +269,21 @@ function formatPacePerKm(distanceKm: number, durationSec: number): string {
   return `${mins}:${String(secs).padStart(2, '0')} /km`;
 }
 
-function formatDeltaKm(current: number, prev: number): { text: string; positive: boolean; neutral: boolean } {
-  if (prev <= 0 && current <= 0) return { text: '±0 km', positive: true, neutral: true };
-  const diff = current - prev;
-  const pct = prev > 0 ? Math.round((diff / prev) * 100) : null;
+function formatDeltaKm(
+  current: number,
+  prev: number,
+  unitSystem: 'metric' | 'imperial' = 'metric'
+): { text: string; positive: boolean; neutral: boolean } {
+  const unit = distanceUnit(unitSystem);
+  const curConv = convertDistance(current, unitSystem);
+  const prevConv = convertDistance(prev, unitSystem);
+  if (prevConv <= 0 && curConv <= 0) return { text: `±0 ${unit}`, positive: true, neutral: true };
+  const diff = curConv - prevConv;
+  const pct = prevConv > 0 ? Math.round((diff / prevConv) * 100) : null;
   const sign = diff >= 0 ? '+' : '';
   const pctStr = pct !== null ? ` (${diff >= 0 ? '+' : ''}${pct}%)` : '';
   return {
-    text: `${sign}${diff.toFixed(1)} km${pctStr}`,
+    text: `${sign}${diff.toFixed(1)} ${unit}${pctStr}`,
     positive: diff >= 0,
     neutral: Math.abs(diff) < 0.05
   };
@@ -435,6 +455,10 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
   estimatedSpeed,
   onLoadTracksToMap
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
+  const locale = getLocale(lang);
   const [catalogItems, setCatalogItems] = useState<CatalogActivityItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -1345,7 +1369,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="activities-dashboard-kpis">
               {/* 1. Gefahrene Kilometer (Rad) */}
               {(() => {
-                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.cyclingKm, prevStats.cyclingKm) : null;
+                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.cyclingKm, prevStats.cyclingKm, unitSystem) : null;
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-blue-200/80 dark:border-blue-900/50 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">
@@ -1358,7 +1382,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             Gefahrene Kilometer (Rad)
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-blue-700 dark:text-blue-300">
-                            {periodStats.cyclingKm.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                            {formatDistance(periodStats.cyclingKm, unitSystem, lang, 1)}
                           </span>
                         </div>
                       </div>
@@ -1377,7 +1401,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
                       <span>{periodStats.cyclingCount} Ausfahrten</span>
                       <span>
-                        Ø {periodStats.cyclingCount > 0 ? (periodStats.cyclingKm / periodStats.cyclingCount).toFixed(1) : '0.0'} km/Tour
+                        Ø {periodStats.cyclingCount > 0 ? formatDistance(periodStats.cyclingKm / periodStats.cyclingCount, unitSystem, lang, 1) : formatDistance(0, unitSystem, lang, 1)}/Tour
                       </span>
                     </div>
                   </div>
@@ -1386,7 +1410,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
 
               {/* 2. Gesamt-Kilometer */}
               {(() => {
-                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.totalKm, prevStats.totalKm) : null;
+                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.totalKm, prevStats.totalKm, unitSystem) : null;
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">
@@ -1399,7 +1423,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             Gesamt-Kilometer
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-slate-900 dark:text-white">
-                            {periodStats.totalKm.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                            {formatDistance(periodStats.totalKm, unitSystem, lang, 1)}
                           </span>
                         </div>
                       </div>
@@ -1425,7 +1449,11 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
 
               {/* 3. Gelaufene Kilometer */}
               {(() => {
-                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.runningKm, prevStats.runningKm) : null;
+                const delta = granularity !== 'all' ? formatDeltaKm(periodStats.runningKm, prevStats.runningKm, unitSystem) : null;
+                const runPaceDisplay =
+                  periodStats.runningKm > 0 && periodStats.runningDurationSec > 0
+                    ? formatPaceFromSecPerKm(periodStats.runningDurationSec / periodStats.runningKm, unitSystem, true)
+                    : periodStats.runningPaceLabel;
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-orange-200/80 dark:border-orange-900/50 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">
@@ -1438,7 +1466,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             Gelaufene Kilometer
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-orange-700 dark:text-orange-300">
-                            {periodStats.runningKm.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+                            {formatDistance(periodStats.runningKm, unitSystem, lang, 1)}
                           </span>
                         </div>
                       </div>
@@ -1456,7 +1484,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
                       <span>{periodStats.runningCount} Läufe</span>
-                      <span>Ø Pace {periodStats.runningPaceLabel}</span>
+                      <span>Ø Pace {runPaceDisplay}</span>
                     </div>
                   </div>
                 );
@@ -1465,8 +1493,11 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
               {/* 4. Höhenmeter & Steigquote */}
               {(() => {
                 const ascDiff = periodStats.ascentM - prevStats.ascentM;
-                const hmPerKm = periodStats.totalKm > 0 ? (periodStats.ascentM / periodStats.totalKm).toFixed(1) : '0.0';
-                const vam = periodStats.vam;
+                const convTotalDist = convertDistance(periodStats.totalKm, unitSystem);
+                const convAsc = convertElevation(periodStats.ascentM, unitSystem);
+                const climbDensity = convTotalDist > 0 ? (convAsc / convTotalDist).toFixed(1) : '0.0';
+                const climbRatioUnit = `${elevationUnit(unitSystem, lang)}/${distanceUnit(unitSystem)}`;
+                const vamText = formatVam(periodStats.vam, unitSystem, lang);
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-emerald-200/80 dark:border-emerald-900/50 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">
@@ -1479,7 +1510,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             Höhenmeter (Anstieg)
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
-                            +{periodStats.ascentM.toLocaleString('de-DE')} hm
+                            {formatElevation(periodStats.ascentM, unitSystem, lang, true)}
                           </span>
                         </div>
                       </div>
@@ -1491,13 +1522,13 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                               : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
                           }`}
                         >
-                          {ascDiff >= 0 ? '+' : ''}{ascDiff.toLocaleString('de-DE')} hm
+                          {formatElevation(ascDiff, unitSystem, lang, true)}
                         </span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
-                      <span>-{periodStats.descentM.toLocaleString('de-DE')} hm Abstieg</span>
-                      <span>{hmPerKm} hm/km · {vam} VAM</span>
+                      <span>-{Math.round(convertElevation(periodStats.descentM, unitSystem)).toLocaleString(locale)} {elevationUnit(unitSystem, lang)} Abstieg</span>
+                      <span>{climbDensity} {climbRatioUnit} · {vamText}</span>
                     </div>
                   </div>
                 );
@@ -1545,10 +1576,14 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
 
               {/* 6. Tempo & Bestwert */}
               {(() => {
-                const fastestKmh =
+                const fastestKmhNum =
                   periodStats.fastestActivity && periodStats.fastestActivity.durationSec > 0
-                    ? (periodStats.fastestActivity.distanceKm / (periodStats.fastestActivity.durationSec / 3600)).toFixed(1)
+                    ? periodStats.fastestActivity.distanceKm / (periodStats.fastestActivity.durationSec / 3600)
                     : null;
+                const runPaceText =
+                  periodStats.runningKm > 0 && periodStats.runningDurationSec > 0
+                    ? formatPaceFromSecPerKm(periodStats.runningDurationSec / periodStats.runningKm, unitSystem, true)
+                    : periodStats.runningPaceLabel;
                 return (
                   <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2">
                     <div className="flex items-start justify-between gap-2">
@@ -1562,20 +1597,20 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                           </span>
                           <span className="text-xl font-black font-mono tabular-nums text-sky-700 dark:text-sky-300">
                             {periodStats.cyclingAvgSpeedKmh > 0
-                              ? `${periodStats.cyclingAvgSpeedKmh.toFixed(1)} km/h`
-                              : `${periodStats.avgSpeedKmh.toFixed(1)} km/h`}
+                              ? formatSpeed(periodStats.cyclingAvgSpeedKmh, unitSystem, 1)
+                              : formatSpeed(periodStats.avgSpeedKmh, unitSystem, 1)}
                           </span>
                         </div>
                       </div>
-                      {fastestKmh && (
+                      {fastestKmhNum !== null && (
                         <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300 font-mono">
-                          Peak {fastestKmh} km/h
+                          Peak {formatSpeed(fastestKmhNum, unitSystem, 1)}
                         </span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
-                      <span>Gesamt Ø: {periodStats.avgSpeedKmh.toFixed(1)} km/h</span>
-                      <span>Lauf Ø: {periodStats.runningPaceLabel}</span>
+                      <span>Gesamt Ø: {formatSpeed(periodStats.avgSpeedKmh, unitSystem, 1)}</span>
+                      <span>Lauf Ø: {runPaceText}</span>
                     </div>
                   </div>
                 );

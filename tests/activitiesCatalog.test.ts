@@ -30,8 +30,20 @@ import {
   sanitizeAppPreferences,
   saveAppPreferences,
   loadAppPreferences,
-  translateUiText
+  translateUiText,
+  parseImportedSettingsJson
 } from '../utils/appSettings';
+import {
+  getLocale,
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+  formatPaceFromSecPerKm,
+  formatPaceFromSpeed,
+  formatVam,
+  formatWeight,
+  formatTemp
+} from '../utils/units';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -703,6 +715,83 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
       translateUiText(translateUiText('Fitness & Gesundheit', 'en'), 'en') === 'Fitness & Health',
       'Expected translateUiText to be idempotent for English strings'
     );
+
+    // Sprint 1: Unit formatting & locale helpers
+    assert(getLocale('de') === 'de-DE', 'Expected de locale to be de-DE');
+    assert(getLocale('en') === 'en-US', 'Expected en locale to be en-US');
+    assert(formatDistance(10, 'metric', 'de', 1).endsWith('km'), 'Expected metric distance in km');
+    assert(formatDistance(10, 'imperial', 'en', 1) === '6.2 mi', 'Expected 10 km -> 6.2 mi in imperial');
+    assert(formatElevation(1000, 'metric', 'de', true).endsWith('hm'), 'Expected metric DE climb in hm');
+    assert(
+      formatElevation(1000, 'imperial', 'en', true).replace(/,/g, '') === '3281 ft',
+      'Expected 1000 m -> 3281 ft in imperial'
+    );
+    assert(formatSpeed(30, 'metric', 1).endsWith('km/h'), 'Expected metric speed in km/h');
+    assert(formatSpeed(100, 'imperial', 1).includes('62.1 mph'), 'Expected 100 km/h -> 62.1 mph');
+    assert(
+      formatPaceFromSecPerKm(299.9, 'metric', true) === '5:00 min/km',
+      'Expected 299.9 sec/km to roll over cleanly to 5:00 min/km without :60'
+    );
+    assert(
+      formatPaceFromSecPerKm(300, 'imperial', true) === '8:03 min/mi',
+      'Expected 5:00 min/km -> 8:03 min/mi'
+    );
+    assert(
+      formatPaceFromSpeed(12, 'metric', true) === '5:00 min/km',
+      'Expected 12 km/h -> 5:00 min/km'
+    );
+    assert(formatVam(1000, 'metric', 'de').includes('VAM'), 'Expected metric VAM suffix');
+    assert(formatVam(1000, 'imperial', 'en').includes('ft/h'), 'Expected imperial VAM in ft/h');
+    assert(formatWeight(75, 'metric', 1).includes('kg'), 'Expected metric weight in kg');
+    assert(formatWeight(75, 'imperial', 1).includes('165.3 lbs'), 'Expected 75 kg -> 165.3 lbs');
+    assert(formatTemp(20, 'metric').includes('20') && formatTemp(20, 'metric').includes('°C'), 'Expected metric temp in °C');
+    assert(formatTemp(20, 'imperial').includes('68') && formatTemp(20, 'imperial').includes('°F'), 'Expected 20 °C -> 68 °F');
+
+    // Sprint 1: Settings JSON import parser
+    const importedValid = parseImportedSettingsJson(
+      JSON.stringify({
+        preferences: {
+          language: 'en',
+          uiStyle: 'peloton-pro',
+          unitSystem: 'imperial',
+          bikeWeight: -10,
+          rhrBaseline: 48
+        },
+        athlete: {
+          ftp: 310,
+          userWeight: 72,
+          userAge: 34,
+          userMaxHr: 192,
+          estimatedSpeed: 28
+        }
+      })
+    );
+    assert(importedValid.preferences.language === 'en', 'Expected imported language en');
+    assert(importedValid.preferences.uiStyle === 'peloton-pro', 'Expected imported uiStyle peloton-pro');
+    assert(importedValid.preferences.unitSystem === 'imperial', 'Expected imported unitSystem imperial');
+    assert(
+      importedValid.preferences.bikeWeight === DEFAULT_APP_PREFERENCES.bikeWeight,
+      'Expected invalid negative bikeWeight in JSON import to fall back to default'
+    );
+    assert(importedValid.preferences.rhrBaseline === 48, 'Expected imported rhrBaseline 48');
+    assert(importedValid.athlete?.ftp === 310 && importedValid.athlete?.userWeight === 72, 'Expected athlete overrides imported');
+    assert(importedValid.athlete?.userMaxHr === 192 && importedValid.athlete?.estimatedSpeed === 28, 'Expected maxHR and speed imported');
+
+    let invalidJsonThrew = false;
+    try {
+      parseImportedSettingsJson('{invalid json');
+    } catch {
+      invalidJsonThrew = true;
+    }
+    assert(invalidJsonThrew, 'Expected parseImportedSettingsJson to throw on invalid JSON');
+
+    let arrayJsonThrew = false;
+    try {
+      parseImportedSettingsJson('[]');
+    } catch {
+      arrayJsonThrew = true;
+    }
+    assert(arrayJsonThrew, 'Expected parseImportedSettingsJson to throw on non-object JSON');
 
     // Clean up extra test rows
     db.prepare('DELETE FROM tracks WHERE user_id = ?').run(testUser);

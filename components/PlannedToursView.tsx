@@ -35,6 +35,8 @@ import {
 } from 'lucide-react';
 import { GPXTrack, SurfaceSegment } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
+import { useAppPreferences } from '../utils/appSettings';
+import { formatDistance, formatElevation } from '../utils/units';
 import {
   parseGPX,
   parseGPXStream,
@@ -412,6 +414,9 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
   onNavigateToMap,
   onLibraryCountChange
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
   const [tours, setTours] = useState<PlannedTourMeta[]>([]);
   const [hydratedTracks, setHydratedTracks] = useState<Record<string, GPXTrack>>({});
   const hydratedTracksRef = useRef<Record<string, GPXTrack>>({});
@@ -2049,14 +2054,14 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                 <Ruler className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span className="text-slate-500 dark:text-slate-400">Gesamtdistanz:</span>
                 <strong className="font-mono text-slate-900 dark:text-white">
-                  {summaryStats.totalDist.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                  {formatDistance(summaryStats.totalDist, unitSystem, lang, 1)}
                 </strong>
               </div>
               <div className="flex items-center gap-1.5">
                 <TrendingUp className="w-3.5 h-3.5 text-amber-500" />
                 <span className="text-slate-500 dark:text-slate-400">Anstieg gesamt:</span>
                 <strong className="font-mono text-slate-900 dark:text-white">
-                  +{Math.round(summaryStats.totalAscent).toLocaleString('de-DE')} hm
+                  {formatElevation(summaryStats.totalAscent, unitSystem, lang, true)}
                 </strong>
               </div>
               <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
@@ -2682,7 +2687,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                               <div className="rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800 px-1.5 py-2">
                                 <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Distanz</div>
                                 <div className="font-mono font-black text-xs text-slate-900 dark:text-white mt-0.5">
-                                  {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                                  {formatDistance(tour.distance, unitSystem, lang, 1)}
                                 </div>
                               </div>
                               <div className="rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100/70 dark:border-emerald-900/30 px-1.5 py-2">
@@ -2690,13 +2695,13 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                                   Anstieg
                                 </div>
                                 <div className="font-mono font-black text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                                  +{Math.round(tour.ascent)} m
+                                  {formatElevation(tour.ascent, unitSystem, lang, true)}
                                 </div>
                               </div>
                               <div className="rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100/70 dark:border-rose-900/30 px-1.5 py-2">
                                 <div className="text-[9px] font-bold uppercase tracking-wider text-rose-500">Abstieg</div>
                                 <div className="font-mono font-black text-xs text-rose-600 dark:text-rose-400 mt-0.5">
-                                  -{Math.round(tour.descent)} m
+                                  -{formatElevation(tour.descent, unitSystem, lang, false)}
                                 </div>
                               </div>
                               <div className="rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100/70 dark:border-indigo-900/30 px-1.5 py-2">
@@ -2974,13 +2979,13 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                                 </span>
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono font-bold">
-                                {tour.distance.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                                {formatDistance(tour.distance, unitSystem, lang, 1)}
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                                +{Math.round(tour.ascent)} m
+                                {formatElevation(tour.ascent, unitSystem, lang, true)}
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-500">
-                                -{Math.round(tour.descent)} m
+                                -{formatElevation(tour.descent, unitSystem, lang, false)}
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono font-semibold text-indigo-600 dark:text-indigo-400">
                                 {formatDurationCompact(estSeconds)}
@@ -3168,10 +3173,10 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                             {section.tours.length} {section.tours.length === 1 ? 'Tour' : 'Touren'}
                           </span>
                           <span>
-                            {section.totalDist.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km
+                            {formatDistance(section.totalDist, unitSystem, lang, 1)}
                           </span>
                           <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                            +{Math.round(section.totalAscent).toLocaleString('de-DE')} hm
+                            {formatElevation(section.totalAscent, unitSystem, lang, true)}
                           </span>
                         </div>
                       </div>

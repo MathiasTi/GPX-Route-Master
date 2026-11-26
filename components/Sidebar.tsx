@@ -18,6 +18,14 @@ import {
 } from '../utils/trackSurfaceColor';
 import { computePauseAwareRunningMetrics } from '../utils/runningMetricsEngine';
 import { triggerHaptic } from '../utils/haptics';
+import { useAppPreferences } from '../utils/appSettings';
+import {
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+  formatPaceFromSecPerKm,
+  formatPaceFromSpeed
+} from '../utils/units';
 import { TrackLibrary } from './TrackLibrary';
 import { WeatherOverlay } from './WeatherOverlay';
 import { SidebarSportsMetricsCard } from './SidebarSportsMetricsCard';
@@ -125,6 +133,9 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
   autoColorBySurface = true,
   onSelection
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
   const [localExpanded, setLocalExpanded] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const expanded = isExpanded !== undefined ? isExpanded : localExpanded;
@@ -491,12 +502,12 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
             title={expanded ? "Klicken zum Einklappen" : "Klicken zum Ausklappen der Details"}
           >
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              {track.distance.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km
+              {formatDistance(track.distance, unitSystem, lang, 1)}
             </span>
             {capabilities.hasRealElevation && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>+{Math.round(track.ascent)} m</span>
+                <span>{formatElevation(track.ascent, unitSystem, lang, true)}</span>
               </>
             )}
             <span aria-hidden="true">·</span>
@@ -511,12 +522,12 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
             <span>
               {track.duration && track.duration > 0 ? (
                 track.activityType === 'running'
-                  ? formatPace(track.duration, track.distance)
-                  : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+                  ? formatPaceFromSecPerKm(track.duration / Math.max(0.01, track.distance), unitSystem, true)
+                  : formatSpeed(track.distance / (track.duration / 3600), unitSystem, 1)
               ) : (
                 track.activityType === 'running'
-                  ? `~${getPaceString(estimatedSpeed)}`
-                  : `~${estimatedSpeed} km/h`
+                  ? `~${formatPaceFromSpeed(estimatedSpeed, unitSystem, true)}`
+                  : `~${formatSpeed(estimatedSpeed, unitSystem, 1)}`
               )}
             </span>
             {colorResolution.isSurfaceColored && colorResolution.primarySurface && (
@@ -773,14 +784,14 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                   <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
                     <span className="text-[8px] text-slate-400 dark:text-slate-500 font-sans font-semibold uppercase tracking-wider">Tempo</span>
                     <span className="font-extrabold text-slate-700 dark:text-slate-300 truncate max-w-full">
-                      {track.duration ? (
-                        track.activityType === 'running' 
-                          ? formatPace(track.duration, track.distance)
-                          : `${(track.distance / (track.duration / 3600)).toFixed(1)} km/h`
+                      {track.duration && track.distance > 0 ? (
+                        track.activityType === 'running'
+                          ? formatPaceFromSecPerKm(track.duration / track.distance, unitSystem, true)
+                          : formatSpeed(track.distance / (track.duration / 3600), unitSystem, 1)
                       ) : (
                         track.activityType === 'running'
-                          ? getPaceString(estimatedSpeed)
-                          : `${estimatedSpeed} km/h`
+                          ? formatPaceFromSpeed(estimatedSpeed, unitSystem, true)
+                          : formatSpeed(estimatedSpeed, unitSystem, 1)
                       )}
                     </span>
                   </div>
@@ -820,7 +831,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         Anstieg
                       </span>
                       <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
-                        +{Math.round(track.ascent).toLocaleString('de-DE')}m
+                        {formatElevation(track.ascent, unitSystem, lang, true)}
                       </span>
                     </div>
                     <div className="bg-rose-500/5 dark:bg-rose-950/20 border border-rose-100/50 dark:border-rose-900/30 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
@@ -828,7 +839,7 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         Abstieg
                       </span>
                       <span className="font-extrabold text-rose-700 dark:text-rose-400">
-                        -{Math.round(track.descent).toLocaleString('de-DE')}m
+                        -{formatElevation(track.descent, unitSystem, lang, false)}
                       </span>
                     </div>
                     <div className="bg-slate-50/60 dark:bg-slate-950/30 border border-slate-100/40 dark:border-slate-800/60 rounded-lg px-1.5 py-1 flex flex-col items-center justify-center">
@@ -956,10 +967,10 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                             }
                           }}
                           className="bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/40 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-colors cursor-pointer flex items-center gap-1"
-                          title={`Anstieg #${cIdx + 1} auf Karte anzoomen (${(climb.distance / 1000).toFixed(1)} km · +${Math.round(climb.ascent)}m)`}
+                          title={`Anstieg #${cIdx + 1} auf Karte anzoomen (${formatDistance(climb.distance / 1000, unitSystem, lang, 1)} · +${formatElevation(climb.ascent, unitSystem, lang, false)})`}
                         >
                           <span>🚩 Berg #{cIdx + 1}</span>
-                          <span className="text-[8px] text-amber-600 dark:text-amber-400 font-normal">+{Math.round(climb.ascent)}m</span>
+                          <span className="text-[8px] text-amber-600 dark:text-amber-400 font-normal">+{formatElevation(climb.ascent, unitSystem, lang, false)}</span>
                         </button>
                       ))}
                     </div>

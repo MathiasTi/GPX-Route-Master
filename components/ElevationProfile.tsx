@@ -22,6 +22,17 @@ import { computePauseAwareRunningMetrics, formatPaceSeconds } from '../utils/run
 import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 import { resolveBottomSheetSnap } from '../utils/mobileSheet';
+import { useAppPreferences } from '../utils/appSettings';
+import {
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+  formatPaceFromSpeed,
+  formatPaceFromSecPerKm,
+  convertElevation,
+  elevationUnit,
+  getLocale
+} from '../utils/units';
 
 const isFitTrack = (t?: GPXTrack | null): boolean => {
   if (!t) return false;
@@ -129,6 +140,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onMobileProfileSnapChange,
   onMobileSheetDragOffset
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sheetDragRef = useRef<{
@@ -2113,7 +2127,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                             <div 
                               key={idx} 
                               style={{ width: `${pct}%`, backgroundColor: getSurfColor(surface.type) }} 
-                              title={`${surface.type}: ${surface.distance.toFixed(1)} km (${pct.toFixed(0)}%)`} 
+                              title={`${surface.type}: ${formatDistance(surface.distance, unitSystem, lang, 1)} (${pct.toFixed(0)}%)`} 
                             />
                           );
                         })}
@@ -2132,15 +2146,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             ) : (
               <div className="flex items-center gap-2 text-[11px] font-bold font-mono tabular-nums whitespace-nowrap">
                 <span className="text-emerald-700 dark:text-emerald-400" title="Gesamtanstieg">
-                  ▲ {Math.round(track.ascent)} m
+                  ▲ {formatElevation(track.ascent, unitSystem, lang, false)}
                 </span>
                 <span className="text-slate-300 dark:text-slate-600">·</span>
                 <span className="text-rose-700 dark:text-rose-400" title="Gesamtabstieg">
-                  ▼ {Math.round(track.descent)} m
+                  ▼ {formatElevation(track.descent, unitSystem, lang, false)}
                 </span>
                 <span className="text-slate-300 dark:text-slate-600">·</span>
                 <span className="text-indigo-700 dark:text-indigo-300" title="Minimale bis maximale Höhe">
-                  {Math.round(minEle)}–{Math.round(maxEle)} m
+                  {Math.round(convertElevation(minEle, unitSystem))}–{Math.round(convertElevation(maxEle, unitSystem))} {elevationUnit(unitSystem, lang)}
                 </span>
                 <span className="text-slate-300 dark:text-slate-600">·</span>
                 <span className="text-amber-700 dark:text-amber-400" title="Maximale Steigung">
@@ -2187,9 +2201,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         {hoverInfo && isTouchScrubbing && (
           <div className="absolute top-1 left-2 right-2 z-30 bg-slate-900/95 dark:bg-slate-950/95 text-white px-3.5 py-1.5 rounded-xl shadow-xl border border-white/15 flex items-center justify-between text-[11px] font-mono pointer-events-none lg:backdrop-blur-md animate-in fade-in duration-150">
             <div className="flex items-center gap-2">
-              <span className="font-extrabold text-white">{hoverInfo.dist.toFixed(2)} km</span>
+              <span className="font-extrabold text-white">{formatDistance(hoverInfo.dist, unitSystem, lang, 2)}</span>
               <span className="text-slate-500">|</span>
-              <span className="font-bold text-indigo-300">{Math.round(hoverInfo.ele)} m</span>
+              <span className="font-bold text-indigo-300">{formatElevation(hoverInfo.ele, unitSystem, lang, false)}</span>
               <span className="text-slate-500">|</span>
               <span className={`font-black ${hoverInfo.slope > 0 ? 'text-emerald-400' : hoverInfo.slope < 0 ? 'text-rose-400' : 'text-slate-300'}`}>
                 {hoverInfo.slope > 0 ? '+' : ''}{hoverInfo.slope.toFixed(1)}%
@@ -2214,11 +2228,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {hoverInfo.speed !== undefined && hoverInfo.speed > 0 && (
                 <span 
                   className="text-teal-300 font-bold"
-                  title={isFitTrack(track) || capabilities.isRunning ? `Geschwindigkeit: ${hoverInfo.speed.toFixed(1)} km/h` : `Pace: ${formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km'}`}
+                  title={isFitTrack(track) || capabilities.isRunning ? `Geschwindigkeit: ${formatSpeed(hoverInfo.speed, unitSystem, 1)}` : `Pace: ${formatPaceFromSpeed(hoverInfo.speed, unitSystem, true)}`}
                 >
                   {isFitTrack(track) || capabilities.isRunning
-                    ? (formatPaceFromSpeedKmh(hoverInfo.speed) || '--:-- min/km')
-                    : `${hoverInfo.speed.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`}
+                    ? formatPaceFromSpeed(hoverInfo.speed, unitSystem, true)
+                    : formatSpeed(hoverInfo.speed, unitSystem, 1)}
                 </span>
               )}
             </div>
@@ -2739,20 +2753,21 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 const hasSpeed = hoverInfo.speed !== undefined && hoverInfo.speed > 0 && showSpeed;
                 const hasCadence = hoverInfo.cadence !== undefined && showCadence;
                 
+                const locale = getLocale(lang);
                 // Let's compute custom layout rows dynamically
                 const rows: { label: string; val: string; color: string }[] = [];
                 
                 // height is always shown
                 rows.push({
                   label: "Höhe:",
-                  val: `${hoverInfo.ele.toLocaleString('de-DE', { maximumFractionDigits: 0 })} m`,
+                  val: formatElevation(hoverInfo.ele, unitSystem, lang, false),
                   color: "fill-slate-400"
                 });
                 
                 if (hasPower) {
                   rows.push({
                     label: "Leistung:",
-                    val: `${hoverInfo.power!.toLocaleString('de-DE', { maximumFractionDigits: 0 })} W`,
+                    val: `${hoverInfo.power!.toLocaleString(locale, { maximumFractionDigits: 0 })} W`,
                     color: "fill-amber-400"
                   });
                 }
@@ -2760,7 +2775,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 if (hasHr) {
                   rows.push({
                     label: "HF (Herzfrequenz):",
-                    val: `${hoverInfo.hr!.toLocaleString('de-DE', { maximumFractionDigits: 0 })} bpm`,
+                    val: `${hoverInfo.hr!.toLocaleString(locale, { maximumFractionDigits: 0 })} bpm`,
                     color: "fill-rose-500"
                   });
                 }
@@ -2770,27 +2785,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   rows.push({
                     label: showPace ? "Pace:" : "Tempo:",
                     val: showPace
-                      ? (formatPaceFromSpeedKmh(hoverInfo.speed!) || '--:-- min/km')
-                      : `${hoverInfo.speed!.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km/h`,
+                      ? (formatPaceFromSpeed(hoverInfo.speed!, unitSystem, true) || '--:--')
+                      : formatSpeed(hoverInfo.speed!, unitSystem, 1),
                     color: "fill-teal-400"
                   });
                 }
                 
                 if (showGap && capabilities.hasGapData && hoverInfo.gapPaceFormatted) {
+                  const [gm, gs] = hoverInfo.gapPaceFormatted.split(':').map(Number);
+                  const gapFormatted =
+                    Number.isFinite(gm) && Number.isFinite(gs)
+                      ? formatPaceFromSecPerKm(gm * 60 + gs, unitSystem, true)
+                      : `${hoverInfo.gapPaceFormatted} min/km`;
                   rows.push({
                     label: "GAP (Pace):",
-                    val: `${hoverInfo.gapPaceFormatted} min/km`,
+                    val: gapFormatted,
                     color: "fill-emerald-400"
                   });
                 }
-
+                
                 if (hasCadence) {
                   const isRun = capabilities.isRunning;
                   const rawCad = hoverInfo.cadence!;
                   const displayCad = isRun && rawCad > 0 && rawCad < 110 ? rawCad * 2 : rawCad;
                   rows.push({
                     label: isRun ? "Schrittfrequenz:" : "Trittfrequenz:",
-                    val: `${displayCad.toLocaleString('de-DE', { maximumFractionDigits: 0 })} ${isRun ? 'spm' : 'rpm'}`,
+                    val: `${displayCad.toLocaleString(locale, { maximumFractionDigits: 0 })} ${isRun ? 'spm' : 'rpm'}`,
                     color: "fill-purple-400"
                   });
                 }

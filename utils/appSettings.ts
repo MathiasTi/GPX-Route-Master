@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import React, { createContext, useContext, useEffect } from 'react';
 import { safeGetItem, safeSetItem } from './storage';
 import { MapLayer } from '../types';
 
@@ -272,6 +272,77 @@ export function saveAppPreferences(partial: Partial<AppPreferences>): AppPrefere
   const merged = sanitizeAppPreferences({ ...current, ...partial });
   safeSetItem(APP_PREFERENCES_STORAGE_KEY, JSON.stringify(merged));
   return merged;
+}
+
+export interface ImportedSettingsPayload {
+  preferences: AppPreferences;
+  athlete?: {
+    ftp?: number;
+    userWeight?: number;
+    userAge?: number;
+    userMaxHr?: number;
+    estimatedSpeed?: number;
+  };
+}
+
+/**
+ * Parses and validates an exported GPX Route Master settings JSON string.
+ */
+export function parseImportedSettingsJson(rawText: string): ImportedSettingsPayload {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new Error('Ungültige JSON-Datei / Invalid JSON file');
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Ungültiges Einstellungsformat / Invalid settings structure');
+  }
+
+  const prefSource =
+    parsed.preferences && typeof parsed.preferences === 'object' ? parsed.preferences : parsed;
+  const preferences = sanitizeAppPreferences(prefSource);
+
+  const athleteRaw =
+    parsed.athlete && typeof parsed.athlete === 'object' ? parsed.athlete : null;
+  const athlete: ImportedSettingsPayload['athlete'] = {};
+
+  if (athleteRaw) {
+    const clampNum = (val: unknown, min: number, max: number, round: boolean) => {
+      const n = Number(val);
+      if (!Number.isFinite(n)) return undefined;
+      const clamped = Math.max(min, Math.min(max, n));
+      return round ? Math.round(clamped) : Number(clamped.toFixed(1));
+    };
+    const ftp = clampNum(athleteRaw.ftp, 50, 600, true);
+    const userWeight = clampNum(athleteRaw.userWeight, 30, 200, false);
+    const userAge = clampNum(athleteRaw.userAge, 10, 100, true);
+    const userMaxHr = clampNum(athleteRaw.userMaxHr, 100, 230, true);
+    const estimatedSpeed = clampNum(athleteRaw.estimatedSpeed, 5, 45, false);
+    if (ftp !== undefined) athlete.ftp = ftp;
+    if (userWeight !== undefined) athlete.userWeight = userWeight;
+    if (userAge !== undefined) athlete.userAge = userAge;
+    if (userMaxHr !== undefined) athlete.userMaxHr = userMaxHr;
+    if (estimatedSpeed !== undefined) athlete.estimatedSpeed = estimatedSpeed;
+  }
+
+  return {
+    preferences,
+    athlete: Object.keys(athlete).length > 0 ? athlete : undefined
+  };
+}
+
+const AppPreferencesContext = createContext<AppPreferences>(DEFAULT_APP_PREFERENCES);
+
+export const AppPreferencesProvider: React.FC<{
+  value: AppPreferences;
+  children: React.ReactNode;
+}> = ({ value, children }) =>
+  React.createElement(AppPreferencesContext.Provider, { value }, children);
+
+export function useAppPreferences(): AppPreferences {
+  return useContext(AppPreferencesContext);
 }
 
 export function resolveSystemDarkPreference(): boolean {
@@ -625,7 +696,59 @@ const DE_TO_EN_EXACT: Record<string, string> = {
   'Karte vergrößern': 'Zoom In',
   'Karte verkleinern': 'Zoom Out',
   'Fein': 'Fine',
-  'Mittel': 'Medium'
+  'Mittel': 'Medium',
+
+  // Expanded EN Coverage (Activities Dashboard, Archive, Planned Tours, Cockpit, Sidebar)
+  'Jahresvergleich': 'Year-over-Year',
+  'Aktivitäts-Verlauf': 'Activity History',
+  'Aktivitäts-Typ': 'Activity Type',
+  'Aktivitäten durchsuchen...': 'Search activities...',
+  'Touren durchsuchen...': 'Search tours...',
+  'Name oder Beschreibung...': 'Name or description...',
+  'Keine Aktivitäten gefunden': 'No activities found',
+  'Keine Touren gefunden': 'No tours found',
+  'Alle Sportarten (Gesamt)': 'All Sports (Total)',
+  'Nur Radfahren': 'Cycling Only',
+  'Nur Laufen': 'Running Only',
+  'Wandern & Sonstige': 'Hiking & Other',
+  'Radfahren (Gesamt)': 'Cycling (Total)',
+  'Laufen (Gesamt)': 'Running (Total)',
+  'Ø Puls': 'Avg HR',
+  'Ø Geschw.': 'Avg Speed',
+  'Ø Pace': 'Avg Pace',
+  'Steigquote': 'Climb Rate',
+  'Höhenprofil & Analyse': 'Elevation Profile & Analysis',
+  'Streckenliste': 'Track List',
+  'Werkzeuge & Analyse': 'Tools & Analysis',
+  'Datenquelle': 'Data Source',
+  'Gesamte Trainingszeit': 'Total Training Time',
+  'Trainingsstunden': 'Training Hours',
+  'Einheiten': 'Sessions',
+  'Anzahl': 'Count',
+  'Kalorienverbrauch': 'Calories Burned',
+  'Durchschnitt': 'Average',
+  'Maximum': 'Maximum',
+  'Minimum': 'Minimum',
+  'Tagesdurchschnitt': 'Daily Average',
+  'Wochenschnitt': 'Weekly Average',
+  'Monatsschnitt': 'Monthly Average',
+  'Alle laden': 'Load All',
+  'Auf Karte anzeigen': 'Show on Map',
+  'Auswahl löschen': 'Delete Selection',
+  'Bearbeiten': 'Edit',
+  'Details': 'Details',
+  'Metriken': 'Metrics',
+  'Zonenverteilung': 'Zone Distribution',
+  'Herzfrequenz-Zonen': 'Heart Rate Zones',
+  'Leistungszonen': 'Power Zones',
+  'Steigungsanalyse': 'Gradient Analysis',
+  'Anstiege': 'Climbs',
+  'Rohdaten': 'Raw Data',
+  'Wettervorhersage': 'Weather Forecast',
+  'Datenbank-Status': 'Database Status',
+  'Synchronisieren': 'Sync',
+  'Vorheriger Zeitraum': 'Previous Period',
+  'Nächster Zeitraum': 'Next Period'
 };
 
 const SORTED_PHRASE_ENTRIES = Object.entries(DE_TO_EN_EXACT).sort(

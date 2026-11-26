@@ -31,6 +31,14 @@ import {
 } from '../utils/garminClient';
 import { getSessionGarminKey } from '../utils/garminSessionKey';
 import { hasRealGpsData } from '../utils/gpxUtils';
+import { useAppPreferences, UnitSystem } from '../utils/appSettings';
+import {
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+  formatPaceFromSpeed,
+  getLocale
+} from '../utils/units';
 
 export type CatalogSource = 'library' | 'garmin';
 export type CatalogActivityCategory = 'cycling' | 'running' | 'hiking' | 'other';
@@ -182,22 +190,15 @@ function formatDurationCompact(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')} min`;
 }
 
-function formatTempoMetric(item: CatalogActivityItem): string {
+function formatTempoMetric(item: CatalogActivityItem, unitSystem: UnitSystem = 'metric'): string {
   if (!item.durationSec || item.durationSec <= 0 || !item.distanceKm || item.distanceKm <= 0) {
     return item.avgHr ? `${item.avgHr} bpm` : '—';
   }
   const speedKmh = item.distanceKm / (item.durationSec / 3600);
   if (item.activityCategory === 'running' || item.activityCategory === 'hiking') {
-    const paceMinPerKm = 60 / Math.max(0.5, speedKmh);
-    let mins = Math.floor(paceMinPerKm);
-    let secs = Math.round((paceMinPerKm - mins) * 60);
-    if (secs === 60) {
-      mins += 1;
-      secs = 0;
-    }
-    return `${mins}:${String(secs).padStart(2, '0')} /km`;
+    return formatPaceFromSpeed(speedKmh, unitSystem, true);
   }
-  return `${speedKmh.toFixed(1)} km/h`;
+  return formatSpeed(speedKmh, unitSystem, 1);
 }
 
 function formatSportLabel(category: CatalogActivityCategory, rawType?: string): string {
@@ -226,6 +227,10 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
   onOpenGarminSync,
   onBackToMap
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
+  const locale = getLocale(lang);
   // Search & filters (strictly Garmin-only)
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -1146,19 +1151,15 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
             <span className="font-mono tabular-nums font-semibold text-slate-800 dark:text-slate-200">
-              {totalCount.toLocaleString('de-DE')} von {databaseTotalCount.toLocaleString('de-DE')} Garmin-Aktivitäten
+              {totalCount.toLocaleString(locale)} von {databaseTotalCount.toLocaleString(locale)} Garmin-Aktivitäten
             </span>
             <span>·</span>
             <span className="font-mono tabular-nums">
-              {summaryStats.totalDistanceKm.toLocaleString('de-DE', {
-                minimumFractionDigits: 1,
-                maximumFractionDigits: 1
-              })}{' '}
-              km gesamt
+              {formatDistance(summaryStats.totalDistanceKm, unitSystem, lang, 1)} gesamt
             </span>
             <span>·</span>
             <span className="font-mono tabular-nums">
-              +{summaryStats.totalAscentM.toLocaleString('de-DE')} hm
+              {formatElevation(summaryStats.totalAscentM, unitSystem, lang, true)}
             </span>
             {isRefreshing && (
               <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 ml-1">
@@ -1583,7 +1584,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                     </div>
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 truncate pl-4">
                       <span className="md:hidden font-mono tabular-nums">
-                        {dt.date} · {item.distanceKm.toFixed(1)} km · +{item.ascentM} hm
+                        {dt.date} · {formatDistance(item.distanceKm, unitSystem, lang, 1)} · {formatElevation(item.ascentM, unitSystem, lang, true)}
                       </span>
                       {subDetails && (
                         <span className="hidden md:inline truncate" title={subDetails}>
@@ -1610,7 +1611,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
                   {/* Distance */}
                   <div className="hidden md:flex flex-col items-end justify-center font-mono tabular-nums text-xs font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                    <span>{item.distanceKm.toFixed(1)} km</span>
+                    <span>{formatDistance(item.distanceKm, unitSystem, lang, 1)}</span>
                     <div className="w-16 h-1 bg-slate-200/70 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
                       <div
                         className="h-full bg-indigo-500/80 rounded-full"
@@ -1621,7 +1622,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
                   {/* Ascent */}
                   <div className="hidden md:flex flex-col items-end justify-center font-mono tabular-nums text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                    <span>+{item.ascentM.toLocaleString('de-DE')} m</span>
+                    <span>{formatElevation(item.ascentM, unitSystem, lang, true)}</span>
                     <div className="w-16 h-1 bg-slate-200/70 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
                       <div
                         className="h-full bg-emerald-500/80 rounded-full"
@@ -1637,7 +1638,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
                   {/* Pace / Speed / HR */}
                   <div className="hidden md:block text-right font-mono tabular-nums text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
-                    {formatTempoMetric(item)}
+                    {formatTempoMetric(item, unitSystem)}
                   </div>
 
                   {/* Row Actions */}

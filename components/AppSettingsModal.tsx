@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import {
   X,
@@ -12,6 +12,7 @@ import {
   Check,
   RotateCcw,
   Download,
+  Upload,
   Heart,
   Zap,
   Sparkles,
@@ -49,8 +50,11 @@ import {
   DefaultWorkspaceView,
   UI_STYLE_PRESETS,
   DEFAULT_APP_PREFERENCES,
+  ImportedSettingsPayload,
+  parseImportedSettingsJson,
   tr
 } from '../utils/appSettings';
+import { formatWeight, formatSpeed } from '../utils/units';
 
 export type AppSettingsTab = 'style' | 'language' | 'athlete' | 'garmin' | 'workspace' | 'storage';
 
@@ -77,6 +81,7 @@ export interface AppSettingsModalProps {
   isOnline?: boolean;
   onGarminDataSynced?: () => void;
   onLoadGarminTrack?: (track: GPXTrack) => void;
+  onImportSettings?: (payload: ImportedSettingsPayload) => void;
 }
 
 export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
@@ -101,7 +106,8 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   tracks = [],
   isOnline = true,
   onGarminDataSynced,
-  onLoadGarminTrack
+  onLoadGarminTrack,
+  onImportSettings
 }) => {
   const [activeTab, setActiveTab] = useState<AppSettingsTab>(initialTab);
   const [storageSnapshot, setStorageSnapshot] = useState<OfflineStatusSnapshot | null>(null);
@@ -152,11 +158,15 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
     setIsStorageLoading(false);
   };
 
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
       setTilePurgeMessage(null);
       setSurfaceCacheMessage(null);
+      setImportError(null);
     }
   }, [isOpen, initialTab]);
 
@@ -171,7 +181,26 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   const tanakaMaxHr = Math.max(1, Math.round(208 - 0.7 * userAge));
   const classicMaxHr = Math.max(1, Math.round(220 - userAge));
   const wattsPerKg = (ftp / Math.max(0.1, userWeight)).toFixed(2);
-  const systemWeight = (userWeight + preferences.bikeWeight).toFixed(1);
+  const systemWeightNum = userWeight + preferences.bikeWeight;
+  const systemWeight = systemWeightNum.toFixed(1);
+
+  const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImportError(null);
+    try {
+      const text = await file.text();
+      const payload = parseImportedSettingsJson(text);
+      if (onImportSettings) {
+        onImportSettings(payload);
+      } else {
+        onUpdatePreferences(payload.preferences);
+      }
+    } catch (err: any) {
+      setImportError(err?.message || t('Fehler beim Importieren der JSON-Datei.', 'Failed to import settings JSON file.'));
+    }
+  };
 
   const handleApplyTileCacheLimits = async (nextMb: number, nextCount: number) => {
     setIsPruningTiles(true);
@@ -717,7 +746,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                       {t('Relativleistung & Systemgewicht', 'Power-to-Weight & Total System Mass')}
                     </span>
                     <span className="text-sm font-black font-mono text-slate-900 dark:text-slate-100">
-                      {wattsPerKg} W/kg · {systemWeight} kg {t('Gesamtmasse', 'total')}
+                      {wattsPerKg} W/kg · {systemWeight} kg {preferences.unitSystem === 'imperial' ? `(${formatWeight(systemWeightNum, 'imperial', 1)})` : ''} {t('Gesamtmasse', 'total')}
                     </span>
                   </div>
                 </div>
@@ -812,6 +841,11 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                 <label className="space-y-1.5 block sm:col-span-2 lg:col-span-3">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {t('Standard-Planungstempo (km/h)', 'Default Touring Speed (km/h)')}
+                    {preferences.unitSystem === 'imperial' && (
+                      <span className="ml-1.5 text-indigo-600 dark:text-indigo-400 font-mono">
+                        ({formatSpeed(estimatedSpeed, 'imperial')})
+                      </span>
+                    )}
                   </span>
                   <FreeMetricInput
                     value={estimatedSpeed}
@@ -1515,7 +1549,14 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
 
         {/* Footer */}
         <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/95 flex flex-wrap items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleImportJsonFile}
+            className="hidden"
+          />
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -1540,6 +1581,19 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
               <Download size={13} />
               <span>{t('Export JSON', 'Export JSON')}</span>
             </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            >
+              <Upload size={13} />
+              <span>{t('Import JSON', 'Import JSON')}</span>
+            </button>
+            {importError && (
+              <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                {importError}
+              </span>
+            )}
           </div>
 
           <button

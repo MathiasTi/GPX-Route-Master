@@ -86,6 +86,7 @@ import { resolveUrlImport, UrlImportError } from "./utils/urlGpxImporter.js";
 import {
   createRateLimiter,
   resolveAllowedCorsOrigin,
+  resolveFrameAncestorsHeader,
   isCsrfSafeRequest,
   getClientIp,
   sanitizeHexColor,
@@ -150,8 +151,6 @@ async function startServer() {
     return "http";
   };
 
-  const rawFrameAncestors = (process.env.FRAME_ANCESTORS || "'self'").replace(/[\r\n;]/g, "").trim();
-  const safeFrameAncestors = rawFrameAncestors || "'self'";
   const PORT = Number(
     process.env.NGINX_PORT
       ? (process.env.DEFAULT_APP_PORT || 3000)
@@ -182,15 +181,22 @@ async function startServer() {
   app.use((req, res, next) => {
     const requestProto = getTrustedRequestProto(req);
     const isSecure = requestProto === "https";
+    const reqHostHeader = getTrustedRequestHost(req);
+    const { frameAncestors, includeXFrameOptionsSameOrigin } = resolveFrameAncestorsHeader({
+      frameAncestorsEnv: process.env.FRAME_ANCESTORS,
+      requestHost: reqHostHeader,
+      appUrlEnv: process.env.APP_URL,
+      isAiStudioNginx: Boolean(process.env.NGINX_PORT)
+    });
 
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
     res.setHeader(
       "Content-Security-Policy",
-      `base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors ${safeFrameAncestors}`
+      `base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors ${frameAncestors}`
     );
-    if (safeFrameAncestors === "'self'") {
+    if (includeXFrameOptionsSameOrigin) {
       res.setHeader("X-Frame-Options", "SAMEORIGIN");
     }
     if (isSecure) {
@@ -198,7 +204,6 @@ async function startServer() {
     }
 
     const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
-    const reqHostHeader = getTrustedRequestHost(req);
     const allowedOrigin = resolveAllowedCorsOrigin(
       origin,
       reqHostHeader,

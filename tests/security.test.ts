@@ -17,6 +17,7 @@ import {
 import {
   createRateLimiter,
   resolveAllowedCorsOrigin,
+  resolveFrameAncestorsHeader,
   isCsrfSafeRequest,
   sanitizeHexColor,
   getSafeApiErrorMessage,
@@ -722,6 +723,35 @@ export function runSecurityTests(): boolean {
     assert(mapSrc.includes('escapeHtml(sanitizePlainText(marker.label'), 'Map.tsx sanitizes and HTML-escapes TextMarker labels before L.DivIcon rendering');
     assert(appSrc.includes('sanitizeTextMarkers(JSON.parse(') && appSrc.includes('preCheckGpxUploadContent'), 'App.tsx sanitizes stored TextMarkers and runs GPX upload pre-check');
     assert(serverSrc.includes('"velo_text_markers"') && serverSrc.includes('sanitizeTextMarkers'), 'server.ts sanitizes velo_text_markers settings on persistence and retrieval');
+  });
+
+  // 23. Frame-Ancestors Policy: Allows AI Studio Preview Iframe While Keeping Self-Hosted SAMEORIGIN
+  test('Frame Ancestors: Allows Google AI Studio preview embedding without exposing self-hosted deployments', () => {
+    const selfHosted = resolveFrameAncestorsHeader({
+      requestHost: 'gpx.example.com',
+      isAiStudioNginx: false
+    });
+    assert(selfHosted.frameAncestors === "'self'", 'Self-hosted deployment must default to frame-ancestors self');
+    assert(selfHosted.includeXFrameOptionsSameOrigin === true, 'Self-hosted deployment must emit X-Frame-Options SAMEORIGIN');
+
+    const aiStudioDev = resolveFrameAncestorsHeader({
+      requestHost: 'ais-dev-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app',
+      isAiStudioNginx: false
+    });
+    assert(
+      aiStudioDev.frameAncestors.includes('https://aistudio.google.com') &&
+        aiStudioDev.frameAncestors.includes('https://ai.studio'),
+      'AI Studio dev preview host must allow Google AI Studio iframe ancestors'
+    );
+    assert(aiStudioDev.includeXFrameOptionsSameOrigin === false, 'AI Studio preview must omit X-Frame-Options SAMEORIGIN so Firefox can render the iframe');
+
+    const explicitOverride = resolveFrameAncestorsHeader({
+      frameAncestorsEnv: "'none'; script-src *",
+      requestHost: 'ais-dev-j64utg4foiwsokqspyv354-50605485163.europe-west2.run.app',
+      isAiStudioNginx: true
+    });
+    assert(explicitOverride.frameAncestors === "'none' script-src *", 'Explicit FRAME_ANCESTORS override must strip semicolons and take precedence');
+    assert(explicitOverride.includeXFrameOptionsSameOrigin === false, 'Explicit non-self override omits X-Frame-Options SAMEORIGIN');
   });
 
   console.log(`\n🔒 Security Test Results: ${passed} passed, ${failed} failed.\n`);

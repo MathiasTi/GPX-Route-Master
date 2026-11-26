@@ -277,3 +277,59 @@ export function sanitizeGarminActivityId(rawId: unknown): string | null {
   }
   return cleaned;
 }
+
+const AI_STUDIO_PREVIEW_HOST_REGEX =
+  /(?:^|\.)ais-(?:dev|pre)-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app(?::\d+)?$/i;
+const AI_STUDIO_FRAME_ANCESTORS =
+  "'self' https://aistudio.google.com https://ai.studio https://*.ai.studio https://*.google.com https://*.usercontent.goog https://*.googleusercontent.com https://*.gstatic.com";
+
+/**
+ * Resolves the Content-Security-Policy `frame-ancestors` directive and whether to emit
+ * `X-Frame-Options: SAMEORIGIN`.
+ * - Honors an explicit `FRAME_ANCESTORS` env var when configured.
+ * - Automatically allows Google AI Studio iframe ancestors on AI Studio preview/shared hosts
+ *   so Firefox/Chrome do not block the embedded preview while keeping clickjacking protection.
+ * - Defaults strictly to `'self'` + `X-Frame-Options: SAMEORIGIN` for self-hosted deployments.
+ */
+export function resolveFrameAncestorsHeader(params: {
+  frameAncestorsEnv?: string;
+  requestHost?: string;
+  appUrlEnv?: string;
+  isAiStudioNginx?: boolean;
+}): { frameAncestors: string; includeXFrameOptionsSameOrigin: boolean } {
+  const custom = (params.frameAncestorsEnv || '').replace(/[\r\n;]/g, '').trim();
+  if (custom) {
+    return {
+      frameAncestors: custom,
+      includeXFrameOptionsSameOrigin: custom === "'self'"
+    };
+  }
+
+  const reqHost = String(params.requestHost || '').split(',')[0].trim().toLowerCase();
+  let appUrlHost = '';
+  if (params.appUrlEnv) {
+    try {
+      appUrlHost = new URL(params.appUrlEnv).host.toLowerCase();
+    } catch {
+      appUrlHost = '';
+    }
+  }
+
+  const isAiStudioPreview =
+    Boolean(params.isAiStudioNginx) ||
+    AI_STUDIO_PREVIEW_HOST_REGEX.test(reqHost) ||
+    AI_STUDIO_PREVIEW_HOST_REGEX.test(appUrlHost);
+
+  if (isAiStudioPreview) {
+    return {
+      frameAncestors: AI_STUDIO_FRAME_ANCESTORS,
+      includeXFrameOptionsSameOrigin: false
+    };
+  }
+
+  return {
+    frameAncestors: "'self'",
+    includeXFrameOptionsSameOrigin: true
+  };
+}
+

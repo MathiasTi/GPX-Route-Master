@@ -1412,10 +1412,29 @@ const App: React.FC = () => {
 
           const arrayBuffer = await file.arrayBuffer();
           const zipUint8 = new Uint8Array(arrayBuffer);
-          const unzipped = unzipSync(zipUint8);
+          let declaredEntries = 0;
+          let declaredUncompressedSize = 0;
+          const MAX_ZIP_ENTRIES = 250;
+          const MAX_UNCOMPRESSED_TOTAL = 100 * 1024 * 1024; // 100 MB max uncompressed
+          const unzipped = unzipSync(zipUint8, {
+            filter(entry) {
+              declaredEntries++;
+              if (declaredEntries > MAX_ZIP_ENTRIES) {
+                throw new Error(`ZIP-Archiv enthält zu viele Einträge (max. ${MAX_ZIP_ENTRIES} erlaubt).`);
+              }
+              const entryPath = entry.name || '';
+              if (entryPath.includes('..') || entryPath.split('/').some((part) => part === '..')) {
+                return false;
+              }
+              declaredUncompressedSize += entry.originalSize || 0;
+              if (declaredUncompressedSize > MAX_UNCOMPRESSED_TOTAL) {
+                throw new Error("Decompressions-Limit überschritten (Zip-Bomb-Schutz). Max. unkomprimierte Gesamtgröße ist 100 MB.");
+              }
+              return true;
+            }
+          });
           
           let totalUncompressedSize = 0;
-          const MAX_UNCOMPRESSED_TOTAL = 100 * 1024 * 1024; // 100 MB max uncompressed
 
           const entries = Object.entries(unzipped);
           const totalEntries = entries.length;
@@ -2908,7 +2927,11 @@ const App: React.FC = () => {
   }
 
   if (!isUnlocked) {
-    return <PasswordGate onUnlocked={handleUnlocked} setupRequired={authSetupRequired} />;
+    return (
+      <AppPreferencesProvider value={appPrefs}>
+        <PasswordGate onUnlocked={handleUnlocked} setupRequired={authSetupRequired} />
+      </AppPreferencesProvider>
+    );
   }
 
   return (
@@ -3290,100 +3313,120 @@ const App: React.FC = () => {
         {/* Full-Screen Planned Tours (Komoot-Style Library) */}
         {activeWorkspaceView === 'planned' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
-              <PlannedToursView
-                workspaceTracks={tracks}
-                ftp={ftp}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
-                onOpenToursBatch={(batchTracks, replaceWorkspace) => {
-                  if (replaceWorkspace) {
-                    replaceWorkspaceWithTracks(batchTracks, true);
-                  } else {
-                    handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
-                  }
-                }}
-                onAddTourToWorkspace={handleLoadLibraryTrack}
-                onRemoveTourFromWorkspace={removeTrack}
-                onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
-                onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
-                onNavigateToMap={() => navigateWorkspace('map')}
-                onLibraryCountChange={setPlannedToursCount}
-              />
-            </Suspense>
+            <ErrorBoundary
+              fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+              fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+            >
+              <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+                <PlannedToursView
+                  workspaceTracks={tracks}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  estimatedSpeed={estimatedSpeed}
+                  onOpenTourSolo={(tr) => replaceWorkspaceWithTracks([tr], true)}
+                  onOpenToursBatch={(batchTracks, replaceWorkspace) => {
+                    if (replaceWorkspace) {
+                      replaceWorkspaceWithTracks(batchTracks, true);
+                    } else {
+                      handleLoadCatalogTracksToMap(batchTracks, { jumpToMap: true, fitToTracks: true });
+                    }
+                  }}
+                  onAddTourToWorkspace={handleLoadLibraryTrack}
+                  onRemoveTourFromWorkspace={removeTrack}
+                  onSyncRefreshedTracksToWorkspace={handleSyncRefreshedTracksToWorkspace}
+                  onCompareTwoToursOnMap={handleCompareTwoToursOnMap}
+                  onNavigateToMap={() => navigateWorkspace('map')}
+                  onLibraryCountChange={setPlannedToursCount}
+                />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         )}
 
         {/* Full-Screen Activities Manager Workspace */}
         {activeWorkspaceView === 'activities' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
-              <ActivitiesManagerView
-                workspaceTracks={tracks}
-                ftp={ftp}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                onLoadTracksToMap={handleLoadCatalogTracksToMap}
-                onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
-                onDatabaseCountChange={setCatalogTotalCount}
-                onOpenDashboard={() => navigateWorkspace('dashboard')}
-                onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-                onOpenGarminSync={() => openSettingsModal('garmin')}
-                onBackToMap={() => navigateWorkspace('map')}
-              />
-            </Suspense>
+            <ErrorBoundary
+              fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+              fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+            >
+              <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+                <ActivitiesManagerView
+                  workspaceTracks={tracks}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  estimatedSpeed={estimatedSpeed}
+                  onLoadTracksToMap={handleLoadCatalogTracksToMap}
+                  onActivityMetadataUpdated={handleCatalogActivityMetadataUpdated}
+                  onDatabaseCountChange={setCatalogTotalCount}
+                  onOpenDashboard={() => navigateWorkspace('dashboard')}
+                  onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+                  onOpenGarminSync={() => openSettingsModal('garmin')}
+                  onBackToMap={() => navigateWorkspace('map')}
+                />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         )}
 
         {/* Full-Screen Activities Dashboard Workspace */}
         {activeWorkspaceView === 'dashboard' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
-              <ActivitiesDashboardView
-                workspaceTracks={tracks}
-                ftp={ftp}
-                userWeight={userWeight}
-                estimatedSpeed={estimatedSpeed}
-                onLoadTracksToMap={handleLoadCatalogTracksToMap}
-                onOpenActivitiesArchive={() => navigateWorkspace('activities')}
-                onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
-                onOpenGarminSync={() => openSettingsModal('garmin')}
-                onBackToMap={() => navigateWorkspace('map')}
-              />
-            </Suspense>
+            <ErrorBoundary
+              fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+              fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+            >
+              <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+                <ActivitiesDashboardView
+                  workspaceTracks={tracks}
+                  ftp={ftp}
+                  userWeight={userWeight}
+                  estimatedSpeed={estimatedSpeed}
+                  onLoadTracksToMap={handleLoadCatalogTracksToMap}
+                  onOpenActivitiesArchive={() => navigateWorkspace('activities')}
+                  onOpenUploadPicker={() => topbarUploadInputRef.current?.click()}
+                  onOpenGarminSync={() => openSettingsModal('garmin')}
+                  onBackToMap={() => navigateWorkspace('map')}
+                />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         )}
 
         {/* Full-Screen Fitness & Health Workspace */}
         {activeWorkspaceView === 'fitness' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden pb-[calc(60px+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
-              <GarminDashboard
-                variant="page"
-                initialTab={fitnessPageInitialTab}
-                onTabChange={handleFitnessTabChange}
-                onClose={() => navigateWorkspace('map')}
-                onLoadTrack={(tr) => {
-                  handleLoadLibraryTrack(tr);
-                  if (hasRealGpsData(tr)) {
-                    navigateWorkspace('map');
-                  } else {
-                    setIntensiveAnalysisTab('overview');
-                    setIntensiveAnalysisOpen(true);
-                  }
-                }}
-                onDataSynced={refreshCatalogTotalCount}
-                userWeight={userWeight}
-                userAge={userAge}
-                userMaxHr={userMaxHr}
-                ftp={ftp}
-                onUpdateFtp={setFtp}
-                onUpdateWeight={setUserWeight}
-                onUpdateAge={setUserAge}
-                onUpdateMaxHr={handleMaxHrChange}
-              />
-            </Suspense>
+            <ErrorBoundary
+              fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+              fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+            >
+              <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, 'Ansicht wird geladen…', 'Loading view…')} />}>
+                <GarminDashboard
+                  variant="page"
+                  initialTab={fitnessPageInitialTab}
+                  onTabChange={handleFitnessTabChange}
+                  onClose={() => navigateWorkspace('map')}
+                  onLoadTrack={(tr) => {
+                    handleLoadLibraryTrack(tr);
+                    if (hasRealGpsData(tr)) {
+                      navigateWorkspace('map');
+                    } else {
+                      setIntensiveAnalysisTab('overview');
+                      setIntensiveAnalysisOpen(true);
+                    }
+                  }}
+                  onDataSynced={refreshCatalogTotalCount}
+                  userWeight={userWeight}
+                  userAge={userAge}
+                  userMaxHr={userMaxHr}
+                  ftp={ftp}
+                  onUpdateFtp={setFtp}
+                  onUpdateWeight={setUserWeight}
+                  onUpdateAge={setUserAge}
+                  onUpdateMaxHr={handleMaxHrChange}
+                />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         )}
 
@@ -3662,43 +3705,53 @@ const App: React.FC = () => {
 
           <AnimatePresence>
             {timeGapModalOpen && (
-              <Suspense fallback={null}>
-                <TimeGapAnalysisModal
-                  isOpen={timeGapModalOpen}
-                  tracks={tracks}
-                  selectedTrackId={timeGapTrackId}
-                  onClose={() => setTimeGapModalOpen(false)}
-                  onSplitTrack={handleSplitTrack}
-                  onCloseGap={handleCloseGap}
-                  onBatchSplit={handleBatchSplit}
-                  onBatchCloseGaps={handleBatchCloseGaps}
-                  onFocusGapOnMap={handleFocusGapOnMap}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <TimeGapAnalysisModal
+                    isOpen={timeGapModalOpen}
+                    tracks={tracks}
+                    selectedTrackId={timeGapTrackId}
+                    onClose={() => setTimeGapModalOpen(false)}
+                    onSplitTrack={handleSplitTrack}
+                    onCloseGap={handleCloseGap}
+                    onBatchSplit={handleBatchSplit}
+                    onBatchCloseGaps={handleBatchCloseGaps}
+                    onFocusGapOnMap={handleFocusGapOnMap}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {validationModalOpen && pendingValidationTracks.length > 0 && (
-              <Suspense fallback={null}>
-                <TrackValidationModal
-                  isOpen={validationModalOpen}
-                  pendingTracks={pendingValidationTracks}
-                  onClose={() => {
-                    setValidationModalOpen(false);
-                    setPendingValidationTracks([]);
-                  }}
-                  onConfirmTracks={handleConfirmValidationTracks}
-                  onCancel={() => {
-                    setValidationModalOpen(false);
-                    setPendingValidationTracks([]);
-                  }}
-                  isPreCheck={isValidationPreCheck}
-                  ftp={ftp}
-                  userWeight={userWeight}
-                  estimatedSpeed={estimatedSpeed}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <TrackValidationModal
+                    isOpen={validationModalOpen}
+                    pendingTracks={pendingValidationTracks}
+                    onClose={() => {
+                      setValidationModalOpen(false);
+                      setPendingValidationTracks([]);
+                    }}
+                    onConfirmTracks={handleConfirmValidationTracks}
+                    onCancel={() => {
+                      setValidationModalOpen(false);
+                      setPendingValidationTracks([]);
+                    }}
+                    isPreCheck={isValidationPreCheck}
+                    ftp={ftp}
+                    userWeight={userWeight}
+                    estimatedSpeed={estimatedSpeed}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
@@ -3729,18 +3782,23 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   <div className="p-4 overflow-y-auto max-h-[calc(90vh-70px)]">
-                    <Suspense fallback={null}>
-                      <WeatherOverlay
-                        track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                        allTracks={tracks}
-                        onSelectTrack={(id) => setMarkedTrackId(id)}
-                        selectedDate={selectedDate}
-                        setSelectedDate={setSelectedDate}
-                        selectedTime={selectedTime}
-                        setSelectedTime={setSelectedTime}
-                        onClose={() => setWeatherOpen(false)}
-                      />
-                    </Suspense>
+                    <ErrorBoundary
+                      fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                      fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+                    >
+                      <Suspense fallback={null}>
+                        <WeatherOverlay
+                          track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                          allTracks={tracks}
+                          onSelectTrack={(id) => setMarkedTrackId(id)}
+                          selectedDate={selectedDate}
+                          setSelectedDate={setSelectedDate}
+                          selectedTime={selectedTime}
+                          setSelectedTime={setSelectedTime}
+                          onClose={() => setWeatherOpen(false)}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
                   </div>
                 </motion.div>
               </div>
@@ -3749,94 +3807,114 @@ const App: React.FC = () => {
 
           <AnimatePresence>
             {comparisonOpen && (
-              <Suspense fallback={null}>
-                <TrackComparison 
-                  tracks={tracks}
-                  onClose={() => setComparisonOpen(false)}
-                  ftp={ftp}
-                  userWeight={userWeight}
-                  userAge={userAge}
-                  estimatedSpeed={estimatedSpeed}
-                  initialTrack1Id={markedTrackId}
-                  initialTrack2Id={compareTrackId}
-                  onCompareOnMap={(id1, id2) => {
-                    setComparisonOpen(false);
-                    handleStartMapComparison(id1, id2);
-                  }}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <TrackComparison 
+                    tracks={tracks}
+                    onClose={() => setComparisonOpen(false)}
+                    ftp={ftp}
+                    userWeight={userWeight}
+                    userAge={userAge}
+                    estimatedSpeed={estimatedSpeed}
+                    initialTrack1Id={markedTrackId}
+                    initialTrack2Id={compareTrackId}
+                    onCompareOnMap={(id1, id2) => {
+                      setComparisonOpen(false);
+                      handleStartMapComparison(id1, id2);
+                    }}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {intensiveAnalysisOpen && (markedTrack || tracks.find(t => t.visible) || tracks[0]) && (
-              <Suspense fallback={null}>
-                <IntensiveTrackAnalysisModal
-                  key={`intensive-analysis-modal-${(markedTrack || tracks.find(t => t.visible) || tracks[0]).id}`}
-                  track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                  allTracks={tracks}
-                  onSelectTrack={(id) => setMarkedTrackId(id)}
-                  initialTab={intensiveAnalysisTab}
-                  onClose={() => setIntensiveAnalysisOpen(false)}
-                  ftp={ftp}
-                  userWeight={userWeight}
-                  userAge={userAge}
-                  userMaxHr={userMaxHr}
-                  estimatedSpeed={estimatedSpeed}
-                  textMarkers={textMarkers}
-                  onAddTextMarker={handleAddTextMarker}
-                  onSelectTrackPoint={(lat, lng) => {
-                    setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
-                  }}
-                  onSelection={(bounds) => {
-                    setSelectionBounds(bounds);
-                    if (bounds && is3D) {
-                      const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
-                      const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
-                      const maxDelta = Math.max(latDiff, lngDiff);
-                      const estimatedZoom = Math.min(18, Math.max(11, Math.floor(Math.log2(360 / maxDelta))));
-                      setMapView(prev => ({
-                        ...prev,
-                        lat: (bounds.minLat + bounds.maxLat) / 2,
-                        lng: (bounds.minLng + bounds.maxLng) / 2,
-                        zoom: estimatedZoom
-                      }));
-                    }
-                  }}
-                  onReverseTrack={handleReverseTrack}
-                  onSanitizeTrack={handleSanitizeTrack}
-                  onOpenGlossary={(metricId) => {
-                    setInitialGlossaryMetricId(metricId);
-                    setGlossaryOpen(true);
-                  }}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <IntensiveTrackAnalysisModal
+                    key={`intensive-analysis-modal-${(markedTrack || tracks.find(t => t.visible) || tracks[0]).id}`}
+                    track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                    allTracks={tracks}
+                    onSelectTrack={(id) => setMarkedTrackId(id)}
+                    initialTab={intensiveAnalysisTab}
+                    onClose={() => setIntensiveAnalysisOpen(false)}
+                    ftp={ftp}
+                    userWeight={userWeight}
+                    userAge={userAge}
+                    userMaxHr={userMaxHr}
+                    estimatedSpeed={estimatedSpeed}
+                    textMarkers={textMarkers}
+                    onAddTextMarker={handleAddTextMarker}
+                    onSelectTrackPoint={(lat, lng) => {
+                      setMapView(prev => ({ ...prev, lat, lng, zoom: Math.max(prev.zoom, 14) }));
+                    }}
+                    onSelection={(bounds) => {
+                      setSelectionBounds(bounds);
+                      if (bounds && is3D) {
+                        const latDiff = Math.max(0.002, bounds.maxLat - bounds.minLat);
+                        const lngDiff = Math.max(0.002, bounds.maxLng - bounds.minLng);
+                        const maxDelta = Math.max(latDiff, lngDiff);
+                        const estimatedZoom = Math.min(18, Math.max(11, Math.floor(Math.log2(360 / maxDelta))));
+                        setMapView(prev => ({
+                          ...prev,
+                          lat: (bounds.minLat + bounds.maxLat) / 2,
+                          lng: (bounds.minLng + bounds.maxLng) / 2,
+                          zoom: estimatedZoom
+                        }));
+                      }
+                    }}
+                    onReverseTrack={handleReverseTrack}
+                    onSanitizeTrack={handleSanitizeTrack}
+                    onOpenGlossary={(metricId) => {
+                      setInitialGlossaryMetricId(metricId);
+                      setGlossaryOpen(true);
+                    }}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {glossaryOpen && (
-              <Suspense fallback={null}>
-                <SportMetricsGlossaryModal
-                  onClose={() => {
-                    setGlossaryOpen(false);
-                    setInitialGlossaryMetricId(undefined);
-                  }}
-                  initialMetricId={initialGlossaryMetricId}
-                  isDark={theme === 'dark'}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <SportMetricsGlossaryModal
+                    onClose={() => {
+                      setGlossaryOpen(false);
+                      setInitialGlossaryMetricId(undefined);
+                    }}
+                    initialMetricId={initialGlossaryMetricId}
+                    isDark={theme === 'dark'}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
             {shortcutsModalOpen && (
-              <Suspense fallback={null}>
-                <KeyboardShortcutsModal
-                  isOpen={shortcutsModalOpen}
-                  onClose={() => setShortcutsModalOpen(false)}
-                />
-              </Suspense>
+              <ErrorBoundary
+                fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+                fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+              >
+                <Suspense fallback={null}>
+                  <KeyboardShortcutsModal
+                    isOpen={shortcutsModalOpen}
+                    onClose={() => setShortcutsModalOpen(false)}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </AnimatePresence>
 
@@ -3929,15 +4007,20 @@ const App: React.FC = () => {
         )}
 
         {isExportModalOpen && (
-          <Suspense fallback={null}>
-            <VideoExportModal
-              track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}
-              isOpen={isExportModalOpen}
-              onClose={() => setIsExportModalOpen(false)}
-              userWeight={userWeight}
-              estimatedSpeed={estimatedSpeed}
-            />
-          </Suspense>
+          <ErrorBoundary
+            fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+            fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+          >
+            <Suspense fallback={null}>
+              <VideoExportModal
+                track={markedTrack || tracks.find(t => t.visible) || tracks[0] || null}
+                isOpen={isExportModalOpen}
+                onClose={() => setIsExportModalOpen(false)}
+                userWeight={userWeight}
+                estimatedSpeed={estimatedSpeed}
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
           </main>
         </div>
@@ -3977,41 +4060,46 @@ const App: React.FC = () => {
       {/* Global Settings & UI Style Customization Modal */}
       <AnimatePresence>
         {settingsModalOpen && (
-          <Suspense fallback={null}>
-            <AppSettingsModal
-              isOpen={settingsModalOpen}
-              onClose={() => setSettingsModalOpen(false)}
-              initialTab={settingsInitialTab}
-              preferences={appPrefs}
-              onUpdatePreferences={updateAppPreferences}
-              onResetDefaults={handleResetAppPreferences}
-              onImportSettings={handleImportSettings}
-              ftp={ftp}
-              onUpdateFtp={setFtp}
-              userWeight={userWeight}
-              onUpdateWeight={setUserWeight}
-              userAge={userAge}
-              onUpdateAge={setUserAge}
-              userMaxHr={userMaxHr}
-              onUpdateMaxHr={handleMaxHrChange}
-              estimatedSpeed={estimatedSpeed}
-              onUpdateEstimatedSpeed={setEstimatedSpeed}
-              activeLayer={activeLayer}
-              onSelectMapLayer={setActiveLayer}
-              tracks={tracks}
-              isOnline={isOnline}
-              onGarminDataSynced={refreshCatalogTotalCount}
-              onLoadGarminTrack={(tr) => {
-                handleLoadLibraryTrack(tr);
-                if (hasRealGpsData(tr)) {
-                  navigateWorkspace('map');
-                } else {
-                  setIntensiveAnalysisTab('overview');
-                  setIntensiveAnalysisOpen(true);
-                }
-              }}
-            />
-          </Suspense>
+          <ErrorBoundary
+            fallbackTitle={tr(appPrefs.language, 'Ansicht konnte nicht geladen werden', 'View could not be loaded')}
+            fallbackMessage={tr(appPrefs.language, 'Beim Laden dieser Ansicht ist ein Fehler aufgetreten. Bitte lade die Seite neu.', 'Failed to load this view. Please reload the page.')}
+          >
+            <Suspense fallback={null}>
+              <AppSettingsModal
+                isOpen={settingsModalOpen}
+                onClose={() => setSettingsModalOpen(false)}
+                initialTab={settingsInitialTab}
+                preferences={appPrefs}
+                onUpdatePreferences={updateAppPreferences}
+                onResetDefaults={handleResetAppPreferences}
+                onImportSettings={handleImportSettings}
+                ftp={ftp}
+                onUpdateFtp={setFtp}
+                userWeight={userWeight}
+                onUpdateWeight={setUserWeight}
+                userAge={userAge}
+                onUpdateAge={setUserAge}
+                userMaxHr={userMaxHr}
+                onUpdateMaxHr={handleMaxHrChange}
+                estimatedSpeed={estimatedSpeed}
+                onUpdateEstimatedSpeed={setEstimatedSpeed}
+                activeLayer={activeLayer}
+                onSelectMapLayer={setActiveLayer}
+                tracks={tracks}
+                isOnline={isOnline}
+                onGarminDataSynced={refreshCatalogTotalCount}
+                onLoadGarminTrack={(tr) => {
+                  handleLoadLibraryTrack(tr);
+                  if (hasRealGpsData(tr)) {
+                    navigateWorkspace('map');
+                  } else {
+                    setIntensiveAnalysisTab('overview');
+                    setIntensiveAnalysisOpen(true);
+                  }
+                }}
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
       </AnimatePresence>
       </div>

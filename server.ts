@@ -94,9 +94,13 @@ import fs from "fs";
 import os from "os";
 import { execFile } from "child_process";
 
-// Self-healing check: Ensure Nginx Lua auth bridge does not block iframe preview (only inside AI Studio nginx wrapper)
+// Opt-in dev-only Nginx Lua auth bridge compatibility check (disabled in production)
 function ensureNginxIframeCompatibility() {
-  if (!process.env.NGINX_PORT) {
+  if (
+    process.env.ALLOW_NGINX_IFRAME_AUTH_BYPASS !== "true" ||
+    process.env.NODE_ENV === "production" ||
+    !process.env.NGINX_PORT
+  ) {
     return;
   }
   try {
@@ -104,11 +108,6 @@ function ensureNginxIframeCompatibility() {
     if (fs.existsSync(luaPath)) {
       const content = fs.readFileSync(luaPath, "utf-8");
       if (!content.startsWith("-- Bypass auth bridge")) {
-        try {
-          fs.chmodSync(luaPath, 0o666);
-        } catch {
-          // ignore
-        }
         fs.writeFileSync(luaPath, "-- Bypass auth bridge for iframe compatibility\nreturn\n", "utf-8");
         execFile("nginx", ["-s", "reload"], (err) => {
           if (err) console.warn("Nginx reload notification:", err.message);
@@ -116,7 +115,7 @@ function ensureNginxIframeCompatibility() {
       }
     }
   } catch (e) {
-    // Non-blocking in environments without nginx or root permissions
+    // Non-blocking in environments without nginx or write permissions
   }
 }
 
@@ -124,7 +123,33 @@ async function startServer() {
   ensureNginxIframeCompatibility();
   const app = express();
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+
+  const trustProxyEnv = (process.env.TRUST_PROXY || "").trim().toLowerCase();
+  const isBehindTrustedProxy =
+    trustProxyEnv === "true" ||
+    /^[1-9]\d*$/.test(trustProxyEnv) ||
+    Boolean(process.env.NGINX_PORT) ||
+    Boolean(process.env.K_SERVICE);
+  if (isBehindTrustedProxy) {
+    app.set("trust proxy", /^[1-9]\d*$/.test(trustProxyEnv) ? Number(trustProxyEnv) : 1);
+  }
+
+  const getTrustedRequestHost = (req: express.Request): string =>
+    String((isBehindTrustedProxy ? req.headers["x-forwarded-host"] : undefined) || req.headers.host || "");
+
+  const getTrustedRequestProto = (req: express.Request): "http" | "https" => {
+    if (req.secure) return "https";
+    if (
+      isBehindTrustedProxy &&
+      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https")
+    ) {
+      return "https";
+    }
+    return "http";
+  };
+
+  const rawFrameAncestors = (process.env.FRAME_ANCESTORS || "'self'").replace(/[\r\n;]/g, "").trim();
+  const safeFrameAncestors = rawFrameAncestors || "'self'";
   const PORT = Number(
     process.env.NGINX_PORT
       ? (process.env.DEFAULT_APP_PORT || 3000)
@@ -153,24 +178,32 @@ async function startServer() {
 
   // Set hardened security headers and strict allowlist CORS
   app.use((req, res, next) => {
-    const isSecure =
-      req.secure ||
-      String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+    const requestProto = getTrustedRequestProto(req);
+    const isSecure = requestProto === "https";
 
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
     res.setHeader(
       "Content-Security-Policy",
-      "base-uri 'self'; object-src 'none'; form-action 'self'"
+      `base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors ${safeFrameAncestors}`
     );
+    if (safeFrameAncestors === "'self'") {
+      res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    }
     if (isSecure) {
       res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     }
 
     const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
-    const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
-    const allowedOrigin = resolveAllowedCorsOrigin(origin, reqHostHeader);
+    const reqHostHeader = getTrustedRequestHost(req);
+    const allowedOrigin = resolveAllowedCorsOrigin(
+      origin,
+      reqHostHeader,
+      process.env.CORS_ALLOWED_ORIGINS,
+      process.env.APP_URL,
+      requestProto
+    );
     res.setHeader("Vary", "Origin");
 
     if (allowedOrigin) {
@@ -202,9 +235,7 @@ async function startServer() {
 
     if (isDocument && (forceClean || !rawCookies.includes("__sw_purged=1"))) {
       res.setHeader("Clear-Site-Data", '"cache"');
-      const isSecure =
-        req.secure ||
-        String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+      const isSecure = getTrustedRequestProto(req) === "https";
       const swCookieFlags = isSecure
         ? "Path=/; SameSite=None; Secure; Max-Age=31536000"
         : "Path=/; SameSite=Lax; Max-Age=31536000";
@@ -296,8 +327,7 @@ async function startServer() {
     extractSessionAuthFromRequest(req).token;
 
   const isSecureRequest = (req: express.Request): boolean =>
-    req.secure ||
-    String(req.headers["x-forwarded-proto"] || "").toLowerCase().includes("https");
+    getTrustedRequestProto(req) === "https";
 
   const buildSessionCookieHeader = (req: express.Request, value: string, maxAgeSec: number): string => {
     const secure = isSecureRequest(req);
@@ -451,13 +481,14 @@ async function startServer() {
   app.post("/api/auth/logout", (req, res) => {
     try {
       const authInfo = extractSessionAuthFromRequest(req);
-      const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const reqHostHeader = getTrustedRequestHost(req);
       const csrfOk = isCsrfSafeRequest({
         method: req.method,
         hasBearerAuth: authInfo.hasBearer,
         hasCookieAuth: authInfo.hasCookie,
         origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
         requestHost: reqHostHeader,
+        requestProtocol: getTrustedRequestProto(req),
         xRequestedWith: typeof req.headers["x-requested-with"] === "string" ? req.headers["x-requested-with"] : undefined
       });
       if (!csrfOk) {
@@ -504,13 +535,14 @@ async function startServer() {
       });
     }
 
-    const reqHostHeader = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+    const reqHostHeader = getTrustedRequestHost(req);
     const csrfOk = isCsrfSafeRequest({
       method: req.method,
       hasBearerAuth: authInfo.hasBearer,
       hasCookieAuth: authInfo.hasCookie,
       origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
       requestHost: reqHostHeader,
+      requestProtocol: getTrustedRequestProto(req),
       xRequestedWith: typeof req.headers["x-requested-with"] === "string" ? req.headers["x-requested-with"] : undefined
     });
     if (!csrfOk) {
@@ -641,9 +673,10 @@ async function startServer() {
       geoUrl.searchParams.set("format", "json");
       geoUrl.searchParams.set("accept-language", "de");
 
+      const nominatimContact = (process.env.NOMINATIM_CONTACT_EMAIL || "").trim();
       const geoResponse = await fetch(geoUrl.toString(), {
         headers: {
-          "User-Agent": "GPXRouteMasterApplet/1.0 (mtirtasana@gmail.com)"
+          "User-Agent": nominatimContact ? `GPXRouteMaster/1.0 (${nominatimContact})` : "GPXRouteMaster/1.0"
         },
         signal: AbortSignal.timeout(2000) // fast 2s timeout
       });
@@ -2721,7 +2754,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     } catch (err: any) {
       res.status(400).json({
         success: false,
-        error: err.message || "Token-Austausch mit Garmin Personal API fehlgeschlagen."
+        error: safeServerError(err, "Token-Austausch mit Garmin Personal API fehlgeschlagen.")
       });
     }
   });
@@ -2764,7 +2797,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       console.error("[Garmin Personal API] Activity sync error:", err);
       res.status(400).json({
         success: false,
-        error: err.message || "Fehler beim Synchronisieren der Garmin-Aktivitäten über die Personal API."
+        error: safeServerError(err, "Fehler beim Synchronisieren der Garmin-Aktivitäten über die Personal API.")
       });
     }
   });
@@ -2789,7 +2822,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       console.error("[Garmin Personal API] Health sync error:", err);
       res.status(400).json({
         success: false,
-        error: err.message || "Fehler beim Synchronisieren der Gesundheitsdaten über die Garmin Personal API."
+        error: safeServerError(err, "Fehler beim Synchronisieren der Gesundheitsdaten über die Garmin Personal API.")
       });
     }
   });
@@ -2818,7 +2851,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       console.error("[Garmin Personal API] FIT download error:", err);
       res.status(400).json({
         success: false,
-        error: err.message || "Fehler beim Herunterladen der FIT-Strecke."
+        error: safeServerError(err, "Fehler beim Herunterladen der FIT-Strecke.")
       });
     }
   });
@@ -3735,7 +3768,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       console.error("[URL Import] Unexpected error:", err);
       return res.status(502).json({
         success: false,
-        error: err?.message || "Fehler beim Importieren der URL."
+        error: safeServerError(err, "Fehler beim Importieren der URL.")
       });
     }
   });
@@ -3765,14 +3798,15 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
     app.use(express.static(distPath, { index: false }));
     app.get("*all", (req, res) => {
       if (fs.existsSync(distIndexPath)) {
-        const rawProto = String(req.headers["x-forwarded-proto"] || (req.secure ? "https" : "http")).split(",")[0].trim().toLowerCase();
-        const safeProto = rawProto === "https" ? "https" : "http";
-        const rawHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+        const safeProto = getTrustedRequestProto(req);
+        const rawHost = getTrustedRequestHost(req).split(",")[0].trim();
         const safeHost = /^[a-zA-Z0-9.-]+(?::\d{1,5})?$/.test(rawHost) ? rawHost : "";
-        const envAppUrl = process.env.APP_URL && !process.env.APP_URL.includes("ais-dev-") ? process.env.APP_URL : "";
-        const origin = safeHost && !safeHost.includes("0.0.0.0") && !safeHost.includes("localhost")
-          ? `${safeProto}://${safeHost}`
-          : envAppUrl;
+        const envAppUrl = process.env.APP_URL && !process.env.APP_URL.includes("ais-dev-") ? process.env.APP_URL.trim() : "";
+        const origin = envAppUrl
+          ? envAppUrl
+          : safeHost && !safeHost.includes("0.0.0.0") && !safeHost.includes("localhost")
+            ? `${safeProto}://${safeHost}`
+            : "";
         let html = fs.readFileSync(distIndexPath, "utf-8");
         if (
           origin &&

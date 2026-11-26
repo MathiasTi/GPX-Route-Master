@@ -1291,8 +1291,8 @@ export function verifyAuthSessionToken(token?: string | null): { valid: boolean;
     const row = db.prepare(`
       SELECT token, expires_at
       FROM auth_sessions
-      WHERE (token = ? OR token = ?) AND expires_at > ?
-    `).get(tokenHash, cleanToken, Date.now()) as { token: string; expires_at: number } | undefined;
+      WHERE token = ? AND expires_at > ?
+    `).get(tokenHash, Date.now()) as { token: string; expires_at: number } | undefined;
 
     if (!row) {
       return { valid: false };
@@ -1312,8 +1312,8 @@ export function getUserBySessionToken(token?: string | null): DbUserRecord | nul
       SELECT u.*
       FROM auth_sessions s
       JOIN users u ON u.id = s.user_id
-      WHERE (s.token = ? OR s.token = ?) AND s.expires_at > ?
-    `).get(tokenHash, cleanToken, Date.now()) as DbUserRecord | undefined;
+      WHERE s.token = ? AND s.expires_at > ?
+    `).get(tokenHash, Date.now()) as DbUserRecord | undefined;
 
     return row || null;
   });
@@ -1327,8 +1327,8 @@ export function deleteAuthSession(token?: string | null): boolean {
     const cleanToken = token.trim();
     const tokenHash = hashSessionToken(cleanToken);
     const res = db
-      .prepare('DELETE FROM auth_sessions WHERE token = ? OR token = ?')
-      .run(tokenHash, cleanToken);
+      .prepare('DELETE FROM auth_sessions WHERE token = ?')
+      .run(tokenHash);
     return res.changes > 0;
   });
 }

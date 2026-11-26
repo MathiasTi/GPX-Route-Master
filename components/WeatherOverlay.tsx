@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import { GPXTrack, WeatherData, GPXPoint } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
+import { useAppPreferences } from '../utils/appSettings';
+import { formatTemp, formatSpeed, formatElevation } from '../utils/units';
 
 interface WeatherOverlayProps {
   track: GPXTrack | undefined;
@@ -55,6 +57,9 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
   onClose,
   hide
 }) => {
+  const appPrefs = useAppPreferences();
+  const unitSystem = appPrefs.unitSystem;
+  const lang = appPrefs.language;
   // If propTrack is undefined, fall back to first visible or first available track
   const effectiveTrack = useMemo(() => {
     if (propTrack) return propTrack;
@@ -460,7 +465,7 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                       </span>
                       {weather.elevation !== undefined && (
                         <span className="text-[10px] text-slate-400 font-medium">
-                          ({Math.round(weather.elevation)} m ü. M.)
+                          ({formatElevation(weather.elevation, unitSystem, lang, false)} {lang === 'en' ? 'elev.' : 'ü. M.'})
                         </span>
                       )}
                     </div>
@@ -472,20 +477,20 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                     <div className="flex items-center gap-2">
                       {getWeatherIcon(weather.condition)}
                       <span className="text-2xl font-black text-slate-900 dark:text-white">
-                        {weather.temperature}°C
+                        {formatTemp(weather.temperature, unitSystem)}
                       </span>
                     </div>
                     <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
-                      <span className="text-emerald-600 dark:text-emerald-400">H: {weather.tempHigh}°</span>
+                      <span className="text-emerald-600 dark:text-emerald-400">H: {formatTemp(weather.tempHigh, unitSystem)}</span>
                       <span>•</span>
-                      <span className="text-sky-600 dark:text-sky-400">T: {weather.tempLow}°</span>
+                      <span className="text-sky-600 dark:text-sky-400">T: {formatTemp(weather.tempLow, unitSystem)}</span>
                     </div>
                   </div>
                 </div>
 
                 {weather.feelsLike !== undefined && (
                   <div className="mt-2 pt-2 border-t border-indigo-100/40 dark:border-slate-800 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-medium">
-                    <span>Gefühlte Temperatur: <strong className="text-slate-700 dark:text-slate-200">{weather.feelsLike}°C</strong></span>
+                    <span>Gefühlte Temperatur: <strong className="text-slate-700 dark:text-slate-200">{formatTemp(weather.feelsLike, unitSystem)}</strong></span>
                     {weather.uvIndex !== undefined && (
                       <span>UV-Index: <strong className={`${weather.uvIndex >= 6 ? 'text-amber-600 font-black' : 'text-slate-700 dark:text-slate-200'}`}>{weather.uvIndex}</strong></span>
                     )}
@@ -505,7 +510,9 @@ export const WeatherOverlay: React.FC<WeatherOverlayProps> = ({
                 <div className="p-1.5 border-x border-slate-200/60 dark:border-slate-800">
                   <Wind className="text-teal-500 mx-auto mb-1" size={14} />
                   <span className="text-xs font-black block text-slate-800 dark:text-slate-100">
-                    {weather.windSpeed ?? 'k.A.'} <span className="text-[9px] font-bold">km/h</span>
+                    {weather.windSpeed !== undefined && weather.windSpeed !== null
+                      ? formatSpeed(weather.windSpeed, unitSystem, 0)
+                      : 'k.A.'}
                   </span>
                   <span className="text-[8px] text-slate-400 font-extrabold uppercase">Windstärke</span>
                 </div>

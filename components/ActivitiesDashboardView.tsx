@@ -59,8 +59,10 @@ import {
   formatVam,
   convertDistance,
   convertElevation,
+  convertSpeed,
   distanceUnit,
   elevationUnit,
+  speedUnit,
   getLocale
 } from '../utils/units';
 import type {
@@ -1772,7 +1774,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                     <span>Jahres-Pace ({yoyModel.focusYear} YTD)</span>
                   </div>
                   <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
-                    {yoyModel.focusYtdKm.toLocaleString('de-DE')} km
+                    {formatDistance(yoyModel.focusYtdKm, unitSystem, lang, 0)}
                   </div>
                 </div>
                 {yoyModel.hasPrevYearData ? (
@@ -1783,7 +1785,8 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                         : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
                     }`}
                   >
-                    {yoyModel.ytdDiffKm >= 0 ? `+${yoyModel.ytdDiffKm}` : yoyModel.ytdDiffKm} km
+                    {yoyModel.ytdDiffKm >= 0 ? '+' : '-'}
+                    {Math.abs(Math.round(convertDistance(yoyModel.ytdDiffKm, unitSystem))).toLocaleString(getLocale(lang))} {distanceUnit(unitSystem)}
                     {yoyModel.ytdDiffPct !== null ? ` (${yoyModel.ytdDiffPct >= 0 ? '+' : ''}${yoyModel.ytdDiffPct}%)` : ''}
                   </span>
                 ) : (
@@ -1817,7 +1820,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                   </div>
                   <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white mt-0.5">
                     {consistencyModel.peakWeekday && consistencyModel.peakWeekday.count > 0
-                      ? `${consistencyModel.peakWeekday.label} · ${Math.round(consistencyModel.peakWeekday.km).toLocaleString('de-DE')} km`
+                      ? `${consistencyModel.peakWeekday.label} · ${formatDistance(consistencyModel.peakWeekday.km, unitSystem, lang, 0)}`
                       : '—'}
                   </div>
                 </div>
@@ -1982,7 +1985,16 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                       <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: -12 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.2} />
                         <XAxis type="number" dataKey="avgHr" name="Ø HF" unit=" bpm" domain={['dataMin - 5', 'dataMax + 5']} stroke="#94a3b8" fontSize={10} />
-                        <YAxis type="number" dataKey="speedKmh" name="Ø Tempo" unit=" km/h" domain={['dataMin - 2', 'dataMax + 2']} stroke="#94a3b8" fontSize={10} />
+                        <YAxis
+                          type="number"
+                          dataKey="speedKmh"
+                          name="Ø Tempo"
+                          unit={` ${speedUnit(unitSystem)}`}
+                          domain={['dataMin - 2', 'dataMax + 2']}
+                          tickFormatter={(v) => convertSpeed(Number(v), unitSystem).toFixed(0)}
+                          stroke="#94a3b8"
+                          fontSize={10}
+                        />
                         <ZAxis type="number" dataKey="distanceKm" range={[45, 260]} name="Distanz" />
                         <Tooltip
                           cursor={{ strokeDasharray: '3 3' }}
@@ -1998,9 +2010,9 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                                   <span className="text-rose-300">Ø Puls:</span>
                                   <span className="text-right font-bold">{pt.avgHr} bpm</span>
                                   <span className="text-blue-300">Ø Tempo:</span>
-                                  <span className="text-right font-bold">{pt.speedKmh} km/h</span>
+                                  <span className="text-right font-bold">{formatSpeed(pt.speedKmh, unitSystem, 1)}</span>
                                   <span className="text-emerald-300">Distanz:</span>
-                                  <span className="text-right font-bold">{pt.distanceKm} km</span>
+                                  <span className="text-right font-bold">{formatDistance(pt.distanceKm, unitSystem, lang, 1)}</span>
                                   <span className="text-amber-300">EF-Index:</span>
                                   <span className="text-right font-bold">{pt.ef}</span>
                                 </div>
@@ -2092,7 +2104,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                   </div>
                   {yoyModel.hasPrevYearData && (
                     <div className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                      {yoyModel.focusYear}: {yoyModel.focusYtdKm.toLocaleString('de-DE')} vs. {yoyModel.prevYear}: {yoyModel.prevYtdKm.toLocaleString('de-DE')} km
+                      {yoyModel.focusYear}: {formatDistance(yoyModel.focusYtdKm, unitSystem, lang, 0)} vs. {yoyModel.prevYear}: {formatDistance(yoyModel.prevYtdKm, unitSystem, lang, 0)}
                     </div>
                   )}
                 </div>
@@ -2107,10 +2119,16 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                       <LineChart data={yoyModel.series}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
                         <XAxis dataKey="month" stroke="#94a3b8" fontSize={10} />
-                        <YAxis stroke="#94a3b8" fontSize={10} unit=" km" width={52} />
+                        <YAxis
+                          stroke="#94a3b8"
+                          fontSize={10}
+                          unit={` ${distanceUnit(unitSystem)}`}
+                          tickFormatter={(v) => String(Math.round(convertDistance(Number(v), unitSystem)))}
+                          width={56}
+                        />
                         <Tooltip
                           contentStyle={{ borderRadius: '12px', fontSize: '11px', backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }}
-                          formatter={(val: any, name: any) => [`${Number(val).toLocaleString('de-DE')} km`, String(name)]}
+                          formatter={(val: any, name: any) => [formatDistance(Number(val), unitSystem, lang, 0), String(name)]}
                         />
                         <Legend wrapperStyle={{ fontSize: '11px' }} />
                         {yoyModel.years.map((yr, idx) => {
@@ -2267,7 +2285,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                       Sportarten-Verteilung ({activePeriodOption?.shortLabel})
                     </span>
                     <span className="font-mono font-bold text-slate-700 dark:text-slate-200">
-                      {periodStats.totalKm.toLocaleString('de-DE')} km gesamt
+                      {formatDistance(periodStats.totalKm, unitSystem, lang, 0)} {lang === 'en' ? 'total' : 'gesamt'}
                     </span>
                   </div>
                   {consistencyModel.sportSplit.length === 0 ? (
@@ -2281,7 +2299,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             <div
                               key={s.label}
                               style={{ width: `${Math.max(2, wPct)}%`, backgroundColor: s.color }}
-                              title={`${s.label}: ${s.km.toFixed(1)} km (${s.count}x)`}
+                              title={`${s.label}: ${formatDistance(s.km, unitSystem, lang, 1)} (${s.count}x)`}
                             />
                           );
                         })}
@@ -2291,7 +2309,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                           <span key={s.label} className="inline-flex items-center gap-1.5 font-mono text-slate-600 dark:text-slate-300">
                             <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
                             <span className="font-sans font-semibold">{s.label}:</span>
-                            <span className="font-bold text-slate-900 dark:text-white">{s.km.toFixed(1)} km</span>
+                            <span className="font-bold text-slate-900 dark:text-white">{formatDistance(s.km, unitSystem, lang, 1)}</span>
                             <span className="text-slate-400">({s.count}x)</span>
                           </span>
                         ))}
@@ -2309,14 +2327,14 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                   {
                     title: 'Längste Aktivität im Zeitraum',
                     act: periodStats.longestActivity,
-                    metric: periodStats.longestActivity ? `${periodStats.longestActivity.distanceKm.toFixed(1)} km` : '—',
+                    metric: periodStats.longestActivity ? formatDistance(periodStats.longestActivity.distanceKm, unitSystem, lang, 1) : '—',
                     badgeClass: 'bg-blue-50/70 dark:bg-blue-950/25 border-blue-200/70 dark:border-blue-900/40',
                     icon: <Award className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                   },
                   {
                     title: 'Meiste Höhenmeter im Zeitraum',
                     act: periodStats.mostAscentActivity,
-                    metric: periodStats.mostAscentActivity ? `+${periodStats.mostAscentActivity.ascentM.toLocaleString('de-DE')} hm` : '—',
+                    metric: periodStats.mostAscentActivity ? formatElevation(periodStats.mostAscentActivity.ascentM, unitSystem, lang, true) : '—',
                     badgeClass: 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200/70 dark:border-emerald-900/40',
                     icon: <Mountain className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                   },
@@ -2325,7 +2343,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                     act: periodStats.fastestActivity,
                     metric:
                       periodStats.fastestActivity && periodStats.fastestActivity.durationSec > 0
-                        ? `${(periodStats.fastestActivity.distanceKm / (periodStats.fastestActivity.durationSec / 3600)).toFixed(1)} km/h`
+                        ? formatSpeed(periodStats.fastestActivity.distanceKm / (periodStats.fastestActivity.durationSec / 3600), unitSystem, 1)
                         : '—',
                     badgeClass: 'bg-orange-50/70 dark:bg-orange-950/25 border-orange-200/70 dark:border-orange-900/40',
                     icon: <Zap className="w-4 h-4 text-orange-600 dark:text-orange-400" />
@@ -2352,7 +2370,7 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                             {card.act.name}
                           </p>
                           <p className="text-[11px] font-mono text-slate-500">
-                            {formatDeFullDate(extractYmd(card.act.timestampIso) || '')} · {card.act.distanceKm.toFixed(1)} km · {formatDurationHoursMin(card.act.durationSec)}
+                            {formatDeFullDate(extractYmd(card.act.timestampIso) || '')} · {formatDistance(card.act.distanceKm, unitSystem, lang, 1)} · {formatDurationHoursMin(card.act.durationSec)}
                           </p>
                         </div>
                         <button
@@ -2452,8 +2470,8 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                         const tempoStr =
                           item.durationSec > 0 && item.distanceKm > 0
                             ? item.activityCategory === 'running' || item.activityCategory === 'hiking'
-                              ? formatPacePerKm(item.distanceKm, item.durationSec)
-                              : `${speedKmh.toFixed(1)} km/h`
+                              ? formatPaceFromSecPerKm(item.durationSec / item.distanceKm, unitSystem, true)
+                              : formatSpeed(speedKmh, unitSystem, 1)
                             : '—';
                         const isItemLoading = loadingTrackKey === item.key;
 
@@ -2477,10 +2495,10 @@ export const ActivitiesDashboardView: React.FC<ActivitiesDashboardViewProps> = (
                               {ymd ? formatDeFullDate(ymd) : '—'}
                             </td>
                             <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900 dark:text-white whitespace-nowrap">
-                              {item.distanceKm.toFixed(1)} km
+                              {formatDistance(item.distanceKm, unitSystem, lang, 1)}
                             </td>
                             <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-                              {item.ascentM > 0 ? `+${item.ascentM.toLocaleString('de-DE')} hm` : '—'}
+                              {item.ascentM > 0 ? formatElevation(item.ascentM, unitSystem, lang, true) : '—'}
                             </td>
                             <td className="py-2.5 px-3 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
                               {formatDurationHoursMin(item.durationSec)}

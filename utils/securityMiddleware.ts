@@ -118,7 +118,8 @@ export function resolveAllowedCorsOrigin(
   rawOrigin: string | undefined,
   requestHostHeader: string | undefined,
   extraAllowedOriginsEnv: string | undefined = process.env.CORS_ALLOWED_ORIGINS,
-  appUrlEnv: string | undefined = process.env.APP_URL
+  appUrlEnv: string | undefined = process.env.APP_URL,
+  requestProtocol?: 'http' | 'https'
 ): string | null {
   if (!rawOrigin || typeof rawOrigin !== 'string') return null;
 
@@ -141,14 +142,23 @@ export function resolveAllowedCorsOrigin(
   const originHostname = parsedOrigin.hostname.toLowerCase();
   const originHostWithPort = parsedOrigin.host.toLowerCase();
 
-  // 1. Exact same-host match (honoring X-Forwarded-Host or Host)
+  // 1. Exact host+port (+ optional protocol) match
   const reqHostRaw = String(requestHostHeader || '')
     .split(',')[0]
     .trim()
     .toLowerCase();
-  const reqHostname = reqHostRaw.split(':')[0];
+  const effectiveProto =
+    requestProtocol === 'https' || requestProtocol === 'http'
+      ? `${requestProtocol}:`
+      : null;
+  const defaultPort = (effectiveProto || parsedOrigin.protocol) === 'https:' ? ':443' : ':80';
+  const normalizedReqHost = reqHostRaw.endsWith(defaultPort)
+    ? reqHostRaw.slice(0, -defaultPort.length)
+    : reqHostRaw;
+  const reqHostname = normalizedReqHost.split(':')[0];
+  const protoMatches = !effectiveProto || parsedOrigin.protocol === effectiveProto;
 
-  if (reqHostRaw && (originHostWithPort === reqHostRaw || originHostname === reqHostname)) {
+  if (normalizedReqHost && protoMatches && originHostWithPort === normalizedReqHost) {
     return parsedOrigin.origin;
   }
 
@@ -200,6 +210,7 @@ export function isCsrfSafeRequest(params: {
   hasCookieAuth: boolean;
   origin?: string;
   requestHost?: string;
+  requestProtocol?: 'http' | 'https';
   xRequestedWith?: string;
   extraAllowedOriginsEnv?: string;
   appUrlEnv?: string;
@@ -215,7 +226,8 @@ export function isCsrfSafeRequest(params: {
     params.origin,
     params.requestHost,
     params.extraAllowedOriginsEnv,
-    params.appUrlEnv
+    params.appUrlEnv,
+    params.requestProtocol
   );
 
   // If Origin is present, it MUST be an allowed origin (even if custom header is set)

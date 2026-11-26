@@ -259,6 +259,12 @@ export function runSecurityTests(): boolean {
       const checkValid = verifyAuthSessionToken(session.token);
       assert(checkValid.valid === true, 'Active session token must verify as valid');
 
+      const checkHashAsBearer = verifyAuthSessionToken(expectedHash);
+      assert(
+        checkHashAsBearer.valid === false,
+        'Stored SHA-256 session hash must NOT verify if presented directly as Bearer token'
+      );
+
       const deleted = deleteAuthSession(session.token);
       assert(deleted === true, 'deleteAuthSession removes the hashed session token');
 
@@ -295,6 +301,18 @@ export function runSecurityTests(): boolean {
     assert(resolveAllowedCorsOrigin('https://evil.run.app', 'my-app.example.com', '', '') === null, 'Arbitrary .run.app origin must be rejected');
     assert(resolveAllowedCorsOrigin('https://attacker.web.app', 'my-app.example.com', '', '') === null, 'Arbitrary .web.app origin must be rejected');
     assert(resolveAllowedCorsOrigin('https://my-app.example.com', 'my-app.example.com', '', '') === 'https://my-app.example.com', 'Same-host origin must be allowed');
+    assert(
+      resolveAllowedCorsOrigin('https://my-app.example.com:8443', 'my-app.example.com', '', '') === null,
+      'Mismatched port on same hostname must be rejected'
+    );
+    assert(
+      resolveAllowedCorsOrigin('http://my-app.example.com', 'my-app.example.com', '', '', 'https') === null,
+      'Mismatched HTTP scheme against HTTPS request must be rejected'
+    );
+    assert(
+      resolveAllowedCorsOrigin('https://my-app.example.com', 'my-app.example.com', '', '', 'https') === 'https://my-app.example.com',
+      'Matching HTTPS scheme and host must be allowed'
+    );
     assert(
       resolveAllowedCorsOrigin('https://trusted.example.org', 'my-app.example.com', 'https://trusted.example.org', '') === 'https://trusted.example.org',
       'Explicitly configured CORS_ALLOWED_ORIGINS entry must be allowed'

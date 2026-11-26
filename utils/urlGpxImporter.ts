@@ -1,5 +1,8 @@
 import dns from 'dns/promises';
+import http from 'http';
+import https from 'https';
 import net from 'net';
+import zlib from 'zlib';
 import { computeCanonicalTrackContentHash } from './komootVersioning';
 
 const MAX_IMPORT_BYTES = 15 * 1024 * 1024; // 15 MB
@@ -250,10 +253,16 @@ const defaultDnsLookup: DnsLookupFn = async (hostname: string) => {
   return dns.lookup(hostname, { all: true });
 };
 
-export async function assertSafeExternalUrl(
+interface ValidatedPinnedTarget {
+  url: URL;
+  pinnedIp: string;
+  family: 4 | 6;
+}
+
+async function assertSafeExternalUrlWithPin(
   rawUrl: string,
   lookupFn: DnsLookupFn = defaultDnsLookup
-): Promise<URL> {
+): Promise<ValidatedPinnedTarget> {
   const trimmed = String(rawUrl || '').trim();
   if (!trimmed) {
     throw new UrlImportError('Bitte gib eine gültige URL ein.', 400);
@@ -300,7 +309,11 @@ export async function assertSafeExternalUrl(
     if (isBlockedIpAddress(hostname)) {
       throw new UrlImportError('Private oder reservierte IP-Adressen sind aus Sicherheitsgründen blockiert.', 403);
     }
-    return parsed;
+    return {
+      url: parsed,
+      pinnedIp: hostname,
+      family: net.isIP(hostname) === 6 ? 6 : 4
+    };
   }
 
   let resolved: Array<{ address: string; family: number }>;
@@ -320,7 +333,17 @@ export async function assertSafeExternalUrl(
     }
   }
 
-  return parsed;
+  const primary = resolved[0];
+  const family: 4 | 6 = net.isIP(primary.address) === 6 || primary.family === 6 ? 6 : 4;
+  return { url: parsed, pinnedIp: primary.address, family };
+}
+
+export async function assertSafeExternalUrl(
+  rawUrl: string,
+  lookupFn: DnsLookupFn = defaultDnsLookup
+): Promise<URL> {
+  const { url } = await assertSafeExternalUrlWithPin(rawUrl, lookupFn);
+  return url;
 }
 
 export function parseKomootTourUrl(rawUrl: string): KomootTourRef | null {
@@ -1084,82 +1107,158 @@ export function buildGpxFromKomootTour(tour: ExtractedKomootTour): string {
   return lines.join('\n');
 }
 
-async function readResponseTextWithLimit(response: Response, maxBytes = MAX_IMPORT_BYTES): Promise<string> {
-  const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new UrlImportError('Die abgerufene Datei überschreitet das Limit von 15 MB.', 413);
-  }
+interface PinnedHttpResponse {
+  ok: boolean;
+  status: number;
+  headers: Headers;
+}
 
-  if (!response.body) {
-    const text = await response.text();
-    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
-      throw new UrlImportError('Die abgerufene Datei überschreitet das Limit von 15 MB.', 413);
-    }
-    return text;
-  }
+function requestWithPinnedIp(
+  target: ValidatedPinnedTarget,
+  extraHeaders: Record<string, string>,
+  maxBytes = MAX_IMPORT_BYTES
+): Promise<{ response: PinnedHttpResponse; text: string }> {
+  return new Promise((resolve, reject) => {
+    const isHttps = target.url.protocol === 'https:';
+    const transport = isHttps ? https : http;
+    let settled = false;
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
+    const fail = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          // ignore
+    const req = transport.request(
+      target.url,
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'identity',
+          ...extraHeaders
+        },
+        // Pin socket connection strictly to the already-validated IP (prevents DNS rebinding TOCTOU)
+        lookup: (_host: string, opts: any, cb?: any) => {
+          const callback = typeof opts === 'function' ? opts : cb;
+          if (typeof opts === 'object' && opts?.all) {
+            callback(null, [{ address: target.pinnedIp, family: target.family }]);
+          } else {
+            callback(null, target.pinnedIp, target.family);
+          }
+        },
+        ...(isHttps && net.isIP(target.url.hostname) === 0
+          ? { servername: target.url.hostname }
+          : {})
+      } as any,
+      (res) => {
+        const status = res.statusCode || 502;
+        const headers = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (Array.isArray(v)) {
+            v.forEach((item) => headers.append(k, item));
+          } else if (typeof v === 'string') {
+            headers.set(k, v);
+          }
         }
-        throw new UrlImportError('Die abgerufene Datei überschreitet das Limit von 15 MB.', 413);
-      }
-      chunks.push(value);
-    }
-  }
 
-  const combined = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder('utf-8').decode(combined);
+        if (status >= 300 && status < 400) {
+          res.resume();
+          if (settled) return;
+          settled = true;
+          resolve({
+            response: { ok: false, status, headers },
+            text: ''
+          });
+          return;
+        }
+
+        const declaredLength = Number(headers.get('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+          res.destroy();
+          fail(new UrlImportError('Die abgerufene Datei überschreitet das Limit von 15 MB.', 413));
+          return;
+        }
+
+        const encoding = (headers.get('content-encoding') || '').toLowerCase();
+        const stream: NodeJS.ReadableStream =
+          encoding === 'gzip'
+            ? res.pipe(zlib.createGunzip())
+            : encoding === 'deflate'
+              ? res.pipe(zlib.createInflate())
+              : res;
+
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+
+        stream.on('data', (chunk: Buffer | Uint8Array | string) => {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          totalBytes += buf.byteLength;
+          if (totalBytes > maxBytes) {
+            res.destroy();
+            fail(new UrlImportError('Die abgerufene Datei überschreitet das Limit von 15 MB.', 413));
+            return;
+          }
+          chunks.push(buf);
+        });
+
+        stream.on('end', () => {
+          if (settled) return;
+          settled = true;
+          const text = Buffer.concat(chunks, totalBytes).toString('utf8');
+          resolve({
+            response: { ok: status >= 200 && status < 300, status, headers },
+            text
+          });
+        });
+
+        stream.on('error', (err) => {
+          fail(err);
+        });
+      }
+    );
+
+    req.setTimeout(FETCH_TIMEOUT_MS, () => {
+      const timeoutErr = new Error('Request timeout');
+      timeoutErr.name = 'TimeoutError';
+      req.destroy(timeoutErr);
+    });
+
+    req.on('error', (err) => {
+      fail(err);
+    });
+
+    req.end();
+  });
 }
 
 async function fetchWithSsrfGuard(
   rawUrl: string,
   extraHeaders: Record<string, string> = {},
   lookupFn: DnsLookupFn = defaultDnsLookup
-): Promise<{ response: Response; text: string; finalUrl: string }> {
+): Promise<{ response: PinnedHttpResponse; text: string; finalUrl: string }> {
   let currentUrl = rawUrl;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const validatedUrl = await assertSafeExternalUrl(currentUrl, lookupFn);
+    const validatedTarget = await assertSafeExternalUrlWithPin(currentUrl, lookupFn);
 
-    let response: Response;
+    let result: { response: PinnedHttpResponse; text: string };
     try {
-      response = await fetch(validatedUrl.toString(), {
-        method: 'GET',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-          ...extraHeaders
-        }
-      });
+      result = await requestWithPinnedIp(validatedTarget, extraHeaders, MAX_IMPORT_BYTES);
     } catch (err: any) {
+      if (err instanceof UrlImportError) {
+        throw err;
+      }
       if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
         throw new UrlImportError('Zeitüberschreitung beim Abrufen der URL (max. 12 Sekunden).', 504);
       }
-      throw new UrlImportError(`Verbindung zu ${validatedUrl.hostname} fehlgeschlagen.`, 502);
+      throw new UrlImportError(`Verbindung zu ${validatedTarget.url.hostname} fehlgeschlagen.`, 502);
     }
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
+    if (result.response.status >= 300 && result.response.status < 400) {
+      const location = result.response.headers.get('location');
       if (!location) {
         throw new UrlImportError('Fehlerhafte Weiterleitung ohne Ziel-URL.', 502);
       }
@@ -1167,15 +1266,18 @@ async function fetchWithSsrfGuard(
         throw new UrlImportError('Zu viele Weiterleitungen beim Abrufen der URL.', 502);
       }
       try {
-        currentUrl = new URL(location, validatedUrl).toString();
+        currentUrl = new URL(location, validatedTarget.url).toString();
       } catch {
         throw new UrlImportError('Ungültige Weiterleitungs-URL vom Zielserver.', 502);
       }
       continue;
     }
 
-    const text = await readResponseTextWithLimit(response);
-    return { response, text, finalUrl: validatedUrl.toString() };
+    return {
+      response: result.response,
+      text: result.text,
+      finalUrl: validatedTarget.url.toString()
+    };
   }
 
   throw new UrlImportError('Zu viele Weiterleitungen beim Abrufen der URL.', 502);

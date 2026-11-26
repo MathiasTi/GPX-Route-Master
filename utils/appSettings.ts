@@ -309,17 +309,16 @@ export function parseImportedSettingsJson(rawText: string): ImportedSettingsPayl
   const athlete: ImportedSettingsPayload['athlete'] = {};
 
   if (athleteRaw) {
-    const clampNum = (val: unknown, min: number, max: number, round: boolean) => {
+    const normalizePositiveNum = (val: unknown, round: boolean) => {
       const n = Number(val);
-      if (!Number.isFinite(n)) return undefined;
-      const clamped = Math.max(min, Math.min(max, n));
-      return round ? Math.round(clamped) : Number(clamped.toFixed(1));
+      if (!Number.isFinite(n) || n <= 0 || n > 10000) return undefined;
+      return round ? Math.round(n) : Number(n.toFixed(1));
     };
-    const ftp = clampNum(athleteRaw.ftp, 50, 600, true);
-    const userWeight = clampNum(athleteRaw.userWeight, 30, 200, false);
-    const userAge = clampNum(athleteRaw.userAge, 10, 100, true);
-    const userMaxHr = clampNum(athleteRaw.userMaxHr, 100, 230, true);
-    const estimatedSpeed = clampNum(athleteRaw.estimatedSpeed, 5, 45, false);
+    const ftp = normalizePositiveNum(athleteRaw.ftp, true);
+    const userWeight = normalizePositiveNum(athleteRaw.userWeight, false);
+    const userAge = normalizePositiveNum(athleteRaw.userAge, true);
+    const userMaxHr = normalizePositiveNum(athleteRaw.userMaxHr, true);
+    const estimatedSpeed = normalizePositiveNum(athleteRaw.estimatedSpeed, false);
     if (ftp !== undefined) athlete.ftp = ftp;
     if (userWeight !== undefined) athlete.userWeight = userWeight;
     if (userAge !== undefined) athlete.userAge = userAge;

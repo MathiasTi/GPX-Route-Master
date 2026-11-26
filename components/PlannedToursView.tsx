@@ -36,7 +36,7 @@ import {
 import { GPXTrack, SurfaceSegment } from '../types';
 import { getApiUrl, apiFetch } from '../utils/api';
 import { useAppPreferences } from '../utils/appSettings';
-import { formatDistance, formatElevation } from '../utils/units';
+import { formatDistance, formatElevation, getLocale } from '../utils/units';
 import {
   parseGPX,
   parseGPXStream,
@@ -2642,7 +2642,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                                   return (
                                     <span
                                       className="px-2 py-0.5 rounded-lg bg-emerald-600/90 text-white text-[10px] font-mono font-extrabold tabular-nums shadow-sm backdrop-blur-md"
-                                      title={`${kMeta.sourceType === 'komoot' ? 'Komoot-Quelle' : 'GPX-URL-Quelle'} · Version v${kMeta.version} · Zuletzt geprüft: ${new Date(kMeta.lastCheckedAt).toLocaleString('de-DE')}`}
+                                      title={`${kMeta.sourceType === 'komoot' ? 'Komoot-Quelle' : 'GPX-URL-Quelle'} · Version v${kMeta.version} · Zuletzt geprüft: ${new Date(kMeta.lastCheckedAt).toLocaleString(getLocale(lang))}`}
                                     >
                                       v{kMeta.version}
                                     </span>
@@ -2940,7 +2940,7 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                                         return (
                                           <span
                                             className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800/60 text-[9px] font-mono font-extrabold tabular-nums"
-                                            title={`Version v${kMeta.version} · Zuletzt geprüft: ${new Date(kMeta.lastCheckedAt).toLocaleString('de-DE')}`}
+                                            title={`Version v${kMeta.version} · Zuletzt geprüft: ${new Date(kMeta.lastCheckedAt).toLocaleString(getLocale(lang))}`}
                                           >
                                             v{kMeta.version}
                                           </span>

@@ -723,8 +723,12 @@ export async function runActivitiesCatalogTests(): Promise<boolean> {
     assert(formatDistance(10, 'imperial', 'en', 1) === '6.2 mi', 'Expected 10 km -> 6.2 mi in imperial');
     assert(formatElevation(1000, 'metric', 'de', true).endsWith('hm'), 'Expected metric DE climb in hm');
     assert(
-      formatElevation(1000, 'imperial', 'en', true).replace(/,/g, '') === '3281 ft',
-      'Expected 1000 m -> 3281 ft in imperial'
+      formatElevation(1000, 'imperial', 'en', true).replace(/,/g, '') === '+3281 ft',
+      'Expected signed 1000 m -> +3281 ft in imperial'
+    );
+    assert(
+      formatElevation(1000, 'imperial', 'en', false).replace(/,/g, '') === '3281 ft',
+      'Expected unsigned 1000 m -> 3281 ft in imperial'
     );
     assert(formatSpeed(30, 'metric', 1).endsWith('km/h'), 'Expected metric speed in km/h');
     assert(formatSpeed(100, 'imperial', 1).includes('62.1 mph'), 'Expected 100 km/h -> 62.1 mph');

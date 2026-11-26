@@ -27,7 +27,6 @@ import {
   formatPaceFromSpeed
 } from '../utils/units';
 import { TrackLibrary } from './TrackLibrary';
-import { WeatherOverlay } from './WeatherOverlay';
 import { SidebarSportsMetricsCard } from './SidebarSportsMetricsCard';
 import { WorkspaceSummaryDashboard } from './WorkspaceSummaryDashboard';
 import { BatchGpxUploader, UploadProgressInfo, UrlImportSubmitResult } from './BatchGpxUploader';
@@ -48,6 +47,10 @@ import {
   useSortable 
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+
+const WeatherOverlay = React.lazy(() =>
+  import('./WeatherOverlay').then((m) => ({ default: m.WeatherOverlay }))
+);
 
 interface TrackItemProps {
   track: GPXTrack;
@@ -2347,15 +2350,17 @@ const Sidebar: React.FC<SidebarProps> = ({
 
               {isWeatherExpanded && (
                 <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                  <WeatherOverlay
-                    track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                    allTracks={tracks}
-                    onSelectTrack={onMarkTrack}
-                    selectedDate={selectedDate}
-                    setSelectedDate={setSelectedDate}
-                    selectedTime={selectedTime}
-                    setSelectedTime={setSelectedTime}
-                  />
+                  <React.Suspense fallback={null}>
+                    <WeatherOverlay
+                      track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
+                      allTracks={tracks}
+                      onSelectTrack={onMarkTrack}
+                      selectedDate={selectedDate}
+                      setSelectedDate={setSelectedDate}
+                      selectedTime={selectedTime}
+                      setSelectedTime={setSelectedTime}
+                    />
+                  </React.Suspense>
                 </div>
               )}
             </section>

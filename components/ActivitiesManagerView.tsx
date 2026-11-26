@@ -1011,7 +1011,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                 <option value="">Alle Länder</option>
                 {countrySummaries.map((c) => (
                   <option key={c.country} value={c.country}>
-                    {c.country === '__unknown__' ? 'Ohne Land' : c.country} ({c.count.toLocaleString('de-DE')})
+                    {c.country === '__unknown__' ? 'Ohne Land' : c.country} ({c.count.toLocaleString(getLocale(lang))})
                   </option>
                 ))}
               </select>
@@ -1029,7 +1029,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                 <option value="">Alle Monate</option>
                 {monthSummaries.map((m) => (
                   <option key={m.monthKey} value={m.monthKey}>
-                    {formatMonthLabel(m.monthKey)} ({m.count.toLocaleString('de-DE')})
+                    {formatMonthLabel(m.monthKey)} ({m.count.toLocaleString(getLocale(lang))})
                   </option>
                 ))}
               </select>
@@ -1209,7 +1209,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
         <div className="bg-indigo-50 dark:bg-indigo-950/50 border-b border-indigo-200 dark:border-indigo-900 px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <span className="font-bold text-indigo-950 dark:text-indigo-100 font-mono tabular-nums">
-              {selectedCount.toLocaleString('de-DE')} ausgewählt
+              {selectedCount.toLocaleString(getLocale(lang))} ausgewählt
             </span>
             {!selectAllFiltered && totalCount > items.length && selectedKeys.size === items.length && (
               <button
@@ -1217,7 +1217,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
                 onClick={() => setSelectAllFiltered(true)}
                 className="font-semibold text-indigo-700 dark:text-indigo-300 underline hover:no-underline cursor-pointer"
               >
-                Alle {totalCount.toLocaleString('de-DE')} gefilterten auswählen
+                Alle {totalCount.toLocaleString(getLocale(lang))} gefilterten auswählen
               </button>
             )}
             <button
@@ -1266,7 +1266,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
             ) : (
               <div className="flex flex-wrap items-center gap-2 bg-rose-100/90 dark:bg-rose-950/90 border border-rose-300 dark:border-rose-800 px-3 py-1 rounded-lg">
                 <span className="text-xs font-bold text-rose-900 dark:text-rose-200">
-                  Wirklich {selectedCount.toLocaleString('de-DE')} Aktivitäten dauerhaft löschen?
+                  Wirklich {selectedCount.toLocaleString(getLocale(lang))} Aktivitäten dauerhaft löschen?
                 </span>
                 <button
                   type="button"
@@ -1468,12 +1468,9 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
 
                     <div className="flex items-center gap-3 whitespace-nowrap shrink-0">
                       <span className="font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                        {row.count.toLocaleString('de-DE')} Touren ·{' '}
-                        {row.totalDistanceKm.toLocaleString('de-DE', {
-                          minimumFractionDigits: 1,
-                          maximumFractionDigits: 1
-                        })}{' '}
-                        km · +{row.totalAscentM.toLocaleString('de-DE')} hm
+                        {row.count.toLocaleString(getLocale(lang))} Touren ·{' '}
+                        {formatDistance(row.totalDistanceKm, unitSystem, lang, 1)} ·{' '}
+                        {formatElevation(row.totalAscentM, unitSystem, lang, true)}
                       </span>
                       <button
                         type="button"

@@ -32,7 +32,7 @@ Environment Variables:
   HEALTH_URL          Live health endpoint verified after deploy (default: http://127.0.0.1:3000/api/health)
   VERIFY_HEALTH       true | false (default: true) -> confirm live /api/health reports deployed HEAD commit
   HEALTH_TIMEOUT_SEC  Max seconds to wait for healthy matching commit (default: 30)
-  LOCK_FILE           Lock path to prevent concurrent runs (default: /tmp/gpx-route-master-autodeploy.lock)
+  LOCK_FILE           Lock path (default: <REPO_DIR>/.git/gpx-route-master-autodeploy.lock)
 EOF
 }
 
@@ -80,11 +80,12 @@ RUN_TESTS="${RUN_TESTS:-false}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 VERIFY_HEALTH="${VERIFY_HEALTH:-true}"
 HEALTH_TIMEOUT_SEC="${HEALTH_TIMEOUT_SEC:-30}"
-LOCK_FILE="${LOCK_FILE:-/tmp/gpx-route-master-autodeploy.lock}"
 
 [[ -d "$REPO_DIR" ]] || die "Repository directory not found: $REPO_DIR"
 [[ -d "${REPO_DIR}/.git" ]] || die "Not a git repository: $REPO_DIR"
 command -v git >/dev/null 2>&1 || die "git is required"
+
+LOCK_FILE="${LOCK_FILE:-${REPO_DIR}/.git/gpx-route-master-autodeploy.lock}"
 
 case "$DEPLOY_MODE" in
   auto|docker|systemd|custom) ;;
@@ -179,10 +180,10 @@ show_status() {
   echo ""
   if [[ -n "$remote_sha" && "$local_sha" != "$remote_sha" ]]; then
     echo "Status: UPDATE AVAILABLE (${short_local} -> ${short_remote}). Run: ${SCRIPT_DIR}/auto-deploy.sh"
-  elif [[ -n "$live_commit" && "$live_commit" != "unknown" && "$live_commit" != "${short_local}"* && "${short_local}" != "${live_commit}"* ]]; then
-    echo "Status: STALE LIVE DEPLOY (Git is at ${short_local}, but live service still runs ${live_commit}). Run: ${SCRIPT_DIR}/auto-deploy.sh --force --no-cache"
   elif [[ -z "$live_json" ]]; then
     echo "Status: GIT AT ${short_local}, LIVE HEALTH UNREACHABLE"
+  elif [[ -z "$live_commit" || "$live_commit" == "unknown" || ( "$live_commit" != "${short_local}"* && "${short_local}" != "${live_commit}"* ) ]]; then
+    echo "Status: STALE LIVE DEPLOY (Git is at ${short_local}, live service reports commit '${live_commit:-missing}'). Run: ${SCRIPT_DIR}/auto-deploy.sh --force --no-cache"
   else
     echo "Status: UP-TO-DATE (Git & live app both on commit ${live_commit})"
   fi
@@ -226,10 +227,28 @@ REMOTE_SHA="$(git rev-parse "${GIT_REMOTE}/${GIT_BRANCH}")"
 
 if [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]]; then
   if [[ "$FORCE_DEPLOY" != "true" ]]; then
-    log "No changes detected on ${GIT_REMOTE}/${GIT_BRANCH} (${LOCAL_SHA:0:7}). Skipping deploy."
-    exit 0
+    local_short="$(git rev-parse --short HEAD)"
+    if [[ "$VERIFY_HEALTH" == "true" ]] && command -v curl >/dev/null 2>&1; then
+      live_json="$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null || true)"
+      if [[ -n "$live_json" ]]; then
+        live_commit="$(extract_json_field "$live_json" "commit")"
+        if [[ -z "$live_commit" || "$live_commit" == "unknown" || ( "$live_commit" != "${local_short}"* && "${local_short}" != "${live_commit}"* ) ]]; then
+          log "Git is already at ${local_short}, but live app at ${HEALTH_URL} reports commit '${live_commit:-missing}'. Triggering deploy to sync live service..."
+        else
+          log "No changes detected on ${GIT_REMOTE}/${GIT_BRANCH} (${local_short}; live commit matches). Skipping deploy."
+          exit 0
+        fi
+      else
+        log "No changes detected on ${GIT_REMOTE}/${GIT_BRANCH} (${local_short}). Skipping deploy."
+        exit 0
+      fi
+    else
+      log "No changes detected on ${GIT_REMOTE}/${GIT_BRANCH} (${local_short}). Skipping deploy."
+      exit 0
+    fi
+  else
+    log "No remote changes (${LOCAL_SHA:0:7}), continuing due to --force."
   fi
-  log "No remote changes (${LOCAL_SHA:0:7}), continuing due to --force."
 else
   log "New commits detected: ${LOCAL_SHA:0:7} -> ${REMOTE_SHA:0:7}"
   git log --oneline "${LOCAL_SHA}..${REMOTE_SHA}" || true

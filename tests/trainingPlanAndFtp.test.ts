@@ -309,6 +309,109 @@ export function runTrainingPlanAndFtpTests(): boolean {
     assert.equal(estimateFtpFromActivities([runOnly], { now }).confidence, 'none');
   });
 
+  check('estimateFtpFromActivities excludes E-Bike and Pedelec rides from FTP', () => {
+    const now = new Date('2026-06-15T12:00:00Z');
+    const ebikeRide: FtpActivityInput = {
+      id: 'ebike-1',
+      name: 'Morning Commute Pedelec',
+      type: 'e_bike_fitness',
+      date: '2026-06-12T08:00:00Z',
+      distance: 35,
+      duration: 3600,
+      ascent: 700,
+      hasPower: true,
+      peaks: { 1200: 380, 3600: 340 },
+    };
+    const report = estimateFtpFromActivities([ebikeRide], { userWeightKg: 75, now });
+    assert.equal(report.recommendedFtp, null);
+    assert.equal(report.confidence, 'none');
+    assert.equal(report.powerActivityCount, 0);
+  });
+
+  check('estimateFtpFromActivities prefers precomputed 1-Hz peaks and prevents pause-gap MMP inflation', () => {
+    const now = new Date('2026-06-15T12:00:00Z');
+    // Precomputed 1-Hz FIT telemetry peak should beat coarse/downsampled point approximations
+    const withPeaks: FtpActivityInput = {
+      id: 'ride-precomputed',
+      name: 'Intervalle',
+      type: 'cycling',
+      date: '2026-06-13T08:00:00Z',
+      distance: 45,
+      duration: 3600,
+      hasPower: true,
+      peaks: { 1200: 290 },
+      points: buildPowerTrackPoints('2026-06-13T08:00:00Z', 1200, 60, 220),
+    };
+    const r1 = estimateFtpFromActivities([withPeaks], { userWeightKg: 75, now });
+    assert.equal(r1.candidates.find((c) => c.method === 'mmp_20m')?.ftpWatts, Math.round(290 * 0.95));
+
+    // Pause-gap test: 10m @ 340W + 10m stopped gap + 10m @ 340W must NOT count as 20m @ 340W
+    const t0 = new Date('2026-06-14T08:00:00Z').getTime();
+    const gappedPts: Array<{ lat: number; lng: number; ele: number; time: string; power: number }> = [];
+    for (let s = 0; s < 600; s++) {
+      gappedPts.push({ lat: 48, lng: 11, ele: 500, time: new Date(t0 + s * 1000).toISOString(), power: 340 });
+    }
+    for (let s = 0; s < 600; s++) {
+      // 10-minute recording pause after first 10-min block (t0 + 1200s .. 1799s)
+      gappedPts.push({ lat: 48, lng: 11, ele: 500, time: new Date(t0 + (1200 + s) * 1000).toISOString(), power: 340 });
+    }
+    const pausedRide: FtpActivityInput = {
+      id: 'ride-paused',
+      name: 'Coffee Stop Ride',
+      type: 'cycling',
+      date: '2026-06-14T08:00:00Z',
+      distance: 25,
+      duration: 1800,
+      points: gappedPts,
+    };
+    const rPaused = estimateFtpFromActivities([pausedRide], { userWeightKg: 75, now });
+    const p20Paused = rPaused.candidates.find((c) => c.method === 'mmp_20m');
+    assert.ok(!p20Paused || p20Paused.ftpWatts < Math.round(340 * 0.95));
+  });
+
+  check('estimateFtpFromActivities ignores flat-road GPS altitude jitter in climbing physics', () => {
+    const now = new Date('2026-06-15T12:00:00Z');
+    const t0 = new Date('2026-06-10T08:00:00Z').getTime();
+    // 60 points separated by 30s (30m ride), flat ~0.1% avg grade with +/- 2.5m altitude GPS jitter
+    const flatJitterPts = Array.from({ length: 60 }, (_, i) => ({
+      lat: 52.5 + i * 0.0022,
+      lng: 13.4,
+      ele: 40 + (i % 2 === 0 ? 0 : 2.5) + i * 0.1,
+      time: new Date(t0 + i * 30000).toISOString(),
+    }));
+    const flatRide: FtpActivityInput = {
+      id: 'flat-jitter',
+      name: 'Spreewald Flat Loop',
+      type: 'road_biking',
+      date: '2026-06-10T08:00:00Z',
+      distance: 14,
+      duration: 1800,
+      ascent: 450,
+      points: flatJitterPts,
+    };
+    const report = estimateFtpFromActivities([flatRide], { userWeightKg: 75, bikeWeightKg: 8.5, now });
+    assert.equal(report.climbActivityCount, 0);
+    assert.equal(report.recommendedFtp, null);
+  });
+
+  check('estimateFtpFromActivities downgrades 2-point and unrealistic Critical Power fits', () => {
+    const now = new Date('2026-06-15T12:00:00Z');
+    // Only 2 non-maximal points (5m=225W, 20m=220W -> tiny W' ~ 1500 J): must omit CP and rely on mmp_20m
+    const nonMaxRide: FtpActivityInput = {
+      id: 'endurance-only',
+      name: 'Endurance Spin',
+      type: 'cycling',
+      date: '2026-06-11T08:00:00Z',
+      distance: 50,
+      duration: 3600,
+      hasPower: true,
+      peaks: { 300: 225, 1200: 220 },
+    };
+    const report = estimateFtpFromActivities([nonMaxRide], { userWeightKg: 75, now });
+    assert.equal(report.candidates.some((c) => c.method === 'critical_power'), false);
+    assert.equal(report.bestMethod?.method, 'mmp_20m');
+  });
+
   check('computeKarvonenBpmRange and computeRunningPaceTargets compute physiological targets', () => {
     const hrr = computeKarvonenBpmRange(0.7, 0.8, 190, 50);
     // 50 + (190-50)*0.7 = 148, 50 + 140*0.8 = 162

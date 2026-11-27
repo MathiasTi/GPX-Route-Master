@@ -98,6 +98,10 @@ function isLikelyCyclingActivity(type?: string, name?: string): boolean {
     raw.includes('strength') ||
     raw.includes('kraft') ||
     raw.includes('yoga') ||
+    raw.includes('e_bik') ||
+    raw.includes('ebike') ||
+    raw.includes('e-bike') ||
+    raw.includes('pedelec') ||
     raw.includes('chrono')
   ) {
     return false;
@@ -145,6 +149,66 @@ function computeActivityDurationSec(act: FtpActivityInput, pts: FtpActivityPoint
     return pts.length - 1;
   }
   return 0;
+}
+
+function buildOneHzPowerTimeline(
+  pts: FtpActivityPoint[],
+  fallbackPowerSamples: number[],
+  durSec: number
+): { samples: number[]; dtSec: number } {
+  const timedSamples: Array<{ tSec: number; watts: number }> = [];
+  for (const p of pts) {
+    const w = Number(p?.power);
+    const tMs = parseTimeMs(p?.time);
+    if (Number.isFinite(w) && w >= 0 && w <= 2500 && tMs !== null) {
+      timedSamples.push({ tSec: Math.round(tMs / 1000), watts: w });
+    }
+  }
+
+  if (timedSamples.length >= 10) {
+    const rawStepSecs: number[] = [];
+    for (let i = 1; i < timedSamples.length; i++) {
+      const dt = timedSamples[i].tSec - timedSamples[i - 1].tSec;
+      if (dt > 0 && dt <= 60) rawStepSecs.push(dt);
+    }
+    rawStepSecs.sort((a, b) => a - b);
+    const medianDt = rawStepSecs.length > 0 ? rawStepSecs[Math.floor(rawStepSecs.length / 2)] : 1;
+    // Distinguish genuine recording pauses from regular coarse downsampling intervals
+    const pauseThresholdSec = Math.max(15, Math.round(medianDt * 2.5));
+
+    const timeline: number[] = [timedSamples[0].watts];
+    for (let i = 1; i < timedSamples.length; i++) {
+      const prev = timedSamples[i - 1];
+      const curr = timedSamples[i];
+      const gap = curr.tSec - prev.tSec;
+      if (gap <= 0) {
+        timeline[timeline.length - 1] = curr.watts;
+        continue;
+      }
+      if (gap <= pauseThresholdSec) {
+        const fillCount = Math.min(gap - 1, 120);
+        for (let k = 0; k < fillCount; k++) {
+          timeline.push(prev.watts);
+        }
+      } else {
+        // Pause gap: dilute contiguous rolling windows with explicit 0W coasting/rest seconds (capped)
+        const zeroFill = Math.min(gap - 1, 1800);
+        for (let k = 0; k < zeroFill; k++) {
+          timeline.push(0);
+        }
+      }
+      timeline.push(curr.watts);
+      if (timeline.length > 86400) break;
+    }
+
+    if (timeline.length >= 10) {
+      return { samples: timeline, dtSec: 1 };
+    }
+  }
+
+  const totalPtsForDt = Math.max(pts.length, fallbackPowerSamples.length);
+  const dtSec = durSec > 0 && totalPtsForDt > 1 ? Math.max(1, durSec / (totalPtsForDt - 1)) : 1;
+  return { samples: fallbackPowerSamples, dtSec };
 }
 
 function computeRollingPeakWatts(powerSamples: number[], dtSec: number, durationSec: number): number {
@@ -215,21 +279,38 @@ function estimateClimbingPhysicsFtp(
     const actDur = computeActivityDurationSec(act, pts);
     const defaultDt = actDur > 0 ? Math.max(1, actDur / Math.max(1, pts.length - 1)) : 5;
 
-    // Scan ascending segments over GPS+elevation points
+    // 3-point moving-average elevation smoothing reduces GPS altitude jitter on flat roads
+    const smoothedEle: Array<number | null> = pts.map((_, idx) => {
+      let sum = 0;
+      let cnt = 0;
+      for (let k = Math.max(0, idx - 1); k <= Math.min(pts.length - 1, idx + 1); k++) {
+        const rawEle = Number(pts[k]?.ele);
+        if (pts[k]?.ele !== undefined && Number.isFinite(rawEle)) {
+          sum += rawEle;
+          cnt++;
+        }
+      }
+      return cnt > 0 ? sum / cnt : null;
+    });
+
+    // Scan sustained ascending segments over GPS+elevation points
     let segStart = -1;
+    let segStartEle = 0;
+    let segMaxEle = 0;
     let segDistKm = 0;
-    let segAscentM = 0;
     let segDurSec = 0;
     let dipGrace = 0;
 
     const finalizeSegment = () => {
-      const candidate = evalSegment(segDistKm, segAscentM, segDurSec);
+      const netGainM = Math.max(0, segMaxEle - segStartEle);
+      const candidate = evalSegment(segDistKm, netGainM, segDurSec);
       if (candidate && (!best || candidate.climbWatts > best.climbWatts)) {
         best = candidate;
       }
       segStart = -1;
+      segStartEle = 0;
+      segMaxEle = 0;
       segDistKm = 0;
-      segAscentM = 0;
       segDurSec = 0;
       dipGrace = 0;
     };
@@ -237,13 +318,15 @@ function estimateClimbingPhysicsFtp(
     for (let i = 1; i < pts.length; i++) {
       const prev = pts[i - 1];
       const curr = pts[i];
+      const prevEle = smoothedEle[i - 1];
+      const currEle = smoothedEle[i];
       if (
         prev?.lat === undefined ||
         prev?.lng === undefined ||
         curr?.lat === undefined ||
         curr?.lng === undefined ||
-        prev?.ele === undefined ||
-        curr?.ele === undefined
+        prevEle === null ||
+        currEle === null
       ) {
         if (segStart >= 0) finalizeSegment();
         continue;
@@ -253,24 +336,37 @@ function estimateClimbingPhysicsFtp(
       const lng1 = Number(prev.lng);
       const lat2 = Number(curr.lat);
       const lng2 = Number(curr.lng);
-      const eleDiff = Number(curr.ele) - Number(prev.ele);
+      const eleDiff = currEle - prevEle;
       const stepDistKm = calculateDistance({ lat: lat1, lng: lng1 }, { lat: lat2, lng: lng2 });
       const t1 = parseTimeMs(prev.time);
       const t2 = parseTimeMs(curr.time);
-      const stepDur = t1 !== null && t2 !== null && t2 > t1 ? Math.min(300, (t2 - t1) / 1000) : defaultDt;
+      const rawStepDur = t1 !== null && t2 !== null && t2 > t1 ? (t2 - t1) / 1000 : defaultDt;
 
+      // Split climb segments cleanly across pause gaps > 60s
+      if (rawStepDur > 60) {
+        if (segStart >= 0) finalizeSegment();
+        continue;
+      }
+
+      const stepDur = rawStepDur;
       if (!Number.isFinite(stepDistKm) || stepDistKm > 0.5 || !Number.isFinite(eleDiff)) continue;
 
       const stepGrade = stepDistKm > 0.002 ? eleDiff / (stepDistKm * 1000) : 0;
-      if (stepGrade >= 0.025 || eleDiff > 0) {
-        if (segStart < 0) segStart = i - 1;
+      if (stepGrade >= 0.03) {
+        if (segStart < 0) {
+          segStart = i - 1;
+          segStartEle = prevEle;
+          segMaxEle = currEle;
+        } else if (currEle > segMaxEle) {
+          segMaxEle = currEle;
+        }
         segDistKm += stepDistKm;
-        if (eleDiff > 0) segAscentM += eleDiff;
         segDurSec += stepDur;
         dipGrace = 0;
       } else if (segStart >= 0 && dipGrace < 3 && eleDiff >= -3) {
         segDistKm += stepDistKm;
         segDurSec += stepDur;
+        if (currEle > segMaxEle) segMaxEle = currEle;
         dipGrace++;
       } else if (segStart >= 0) {
         finalizeSegment();
@@ -279,8 +375,8 @@ function estimateClimbingPhysicsFtp(
     if (segStart >= 0) finalizeSegment();
   }
 
-  // Fallback on aggregate climbing ride stats if point scan found nothing
-  if (!best && Number(act.ascent || 0) >= 400 && Number(act.distance || 0) > 5 && Number(act.duration || 0) >= 900) {
+  // Fallback on aggregate climbing ride stats only when no detailed point series exists
+  if (!best && pts.length < 20 && Number(act.ascent || 0) >= 400 && Number(act.distance || 0) > 5 && Number(act.duration || 0) >= 900) {
     best = evalSegment(Number(act.distance), Number(act.ascent), Number(act.duration));
   }
 
@@ -367,16 +463,19 @@ export function estimateFtpFromActivities(
 
     if (hasGenuinePowerSamples || hasPrecomputedPeaks) {
       powerActivityCount++;
-      const totalPtsForDt = Math.max(pts.length, powerSamples.length);
-      const dtSec = durSec > 0 && totalPtsForDt > 1 ? Math.max(1, durSec / (totalPtsForDt - 1)) : 1;
+      const timeline = hasGenuinePowerSamples
+        ? buildOneHzPowerTimeline(pts, powerSamples, durSec)
+        : null;
 
       for (const d of durations) {
         let peakW = 0;
-        if (hasGenuinePowerSamples && (durSec <= 0 || durSec >= d * 0.9)) {
-          peakW = computeRollingPeakWatts(powerSamples, dtSec, d);
-        }
-        if (peakW <= 0 && act.peaks && Number(act.peaks[d] || 0) > 10) {
+        const durationEligible = durSec <= 0 || durSec >= d * 0.9;
+        // Prefer full-resolution precomputed 1-Hz telemetry peaks first when available
+        if (durationEligible && act.hasPower !== false && act.peaks && Number(act.peaks[d] || 0) > 10) {
           peakW = Math.round(Number(act.peaks[d]));
+        }
+        if (peakW <= 0 && hasGenuinePowerSamples && timeline && durationEligible) {
+          peakW = computeRollingPeakWatts(timeline.samples, timeline.dtSec, d);
         }
         if (peakW <= 20 || peakW > 2000) continue;
 
@@ -442,20 +541,46 @@ export function estimateFtpFromActivities(
   }
 
   // Method B: Critical Power Monod-Scherrer regression (5m + 8m/20m)
+  const p20 = selectedPeaks[1200];
   const cpInputs: Array<{ durationSec: number; label: string; watts: number }> = [];
   if (selectedPeaks[300]?.watts) cpInputs.push({ durationSec: 300, label: '5m', watts: selectedPeaks[300].watts });
   if (selectedPeaks[480]?.watts) cpInputs.push({ durationSec: 480, label: '8m', watts: selectedPeaks[480].watts });
   if (selectedPeaks[1200]?.watts) cpInputs.push({ durationSec: 1200, label: '20m', watts: selectedPeaks[1200].watts });
 
   if (cpInputs.length >= 2 && (selectedPeaks[1200] || selectedPeaks[480])) {
+    const n = cpInputs.length;
+    const meanX = cpInputs.reduce((acc, p) => acc + p.durationSec, 0) / n;
+    const meanY = cpInputs.reduce((acc, p) => acc + p.watts * p.durationSec, 0) / n;
+    let num = 0;
+    let den = 0;
+    for (const p of cpInputs) {
+      const dx = p.durationSec - meanX;
+      num += dx * (p.watts * p.durationSec - meanY);
+      den += dx * dx;
+    }
+    const rawSlopeCp = den > 0 ? num / den : 0;
+    const rawWPrimeJ = meanY - rawSlopeCp * meanX;
+
     const cpEst = estimateCriticalPowerFromBests(cpInputs, 240, safeWeight);
-    if (cpEst.cpWatts >= 80 && cpEst.cpWatts <= 600) {
+    const cpImpossible =
+      !Number.isFinite(rawWPrimeJ) ||
+      rawWPrimeJ < 3000 ||
+      (p20 && cpEst.cpWatts > p20.watts);
+
+    if (!cpImpossible && cpEst.cpWatts >= 80 && cpEst.cpWatts <= 600) {
+      const isReliableCp =
+        cpInputs.length >= 3 &&
+        cpEst.rSquared >= 0.97 &&
+        rawWPrimeJ >= 8000 &&
+        rawWPrimeJ <= 38000 &&
+        (!p20 || cpEst.cpWatts <= Math.round(p20.watts * 0.98));
+
       candidates.push({
         method: 'critical_power',
         label: `Critical Power Regression (R² ${cpEst.rSquared})`,
         ftpWatts: cpEst.cpWatts,
         wkg: toWkg(cpEst.cpWatts),
-        confidence: cpEst.rSquared >= 0.94 ? 'high' : 'medium',
+        confidence: isReliableCp ? 'high' : 'medium',
         basisValue: `${cpInputs.map((c) => `${c.label}: ${c.watts}W`).join(' · ')} (W' ${cpEst.wPrimeKj} kJ)`,
         activityName: selectedPeaks[1200]?.activityName || selectedPeaks[480]?.activityName,
         activityDate: selectedPeaks[1200]?.activityDate || selectedPeaks[480]?.activityDate,
@@ -465,7 +590,6 @@ export function estimateFtpFromActivities(
   }
 
   // Method C: 20-min Peak * 0.95
-  const p20 = selectedPeaks[1200];
   if (p20) {
     const ftpWatts = Math.round(p20.watts * 0.95);
     if (ftpWatts >= 80 && ftpWatts <= 600) {

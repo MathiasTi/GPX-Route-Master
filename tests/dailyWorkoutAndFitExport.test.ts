@@ -351,6 +351,38 @@ export function runDailyWorkoutAndFitExportTests(): boolean {
     assert.ok(rec.intensityLevel === 'easy' || rec.intensityLevel === 'rest');
   });
 
+  check('yesterdayTss strictly counts yesterday local day and excludes same-day morning workouts', () => {
+    const now = new Date('2026-06-15T20:00:00Z');
+    const rec = suggestDailyWorkout(
+      makeBaseDailyInput({
+        now,
+        recentActivities: [
+          {
+            // Same day (June 15), 13h before 20:00Z: should NOT count into yesterdayTss
+            date: '2026-06-15T07:00:00Z',
+            type: 'running',
+            name: 'Morning Shakeout',
+            distance: 8,
+            duration: 2400,
+            tss: 42,
+            avg_hr: 138,
+          },
+          {
+            // Yesterday (June 14): SHOULD count into yesterdayTss
+            date: '2026-06-14T15:00:00Z',
+            type: 'cycling',
+            name: 'Base Ride',
+            distance: 45,
+            duration: 5400,
+            tss: 75,
+            avg_hr: 140,
+          },
+        ],
+      })
+    );
+    assert.equal(rec.recentSummary.yesterdayTss, 75);
+  });
+
   check('FIT binary round-trip encodes running pace (mm/s) and HR (+100) targets accurately', () => {
     const runWorkout: PlannedWorkout = {
       dayLabel: 'Heute',

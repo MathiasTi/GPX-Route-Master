@@ -445,7 +445,7 @@ export default function FitnessPerformanceAnalysis({
 
   // Stage 1: Parse points_json & pre-compute heavy telemetry ONCE when activities change (independent of FTP / maxHr)
   const parsedActivitiesTelemetry = useMemo(() => {
-    const peakDurations = [1, 5, 15, 60, 300, 1200, 3600];
+    const peakDurations = [1, 5, 15, 60, 300, 480, 1200, 3600];
     return activities
       .filter(act => !isStopWatchType(act.type))
       .map(act => {
@@ -891,6 +891,10 @@ export default function FitnessPerformanceAnalysis({
         lastDateStr = dStr;
       }
     }
+    const todayIsoStr = new Date().toISOString().slice(0, 10);
+    if (todayIsoStr > lastDateStr) {
+      lastDateStr = todayIsoStr;
+    }
 
     const start = new Date(`${firstDateStr}T00:00:00Z`);
     const end = new Date(`${lastDateStr}T00:00:00Z`);
@@ -934,11 +938,13 @@ export default function FitnessPerformanceAnalysis({
       ctl = prevCtl * ctlLambda + tss * (1 - ctlLambda);
       atl = prevAtl * atlLambda + tss * (1 - atlLambda);
 
-      // TSB is Form at the start of the day (yesterday's balance)
+      // TSB is Form at the start of the day (yesterday's balance); endTsb/endAcwr reflect today's completion
       const tsb = prevCtl - prevAtl;
+      const endTsb = ctl - atl;
 
       // Acute to Chronic Workload Ratio (ACWR): Sweet spot is 0.8 - 1.3, danger > 1.5
       const acwr = prevCtl > 10 ? prevAtl / prevCtl : 1.0;
+      const endAcwr = ctl > 10 ? atl / ctl : 1.0;
 
       // Format date for display (de-DE)
       const dObj = new Date(`${date}T12:00:00Z`);
@@ -951,15 +957,22 @@ export default function FitnessPerformanceAnalysis({
         ctl: Math.round(ctl),
         atl: Math.round(atl),
         tsb: Math.round(tsb),
-        acwr: parseFloat(acwr.toFixed(2))
+        acwr: parseFloat(acwr.toFixed(2)),
+        endTsb: Math.round(endTsb),
+        endAcwr: parseFloat(endAcwr.toFixed(2))
       };
     }).filter(d => d.date >= bufferCutoffStr);
   }, [sportFilteredActivities, calculatedActivities]);
 
-  // Current Fitness values (last day in timeline)
+  // Current Fitness values (post-today balance on last day in timeline)
   const currentFitness = useMemo(() => {
     if (fitnessTrendData.length === 0) return { ctl: 0, atl: 0, tsb: 0, acwr: 1.0 };
-    return fitnessTrendData[fitnessTrendData.length - 1];
+    const latest = fitnessTrendData[fitnessTrendData.length - 1];
+    return {
+      ...latest,
+      tsb: latest.endTsb,
+      acwr: latest.endAcwr
+    };
   }, [fitnessTrendData]);
 
   const longitudinalActivities = useMemo<LongitudinalActivityInput[]>(() => {
@@ -1014,7 +1027,8 @@ export default function FitnessPerformanceAnalysis({
       if (d === 3600) label = "1h";
 
       const peakInfo = maxPeaks[d];
-      const relPower = peakInfo.power / userWeight;
+      const safeWeight = Math.max(30, userWeight || 75);
+      const relPower = peakInfo.power / safeWeight;
 
       return {
         duration: d,
@@ -1039,6 +1053,7 @@ export default function FitnessPerformanceAnalysis({
   // Overall training polarization & zones aggregation
   const trainingZonesAggr = useMemo(() => {
     const isRunningView = filterType === 'running';
+    const safeFtp = Math.max(50, ftp || 250);
     
     // Heart Rate Zones (Z1-Z5 based on user max HR)
     const hrZonesSeconds = [0, 0, 0, 0, 0];
@@ -1050,15 +1065,17 @@ export default function FitnessPerformanceAnalysis({
       const hrSamples: number[] = act.hrSamples || [];
       const powerSamples: number[] = act.powerSamples || [];
       const isRun = isRunningType(act.type, act.name);
+      // Never mix running wrist-power watts into Cycling Coggan 7-zone buckets
+      const includePowerZones = isRunningView || !isRun;
 
       // If no points, split overall duration proportionally
       if (act.pointsCount === 0) {
         if (act.avg_hr) {
           hrZonesSeconds[classifyHrZone(act.avg_hr)] += act.duration;
         }
-        if (act.hasPower && act.np) {
+        if (includePowerZones && act.hasPower && act.np) {
           const pwr = act.np;
-          const ratio = pwr / ftp;
+          const ratio = pwr / safeFtp;
           if (isRunningView || isRun) {
             let zIdx = 0;
             if (ratio < 0.80) zIdx = 0;
@@ -1092,12 +1109,12 @@ export default function FitnessPerformanceAnalysis({
         hrZonesSeconds[classifyHrZone(act.avg_hr)] += act.duration;
       }
 
-      if (powerSamples.length > 0) {
+      if (includePowerZones && powerSamples.length > 0) {
         const dt = act.duration > 0 ? act.duration / powerSamples.length : 1;
         const maxZIdx = pwrZonesSeconds.length - 1;
         if (isRunningView || isRun) {
           for (let i = 0; i < powerSamples.length; i++) {
-            const ratio = powerSamples[i] / ftp;
+            const ratio = powerSamples[i] / safeFtp;
             let zIdx = 0;
             if (ratio < 0.80) zIdx = 0;
             else if (ratio < 0.90) zIdx = 1;
@@ -1108,7 +1125,7 @@ export default function FitnessPerformanceAnalysis({
           }
         } else {
           for (let i = 0; i < powerSamples.length; i++) {
-            const ratio = powerSamples[i] / ftp;
+            const ratio = powerSamples[i] / safeFtp;
             let zoneIdx = 0;
             if (ratio < 0.55) zoneIdx = 0;
             else if (ratio < 0.75) zoneIdx = 1;

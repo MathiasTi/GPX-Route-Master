@@ -2252,7 +2252,7 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       }
     }
 
-    const durations = [1, 5, 15, 60, 300, 1200, 3600];
+    const durations = [1, 5, 15, 60, 300, 480, 1200, 3600];
     const peaks: Record<number, number> = {};
     for (const d of durations) {
       if (secPower.length < d) {
@@ -2988,18 +2988,33 @@ Antworte ausschließlich im folgenden JSON-Format (innerhalb eines \`\`\`json Bl
       const health = getHealthMetrics("default", { includePoints: true });
       const garminActs = Array.isArray(health.activities) ? health.activities : [];
 
-      const libraryTracks = getAllTracksFull(40).map((t) => ({
-        id: t.id,
-        name: t.name,
-        type: t.activity_type || "cycling",
-        date: t.date_created,
-        distance: t.distance,
-        duration: t.duration,
-        ascent: t.ascent,
-        points_json: t.points_json
-      }));
+      // Only include saved library tracks that contain genuine recorded power telemetry (>10W),
+      // never planned/curated GPX tours without power meters.
+      const libraryTracks = getAllTracksFull(40)
+        .filter((t) => {
+          if (typeof t.points_json !== "string" || !t.points_json.includes('"power"')) {
+            return false;
+          }
+          try {
+            const pts = JSON.parse(t.points_json);
+            return Array.isArray(pts) && pts.some((p: any) => Number(p?.power) > 10);
+          } catch {
+            return false;
+          }
+        })
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          type: t.activity_type || "cycling",
+          date: t.date_created,
+          distance: t.distance,
+          duration: t.duration,
+          ascent: t.ascent,
+          hasPower: true,
+          points_json: t.points_json
+        }));
 
-      const combined = garminActs.length > 0 ? [...garminActs, ...libraryTracks] : libraryTracks;
+      const combined = [...garminActs, ...libraryTracks];
       const report = estimateFtpFromActivities(combined, {
         userWeightKg,
         bikeWeightKg,

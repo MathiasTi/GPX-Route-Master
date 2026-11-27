@@ -697,7 +697,7 @@ export function suggestDailyWorkout(input: DailyWorkoutInput): DailyWorkoutRecom
     }
 
     const actTss = Number(act.tss || 0) > 0 ? Number(act.tss) : Math.round((Number(act.duration || 0) / 3600) * 52);
-    if (dayKey === yesterdayKey || (diffHours >= 10 && diffHours <= 34)) {
+    if (dayKey === yesterdayKey) {
       yesterdayTss += actTss;
     }
     if (diffHours <= 48) {

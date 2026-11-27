@@ -32,6 +32,13 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [swStats, setSwStats] = useState<SWCacheStats>({ tileCount: 0, shellCount: 0 });
   const [isClearingCache, setIsClearingCache] = useState(false);
+  const [liveBuildInfo, setLiveBuildInfo] = useState<{
+    version?: string;
+    commit?: string;
+    branch?: string;
+    buildTime?: string;
+    startedAt?: string;
+  } | null>(null);
 
   const fetchSWStats = async () => {
     const stats = await getSWCacheStats();
@@ -69,6 +76,20 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
   useEffect(() => {
     fetchVersions();
     fetchSWStats();
+    apiFetch(getApiUrl('/api/health'))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.status === 'ok') {
+          setLiveBuildInfo({
+            version: data.version,
+            commit: data.commit,
+            branch: data.branch,
+            buildTime: data.buildTime,
+            startedAt: data.startedAt
+          });
+        }
+      })
+      .catch(() => {});
 
     const updateOnline = () => setIsOnline(navigator.onLine);
     window.addEventListener('online', updateOnline);
@@ -198,10 +219,35 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose, onVersionUpdate
             <div className="p-2.5 rounded-xl bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 border border-orange-200/40 dark:border-orange-900/30 shrink-0">
               <Terminal className="w-5 h-5" />
             </div>
-            <div className="space-y-1">
-              <h3 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wide">
-                GPX Route Master Engine
-              </h3>
+            <div className="space-y-1.5 flex-1 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wide">
+                  GPX Route Master Engine
+                </h3>
+                {liveBuildInfo && (
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                    {liveBuildInfo.version && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/60 font-bold">
+                        v{liveBuildInfo.version}
+                      </span>
+                    )}
+                    {liveBuildInfo.commit && liveBuildInfo.commit !== 'unknown' && (
+                      <span
+                        title={`Branch: ${liveBuildInfo.branch || 'main'} · Gestartet: ${liveBuildInfo.startedAt || '—'}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800/60 font-bold"
+                      >
+                        <GitCommit className="w-3 h-3" />
+                        {liveBuildInfo.commit}
+                      </span>
+                    )}
+                    {liveBuildInfo.buildTime && (
+                      <span className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800">
+                        Build: {new Date(liveBuildInfo.buildTime).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 Ein professioneller Full-Stack-Routenmanager mit nahtloser GPX-Modulverkettung, intelligenter Höhenprofilberechnung und tiefer Garmin-SQLite-Datenbankanalyse zur Synchronisierung von Sport- & Gesundheitsmetriken.
               </p>

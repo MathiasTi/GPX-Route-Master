@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_GIT_COMMIT: ${APP_GIT_COMMIT:-unknown}
+        APP_GIT_BRANCH: ${APP_GIT_BRANCH:-unknown}
+        APP_BUILD_TIME: ${APP_BUILD_TIME:-unknown}
     container_name: gpx-route-master
     restart: unless-stopped
     ports:

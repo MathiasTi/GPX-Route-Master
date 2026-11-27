@@ -299,9 +299,13 @@ systemctl "${SYSTEMCTL_ARGS[@]}" list-timers --all "${SERVICE_NAME}.timer" || tr
 echo ""
 echo "Useful commands:"
 if [[ "$USER_MODE" == "true" ]]; then
+  echo "  Status:     ${DEPLOY_SCRIPT} --status"
+  echo "  Force:      ${DEPLOY_SCRIPT} --force --no-cache"
   echo "  Test now:   systemctl --user start ${SERVICE_NAME}.service"
   echo "  View logs:  journalctl --user -u ${SERVICE_NAME}.service -n 100 --no-pager"
 else
+  echo "  Status:     ${DEPLOY_SCRIPT} --status"
+  echo "  Force:      sudo ${DEPLOY_SCRIPT} --force --no-cache"
   echo "  Test now:   sudo systemctl start ${SERVICE_NAME}.service"
   echo "  View logs:  sudo journalctl -u ${SERVICE_NAME}.service -n 100 --no-pager"
 fi

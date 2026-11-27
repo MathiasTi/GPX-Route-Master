@@ -657,6 +657,15 @@ function runInitDbStatements() {
         'Fix map polyline oversimplification on dense FIT tracks, reject timestamped 2-point straight-line stubs & GPS spikes, and honor FIT sport metadata.'
       );
     }
+
+    const hasV2100 = (checkMigration.get('2.10.0') as { count: number }).count > 0;
+    if (!hasV2100) {
+      db.prepare('INSERT INTO app_version (version, updated_at, changelog) VALUES (?, ?, ?)').run(
+        '2.10.0',
+        new Date().toISOString(),
+        'Multi-Methoden FTP-Berechnung & Feldtest-Rechner, Garmin-Athletenwerte-Download, ganzheitlicher adaptiver Trainingsplan (Athlet, Last & Vitaldaten), tägliche Trainingsempfehlung mit Intensitätssteuerung, nativer binärer Garmin .FIT-Workout-Export & verifizierbares Auto-Deploy.'
+      );
+    }
   } catch (e) {
     console.error('Failed to run 2.9.2 Garmin seed stub cleanup migration:', e);
   }

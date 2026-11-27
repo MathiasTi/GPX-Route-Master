@@ -6,6 +6,20 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [2.10.0] - 2026-11-27
+
+### Adaptiver Trainingsplan, Tägliche Trainingsempfehlung, FTP-Berechnung & Verifizierbares Auto-Deploy
+- **Tägliche Trainingsempfehlung („Heutiges Training“) (`utils/dailyWorkoutEngine.ts`, `FitnessPerformanceAnalysis.tsx`)**:
+  - Bewertet 14-Tage-Aktivitätshistorie (Abstand seit letztem Hartreiz, gestriger/48h-TSS, Trainingsserie, 7d-Verteilung), CTL/ATL/TSB/ACWR, akute „Letzte Nacht / Heute“-Vitaldaten und Sportart-Balance inkl. Auto-Cross-Training, Zeitbudget (`30–120 Min`), Tagesform, 5 Intensitätsstufen (`Z1`–`Z5`), RPE/Ziel-IF und Erholungszeit.
+- **Nativer Garmin `.FIT`-Workout-Export (+ `.TCX` & `.ZWO`) (`utils/garminWorkoutExporter.ts`)**:
+  - Binärer FIT-2.0-Workout-Encoder (`file_id.type = workout`, `workout`, `workout_step` inkl. nativer `repeat_until_steps_cmplt`-Loops) für Watt-, Karvonen-Puls- und Lauf-Pace-Ziele (`GARMIN/NewFiles/`).
+- **Multi-Methoden FTP-Schätzung & Garmin-Athletenwerte (`utils/ftpEstimator.ts`, `utils/garminPersonalApi.ts`, `AppSettingsModal.tsx`)**:
+  - `60-Min-MMP`, `Critical Power`, `20-Min`/`8-Min-MMP` + Bergauf-Physik-Fallback und Feldtest-Rechner sowie direkter Garmin-Athletenprofil-Download.
+- **Verifizierbares Auto-Deploy & Live-Build-Anzeige (`scripts/auto-deploy.sh`, `server.ts`, `components/AboutModal.tsx`, `Dockerfile`, `docker-compose.yml`)**:
+  - Injiziert Git-Commit, Branch & Build-Zeit in Docker- und Native-Builds, prüft `/api/health` nach jedem Deploy (`VERIFY_HEALTH`) und ergänzt `--status` sowie `--no-cache`.
+
+---
+
 ## [2.9.7] - 2026-11-17
 
 ### Einstellungen, Deutsch/Englisch-Sprachmenü, 6 UI-Stile & Metrik-Verifikation

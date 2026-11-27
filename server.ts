@@ -95,7 +95,7 @@ import {
 } from "./utils/securityMiddleware.js";
 import fs from "fs";
 import os from "os";
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 
 // Opt-in dev-only Nginx Lua auth bridge compatibility check (disabled in production)
 function ensureNginxIframeCompatibility() {
@@ -293,9 +293,75 @@ async function startServer() {
   // Serve static assets from public directory
   app.use(express.static(path.join(process.cwd(), "public")));
 
-  // Health check endpoint
+  const resolveServerBuildInfo = () => {
+    const startedAt = new Date().toISOString();
+    let version = "2.10.0";
+    try {
+      const pkgRaw = fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8");
+      const pkg = JSON.parse(pkgRaw);
+      if (typeof pkg?.version === "string" && pkg.version.trim()) {
+        version = pkg.version.trim();
+      }
+    } catch {
+      // fallback default
+    }
+
+    let fileBuildInfo: { commit?: string; branch?: string; buildTime?: string } = {};
+    try {
+      const buildInfoPath = path.join(process.cwd(), "dist", "build-info.json");
+      if (fs.existsSync(buildInfoPath)) {
+        fileBuildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8")) || {};
+      }
+    } catch {
+      fileBuildInfo = {};
+    }
+
+    const pickValid = (...candidates: Array<string | undefined>): string | undefined => {
+      for (const c of candidates) {
+        if (typeof c === "string") {
+          const t = c.trim();
+          if (t && t.toLowerCase() !== "unknown") return t;
+        }
+      }
+      return undefined;
+    };
+
+    let commit = pickValid(process.env.APP_GIT_COMMIT, fileBuildInfo.commit);
+    if (!commit) {
+      try {
+        commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+          cwd: process.cwd(),
+          timeout: 1500,
+          encoding: "utf8"
+        }).trim();
+      } catch {
+        commit = "unknown";
+      }
+    }
+
+    let branch = pickValid(process.env.APP_GIT_BRANCH, fileBuildInfo.branch);
+    if (!branch) {
+      try {
+        branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd: process.cwd(),
+          timeout: 1500,
+          encoding: "utf8"
+        }).trim();
+      } catch {
+        branch = "unknown";
+      }
+    }
+
+    const buildTime = pickValid(process.env.APP_BUILD_TIME, fileBuildInfo.buildTime) || startedAt;
+
+    return { version, commit, branch, buildTime, startedAt };
+  };
+
+  const serverBuildInfo = resolveServerBuildInfo();
+
+  // Health check endpoint (includes running build metadata for deployment verification)
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: Date.now() });
+    res.json({ status: "ok", ...serverBuildInfo, timestamp: Date.now() });
   });
 
   // Helper to extract session token and auth source from Authorization Bearer header or velo_session cookie

@@ -3,6 +3,10 @@ FROM node:22-bookworm AS builder
 
 WORKDIR /app
 
+ARG APP_GIT_COMMIT=unknown
+ARG APP_GIT_BRANCH=unknown
+ARG APP_BUILD_TIME=unknown
+
 # Abhängigkeiten kopieren
 COPY package*.json ./
 
@@ -11,7 +15,7 @@ RUN npm install --no-fund
 
 # Quellcode kopieren und die Anwendung bauen
 COPY . .
-RUN npm run build
+RUN npm run build && node -e 'const fs = require("fs"); fs.writeFileSync("/app/dist/build-info.json", JSON.stringify({ commit: process.env.APP_GIT_COMMIT || "unknown", branch: process.env.APP_GIT_BRANCH || "unknown", buildTime: process.env.APP_BUILD_TIME || new Date().toISOString() }, null, 2));'
 
 # Prune devDependencies, um nur produktive Module zu behalten (better-sqlite3 bleibt erhalten und fertig kompiliert)
 RUN npm prune --omit=dev
@@ -21,12 +25,19 @@ FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app
 
+ARG APP_GIT_COMMIT=unknown
+ARG APP_GIT_BRANCH=unknown
+ARG APP_BUILD_TIME=unknown
+
 # Installiere Python 3 (falls lokale Hilfsskripte genutzt werden)
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 
 # Produktions-Umgebungsvariablen setzen
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV APP_GIT_COMMIT=${APP_GIT_COMMIT}
+ENV APP_GIT_BRANCH=${APP_GIT_BRANCH}
+ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
 # Kopiere die produktiven Abhängigkeiten, gebauten Server und Assets aus der Build-Stage
 COPY --from=builder /app/package.json ./package.json

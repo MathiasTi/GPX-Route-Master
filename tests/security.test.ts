@@ -353,6 +353,34 @@ export function runSecurityTests(): boolean {
       'Same-origin cookie mutation with X-Requested-With must be allowed'
     );
     assert(
+      resolveAllowedCorsOrigin('https://my-app.example.com', 'my-app.example.com', '', '', 'http') === 'https://my-app.example.com',
+      'TLS-terminating reverse proxy same-host HTTPS origin against internal HTTP backend must be allowed'
+    );
+    assert(
+      isCsrfSafeRequest({
+        method: 'POST',
+        hasBearerAuth: false,
+        hasCookieAuth: true,
+        origin: 'https://my-app.example.com',
+        requestHost: 'my-app.example.com',
+        requestProtocol: 'http',
+        xRequestedWith: 'XMLHttpRequest'
+      }) === true,
+      'Cookie mutation from same-host HTTPS origin behind TLS proxy must be allowed'
+    );
+    assert(
+      isCsrfSafeRequest({
+        method: 'POST',
+        hasBearerAuth: false,
+        hasCookieAuth: true,
+        origin: 'https://evil.example.net',
+        requestHost: 'my-app.example.com',
+        requestProtocol: 'http',
+        xRequestedWith: 'XMLHttpRequest'
+      }) === false,
+      'Cross-host HTTPS origin against internal HTTP backend must still be rejected'
+    );
+    assert(
       isCsrfSafeRequest({
         method: 'POST',
         hasBearerAuth: true,

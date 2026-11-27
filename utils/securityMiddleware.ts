@@ -151,12 +151,17 @@ export function resolveAllowedCorsOrigin(
     requestProtocol === 'https' || requestProtocol === 'http'
       ? `${requestProtocol}:`
       : null;
-  const defaultPort = (effectiveProto || parsedOrigin.protocol) === 'https:' ? ':443' : ':80';
+  const defaultPort = parsedOrigin.protocol === 'https:' ? ':443' : ':80';
   const normalizedReqHost = reqHostRaw.endsWith(defaultPort)
     ? reqHostRaw.slice(0, -defaultPort.length)
     : reqHostRaw;
   const reqHostname = normalizedReqHost.split(':')[0];
-  const protoMatches = !effectiveProto || parsedOrigin.protocol === effectiveProto;
+  // Allow HTTPS origins to match internal HTTP backends (e.g. TLS-terminating reverse proxy),
+  // while still blocking HTTP origin downgrades when the server already sees HTTPS.
+  const protoMatches =
+    !effectiveProto ||
+    parsedOrigin.protocol === effectiveProto ||
+    (effectiveProto === 'http:' && parsedOrigin.protocol === 'https:');
 
   if (normalizedReqHost && protoMatches && originHostWithPort === normalizedReqHost) {
     return parsedOrigin.origin;

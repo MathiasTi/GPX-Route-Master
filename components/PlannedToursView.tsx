@@ -478,6 +478,8 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const [showUrlImportPanel, setShowUrlImportPanel] = useState(false);
+  const [showMobileImportMenu, setShowMobileImportMenu] = useState(false);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [urlImportInput, setUrlImportInput] = useState('');
   const [isImportingUrl, setIsImportingUrl] = useState(false);
   const [urlImportError, setUrlImportError] = useState<string | null>(null);
@@ -1901,59 +1903,132 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
                   </button>
                 )}
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              <p className="hidden md:block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Komoot-Bibliothek für geplante GPX-Routen &amp; Etappen – getrennt von aufgezeichneten Aktivitäten.
               </p>
             </div>
           </div>
 
-          {/* Primary Action Buttons */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => gpxUploadInputRef.current?.click()}
-              disabled={isUploading}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isUploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-              <span>GPX-Tour planen / importieren</span>
-            </button>
-
-            <button
-              type="button"
-              id="btn-planned-url-import-toggle"
-              onClick={() => {
-                setUrlImportError(null);
-                setShowUrlImportPanel((prev) => {
-                  const next = !prev;
-                  if (next) {
-                    setTimeout(() => urlImportInputRef.current?.focus(), 60);
-                  }
-                  return next;
-                });
-              }}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border shadow-sm transition-all cursor-pointer ${
-                showUrlImportPanel
-                  ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-400 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
-                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
-              }`}
-            >
-              <Link2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>URL / Komoot importieren</span>
-            </button>
-
-            {workspaceTracks.length > 0 && (
+          {/* Primary Action Buttons: Inline on md+, Consolidated Menu on Phones */}
+          <div className="flex items-center justify-between md:justify-end gap-2">
+            <div className="md:hidden relative">
               <button
                 type="button"
-                onClick={handleSaveWorkspaceToPlanned}
-                disabled={isSavingWorkspace}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all cursor-pointer disabled:opacity-50"
-                title="Aktuell auf der Karte geöffnete Strecken dauerhaft hier speichern"
+                id="btn-planned-mobile-import-menu"
+                onClick={() => setShowMobileImportMenu((prev) => !prev)}
+                aria-expanded={showMobileImportMenu}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors cursor-pointer"
               >
-                {isSavingWorkspace ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                <span>Workspace sichern ({workspaceTracks.length})</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Import</span>
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showMobileImportMenu ? 'rotate-180' : ''}`} />
               </button>
-            )}
+
+              {showMobileImportMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowMobileImportMenu(false)}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute left-0 top-full mt-1.5 w-60 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl py-1.5 z-50 text-xs"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowMobileImportMenu(false);
+                        gpxUploadInputRef.current?.click();
+                      }}
+                      disabled={isUploading}
+                      className="w-full min-h-[42px] px-3 py-2 text-left flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+                    >
+                      {isUploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-500" /> : <Upload className="w-3.5 h-3.5 text-emerald-500" />}
+                      <span>GPX-Tour planen / importieren</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowMobileImportMenu(false);
+                        setUrlImportError(null);
+                        setShowUrlImportPanel(true);
+                        setTimeout(() => urlImportInputRef.current?.focus(), 60);
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 text-left flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Link2 className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>URL / Komoot importieren</span>
+                    </button>
+                    {workspaceTracks.length > 0 && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setShowMobileImportMenu(false);
+                          handleSaveWorkspaceToPlanned();
+                        }}
+                        disabled={isSavingWorkspace}
+                        className="w-full min-h-[42px] px-3 py-2 text-left flex items-center gap-2 font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 cursor-pointer disabled:opacity-50"
+                      >
+                        {isSavingWorkspace ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        <span>Workspace sichern ({workspaceTracks.length})</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="hidden md:flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => gpxUploadInputRef.current?.click()}
+                disabled={isUploading}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isUploading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                <span>GPX-Tour planen / importieren</span>
+              </button>
+
+              <button
+                type="button"
+                id="btn-planned-url-import-toggle"
+                onClick={() => {
+                  setUrlImportError(null);
+                  setShowUrlImportPanel((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      setTimeout(() => urlImportInputRef.current?.focus(), 60);
+                    }
+                    return next;
+                  });
+                }}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border shadow-sm transition-all cursor-pointer ${
+                  showUrlImportPanel
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-400 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+                }`}
+              >
+                <Link2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>URL / Komoot importieren</span>
+              </button>
+
+              {workspaceTracks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleSaveWorkspaceToPlanned}
+                  disabled={isSavingWorkspace}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                  title="Aktuell auf der Karte geöffnete Strecken dauerhaft hier speichern"
+                >
+                  {isSavingWorkspace ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  <span>Workspace sichern ({workspaceTracks.length})</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -2047,24 +2122,24 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
 
         {/* Summary KPI Strip & Filter Toolbar */}
         <div className="max-w-7xl mx-auto mt-4 flex flex-col gap-3">
-          {/* Quick Summary KPI Pills (without Plan-Tempo slider; global Settings speed used) */}
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 rounded-2xl px-3.5 py-2.5">
-            <div className="flex items-center gap-4 sm:gap-6 flex-wrap text-xs">
+          {/* Quick Summary KPI Pills (compact single row on mobile) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 rounded-2xl px-3 py-2">
+            <div className="flex items-center gap-3 sm:gap-5 flex-wrap text-xs">
               <div className="flex items-center gap-1.5">
                 <Ruler className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                <span className="text-slate-500 dark:text-slate-400">Gesamtdistanz:</span>
+                <span className="hidden sm:inline text-slate-500 dark:text-slate-400">Gesamtdistanz:</span>
                 <strong className="font-mono text-slate-900 dark:text-white">
                   {formatDistance(summaryStats.totalDist, unitSystem, lang, 1)}
                 </strong>
               </div>
               <div className="flex items-center gap-1.5">
                 <TrendingUp className="w-3.5 h-3.5 text-amber-500" />
-                <span className="text-slate-500 dark:text-slate-400">Anstieg gesamt:</span>
+                <span className="hidden sm:inline text-slate-500 dark:text-slate-400">Anstieg gesamt:</span>
                 <strong className="font-mono text-slate-900 dark:text-white">
                   {formatElevation(summaryStats.totalAscent, unitSystem, lang, true)}
                 </strong>
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
                 <span>🚴 {summaryStats.cyclingCount} Rad</span>
                 <span>·</span>
                 <span>🏃 {summaryStats.runningCount} Lauf</span>
@@ -2072,33 +2147,60 @@ export const PlannedToursView: React.FC<PlannedToursViewProps> = ({
             </div>
 
             <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-              {filteredAndSortedTours.length} / {tours.length} Touren angezeigt
+              {filteredAndSortedTours.length} / {tours.length}
             </div>
           </div>
 
-          {/* Search, Filters, Grouping & View Controls */}
+          {/* Search, Mobile Filter Toggle, Inline Desktop Filters, Grouping & View Controls */}
           <div className="flex flex-col lg:flex-row lg:items-center gap-2.5">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Touren durchsuchen (Name, Gruppe, Tags, Notizen)..."
-                className="w-full pl-9 pr-8 py-2 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <div className="relative flex-1 min-w-0">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Touren durchsuchen..."
+                  className="w-full pl-9 pr-8 py-2 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {(() => {
+                const activeCount =
+                  (sportFilter !== 'all' ? 1 : 0) +
+                  (difficultyFilter !== 'all' ? 1 : 0) +
+                  (distanceFilter !== 'all' ? 1 : 0) +
+                  (ascentFilter !== 'all' ? 1 : 0) +
+                  (groupBy !== 'none' ? 1 : 0);
+                return (
+                  <button
+                    type="button"
+                    id="btn-planned-mobile-filters"
+                    onClick={() => setShowMobileFilters((prev) => !prev)}
+                    aria-expanded={showMobileFilters}
+                    className={`lg:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer shrink-0 ${
+                      showMobileFilters || activeCount > 0
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Filter{activeCount > 0 ? ` (${activeCount})` : ''}</span>
+                  </button>
+                );
+              })()}
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className={`${showMobileFilters ? 'flex' : 'hidden'} lg:flex items-center gap-2 flex-wrap`}>
               {/* Sport Filter */}
               <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200/80 dark:border-slate-700">
                 <button

@@ -1548,7 +1548,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               Garmin Fitness &amp; Gesundheit
             </h2>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => {
@@ -1556,12 +1556,12 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                 if (activeTab === 'analytics') fetchAnalytics();
               }}
               disabled={isLoading}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 disabled:opacity-60"
+              className="p-2 rounded-lg text-xs font-semibold flex items-center justify-center transition-colors cursor-pointer border bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 disabled:opacity-60"
               title="Gesundheits- & Aktivitätsdaten neu laden"
+              aria-label="Daten aktualisieren"
               id="btn-garmin-refresh"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-orange-500' : ''}`} />
-              <span className="hidden lg:inline">Aktualisieren</span>
             </button>
             <button
               type="button"
@@ -1574,19 +1574,19 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
               title="Athleten-Profil bearbeiten (FTP, Gewicht, Alter, Max. Puls)"
             >
               <Sliders className="w-3.5 h-3.5 text-orange-500" style={showAthleteSettings ? { color: '#ffffff' } : undefined} />
-              <span className="font-mono tabular-nums">{ftp}W · {userWeight}kg · {userAge}J</span>
+              <span className="font-mono tabular-nums">{ftp}W · {userWeight}kg</span>
             </button>
             <button
               type="button"
               onClick={() => handleSelectTab(activeTab === 'personal-api' ? 'overview' : 'personal-api')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
                 activeTab === 'personal-api'
                   ? 'bg-orange-600 text-white border-orange-600'
                   : 'bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/40 dark:hover:bg-orange-900/50 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800/60'
               }`}
             >
               <Key className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Zurück zum Cockpit' : 'Garmin Personal API'}</span>
+              <span className="hidden sm:inline">{activeTab === 'personal-api' ? 'Cockpit' : 'Personal API'}</span>
               <span className="sm:hidden">API</span>
             </button>
             {variant === 'modal' && onClose && (
@@ -2099,8 +2099,8 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
 
                 return (
                   <div className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
-                      <div className="flex flex-wrap items-center gap-1">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
+                      <div className="flex items-center gap-1 flex-nowrap overflow-x-auto no-scrollbar md:flex-wrap pb-0.5 sm:pb-0">
                         {groups.map((grp) => {
                           const isGrpActive = grp.id === activeGroup.id;
                           return (
@@ -2108,10 +2108,10 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                               key={grp.id}
                               type="button"
                               onClick={() => handleSelectTab(grp.tabs[0].id)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                                 isGrpActive
-                                  ? 'bg-orange-600 text-white'
-                                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                  ? 'bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
+                                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-transparent'
                               }`}
                             >
                               {grp.label}
@@ -2121,7 +2121,7 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                       </div>
 
                       {showRangeSelector && (
-                        <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                        <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 self-start sm:self-auto shrink-0">
                           {([
                             { val: 14 as const, label: '14T' },
                             { val: 30 as const, label: '30T' },
@@ -2147,13 +2147,13 @@ export const GarminDashboard: React.FC<GarminDashboardProps> = ({
                     </div>
 
                     {activeGroup.tabs.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto no-scrollbar md:flex-wrap">
                         {activeGroup.tabs.map((tab) => (
                           <button
                             key={tab.id}
                             type="button"
                             onClick={() => handleSelectTab(tab.id)}
-                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap border ${
+                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 border ${
                               activeTab === tab.id
                                 ? 'bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100'
                                 : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'

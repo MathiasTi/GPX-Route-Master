@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Upload, FolderUp, FileText, RefreshCw, X, Link2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Upload, FolderUp, FileText, RefreshCw, X, Link2, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { triggerHaptic } from '../utils/haptics';
 
@@ -32,6 +32,7 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [showUrlPanel, setShowUrlPanel] = useState(false);
+  const [showImportMenu, setShowImportMenu] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [isImportingUrl, setIsImportingUrl] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
@@ -194,7 +195,7 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-1 shrink-0 relative">
               <button
                 type="button"
                 onClick={(e) => {
@@ -202,25 +203,13 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
                   triggerHaptic('light');
                   fileInputRef.current?.click();
                 }}
-                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                title="Mehrere GPX/FIT/ZIP Dateien auswählen"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[10.5px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                title="GPX/FIT/ZIP Dateien auswählen"
               >
                 <Upload className="w-3 h-3" />
-                <span>Dateien</span>
+                <span>Import</span>
               </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  triggerHaptic('light');
-                  folderInputRef.current?.click();
-                }}
-                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                title="Ganzen Ordner mit GPX-Dateien importieren"
-              >
-                <FolderUp className="w-3 h-3 text-amber-500" />
-                <span>Ordner</span>
-              </button>
+
               {onImportUrl && (
                 <button
                   type="button"
@@ -228,6 +217,7 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
                   onClick={(e) => {
                     e.stopPropagation();
                     triggerHaptic('light');
+                    setShowImportMenu(false);
                     setUrlError(null);
                     setShowUrlPanel((prev) => {
                       const next = !prev;
@@ -237,17 +227,100 @@ export const BatchGpxUploader: React.FC<BatchGpxUploaderProps> = ({
                       return next;
                     });
                   }}
-                  className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  className={`inline-flex items-center justify-center p-1.5 rounded-lg border text-[10px] font-bold transition-colors cursor-pointer shrink-0 ${
                     showUrlPanel
                       ? 'bg-emerald-600 border-emerald-600 text-white'
-                      : 'bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700'
+                      : 'bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700'
                   }`}
                   title="Komoot-Tour, Collection oder GPX-URL importieren"
+                  aria-label="URL / Komoot importieren"
                   aria-expanded={showUrlPanel}
                 >
-                  <Link2 className={`w-3 h-3 ${showUrlPanel ? 'text-white' : 'text-emerald-500'}`} />
-                  <span>URL</span>
+                  <Link2 className={`w-3.5 h-3.5 ${showUrlPanel ? 'text-white' : 'text-emerald-500'}`} />
                 </button>
+              )}
+
+              <button
+                type="button"
+                id="btn-sidebar-import-options"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  triggerHaptic('light');
+                  setShowImportMenu((prev) => !prev);
+                }}
+                className={`inline-flex items-center justify-center p-1.5 rounded-lg border text-[10px] font-bold transition-colors cursor-pointer shrink-0 ${
+                  showImportMenu
+                    ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-900 dark:text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700'
+                }`}
+                title="Weitere Import-Optionen (Ordner, URL)"
+                aria-label="Weitere Import-Optionen"
+                aria-expanded={showImportMenu}
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showImportMenu ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showImportMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowImportMenu(false);
+                    }}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-1 w-48 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl py-1 z-50 text-xs"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowImportMenu(false);
+                        triggerHaptic('light');
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      <span>Dateien wählen…</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowImportMenu(false);
+                        triggerHaptic('light');
+                        folderInputRef.current?.click();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <FolderUp className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span>Ganzen Ordner laden…</span>
+                    </button>
+                    {onImportUrl && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowImportMenu(false);
+                          triggerHaptic('light');
+                          setUrlError(null);
+                          setShowUrlPanel(true);
+                          setTimeout(() => urlInputRef.current?.focus(), 60);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <Link2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>Komoot / GPX URL…</span>
+                      </button>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           </div>

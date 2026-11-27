@@ -917,7 +917,7 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
     >
       {/* Top Sticky Search & Filter Command Bar */}
       <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 space-y-2 shrink-0">
-        <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 justify-between">
+        <div className="flex items-center gap-2 justify-between">
           {/* Left: Instant Full-Text Search */}
           <div className="relative flex-1 max-w-2xl">
             <Search
@@ -945,14 +945,13 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
             )}
           </div>
 
-          {/* Right: Sport, Sort & Collapsible Filter Drawer */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Sport Category Filter */}
+          {/* Right: Inline Sport & Sort on sm+; Single Filter Toggle on all viewports */}
+          <div className="flex items-center gap-2 shrink-0">
             <select
               value={activityFilter}
               onChange={(e) => setActivityFilter(e.target.value as 'all' | CatalogActivityCategory)}
               aria-label="Sportart filtern"
-              className="px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              className="hidden sm:block px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
             >
               <option value="all">Alle Sportarten</option>
               <option value="cycling">Radsport</option>
@@ -961,12 +960,11 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
               <option value="other">Sonstige</option>
             </select>
 
-            {/* Sort Order */}
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as CatalogSortBy)}
               aria-label="Sortierung"
-              className="px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              className="hidden sm:block px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
             >
               <option value="date-desc">Neueste zuerst</option>
               <option value="date-asc">Älteste zuerst</option>
@@ -981,23 +979,60 @@ export const ActivitiesManagerView: React.FC<ActivitiesManagerViewProps> = ({
               type="button"
               onClick={() => setShowAdvancedFilters((prev) => !prev)}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                showAdvancedFilters || activeExtendedFilterCount > 0
+                showAdvancedFilters || activeExtendedFilterCount > 0 || activityFilter !== 'all'
                   ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
                   : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900'
               }`}
             >
               <SlidersHorizontal size={13} />
               <span>Filter</span>
-              {activeExtendedFilterCount > 0 && (
-                <span className="font-mono text-[11px] font-bold">({activeExtendedFilterCount})</span>
+              {(activeExtendedFilterCount + (activityFilter !== 'all' ? 1 : 0)) > 0 && (
+                <span className="font-mono text-[11px] font-bold">
+                  ({activeExtendedFilterCount + (activityFilter !== 'all' ? 1 : 0)})
+                </span>
               )}
             </button>
           </div>
         </div>
 
-        {/* Collapsible Extended Filter Drawer (including Country & Month filters) */}
+        {/* Collapsible Extended Filter Drawer (including Mobile Sport/Sort + Country & Month filters) */}
         {showAdvancedFilters && (
           <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-2.5 items-end">
+            <div className="sm:hidden">
+              <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                Sportart
+              </label>
+              <select
+                value={activityFilter}
+                onChange={(e) => setActivityFilter(e.target.value as 'all' | CatalogActivityCategory)}
+                aria-label="Sportart filtern (Mobil)"
+                className="w-full px-2.5 py-1.5 text-xs font-semibold bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md text-slate-900 dark:text-slate-100 cursor-pointer"
+              >
+                <option value="all">Alle Sportarten</option>
+                <option value="cycling">Radsport</option>
+                <option value="running">Laufen</option>
+                <option value="hiking">Wandern</option>
+                <option value="other">Sonstige</option>
+              </select>
+            </div>
+            <div className="sm:hidden">
+              <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                Sortierung
+              </label>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as CatalogSortBy)}
+                aria-label="Sortierung (Mobil)"
+                className="w-full px-2.5 py-1.5 text-xs font-semibold bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md text-slate-900 dark:text-slate-100 cursor-pointer"
+              >
+                <option value="date-desc">Neueste zuerst</option>
+                <option value="date-asc">Älteste zuerst</option>
+                <option value="distance-desc">Größte Distanz</option>
+                <option value="ascent-desc">Meiste Höhenmeter</option>
+                <option value="duration-desc">Längste Dauer</option>
+                <option value="name-asc">Name (A–Z)</option>
+              </select>
+            </div>
             <div>
               <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
                 Land

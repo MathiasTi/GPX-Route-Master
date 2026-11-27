@@ -433,6 +433,55 @@ export async function runWorkspaceQoLTests(): Promise<boolean> {
     'Sidebar.tsx integrates primary-surface auto-coloring, toggle menu item, and active legend'
   );
 
+  // Clean UI & menu consolidation structural checks (desktop + mobile)
+  assert(
+    appSrc.includes('id="btn-desktop-system-menu"') &&
+      appSrc.includes('createPortal') &&
+      appSrc.includes('fixed inset-x-0 bottom-0 z-[1200] rounded-t-3xl'),
+    'App.tsx consolidates desktop utilities into system menu and portals mobile overflow bottom sheet'
+  );
+
+  assert(
+    sidebarSrc.includes('md:hidden py-4 bg-slate-900') &&
+      sidebarSrc.includes('id="btn-sidebar-tools-menu"'),
+    'Sidebar.tsx hides duplicate desktop brand header and groups tools into dropdown menu'
+  );
+
+  const mapSrc = fs.readFileSync(path.join(root, 'components/Map.tsx'), 'utf8');
+  assert(
+    mapSrc.includes('useState(false)') &&
+      mapSrc.includes('useState(true)') &&
+      mapSrc.includes('createPortal') &&
+      mapSrc.includes('Kartenstil') &&
+      mapSrc.includes('3D-Gelände') &&
+      mapSrc.includes('hidden lg:flex min-h-[40px]') &&
+      !mapSrc.includes('id="btn-toolbar-shortcuts"'),
+    'Map.tsx moves layer/3D options into portaled Karten-Optionen, collapses HUD defaults, and deduplicates mobile corner pills'
+  );
+
+  const thumbBarSrc = fs.readFileSync(path.join(root, 'components/mobile/MobileThumbBar.tsx'), 'utf8');
+  assert(
+    thumbBarSrc.includes('id="mobile-thumb-more"') &&
+      thumbBarSrc.includes('z-[480]') &&
+      !thumbBarSrc.includes('backdrop-blur-xl'),
+    'MobileThumbBar.tsx condenses mobile map rail into 3-button strip with elevated overflow popover'
+  );
+
+  const elevationSrc = fs.readFileSync(path.join(root, 'components/ElevationProfile.tsx'), 'utf8');
+  assert(
+    elevationSrc.includes('id="btn-elevation-actions-menu"') &&
+      elevationSrc.includes('createPortal') &&
+      elevationSrc.includes('xl:hidden') &&
+      !elevationSrc.includes('hidden xl:flex items-center gap-2.5 pl-2 ml-0.5'),
+    'ElevationProfile.tsx portals settings sheet, keeps xl-aligned KPI bar, and removes duplicate inline checkboxes'
+  );
+
+  const fitnessSrc = fs.readFileSync(path.join(root, 'components/FitnessPerformanceAnalysis.tsx'), 'utf8');
+  assert(
+    fitnessSrc.includes('id="btn-fitness-athlete-profile"'),
+    'FitnessPerformanceAnalysis.tsx uses compact profile popover trigger instead of expanded form bar'
+  );
+
   console.log(`\n📊 Workspace QoL & Bugfix Results: ${passed} passed, ${failed} failed\n`);
   return failed === 0;
 }

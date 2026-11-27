@@ -1,5 +1,6 @@
 
 import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { GPXTrack, GPXPoint, TextMarker } from '../types';
 import { 
   calculateDistance, 
@@ -19,7 +20,7 @@ import { resolveTrackPointSpeedsKmh, formatPaceFromSpeedKmh } from '../domain/te
 import { computeTrackWbal } from '../utils/wbalEngine';
 import { resolveTrackCapabilities } from '../utils/trackTelemetryCapabilities';
 import { computePauseAwareRunningMetrics, formatPaceSeconds } from '../utils/runningMetricsEngine';
-import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Download, CheckCircle2, Sparkles, AlertTriangle, Wrench, Layers, RefreshCw, Check, Scissors, FilePlus, Heart, Zap, RotateCcw, Crosshair, Video, ArrowLeftRight, SlidersHorizontal, ChevronDown, MoreHorizontal } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 import { resolveBottomSheetSnap } from '../utils/mobileSheet';
 import { useAppPreferences } from '../utils/appSettings';
@@ -159,6 +160,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [isSmoothed, setIsSmoothed] = useState(false);
   const [elevationFilter, setElevationFilter] = useState<ElevationFilterStrength>('light');
   const [showSettingsPopover, setShowSettingsPopover] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [showElevation, setShowElevation] = useState(true);
   const [showPower, setShowPower] = useState(true);
   const [showHr, setShowHr] = useState(true);
@@ -1311,138 +1313,90 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   return (
     <div className="h-full w-full flex flex-col select-none relative">
       {/* Desktop Single-Row Compact Topbar */}
-      <div className="hidden lg:flex items-center justify-between gap-2 mb-1.5 px-1.5 min-h-[34px] shrink-0">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+      <div className="hidden lg:flex items-center justify-between gap-3 mb-1.5 px-1.5 min-h-[34px] shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <div className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0" style={{ backgroundColor: displayTrackColor }}></div>
           <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate min-w-0" title={track.name}>
             {track.name}
           </h3>
+          {!(selectionBounds && selectedRegions.length > 0) && (
+            <div className="hidden xl:flex items-center gap-1.5 text-[11px] font-bold font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0 pl-2 border-l border-slate-200 dark:border-slate-700/80">
+              <span className="text-emerald-700 dark:text-emerald-400" title="Gesamtanstieg">
+                ▲ {formatElevation(track.ascent, unitSystem, lang, false)}
+              </span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="text-rose-700 dark:text-rose-400" title="Gesamtabstieg">
+                ▼ {formatElevation(track.descent, unitSystem, lang, false)}
+              </span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="text-indigo-700 dark:text-indigo-300" title="Minimale bis maximale Höhe">
+                {Math.round(convertElevation(minEle, unitSystem))}–{Math.round(convertElevation(maxEle, unitSystem))} {elevationUnit(unitSystem, lang)}
+              </span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="text-amber-700 dark:text-amber-400" title="Maximale Steigung">
+                max {(track.maxSlope ?? 0).toFixed(1)}%
+              </span>
+              {gradientAnomalies.length > 0 && (
+                <>
+                  <span className="text-slate-300 dark:text-slate-600">·</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGradientWarnings(true);
+                      setActiveAnomalyId(gradientAnomalies[0].id);
+                    }}
+                    className="flex items-center gap-1 text-rose-700 dark:text-rose-300 hover:underline cursor-pointer shrink-0"
+                    title="Klicken, um die erste Steigungsanomalie hervorzuheben"
+                  >
+                    <AlertTriangle className="w-3 h-3 text-rose-500 shrink-0" />
+                    <span>{gradientAnomalies.length}</span>
+                  </button>
+                  {onRepairAnomalies && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveAnomalyId(null);
+                        onRepairAnomalies(track.id);
+                      }}
+                      className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-1.5 py-0.5 rounded font-sans font-bold text-[10px] transition-colors cursor-pointer shrink-0"
+                      title="Alle Steigungsanomalien und GPS-Höhensprünge automatisch korrigieren"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      <span>Reparieren</span>
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={handleDownloadGPX}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 shadow-2xs ${
-              downloadSuccess
-                ? 'bg-emerald-600 text-white'
-                : 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 hover:bg-sky-100 hover:text-sky-800'
-            }`}
-            title="Markierten Track mit allen Metadaten, Oberflächen-Tags & Bereinigungen als .gpx herunterladen"
-          >
-            {downloadSuccess ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-100 animate-bounce" />
-                <span>Exportiert!</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                <span>GPX Download</span>
-              </>
-            )}
-          </button>
-
-          {onOpenVideoExport && (
-            <button
-              onClick={onOpenVideoExport}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer whitespace-nowrap shrink-0"
-              title="3D-Überflug Video Studio öffnen (Komoot / Relive Stil)"
-            >
-              <Video className="w-3.5 h-3.5 text-emerald-100" />
-              <span>3D-Überflug</span>
-            </button>
-          )}
-
           {onOpenIntensiveAnalysis && (
             <button
-              onClick={onOpenIntensiveAnalysis}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm hover:from-purple-700 hover:to-indigo-700 transition-all cursor-pointer whitespace-nowrap shrink-0"
-              title="Intensive Track Analysis & Physical Pacing Engine"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-purple-200" />
-              <span>Intensiv-Analyse</span>
-            </button>
-          )}
-
-          {onReverseTrack && (
-            <button
               type="button"
-              onClick={() => {
-                triggerHaptic('medium');
-                onReverseTrack(track.id);
-              }}
-              id="btn-elevation-reverse-track"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-violet-50 hover:bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:hover:bg-violet-900/60 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/70 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-              title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
+              onClick={onOpenIntensiveAnalysis}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Analyse-Cockpit & Pacing-Engine öffnen"
             >
-              <ArrowLeftRight className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
-              <span>Umkehren</span>
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Analyse</span>
             </button>
           )}
-
-          <div className="hidden xl:flex items-center gap-2.5 pl-2 ml-0.5 border-l border-slate-200 dark:border-slate-700/80">
-            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 whitespace-nowrap">
-              <input
-                type="checkbox"
-                checked={showElevation}
-                onChange={(e) => setShowElevation(e.target.checked)}
-                className="w-3.5 h-3.5 text-slate-600 rounded bg-slate-100 border-slate-300 focus:ring-slate-500 cursor-pointer"
-              />
-              Höhe
-            </label>
-            {profileData.hasPower && (
-              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 whitespace-nowrap">
-                <input
-                  type="checkbox"
-                  checked={showPower}
-                  onChange={(e) => setShowPower(e.target.checked)}
-                  className="w-3.5 h-3.5 text-amber-500 rounded bg-slate-100 border-slate-300 focus:ring-amber-500 cursor-pointer"
-                />
-                Watt
-              </label>
-            )}
-            {profileData.hasHr && (
-              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-red-500 whitespace-nowrap">
-                <input
-                  type="checkbox"
-                  checked={showHr}
-                  onChange={(e) => setShowHr(e.target.checked)}
-                  className="w-3.5 h-3.5 text-red-500 rounded bg-slate-100 border-slate-300 focus:ring-red-500 cursor-pointer"
-                />
-                HF
-              </label>
-            )}
-            {profileData.hasRealElevation && (
-              <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-violet-600 whitespace-nowrap">
-                <input
-                  type="checkbox"
-                  checked={showSlope}
-                  onChange={(e) => setShowSlope(e.target.checked)}
-                  className="w-3.5 h-3.5 text-violet-500 rounded bg-slate-100 border-slate-300 focus:ring-violet-500 cursor-pointer"
-                />
-                Steigung
-              </label>
-            )}
-            <label className="flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 whitespace-nowrap">
-              <input
-                type="checkbox"
-                checked={showSegmentMarkers}
-                onChange={(e) => setShowSegmentMarkers(e.target.checked)}
-                className="w-3.5 h-3.5 text-amber-600 rounded bg-slate-100 border-slate-300 focus:ring-amber-500 cursor-pointer"
-              />
-              Anstiege
-            </label>
-          </div>
 
           <button
             type="button"
-            onClick={() => setShowSettingsPopover((prev) => !prev)}
+            onClick={() => {
+              setShowActionsMenu(false);
+              setShowSettingsPopover((prev) => !prev);
+            }}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
               showSettingsPopover
                 ? 'bg-indigo-600 text-white border-indigo-600'
                 : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
             }`}
-            title="Kurven, Höhenfilter & Werkzeuge"
+            title="Kurven, Höhenfilter & Overlays umschalten"
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span>Kurven</span>
@@ -1453,11 +1407,145 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             )}
           </button>
 
-          {profileData.hasPower && !capabilities.isRunning && (
-            <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-[10.5px] font-mono font-bold text-slate-700 dark:text-slate-300 whitespace-nowrap">
-              FTP {ftp}W
-            </span>
-          )}
+          {/* Consolidated Track Actions Menu (GPX Download, 3D Flyover, Reverse, Sanitize, OSM) */}
+          <div className="relative">
+            <button
+              type="button"
+              id="btn-elevation-actions-menu"
+              onClick={() => {
+                setShowSettingsPopover(false);
+                setShowActionsMenu((prev) => !prev);
+              }}
+              aria-expanded={showActionsMenu}
+              aria-haspopup="menu"
+              className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors cursor-pointer shrink-0 ${
+                showActionsMenu || downloadSuccess
+                  ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700'
+                  : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+              }`}
+              title="Track-Aktionen (GPX Export, 3D-Überflug, Umkehren, Bereinigen)"
+              aria-label="Track-Aktionen"
+            >
+              {downloadSuccess ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+              ) : (
+                <MoreHorizontal className="w-3.5 h-3.5" />
+              )}
+            </button>
+
+            {showActionsMenu && (
+              <>
+                <div
+                  className="fixed inset-0 z-[1990]"
+                  onClick={() => setShowActionsMenu(false)}
+                />
+                <div
+                  role="menu"
+                  className="absolute right-0 bottom-full mb-1.5 w-56 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl py-1 z-[2000] text-xs text-slate-700 dark:text-slate-200"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      handleDownloadGPX();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                    <span>{downloadSuccess ? 'Exportiert!' : 'GPX herunterladen'}</span>
+                  </button>
+
+                  {onOpenVideoExport && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowActionsMenu(false);
+                        onOpenVideoExport();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Video className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      <span>3D-Überflug Studio</span>
+                    </button>
+                  )}
+
+                  {(onReverseTrack || onSanitizeTrack || onAnalyzeSurface) && (
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                  )}
+
+                  {onReverseTrack && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      id="btn-elevation-reverse-track"
+                      onClick={() => {
+                        setShowActionsMenu(false);
+                        triggerHaptic('medium');
+                        onReverseTrack(track.id);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <ArrowLeftRight className="w-3.5 h-3.5 text-violet-500 shrink-0" />
+                      <span>Richtung umkehren</span>
+                    </button>
+                  )}
+
+                  {onSanitizeTrack && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowActionsMenu(false);
+                        triggerHaptic('medium');
+                        onSanitizeTrack(track.id);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      <span>GPS &amp; Höhe bereinigen</span>
+                    </button>
+                  )}
+
+                  {onShiftLoopStart && hoverInfo && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowActionsMenu(false);
+                        triggerHaptic('success');
+                        const targetIdx = profileData.data.findIndex(p => Math.abs(p.dist - hoverInfo.dist) < 0.05);
+                        if (targetIdx !== -1) {
+                          onShiftLoopStart(track.id, targetIdx);
+                        }
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Crosshair className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      <span>Start auf km {hoverInfo.dist.toFixed(1)} setzen</span>
+                    </button>
+                  )}
+
+                  {onAnalyzeSurface && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={isAnalyzingSurface}
+                      onClick={() => {
+                        setShowActionsMenu(false);
+                        onAnalyzeSurface(track.id);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      <span>{isAnalyzingSurface ? 'OSM-Analyse läuft…' : 'OSM-Oberflächen analysieren'}</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
 
           {onCollapse && (
             <button
@@ -1590,74 +1678,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         </button>
 
         <div className="flex items-center gap-1 shrink-0">
-          {/* Compact Snap Stage Switcher (S / M / L) */}
-          <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/70 dark:border-slate-700/70 text-[10.5px] font-bold">
-            <button
-              type="button"
-              aria-label="Profilhöhe Mini"
-              onClick={() => {
-                triggerHaptic('light');
-                onMobileProfileSnapChange?.('mini');
-              }}
-              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
-                mobileProfileSnap === 'mini'
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                  : 'text-slate-500 dark:text-slate-400'
-              }`}
-            >
-              S
-            </button>
-            <button
-              type="button"
-              aria-label="Profilhöhe Standard"
-              onClick={() => {
-                triggerHaptic('light');
-                onMobileProfileSnapChange?.('standard');
-              }}
-              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
-                mobileProfileSnap === 'standard'
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                  : 'text-slate-500 dark:text-slate-400'
-              }`}
-            >
-              M
-            </button>
-            <button
-              type="button"
-              aria-label="Profilhöhe Max"
-              onClick={() => {
-                triggerHaptic('light');
-                onMobileProfileSnapChange?.('expanded');
-              }}
-              className={`min-h-[36px] min-w-[30px] px-1.5 rounded-lg transition-all cursor-pointer touch-manipulation ${
-                mobileProfileSnap === 'expanded'
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs font-black'
-                  : 'text-slate-500 dark:text-slate-400'
-              }`}
-            >
-              L
-            </button>
-          </div>
-
-          {onReverseTrack && (
-            <button
-              type="button"
-              onClick={() => {
-                triggerHaptic('medium');
-                onReverseTrack(track.id);
-              }}
-              className="min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-200/80 dark:border-violet-800/60 transition-all cursor-pointer touch-manipulation active:scale-95"
-              title="GPX-Streckenrichtung umkehren (Start & Ziel tauschen)"
-              aria-label="Richtung umkehren"
-            >
-              <ArrowLeftRight className="w-4 h-4" />
-            </button>
-          )}
-
           <button
             type="button"
             onClick={() => setShowSettingsPopover((prev) => !prev)}
-            className={`min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl transition-all cursor-pointer touch-manipulation active:scale-95 ${
+            className={`min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl transition-all cursor-pointer touch-manipulation active:scale-95 ${
               showSettingsPopover
                 ? 'bg-indigo-600 text-white'
                 : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
@@ -1675,7 +1699,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 triggerHaptic('light');
                 onCollapse();
               }}
-              className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer touch-manipulation active:scale-95"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer touch-manipulation active:scale-95"
               title="Höhenprofil ausblenden"
               aria-label="Höhenprofil ausblenden"
             >
@@ -1685,14 +1709,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         </div>
       </div>
 
-      {/* Floating Series & Tools Popover (Desktop & Mobile) */}
-      {showSettingsPopover && (
+      {/* Floating Series & Tools Popover via Portal (Escapes mobile-contain / clip on Desktop & Mobile) */}
+      {showSettingsPopover && typeof document !== 'undefined' && createPortal(
         <>
           <div
-            className="fixed inset-0 z-[1990]"
+            className="fixed inset-0 z-[1190] bg-slate-950/35 sm:bg-transparent"
             onClick={() => setShowSettingsPopover(false)}
           />
-          <div className="absolute top-11 right-2 lg:right-3 z-[2000] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 w-72 max-w-[calc(100vw-1rem)] max-h-[min(70vh,460px)] overflow-y-auto text-left select-none font-sans text-slate-800 dark:text-slate-100">
+          <div className="fixed inset-x-0 bottom-0 z-[1200] rounded-t-2xl pb-[calc(1rem+env(safe-area-inset-bottom,0px))] max-h-[78vh] p-4 sm:p-3.5 sm:inset-auto sm:bottom-16 sm:right-4 sm:w-72 sm:rounded-2xl sm:pb-3.5 sm:max-h-[min(70vh,480px)] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md border-t sm:border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 overflow-y-auto text-left select-none font-sans text-slate-800 dark:text-slate-100">
+            <div className="sm:hidden flex justify-center -mt-1 pb-0.5">
+              <span className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700" />
+            </div>
             <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-1.5">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">Anzeige &amp; Werkzeuge</span>
               <button
@@ -2006,9 +2033,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               )}
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
-          <div className={`${mobileProfileSnap === 'mini' && !(selectionBounds && selectedRegions.length > 0) ? 'hidden sm:flex' : 'flex'} items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full`}>
+          <div className={`${!(selectionBounds && selectedRegions.length > 0) ? (mobileProfileSnap === 'mini' ? 'hidden sm:flex xl:hidden' : 'flex xl:hidden') : 'flex'} items-center gap-x-2.5 gap-y-1 text-[11px] font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto scrollbar-none flex-nowrap shrink-0 max-w-full`}>
             {selectionBounds && selectedRegions.length > 0 ? (
               <>
                 <button 

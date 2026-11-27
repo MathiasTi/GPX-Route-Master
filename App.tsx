@@ -1,10 +1,11 @@
 import React, { Suspense, useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { GPXTrack, GPXPoint, TextMarker, MapLayer, TimeGap } from './types';
 import Sidebar from './components/Sidebar';
 import { PasswordGate } from './components/PasswordGate';
 import Map from './components/Map';
 import ElevationProfile from './components/ElevationProfile';
-import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal } from 'lucide-react';
+import { Activity, BarChart2, BarChart3, Menu, RefreshCw, FileText, WifiOff, X, Map as MapIcon, ListFilter, Sun, Moon, Lock, Compass, Settings as SettingsIcon, Languages, ChevronDown, MoreHorizontal, BookOpen, Keyboard, Upload } from 'lucide-react';
 import {
   AppPreferences,
   AppPreferencesProvider,
@@ -261,6 +262,7 @@ const App: React.FC = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [mobileToolsMenuOpen, setMobileToolsMenuOpen] = useState(false);
+  const [desktopSystemMenuOpen, setDesktopSystemMenuOpen] = useState(false);
   const [isRoutePlannerActive, setIsRoutePlannerActive] = useState(false);
   const [isLiveNavActive, setIsLiveNavActive] = useState(false);
   const mobileSheetContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2650,6 +2652,8 @@ const App: React.FC = () => {
 
       // Escape key: close any open modal or clear active selection/flight
       if (e.key === 'Escape') {
+        if (desktopSystemMenuOpen) { setDesktopSystemMenuOpen(false); return; }
+        if (mobileToolsMenuOpen) { setMobileToolsMenuOpen(false); return; }
         if (pendingKomootCollection) { setPendingKomootCollection(null); return; }
         if (settingsModalOpen) { setSettingsModalOpen(false); return; }
         if (shortcutsModalOpen) { setShortcutsModalOpen(false); return; }
@@ -2914,7 +2918,9 @@ const App: React.FC = () => {
     timeGapModalOpen,
     isExportModalOpen,
     selectionBounds,
-    is3D
+    is3D,
+    desktopSystemMenuOpen,
+    mobileToolsMenuOpen
   ]);
 
 
@@ -3098,43 +3104,8 @@ const App: React.FC = () => {
 
         {/* Right Quick Actions (Desktop Controls / Mobile Overflow Menu) */}
         <div className="relative flex items-center gap-1.5 shrink-0">
-          {/* Desktop-only Secondary Controls */}
-          <div className="hidden lg:flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              data-no-translate="true"
-              id="btn-language-toggle"
-              onClick={() => {
-                triggerHaptic('light');
-                updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
-              }}
-              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-              title={appPrefs.language === 'de' ? 'Switch interface to English (EN)' : 'Sprache auf Deutsch wechseln (DE)'}
-              aria-label={appPrefs.language === 'de' ? 'Switch interface to English' : 'Sprache auf Deutsch wechseln'}
-            >
-              <Languages size={14} className="text-indigo-500" />
-              <span className="font-mono">{appPrefs.language.toUpperCase()}</span>
-            </button>
-
-            <button
-              type="button"
-              id="btn-open-settings"
-              onClick={() => {
-                triggerHaptic('light');
-                openSettingsModal('style');
-              }}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                settingsModalOpen
-                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
-              }`}
-              title={tr(appPrefs.language, 'Einstellungen, Sprache & UI-Stile (,)', 'Settings, Language & UI Styles (,)')}
-              aria-label={tr(appPrefs.language, 'Einstellungen öffnen', 'Open Settings')}
-            >
-              <SettingsIcon size={14} className="text-indigo-500" />
-              <span>{tr(appPrefs.language, 'Einstellungen', 'Settings')}</span>
-            </button>
-
+          {/* Desktop-only Secondary Controls: Theme + Unified System Menu */}
+          <div className="hidden lg:flex items-center gap-1.5 shrink-0 relative">
             <button
               type="button"
               onClick={handleToggleThemeQuick}
@@ -3147,16 +3118,128 @@ const App: React.FC = () => {
 
             <button
               type="button"
-              onClick={handleLockApp}
-              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
-              title={tr(appPrefs.language, 'App sperren', 'Lock App')}
-              aria-label={tr(appPrefs.language, 'App sperren', 'Lock App')}
+              id="btn-desktop-system-menu"
+              onClick={() => {
+                triggerHaptic('light');
+                setDesktopSystemMenuOpen((prev) => !prev);
+              }}
+              aria-expanded={desktopSystemMenuOpen}
+              aria-haspopup="menu"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                desktopSystemMenuOpen || settingsModalOpen
+                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+              }`}
+              title={tr(appPrefs.language, 'System, Einstellungen, Sprache & Hilfe', 'System, Settings, Language & Help')}
+              aria-label={tr(appPrefs.language, 'Systemmenü öffnen', 'Open System Menu')}
             >
-              <Lock size={15} />
+              <SettingsIcon size={14} className="text-indigo-500" />
+              <span>{tr(appPrefs.language, 'Menü', 'Menu')}</span>
+              <ChevronDown size={13} className={`transition-transform ${desktopSystemMenuOpen ? 'rotate-180' : ''}`} />
             </button>
+
+            {desktopSystemMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-[1190]"
+                  onClick={() => setDesktopSystemMenuOpen(false)}
+                />
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full mt-1.5 w-60 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5 text-xs"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    id="btn-open-settings"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setDesktopSystemMenuOpen(false);
+                      openSettingsModal('style');
+                    }}
+                    className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <SettingsIcon size={14} className="text-indigo-500" />
+                      <span>{tr(appPrefs.language, 'Einstellungen & UI', 'Settings & UI')}</span>
+                    </span>
+                    <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">,</kbd>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-no-translate="true"
+                    id="btn-language-toggle"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      updateAppPreferences({ language: appPrefs.language === 'de' ? 'en' : 'de' });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Languages size={14} className="text-indigo-500" />
+                      <span>{tr(appPrefs.language, 'Sprache', 'Language')}</span>
+                    </span>
+                    <span className="font-mono text-[11px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-indigo-600 dark:text-indigo-300">
+                      {appPrefs.language.toUpperCase()}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setDesktopSystemMenuOpen(false);
+                      setGlossaryOpen(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <BookOpen size={14} className="text-emerald-500" />
+                      <span>{tr(appPrefs.language, 'Sport-Glossar', 'Sports Glossary')}</span>
+                    </span>
+                    <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">G</kbd>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setDesktopSystemMenuOpen(false);
+                      setShortcutsModalOpen(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Keyboard size={14} className="text-slate-500 dark:text-slate-400" />
+                      <span>{tr(appPrefs.language, 'Tastaturkürzel', 'Keyboard Shortcuts')}</span>
+                    </span>
+                    <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">?</kbd>
+                  </button>
+
+                  <div className="border-t border-slate-100 dark:border-slate-800 my-1" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setDesktopSystemMenuOpen(false);
+                      handleLockApp();
+                    }}
+                    className="w-full px-3 py-2 rounded-xl flex items-center gap-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold cursor-pointer"
+                  >
+                    <Lock size={14} />
+                    <span>{tr(appPrefs.language, 'App sperren', 'Lock App')}</span>
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Mobile Overflow Tools Button (< lg) */}
+          {/* Mobile Overflow Tools Button (< lg) -> Slide-Up Bottom Sheet on Phones */}
           <div className="lg:hidden relative">
             <button
               type="button"
@@ -3177,13 +3260,68 @@ const App: React.FC = () => {
               <MoreHorizontal size={19} />
             </button>
 
-            {mobileToolsMenuOpen && (
+            {mobileToolsMenuOpen && typeof document !== 'undefined' && createPortal(
               <>
                 <div
-                  className="fixed inset-0 z-[1190]"
+                  className="fixed inset-0 z-[1190] bg-slate-950/40 sm:bg-transparent"
                   onClick={() => setMobileToolsMenuOpen(false)}
                 />
-                <div className="absolute right-0 top-full mt-1.5 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-[1200] space-y-0.5">
+                <div className="fixed inset-x-0 bottom-0 z-[1200] rounded-t-3xl pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:pb-1.5 sm:inset-auto sm:top-[56px] sm:right-4 sm:w-64 sm:rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border-t sm:border border-slate-200 dark:border-slate-700 px-3 pt-2 sm:p-1.5 space-y-1">
+                  <div className="sm:hidden flex justify-center pb-1">
+                    <span className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700" />
+                  </div>
+
+                  <div className="px-2 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    {tr(appPrefs.language, 'Schnellaktionen', 'Quick Actions')}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setMobileToolsMenuOpen(false);
+                      topbarUploadInputRef.current?.click();
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <Upload size={15} className="text-blue-500" />
+                    <span>{tr(appPrefs.language, 'GPX / FIT importieren', 'Import GPX / FIT')}</span>
+                  </button>
+
+                  {activeWorkspaceView === 'map' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('light');
+                        setMobileToolsMenuOpen(false);
+                        setWeatherOpen(true);
+                      }}
+                      className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Sun size={15} className="text-amber-500" />
+                      <span>{tr(appPrefs.language, 'Wetter-Prognose', 'Weather Forecast')}</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setMobileToolsMenuOpen(false);
+                      setGlossaryOpen(true);
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl flex items-center gap-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    <BookOpen size={15} className="text-emerald-500" />
+                    <span>{tr(appPrefs.language, 'Sport-Glossar', 'Sports Glossary')}</span>
+                  </button>
+
+                  <div className="border-t border-slate-100 dark:border-slate-800 my-1" />
+
+                  <div className="px-2 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    {tr(appPrefs.language, 'Darstellung & System', 'Appearance & System')}
+                  </div>
+
                   <button
                     type="button"
                     data-no-translate="true"
@@ -3245,7 +3383,8 @@ const App: React.FC = () => {
                     <span>{tr(appPrefs.language, 'App sperren', 'Lock App')}</span>
                   </button>
                 </div>
-              </>
+              </>,
+              document.body
             )}
           </div>
         </div>
@@ -3613,24 +3752,39 @@ const App: React.FC = () => {
             <ErrorBoundary fallbackTitle="Kartenansicht konnte nicht geladen werden" fallbackMessage="Beim Rendern der interaktiven Karte ist ein Problem aufgetreten.">
               {is3D ? (
                 <Suspense fallback={<LazyViewFallback label={tr(appPrefs.language, '3D-Karte wird geladen…', 'Loading 3D map…')} />}>
-                  <Map3D 
-                    tracks={tracks} 
-                    activeLayer={activeLayer}
-                    markedTrackId={markedTrackId}
-                    onMarkTrack={setMarkedTrackId}
-                    hoveredPoint={hoveredPoint}
-                    onHoverPoint={setHoveredPoint}
-                    selectionBounds={selectionBounds}
-                    onSelection={setSelectionBounds}
-                    mapView={mapView}
-                    onMapViewChange={setMapView}
-                    estimatedSpeed={estimatedSpeed}
-                  />
+                  <>
+                    <Map3D 
+                      tracks={tracks} 
+                      activeLayer={activeLayer}
+                      markedTrackId={markedTrackId}
+                      onMarkTrack={setMarkedTrackId}
+                      hoveredPoint={hoveredPoint}
+                      onHoverPoint={setHoveredPoint}
+                      selectionBounds={selectionBounds}
+                      onSelection={setSelectionBounds}
+                      mapView={mapView}
+                      onMapViewChange={setMapView}
+                      estimatedSpeed={estimatedSpeed}
+                    />
+                    <button
+                      type="button"
+                      id="btn-exit-3d-mode"
+                      onClick={() => handleToggle3DMode()}
+                      className="absolute top-3 right-3 z-[450] min-h-[40px] px-3 py-1.5 rounded-xl bg-white/95 dark:bg-slate-900/95 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-700 shadow-lg text-xs font-bold flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+                      title="Zurück zur 2D-Kartenansicht (Taste 3)"
+                    >
+                      <MapIcon size={14} className="text-indigo-500" />
+                      <span>2D-Karte</span>
+                    </button>
+                  </>
                 </Suspense>
               ) : (
                 <Map 
                   tracks={tracks} 
                   activeLayer={activeLayer}
+                  setActiveLayer={setActiveLayer}
+                  is3D={is3D}
+                  onToggle3D={handleToggle3DMode}
                   markedTrackId={markedTrackId}
                   compareTrackId={compareTrackId}
                   onStartMapComparison={handleStartMapComparison}

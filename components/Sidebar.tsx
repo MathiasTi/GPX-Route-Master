@@ -48,10 +48,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
-const WeatherOverlay = React.lazy(() =>
-  import('./WeatherOverlay').then((m) => ({ default: m.WeatherOverlay }))
-);
-
 interface TrackItemProps {
   track: GPXTrack;
   isMarked: boolean;
@@ -364,8 +360,11 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                 {isMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute right-0 top-full mt-1 w-52 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 shadow-xl py-1 z-50 text-xs"
+                    className="absolute right-0 top-full mt-1 w-56 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 shadow-xl py-1 z-50 text-xs max-h-[70vh] overflow-y-auto"
                   >
+                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                      Analyse &amp; 3D
+                    </div>
                     {onOpenIntensiveAnalysis && (
                       <button
                         type="button"
@@ -380,6 +379,86 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                         <span>Analyse-Cockpit öffnen</span>
                       </button>
                     )}
+
+                    {onOpenVideoExport && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenVideoExport(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Video className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>3D-Überflug Studio</span>
+                      </button>
+                    )}
+
+                    {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenClimbs(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>Berge ({trackClimbs.length})</span>
+                      </button>
+                    )}
+
+                    {onOpenAnalytics && capabilities.hasPowerPhysicsTabData && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenAnalytics(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <BarChart2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span>{capabilities.isRunning ? 'Laufdaten (GAP/CS)' : 'Leistungsphysik'}</span>
+                      </button>
+                    )}
+
+                    {onOpenTrainingZones && capabilities.hasZonesTabData && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenTrainingZones(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                        <span>Trainingszonen</span>
+                      </button>
+                    )}
+
+                    {onOpenRawData && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenRawData(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <FileCode className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                        <span>Rohdaten-Inspektor</span>
+                      </button>
+                    )}
+
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                      Strecke
+                    </div>
 
                     <button
                       type="button"
@@ -397,6 +476,120 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                       )}
                       <span>{expanded ? 'Details einklappen' : 'Details ausklappen'}</span>
                     </button>
+
+                    {onReverseTrack && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          triggerHaptic('medium');
+                          onReverseTrack(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <ArrowLeftRight className="w-3.5 h-3.5 text-violet-500 shrink-0" />
+                        <span>Richtung umkehren</span>
+                      </button>
+                    )}
+
+                    {onOpenTimeGapAnalysis && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenTimeGapAnalysis(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Scissors className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>Zeitlücken analysieren</span>
+                      </button>
+                    )}
+
+                    {onSanitizeTrack && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onSanitizeTrack(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>Track bereinigen</span>
+                      </button>
+                    )}
+
+                    {onOpenValidation && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onOpenValidation(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <span className="flex items-center gap-2">
+                          <ShieldCheck className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                          <span>GPS prüfen</span>
+                        </span>
+                        {startValidation.issue && (
+                          <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                        )}
+                      </button>
+                    )}
+
+                    {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onCompareTrackOnMap(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <GitCompare className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                        <span>{isCompared ? 'Vergleich beenden' : 'Auf Karte vergleichen'}</span>
+                      </button>
+                    )}
+
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                      Datei &amp; Workspace
+                    </div>
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onCloseMenu?.();
+                        handleExportGPX();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                      <span>Als GPX exportieren</span>
+                    </button>
+
+                    {onSaveTrackToLibrary && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onCloseMenu?.();
+                          onSaveTrackToLibrary(track.id);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Database className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span>In Bibliothek sichern</span>
+                      </button>
+                    )}
 
                     <button
                       type="button"
@@ -429,37 +622,6 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
                       >
                         <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isRefreshingKomoot ? 'animate-spin' : ''}`} />
                         <span>Komoot aktualisieren (v{komootMeta.version})</span>
-                      </button>
-                    )}
-
-                    {onReverseTrack && (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          onCloseMenu?.();
-                          triggerHaptic('medium');
-                          onReverseTrack(track.id);
-                        }}
-                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
-                      >
-                        <ArrowLeftRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>Richtung umkehren</span>
-                      </button>
-                    )}
-
-                    {totalTracks > 1 && !isMarked && onCompareTrackOnMap && (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          onCloseMenu?.();
-                          onCompareTrackOnMap(track.id);
-                        }}
-                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
-                      >
-                        <GitCompare className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                        <span>{isCompared ? 'Vergleich beenden' : 'Auf Karte vergleichen'}</span>
                       </button>
                     )}
 
@@ -585,184 +747,32 @@ const SortableTrackItem: React.FC<TrackItemProps> = React.memo(({
           {/* Expanded Content Section */}
           {expanded && (
             <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
-              {/* Grouped Track Actions */}
-              <div className="space-y-2 bg-slate-50/80 dark:bg-slate-800/40 p-2 rounded-xl border border-slate-200/70 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
-                {/* Group 1: Analyse & 3D */}
-                <div className="space-y-1">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
-                    Analyse &amp; 3D
-                  </div>
-                  <div className="grid grid-cols-3 gap-1">
-                    {onOpenVideoExport && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenVideoExport(track.id)}
-                        className="p-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 rounded-lg border border-emerald-200/80 dark:border-emerald-800/70 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="3D-Überflug Video Studio öffnen"
-                      >
-                        <Video className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                        <span>3D-Flug</span>
-                      </button>
-                    )}
+              {/* Calm 2-Button Quick Strip (Secondary actions live cleanly in the ⋯ menu) */}
+              <div className="flex items-center gap-1.5" data-sidebar-menu="true" onClick={(e) => e.stopPropagation()}>
+                {onOpenIntensiveAnalysis && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenIntensiveAnalysis(track.id)}
+                    className="flex-1 py-1.5 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 text-[11px] font-semibold"
+                    title="Analyse-Cockpit öffnen (Übersicht, Splits, Leistung & Rohdaten)"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    <span>Analyse-Cockpit</span>
+                  </button>
+                )}
 
-                    {onOpenIntensiveAnalysis && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenIntensiveAnalysis(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="Analyse-Cockpit öffnen (Übersicht, Splits & Pacing)"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                        <span>Cockpit</span>
-                      </button>
-                    )}
-
-                    {trackClimbs && trackClimbs.length > 0 && onOpenClimbs && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenClimbs(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="Bergwertungen im Cockpit öffnen"
-                      >
-                        <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                        <span>Berge ({trackClimbs.length})</span>
-                      </button>
-                    )}
-
-                    {onOpenAnalytics && capabilities.hasPowerPhysicsTabData && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenAnalytics(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title={capabilities.isRunning ? "Laufmetriken (GAP, CS & D'bal) im Cockpit öffnen" : "Leistungsphysik im Cockpit öffnen"}
-                      >
-                        <BarChart2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                        <span>{capabilities.isRunning ? 'Laufdaten' : 'Leistung'}</span>
-                      </button>
-                    )}
-
-                    {onOpenTrainingZones && capabilities.hasZonesTabData && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenTrainingZones(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="Trainingszonen im Cockpit öffnen"
-                      >
-                        <Heart className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
-                        <span>Zonen</span>
-                      </button>
-                    )}
-
-                    {onOpenRawData && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenRawData(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-semibold"
-                        title="Rohdaten-Inspektor im Cockpit öffnen"
-                      >
-                        <FileCode className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                        <span>Rohdaten</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Group 2: Strecke bearbeiten */}
-                <div className="space-y-1 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
-                    Strecke bearbeiten
-                  </div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {onOpenTimeGapAnalysis && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenTimeGapAnalysis(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                        title="Zeitlücken > 30s analysieren & Track trennen"
-                      >
-                        <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                        <span>Lücken</span>
-                      </button>
-                    )}
-
-                    {onReverseTrack && (
-                      <button
-                        type="button"
-                        onClick={() => onReverseTrack(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                        title="Streckenverlauf umkehren"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
-                        <span>Umkehren</span>
-                      </button>
-                    )}
-
-                    {onSanitizeTrack && (
-                      <button
-                        type="button"
-                        onClick={() => onSanitizeTrack(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                        title="1-Click Track-Sanitizer (GPS-Ausreißer & Höhen-Spikes)"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                        <span>Bereinigen</span>
-                      </button>
-                    )}
-
-                    {onOpenValidation && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenValidation(track.id)}
-                        className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold relative"
-                        title={startValidation.issue ? `Plausibilitätsprüfung: ${startValidation.issue.title}` : "GPS-Validierung & Plausibilitätsprüfung"}
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                        <span>Prüfen</span>
-                        {startValidation.issue && (
-                          <span className="absolute -top-1 -right-1 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white dark:ring-slate-900" />
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Group 3: Export & Bibliothek */}
-                <div className="space-y-1 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-0.5">
-                    Export &amp; Bibliothek
-                  </div>
-                  <div className="grid grid-cols-3 gap-1">
-                    <button
-                      type="button"
-                      onClick={handleExportGPX}
-                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                      title="Track als GPX-Datei exportieren"
-                    >
-                      <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                      <span>Export</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onSaveTrackToLibrary?.(track.id)}
-                      className="p-1.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                      title="Aktivität dauerhaft in der Bibliothek speichern"
-                    >
-                      <Database className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                      <span>Sichern</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onRemoveTrack(track.id)}
-                      className="p-1.5 bg-white hover:bg-rose-50 dark:bg-slate-800 dark:hover:bg-rose-950/30 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 rounded-lg border border-slate-200/80 hover:border-rose-200 dark:border-slate-700 dark:hover:border-rose-900/50 transition-colors cursor-pointer flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold"
-                      title="Track vollständig entfernen"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />
-                      <span>Löschen</span>
-                    </button>
-                  </div>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('light');
+                    onToggleMenu?.(track.id);
+                  }}
+                  className="py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200/80 dark:border-slate-700 transition-colors cursor-pointer flex items-center justify-center gap-1 text-[11px] font-semibold shrink-0"
+                  title="Weitere Aktionen (3D-Flug, Export, Bearbeiten)"
+                >
+                  <span>Aktionen</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                </button>
               </div>
               
               <div className="flex flex-col gap-1.5">
@@ -1379,7 +1389,6 @@ const Sidebar: React.FC<SidebarProps> = ({
       setExpandedTrackMap(nextMap);
     }
   };
-  const [isWeatherExpanded, setIsWeatherExpanded] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [latestBuildDate, setLatestBuildDate] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -1495,7 +1504,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <X size={20} />
           </button>
 
-          <div className="relative z-10 pl-5 pr-16 md:px-5 py-4 bg-slate-900 text-white flex justify-between items-center border-b border-slate-800/80">
+          <div className="relative z-10 pl-5 pr-16 md:hidden py-4 bg-slate-900 text-white flex justify-between items-center border-b border-slate-800/80">
             <div className="flex items-center gap-2.5">
               <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
                 <Layers className="w-5 h-5 text-blue-400 shrink-0" />
@@ -2077,306 +2086,221 @@ const Sidebar: React.FC<SidebarProps> = ({
               />
             )}
 
-            <section className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+            <section className="space-y-2.5 border-t border-slate-100 dark:border-slate-800 pt-3">
               <div className="flex justify-between items-center">
-                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Werkzeuge & Analyse</h2>
+                <h2 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Werkzeuge</h2>
                 {canUndo && (
-                  <button 
+                  <button
+                    type="button"
                     onClick={onUndo}
-                    className="flex items-center gap-1 text-[10px] text-blue-600 font-bold hover:bg-blue-100 bg-blue-50 px-2 py-1 rounded transition-colors"
+                    className="flex items-center gap-1 text-[10px] text-blue-600 font-bold hover:bg-blue-100 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-400 px-2 py-0.5 rounded transition-colors cursor-pointer"
                   >
-                    <Undo2 className="w-3 h-3" /> RÜCKGÄNGIG
+                    <Undo2 className="w-3 h-3" /> Rückgängig
                   </button>
                 )}
               </div>
 
-              {onOpenVideoExport && (
-                <button 
-                  onClick={() => onOpenVideoExport(markedTrackId || undefined)}
-                  disabled={tracks.length === 0}
-                  id="btn-sidebar-3d-flyover"
-                  className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-all cursor-pointer group"
-                  title="3D-Überflug Video Studio im Stile von Komoot & Relive öffnen"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1 rounded-md bg-white/15">
-                      <Video className="w-4 h-4 text-emerald-100" />
-                    </div>
-                    <div className="text-left">
-                      <div className="font-bold leading-tight">3D-Überflug Video-Studio</div>
-                      <div className="text-[10px] text-emerald-100 font-normal">Komoot / Relive Kameraflug & Export</div>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-emerald-100 group-hover:translate-x-0.5 transition-transform" />
-                </button>
-              )}
+              <div className="flex items-center gap-1.5 relative" data-sidebar-menu="true">
+                {onOpenIntensiveAnalysis && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenIntensiveAnalysis(markedTrackId || undefined)}
+                    disabled={tracks.length === 0}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-xs transition-colors cursor-pointer"
+                    title="Analyse-Cockpit & Pacing-Engine öffnen"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    <span>Analyse-Cockpit</span>
+                  </button>
+                )}
 
-              {onOpenIntensiveAnalysis && (
-                <button 
-                  onClick={() => onOpenIntensiveAnalysis(markedTrackId || undefined)}
-                  disabled={tracks.length === 0}
-                  className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-all cursor-pointer group"
-                  title="Intensive Track Analysis & Physical Pacing Engine (Segment-Tiefenanalyse, Pacing & Steigungsphysik)"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1 rounded-md bg-white/15">
-                      <Sparkles className="w-4 h-4 text-indigo-100" />
-                    </div>
-                    <div className="text-left">
-                      <div className="font-bold leading-tight">Intensive Pacing Analyse</div>
-                      <div className="text-[10px] text-indigo-200 font-normal">Segment- & Leistungsphysik</div>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-indigo-200 group-hover:translate-x-0.5 transition-transform" />
-                </button>
-              )}
-
-              {onStartMapComparison && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (compareTrackId && onExitMapComparison) {
-                      onExitMapComparison();
-                    } else {
-                      onStartMapComparison();
-                    }
-                  }}
-                  disabled={tracks.length < 2 && !compareTrackId}
-                  id="btn-sidebar-map-compare-2-tracks"
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold border shadow-2xs transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                    compareTrackId
-                      ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-800 dark:text-orange-200 border-orange-300 dark:border-orange-700'
-                      : 'bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800'
-                  }`}
-                  title={tracks.length < 2 ? 'Lade mindestens 2 GPX-Strecken, um sie auf der Karte zu vergleichen' : compareTrackId ? '2-Track Karten-Vergleich beenden' : '2 GPX Tracks gleichzeitig auf der Karte anzeigen und vergleichen'}
-                >
-                  <div className="flex items-center gap-2">
-                    <GitCompare className={`w-4 h-4 ${compareTrackId ? 'text-orange-600 dark:text-orange-400' : 'text-indigo-600 dark:text-indigo-400'}`} />
-                    <span>{compareTrackId ? 'Karten-Vergleich aktiv (Beenden)' : '2 Tracks auf Karte vergleichen'}</span>
-                  </div>
-                  {compareTrackId ? (
-                    <X className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-                  ) : (
-                    <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400 font-bold">A vs B</span>
-                  )}
-                </button>
-              )}
-
-              {/* Core Route Tools: Clean 2x2 Grid */}
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={onMergeSelected}
-                  disabled={tracks.length < 2}
-                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
-                >
-                  <Combine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                  <span>Verbinden</span>
-                </button>
-                <button 
-                  onClick={() => setIs3D(!is3D)}
-                  className={`flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold border shadow-2xs transition-all cursor-pointer ${
-                    is3D 
-                      ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-800' 
-                      : 'bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <Box className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                  <span>3D {is3D ? 'Aktiv' : 'Ansicht'}</span>
-                </button>
-                <button 
-                  onClick={onOpenComparison}
-                  disabled={tracks.length < 2}
-                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
-                  title={tracks.length < 2 ? "Lade mindestens 2 Aktivitäten hoch, um sie zu vergleichen" : "Aktivitäten vergleichen"}
-                >
-                  <GitCompare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                  <span>Vergleichen</span>
-                </button>
-                <button 
-                  onClick={() => onOpenTimeGapAnalysis?.(markedTrackId || undefined)}
-                  disabled={tracks.length === 0}
-                  className="flex items-center justify-center gap-2 py-2 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition-all cursor-pointer"
-                  title="Erkennt Unterbrechungen > 30s und erlaubt das Trennen oder Schließen von Zeitlücken"
-                >
-                  <Scissors className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                  <span>Zeitlücken</span>
-                </button>
-              </div>
-
-              {/* Active Route Quick-Actions (when a track is selected) */}
-              {markedTrack && (
-                <div className="p-2 rounded-xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 space-y-1.5">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 truncate">
-                    Auswahl: <span className="text-slate-700 dark:text-slate-300 font-semibold normal-case">{markedTrack.name}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button 
-                      onClick={() => onOpenSummaryReport?.(markedTrackId || undefined)}
-                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer shadow-xs"
-                      title="Druckbaren Aktivitäts-Report im Cockpit öffnen"
-                    >
-                      <BarChart2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                      <span>PDF-Report</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        triggerHaptic('medium');
-                        downloadTrackAsGPX(markedTrack, { textMarkers });
-                      }}
-                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer shadow-xs"
-                      title="Markierten Track als .gpx herunterladen"
-                    >
-                      <Download className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                      <span>GPX Export</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Extended Analytics & Garmin: Clean, Unified Segmented Card */}
-              <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-850/50 backdrop-blur-xs overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
-                <button 
-                  onClick={onOpenPerformanceAnalysis}
-                  className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
-                  title="Wissenschaftliche Leistungs- & Fitness-Analyse (CTL, ATL, TSB, Leistungskurven)"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/40">
-                      <TrendingUp className="w-3.5 h-3.5" />
-                    </div>
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Fitness & Leistung (CTL/ATL)</span>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
-                </button>
-
-                <button 
-                  onClick={onOpenGarminHealth}
-                  className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
-                  title="Garmin Connect Fitness- & Gesundheitsdaten anzeigen & SQLite-Import"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1 rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900/40">
-                      <Database className="w-3.5 h-3.5" />
-                    </div>
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Garmin Fitness & Gesundheit</span>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
-                </button>
-
-                {onOpenGarminActivitiesAnalysis && (
-                  <button 
-                    onClick={onOpenGarminActivitiesAnalysis}
-                    className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
-                    title="Garmin Connect Aktivitäten-Verlauf analysieren & Einheiten vergleichen"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-1 rounded-md bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 border border-orange-100 dark:border-orange-900/40">
-                        <GitCompare className="w-3.5 h-3.5" />
-                      </div>
-                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Garmin Einheiten-Vergleich</span>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
-                  </button>
-                )}
-
-                {onOpenGlossary && (
-                  <button 
-                    onClick={() => onOpenGlossary()}
-                    className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer text-left group"
-                    title="Wissenschaftliches Sport-Glossar (VAM, TSS, FTP, EF, VO2max, VI, Pacing) & Interaktive Rechner"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-1 rounded-md bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/40">
-                        <BookOpen className="w-3.5 h-3.5" />
-                      </div>
-                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Sport-Glossar (VAM, TSS...)</span>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
-                  </button>
-                )}
-              </div>
-
-              {onOpenShortcuts && (
-                <button 
+                  id="btn-sidebar-tools-menu"
                   onClick={() => {
                     triggerHaptic('light');
-                    onOpenShortcuts();
+                    setOpenMenuId((prev) => (prev === 'sidebar-tools' ? null : 'sidebar-tools'));
                   }}
-                  className="w-full flex items-center justify-between p-3 rounded-xl text-sm font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/60 dark:border-slate-700/60 shadow-xs transition-all cursor-pointer group"
-                  title="Übersicht aller Tastaturkürzel anzeigen (Drücke ? oder Shift+/)"
-                  id="btn-sidebar-shortcuts"
+                  aria-expanded={openMenuId === 'sidebar-tools'}
+                  aria-haspopup="menu"
+                  className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer shrink-0 ${
+                    openMenuId === 'sidebar-tools'
+                      ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-900 dark:text-white'
+                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                  title="Weitere Werkzeuge (3D, Vergleich, Export, Wetter)"
                 >
-                  <div className="flex items-center gap-2">
-                    <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
-                    <span>Tastaturkürzel & Steuerung</span>
-                  </div>
-                  <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-black bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-slate-600 dark:text-slate-300 shadow-2xs">
-                    ?
-                  </kbd>
+                  <span>Werkzeuge</span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${openMenuId === 'sidebar-tools' ? 'rotate-180' : ''}`} />
                 </button>
-              )}
-            </section>
 
-            <section className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 transition-all">
-                <button
-                  onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
-                  className="flex-1 flex items-center gap-2 text-left cursor-pointer"
-                >
-                  <span className="text-base">🌤️</span>
-                  <div>
-                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">Wetter & Routen-Prognose</div>
-                    <div className="text-[10px] text-slate-400 font-medium">Start, Gipfel & Zielprognose</div>
-                  </div>
-                </button>
-                <div className="flex items-center gap-1">
-                  {onOpenWeather && (
+                {openMenuId === 'sidebar-tools' && (
+                  <div
+                    role="menu"
+                    className={`absolute right-0 ${tracks.length === 0 ? 'top-full mt-1.5' : 'bottom-full mb-1.5'} w-60 max-h-[60vh] overflow-y-auto rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl py-1 z-50 text-xs`}
+                  >
+                    {onOpenVideoExport && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={tracks.length === 0}
+                        id="btn-sidebar-3d-flyover"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          onOpenVideoExport(markedTrackId || undefined);
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                      >
+                        <Video className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>3D-Überflug Video-Studio</span>
+                      </button>
+                    )}
+
                     <button
-                      onClick={onOpenWeather}
-                      title="Große Wetter-Ansicht öffnen"
-                      className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenuId(null);
+                        setIs3D(!is3D);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                     >
-                      <ExternalLink size={13} />
+                      <span className="flex items-center gap-2">
+                        <Box className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                        <span>3D-Gelände</span>
+                      </span>
+                      {is3D && <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />}
                     </button>
-                  )}
-                  <button
-                    onClick={() => setIsWeatherExpanded(!isWeatherExpanded)}
-                    className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 transition-colors cursor-pointer"
-                  >
-                    {isWeatherExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                  </button>
-                </div>
-              </div>
 
-              {isWeatherExpanded && (
-                <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                  <React.Suspense fallback={null}>
-                    <WeatherOverlay
-                      track={markedTrack || tracks.find(t => t.visible) || tracks[0]}
-                      allTracks={tracks}
-                      onSelectTrack={onMarkTrack}
-                      selectedDate={selectedDate}
-                      setSelectedDate={setSelectedDate}
-                      selectedTime={selectedTime}
-                      setSelectedTime={setSelectedTime}
-                    />
-                  </React.Suspense>
-                </div>
-              )}
-            </section>
+                    {onStartMapComparison && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={tracks.length < 2 && !compareTrackId}
+                        id="btn-sidebar-map-compare-2-tracks"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          if (compareTrackId && onExitMapComparison) {
+                            onExitMapComparison();
+                          } else {
+                            onStartMapComparison();
+                          }
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                      >
+                        <GitCompare className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                        <span>{compareTrackId ? 'Karten-Vergleich beenden' : '2 Tracks auf Karte vergleichen'}</span>
+                      </button>
+                    )}
 
-            <section className="space-y-3">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Kartentyp</h2>
-              <div className="grid grid-cols-2 gap-1.5">
-                {Object.values(MapLayer).map((layer) => (
-                  <button
-                    key={layer}
-                    onClick={() => setActiveLayer(layer)}
-                    className={`text-left px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-colors ${activeLayer === layer ? 'bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent'}`}
-                  >
-                    {layer}
-                  </button>
-                ))}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={tracks.length < 2}
+                      onClick={() => {
+                        setOpenMenuId(null);
+                        onOpenComparison();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                    >
+                      <GitCompare className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      <span>Aktivitäten vergleichen</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={tracks.length < 2}
+                      onClick={() => {
+                        setOpenMenuId(null);
+                        onMergeSelected();
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Combine className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      <span>Tracks verbinden</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={tracks.length === 0}
+                      onClick={() => {
+                        setOpenMenuId(null);
+                        onOpenTimeGapAnalysis?.(markedTrackId || undefined);
+                      }}
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Scissors className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span>Zeitlücken analysieren</span>
+                    </button>
+
+                    {markedTrack && (
+                      <>
+                        <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            onOpenSummaryReport?.(markedTrackId || undefined);
+                          }}
+                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                        >
+                          <BarChart2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                          <span>PDF-Report öffnen</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            triggerHaptic('medium');
+                            downloadTrackAsGPX(markedTrack, { textMarkers });
+                          }}
+                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                          <span>Aktive Strecke als GPX</span>
+                        </button>
+                      </>
+                    )}
+
+                    {(onOpenWeather || onOpenGlossary) && (
+                      <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+                    )}
+
+                    {onOpenWeather && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          onOpenWeather();
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <Sun className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>Wetter &amp; Routen-Prognose</span>
+                      </button>
+                    )}
+
+                    {onOpenGlossary && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          onOpenGlossary();
+                        }}
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <BookOpen className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>Sport-Glossar (VAM, TSS...)</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 

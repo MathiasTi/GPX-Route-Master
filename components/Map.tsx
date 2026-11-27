@@ -1,5 +1,6 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { MapContainer, Polyline, useMapEvents, useMap, Marker, Popup, Rectangle, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import { GPXTrack, MapLayer, MAP_LAYERS, GPXPoint, TextMarker, TimeGap } from '../types';
@@ -45,7 +46,7 @@ import {
 } from '../utils/liveNavigation';
 import { RoutePlannerDock } from './RoutePlannerDock';
 import { LiveNavigationHUD } from './mobile/LiveNavigationHUD';
-import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Maximize2, RefreshCw, Download, Sparkles, Keyboard, GitCompare, ArrowLeftRight, X, BarChart2, Flame, Route } from 'lucide-react';
+import { Palette, Bike, Activity, Clock, TrendingUp, ChevronDown, ChevronUp, Target, Compass, Navigation, Maximize2, RefreshCw, Download, Sparkles, Layers, Box, GitCompare, ArrowLeftRight, X, BarChart2, Flame, Route } from 'lucide-react';
 
 // Fix for default marker icons in Leaflet + React
 // @ts-ignore
@@ -116,6 +117,9 @@ const getBearing = (lat1: number, lng1: number, lat2: number, lng2: number): num
 interface MapProps {
   tracks: GPXTrack[];
   activeLayer: MapLayer;
+  setActiveLayer?: (layer: MapLayer) => void;
+  is3D?: boolean;
+  onToggle3D?: () => void;
   markedTrackId: string | null;
   onMarkTrack: (id: string) => void;
   hoveredPoint?: GPXPoint | null;
@@ -1068,6 +1072,9 @@ interface POI {
 const Map: React.FC<MapProps> = ({ 
   tracks, 
   activeLayer, 
+  setActiveLayer,
+  is3D = false,
+  onToggle3D,
   markedTrackId, 
   onMarkTrack, 
   hoveredPoint, 
@@ -1116,7 +1123,6 @@ const Map: React.FC<MapProps> = ({
   const [compareSyncMode, setCompareSyncMode] = useState<'distance' | 'progress'>('distance');
   const [compareScrubFraction, setCompareScrubFraction] = useState<number | null>(null);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
-  const [isQuickShortcutsOpen, setIsQuickShortcutsOpen] = useState(false);
   const [routeProfile, setRouteProfile] = useState<RouteProfile>('road');
   const [snapToRoads, setSnapToRoads] = useState<boolean>(true);
   const [snappedRoutePreview, setSnappedRoutePreview] = useState<RoutePreview | null>(null);
@@ -1360,16 +1366,15 @@ const Map: React.FC<MapProps> = ({
   }, [isSidebarOpen]);
 
   useEffect(() => {
-    if (!isColorMenuOpen && !isQuickShortcutsOpen) return;
+    if (!isColorMenuOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsColorMenuOpen(false);
-        setIsQuickShortcutsOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isColorMenuOpen, isQuickShortcutsOpen]);
+  }, [isColorMenuOpen]);
 
   // Personal Lifetime Heatmap state (Veloviewer / Strava style)
   const [showLifetimeHeatmap, setShowLifetimeHeatmap] = useState(false);
@@ -3232,91 +3237,19 @@ const Map: React.FC<MapProps> = ({
               triggerHaptic('medium');
               setRecenterTrigger(prev => prev + 1);
             }}
-            className="pointer-events-auto min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg lg:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-[transform,background-color] duration-150 flex items-center justify-center gap-1.5 text-xs font-bold cursor-pointer active:scale-95 touch-manipulation"
-            title={`Karte auf gesamte Route "${activeTrack.name}" ausrichten (Taste F)`}
+            className="pointer-events-auto min-h-[42px] min-w-[42px] sm:min-h-[38px] sm:min-w-[38px] flex items-center justify-center rounded-xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg lg:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-[transform,background-color] duration-150 cursor-pointer active:scale-95 touch-manipulation"
+            title={`Route "${activeTrack.name}" zentrieren (Taste F)`}
             aria-label="Route auf Karte zentrieren"
             id="btn-toolbar-center-route"
           >
             <Target className="w-4 h-4 text-amber-500 shrink-0" />
-            <span className="hidden sm:inline whitespace-nowrap">Route zentrieren</span>
-            <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">F</kbd>
           </button>
-        )}
-
-        {onOpenShortcuts && (
-          <div className="hidden md:flex relative flex-col items-end pointer-events-auto">
-            {isQuickShortcutsOpen && (
-              <div
-                className="mb-2 w-60 rounded-2xl bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-800 shadow-xl lg:backdrop-blur-md p-3 text-[11px] text-slate-700 dark:text-slate-200 space-y-2"
-                role="dialog"
-                aria-label="Schnellübersicht Tastenkürzel"
-              >
-                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5">
-                  <span className="font-extrabold text-slate-800 dark:text-slate-100">Karten-Shortcuts</span>
-                  <button
-                    type="button"
-                    onClick={() => setIsQuickShortcutsOpen(false)}
-                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                    aria-label="Kurzübersicht schließen"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <div className="space-y-1.5 font-medium">
-                  <div className="flex items-center justify-between">
-                    <span>Zoom rein / raus</span>
-                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">+ / -</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Feinzoom (±0,25)</span>
-                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">Shift + Klick</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Route zentrieren</span>
-                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">F</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Rückgängig</span>
-                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">Strg + Z</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsQuickShortcutsOpen(false);
-                    onOpenShortcuts();
-                  }}
-                  className="w-full py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-[11px] transition-colors cursor-pointer"
-                >
-                  Alle Tastenkürzel öffnen (?)
-                </button>
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                triggerHaptic('light');
-                setIsQuickShortcutsOpen((prev) => !prev);
-              }}
-              onDoubleClick={() => {
-                setIsQuickShortcutsOpen(false);
-                onOpenShortcuts();
-              }}
-              className="p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 shadow-lg lg:backdrop-blur-md hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-black cursor-pointer active:scale-95 group"
-              title="Kompakte Tastenkürzel-Hilfe umschalten (Taste ? für Gesamtübersicht)"
-              id="btn-toolbar-shortcuts"
-            >
-              <Keyboard className="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
-              <span className="hidden xs:inline">Shortcuts</span>
-              <kbd className="hidden sm:inline-block px-1 py-0.2 text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded border border-slate-200 dark:border-slate-700">?</kbd>
-            </button>
-          </div>
         )}
       </div>
 
-      {/* Strecken-Farbmodus, Routenplaner & Lebenszeit-Heatmap in Karten-Optionen (oben rechts) */}
-      {!isColorMenuOpen && !isLiveNavActive ? (
-        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] flex items-center gap-2 pointer-events-auto map-overlay-layer">
+      {/* Strecken-Farbmodus, Routenplaner & Karten-Optionen (oben rechts) */}
+      {!isColorMenuOpen && !isLiveNavActive && (
+        <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] flex items-center gap-1.5 sm:gap-2 pointer-events-auto map-overlay-layer">
           {activeTrack && onToggleLiveNav && !isRoutePlannerActive && (
             <button
               type="button"
@@ -3326,11 +3259,11 @@ const Map: React.FC<MapProps> = ({
                 onToggleLiveNav();
               }}
               aria-pressed={isLiveNavActive}
-              className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl border shadow-md lg:backdrop-blur-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color] duration-150 select-none font-bold touch-manipulation whitespace-nowrap bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500"
+              className="hidden lg:flex min-h-[40px] px-3 py-1.5 rounded-xl border shadow-md lg:backdrop-blur-md items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color] duration-150 select-none font-bold whitespace-nowrap bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500"
               title={language === 'en' ? 'Follow active track with live GPS' : 'Aktive Strecke mit Live-GPS abfahren'}
             >
-              <Navigation className="w-4 h-4 text-white" />
-              <span className="text-xs font-semibold hidden sm:inline">
+              <Navigation className="w-3.5 h-3.5 text-white" />
+              <span className="text-xs font-semibold">
                 {language === 'en' ? 'Follow' : 'Navigieren'}
               </span>
             </button>
@@ -3344,15 +3277,15 @@ const Map: React.FC<MapProps> = ({
                 onToggleRoutePlanner();
               }}
               aria-pressed={isRoutePlannerActive}
-              className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl border shadow-md lg:backdrop-blur-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color,color,border-color] duration-150 select-none font-bold touch-manipulation whitespace-nowrap ${
+              className={`hidden lg:flex min-h-[40px] px-3 py-1.5 rounded-xl border shadow-md lg:backdrop-blur-md items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-[transform,background-color,color,border-color] duration-150 select-none font-bold whitespace-nowrap ${
                 isRoutePlannerActive
                   ? 'bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-700'
                   : 'bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-200 border-slate-200/70 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
               title={language === 'en' ? 'Plan route on map' : 'Route auf Karte planen'}
             >
-              <Route className={`w-4 h-4 ${isRoutePlannerActive ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`} />
-              <span className="text-xs font-semibold hidden sm:inline">
+              <Route className={`w-3.5 h-3.5 ${isRoutePlannerActive ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`} />
+              <span className="text-xs font-semibold">
                 {language === 'en' ? 'Plan Route' : 'Route planen'}
               </span>
             </button>
@@ -3360,8 +3293,8 @@ const Map: React.FC<MapProps> = ({
           <button
             type="button"
             onClick={() => setIsColorMenuOpen(true)}
-            className="relative bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-2.5 py-2 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-[transform,background-color] duration-150 text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] touch-manipulation"
-            title="Karten-Optionen, Heatmap & Verpflegung einblenden"
+            className="relative bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-2.5 py-2 sm:py-1.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-95 transition-[transform,background-color] duration-150 text-slate-700 dark:text-slate-200 select-none font-bold min-h-[44px] min-w-[44px] lg:min-h-[40px] touch-manipulation"
+            title="Kartenstil, Farbmodus, Heatmap & Verpflegung"
             id="btn-color-mode-toggle"
           >
             <Palette className="w-4 h-4 text-indigo-500" />
@@ -3374,14 +3307,19 @@ const Map: React.FC<MapProps> = ({
             )}
           </button>
         </div>
-      ) : (
+      )}
+
+      {isColorMenuOpen && typeof document !== 'undefined' && createPortal(
         <>
           <div
-            className="fixed inset-0 z-[440]"
+            className="fixed inset-0 z-[1190] bg-slate-950/35 sm:bg-transparent"
             onClick={() => setIsColorMenuOpen(false)}
             aria-hidden="true"
           />
-          <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-[450] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md px-3 py-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 shadow-lg flex flex-col gap-2 font-sans pointer-events-auto select-none w-64 max-w-[90vw] max-h-[min(74vh,520px)] overflow-y-auto map-overlay-layer">
+          <div className="fixed inset-x-0 bottom-0 z-[1200] rounded-t-2xl pb-[calc(1rem+env(safe-area-inset-bottom,0px))] max-h-[78vh] p-4 sm:p-3 sm:inset-auto sm:top-[64px] sm:right-4 sm:w-72 sm:rounded-xl sm:pb-3 sm:max-h-[min(76vh,560px)] bg-white/95 dark:bg-slate-900/95 lg:backdrop-blur-md border-t sm:border border-slate-200/70 dark:border-slate-800 shadow-2xl flex flex-col gap-2.5 font-sans pointer-events-auto select-none overflow-y-auto">
+          <div className="sm:hidden flex justify-center -mt-1 pb-0.5">
+            <span className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700" />
+          </div>
           <div className="font-extrabold text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1 flex items-center justify-between gap-4">
             <span className="flex items-center gap-1">
               <Palette className="w-3.5 h-3.5 text-indigo-500" />
@@ -3397,18 +3335,68 @@ const Map: React.FC<MapProps> = ({
               ✕
             </button>
           </div>
+
+          {/* Section 0: Kartenstil & 3D */}
+          {(setActiveLayer || onToggle3D) && (
+            <>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-indigo-500" />
+                    Kartenstil
+                  </span>
+                  {onToggle3D && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsColorMenuOpen(false);
+                        onToggle3D();
+                      }}
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                        is3D
+                          ? 'bg-purple-600 text-white border-purple-600'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <Box className="w-3 h-3" />
+                      <span>3D-Gelände</span>
+                    </button>
+                  )}
+                </div>
+                {setActiveLayer && (
+                  <div className="grid grid-cols-2 gap-1">
+                    {Object.values(MapLayer).map((layerName) => (
+                      <button
+                        key={layerName}
+                        type="button"
+                        onClick={() => setActiveLayer(layerName)}
+                        className={`text-left px-2 py-1.5 sm:py-1 rounded-lg text-[10.5px] font-semibold transition-colors cursor-pointer truncate ${
+                          activeLayer === layerName
+                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-transparent'
+                        }`}
+                      >
+                        {layerName}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-slate-100 dark:border-slate-800 my-0.5" />
+            </>
+          )}
           
           {/* Section 1: Farbmodus */}
           <div>
             <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Strecken-Farbmodus</div>
-            <div className="flex flex-col gap-1 text-[11px]">
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            <div className="flex flex-col gap-0.5 text-[11px]">
+              <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-1 sm:py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 <input 
                   type="radio" 
                   name="colorMode" 
                   value="surface"
                   checked={colorMode === 'surface'} 
-                  onChange={() => setColorMode('surface')} 
+                  onChange={() => { setColorMode('surface'); setIsLegendVisible(true); }} 
                   className="accent-blue-600 font-sans"
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
@@ -3416,7 +3404,7 @@ const Map: React.FC<MapProps> = ({
                 </span>
               </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-1 sm:py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 <input 
                   type="radio" 
                   name="colorMode" 
@@ -3428,37 +3416,37 @@ const Map: React.FC<MapProps> = ({
                 <span className="font-semibold text-slate-700 dark:text-slate-300">Standard (Streckenfarbe)</span>
               </label>
               
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-1 sm:py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 <input 
                   type="radio" 
                   name="colorMode" 
                   value="hr"
                   checked={colorMode === 'hr'} 
-                  onChange={() => setColorMode('hr')} 
+                  onChange={() => { setColorMode('hr'); setIsLegendVisible(true); }} 
                   className="accent-blue-600 font-sans"
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300">Herzfrequenz-Zonen</span>
               </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-1 sm:py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 <input 
                   type="radio" 
                   name="colorMode" 
                   value="power"
                   checked={colorMode === 'power'} 
-                  onChange={() => setColorMode('power')} 
+                  onChange={() => { setColorMode('power'); setIsLegendVisible(true); }} 
                   className="accent-blue-600"
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300">Leistungs-Zonen (Watt)</span>
               </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-1 sm:py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 <input 
                   type="radio" 
                   name="colorMode" 
                   value="speed"
                   checked={colorMode === 'speed'} 
-                  onChange={() => setColorMode('speed')} 
+                  onChange={() => { setColorMode('speed'); setIsLegendVisible(true); }} 
                   className="accent-blue-600"
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300">Tempo / Pace</span>
@@ -3470,10 +3458,10 @@ const Map: React.FC<MapProps> = ({
 
           {/* Section 2: Lebenszeit-Heatmap */}
           <div>
-            <div className="flex items-center justify-between mb-1.5 gap-2">
+            <div className="flex items-center justify-between gap-2 min-h-[34px] sm:min-h-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <Flame className={`w-3.5 h-3.5 shrink-0 ${showLifetimeHeatmap ? 'text-orange-500' : 'text-slate-400'}`} />
-                <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider truncate">
+                <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider truncate">
                   Lebenszeit-Heatmap
                 </span>
                 {showLifetimeHeatmap && (
@@ -3502,34 +3490,36 @@ const Map: React.FC<MapProps> = ({
               </button>
             </div>
 
-            <div className={`grid grid-cols-3 gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-lg transition-opacity ${showLifetimeHeatmap ? 'opacity-100' : 'opacity-45 pointer-events-none'}`}>
-              {([
-                { id: 'all', label: 'Alle' },
-                { id: 'cycling', label: 'Rad' },
-                { id: 'running', label: 'Lauf' }
-              ] as const).map(opt => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setHeatmapSportFilter(opt.id)}
-                  className={`py-1 rounded text-[10px] font-extrabold transition-colors cursor-pointer ${
-                    heatmapSportFilter === opt.id
-                      ? 'bg-orange-500 text-white shadow-2xs'
-                      : 'text-slate-600 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            {showLifetimeHeatmap && (
+              <div className="grid grid-cols-3 gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-lg mt-1.5">
+                {([
+                  { id: 'all', label: 'Alle' },
+                  { id: 'cycling', label: 'Rad' },
+                  { id: 'running', label: 'Lauf' }
+                ] as const).map(opt => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setHeatmapSportFilter(opt.id)}
+                    className={`py-1 rounded text-[10px] font-extrabold transition-colors cursor-pointer ${
+                      heatmapSportFilter === opt.id
+                        ? 'bg-orange-500 text-white shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="border-t border-slate-100 dark:border-slate-800 my-0.5" />
 
           {/* Section 3: Verpflegung & POIs */}
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Verpflegung & POIs</span>
+            <div className="flex items-center justify-between min-h-[34px] sm:min-h-0">
+              <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">Verpflegung &amp; POIs</span>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input 
                   type="checkbox" 
@@ -3541,59 +3531,83 @@ const Map: React.FC<MapProps> = ({
                   })} 
                   className="sr-only peer"
                 />
-                <div className="w-7 h-4 bg-slate-200 dark:bg-slate-850 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+                <div className="w-8 h-4.5 bg-slate-200 dark:bg-slate-700 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
               </label>
             </div>
 
-            <div className={`flex flex-col gap-1 text-[11px] transition-opacity duration-200 ${showPOIs ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                <input 
-                  type="checkbox" 
-                  checked={poiFilters.water} 
-                  onChange={() => setPoiFilters(prev => ({ ...prev, water: !prev.water }))} 
-                  className="accent-sky-500 rounded"
-                />
-                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
-                  <span>💧</span> Wasserstellen
-                </span>
-              </label>
+            {showPOIs && (
+              <div className="flex flex-col gap-1 text-[11px] mt-1.5">
+                <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                  <input 
+                    type="checkbox" 
+                    checked={poiFilters.water} 
+                    onChange={() => setPoiFilters(prev => ({ ...prev, water: !prev.water }))} 
+                    className="accent-sky-500 rounded"
+                  />
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <span>💧</span> Wasserstellen
+                  </span>
+                </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                <input 
-                  type="checkbox" 
-                  checked={poiFilters.supermarket} 
-                  onChange={() => setPoiFilters(prev => ({ ...prev, supermarket: !prev.supermarket }))} 
-                  className="accent-emerald-500 rounded"
-                />
-                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
-                  <span>🛒</span> Supermarkt / Bäcker
-                </span>
-              </label>
+                <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                  <input 
+                    type="checkbox" 
+                    checked={poiFilters.supermarket} 
+                    onChange={() => setPoiFilters(prev => ({ ...prev, supermarket: !prev.supermarket }))} 
+                    className="accent-emerald-500 rounded"
+                  />
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <span>🛒</span> Supermarkt / Bäcker
+                  </span>
+                </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                <input 
-                  type="checkbox" 
-                  checked={poiFilters.restaurant} 
-                  onChange={() => setPoiFilters(prev => ({ ...prev, restaurant: !prev.restaurant }))} 
-                  className="accent-rose-500 rounded"
-                />
-                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
-                  <span>🍴</span> Gastronomie
-                </span>
-              </label>
+                <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                  <input 
+                    type="checkbox" 
+                    checked={poiFilters.restaurant} 
+                    onChange={() => setPoiFilters(prev => ({ ...prev, restaurant: !prev.restaurant }))} 
+                    className="accent-rose-500 rounded"
+                  />
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <span>🍴</span> Gastronomie
+                  </span>
+                </label>
 
-              <label className="flex items-center gap-2 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                <input 
-                  type="checkbox" 
-                  checked={poiFilters.gas_station} 
-                  onChange={() => setPoiFilters(prev => ({ ...prev, gas_station: !prev.gas_station }))} 
-                  className="accent-amber-500 rounded"
-                />
-                <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
-                  <span>⛽</span> Tankstellen / Kioske
-                </span>
-              </label>
-            </div>
+                <label className="flex items-center gap-2 cursor-pointer min-h-[34px] sm:min-h-0 py-0.5 px-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                  <input 
+                    type="checkbox" 
+                    checked={poiFilters.gas_station} 
+                    onChange={() => setPoiFilters(prev => ({ ...prev, gas_station: !prev.gas_station }))} 
+                    className="accent-amber-500 rounded"
+                  />
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <span>⛽</span> Tankstellen / Kioske
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: HUD Einblendungen */}
+          <div className="border-t border-slate-100 dark:border-slate-800 pt-1.5 flex items-center justify-between gap-2 text-[10.5px] font-semibold text-slate-600 dark:text-slate-300">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!isStatsCollapsed}
+                onChange={() => setIsStatsCollapsed(prev => !prev)}
+                className="accent-indigo-600 rounded"
+              />
+              <span>Track-Statistik</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isLegendVisible}
+                onChange={() => setIsLegendVisible(prev => !prev)}
+                className="accent-indigo-600 rounded"
+              />
+              <span>Legende</span>
+            </label>
           </div>
 
           {/* Warnungsmeldung falls ausgewählte Strecke keine entsprechenden Daten enthält oder virtuell ist */}
@@ -3640,7 +3654,8 @@ const Map: React.FC<MapProps> = ({
             return null;
           })()}
           </div>
-        </>
+        </>,
+        document.body
       )}
 
       {/* Premium Map Legend explaining Surface Types or Zone Ranges */}
